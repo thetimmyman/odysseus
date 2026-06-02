@@ -61,12 +61,22 @@ services:
       # Find yours with:  id -u  /  id -g
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      - PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-/app/data/ms-playwright}
+      - npm_config_cache=${npm_config_cache:-/app/data/.npm}
     depends_on:
       searxng:
         condition: service_healthy
       chromadb:
         condition: service_started
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:7000/api/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "autoheal=true"
 
   chromadb:
     image: docker.io/chromadb/chroma:latest

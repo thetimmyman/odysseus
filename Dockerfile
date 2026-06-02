@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     && rm -rf /var/lib/apt/lists/*
 
+# Chromium runtime libs for the built-in Browser MCP (@playwright/mcp).
+RUN npx -y playwright@latest install-deps chromium && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install Python deps first (layer cache)

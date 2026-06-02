@@ -1030,6 +1030,24 @@ async def _scheduled_email_poller():
 
 _poller_task = None
 _summarize_task = None
+_spam_rules_task = None
+
+
+async def _spam_rules_poller():
+    """Periodically apply user spam-rules to the inbox: move matching mail to
+    Spam and log each hit. Self-contained -- never touches the LLM classify
+    loop, and apply_rules_to_inbox() early-returns when no rules exist, so this
+    is free when the feature is unused."""
+    import asyncio
+    while True:
+        try:
+            await asyncio.sleep(180)
+            from src import spam_rules as _sr
+            moved = await asyncio.to_thread(_sr.apply_rules_to_inbox)
+            if moved:
+                logger.info(f"spam-rules poller moved {moved} email(s) to Spam")
+        except Exception as e:
+            logger.error(f"spam-rules poller error: {e}")
 
 def _inprocess_pollers_enabled() -> bool:
     """Honour `ODYSSEUS_INPROCESS_POLLERS` — set to `0`/`false`/`no`/`off`
@@ -1058,11 +1076,14 @@ def _start_poller():
     import asyncio
 
     def _launch():
-        global _poller_task, _summarize_task
+        global _poller_task, _summarize_task, _spam_rules_task
         loop = asyncio.get_running_loop()
         if _poller_task is None:
             _poller_task = loop.create_task(_scheduled_email_poller())
             logger.info("Started scheduled email poller")
+        if _spam_rules_task is None:
+            _spam_rules_task = loop.create_task(_spam_rules_poller())
+            logger.info("Started spam-rules poller")
         _summarize_task = None
 
     try:

@@ -983,6 +983,58 @@ def setup_email_routes():
             logger.error(f"unflag-spam failed: {e}")
             return {"ok": False, "error": "Mail operation failed"}
 
+    @router.post("/spam-rule/{uid}")
+    async def create_spam_rule(
+        uid: str,
+        request: Request,
+        folder: str = Query("INBOX"),
+        account_id: str | None = Query(None),
+        owner: str = Depends(require_owner),
+    ):
+        """Mark this email as spam NOW and create a rule that auto-files similar
+        future mail. JSON body: {sender:bool, domain:bool, content:bool} (at
+        least one true). Also sweeps the current inbox for existing matches.
+        Silent + logged (see GET /spam-rules)."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        criteria = {
+            "sender": bool(body.get("sender")),
+            "domain": bool(body.get("domain")),
+            "content": bool(body.get("content")),
+        }
+        if not any(criteria.values()):
+            return {"ok": False, "error": "Pick at least one: sender, domain, or content"}
+        import src.spam_rules as _sr
+        info = await _asyncio.to_thread(_sr.fetch_email_fields, uid, folder, account_id, owner)
+        if not info:
+            return {"ok": False, "error": "Could not read the source email"}
+        rid = await _asyncio.to_thread(
+            _sr.create_rule, account_id, criteria, info["sender"],
+            info["subject"], info["body"], uid, info.get("message_id", ""))
+        dest = await _asyncio.to_thread(_sr.move_to_spam, uid, account_id, owner, folder)
+        # Retroactively file other matching mail already in the inbox.
+        swept = await _asyncio.to_thread(_sr.apply_rules_to_inbox, account_id, owner)
+        return {"ok": True, "rule_id": rid, "moved": bool(dest), "dest": dest,
+                "swept": max(0, int(swept or 0)), "criteria": criteria}
+
+    @router.get("/spam-rules")
+    async def list_spam_rules(owner: str = Depends(require_owner)):
+        """List active spam rules + recent auto-filed hits (review surface)."""
+        import src.spam_rules as _sr
+        rules = await _asyncio.to_thread(_sr.list_rules)
+        hits = await _asyncio.to_thread(_sr.recent_hits, 50)
+        return {"rules": rules, "hits": hits}
+
+    @router.delete("/spam-rules/{rule_id}")
+    async def delete_spam_rule(rule_id: int, owner: str = Depends(require_owner)):
+        """Deactivate a spam rule (stops future auto-filing; does not un-move
+        already-filed mail)."""
+        import src.spam_rules as _sr
+        ok = await _asyncio.to_thread(_sr.delete_rule, rule_id)
+        return {"ok": bool(ok)}
+
     @router.get("/contacts")
     async def list_contacts(
         q: str = Query(""),
