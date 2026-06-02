@@ -4096,7 +4096,7 @@ async def do_vault_unlock(content: str, owner: Optional[str] = None) -> Dict:
 # whole-file write_file) and surfaces a diff + .bak backup so changes are
 # reviewable and reversible. Reuses parse_edit_blocks() (FIND/REPLACE blocks).
 # ---------------------------------------------------------------------------
-async def do_edit_file(content: str, owner: Optional[str] = None) -> Dict:
+async def do_edit_file(content: str, owner: Optional[str] = None, session_id: Optional[str] = None) -> Dict:
     """Apply targeted FIND/REPLACE edits to a file on disk.
 
     `content`: first line = path; remainder = one or more
@@ -4116,7 +4116,7 @@ async def do_edit_file(content: str, owner: Optional[str] = None) -> Dict:
     if not raw_path:
         return {"error": "edit_file: path is required (first line)", "exit_code": 1}
     try:
-        path = _resolve_tool_path(raw_path)
+        path = _resolve_tool_path(raw_path, session_id, owner)
     except ValueError as e:
         return {"error": f"edit_file: {e}", "exit_code": 1}
 
@@ -4193,7 +4193,7 @@ async def do_edit_file(content: str, owner: Optional[str] = None) -> Dict:
     }
 
 
-async def do_revert_file(content: str, owner: Optional[str] = None) -> Dict:
+async def do_revert_file(content: str, owner: Optional[str] = None, session_id: Optional[str] = None) -> Dict:
     """Undo the last edit_file change by restoring <path>.bak."""
     import os as _os
     import difflib as _difflib
@@ -4203,7 +4203,7 @@ async def do_revert_file(content: str, owner: Optional[str] = None) -> Dict:
     if not raw_path:
         return {"error": "revert_file: path is required", "exit_code": 1}
     try:
-        path = _resolve_tool_path(raw_path)
+        path = _resolve_tool_path(raw_path, session_id, owner)
     except ValueError as e:
         return {"error": f"revert_file: {e}", "exit_code": 1}
     bak = path + ".bak"
@@ -4235,3 +4235,48 @@ async def do_revert_file(content: str, owner: Optional[str] = None) -> Dict:
         "diff": diff,
         "applied": 1,
     }
+
+
+async def do_set_project(content: str, session_id=None, owner=None) -> Dict:
+    """Set this session's active project root. bash/python then run with this
+    directory as cwd, and read_file/write_file/edit_file may operate inside it
+    in addition to the normal data/temp roots. Persists across turns for this
+    session. Path must already exist and be a directory."""
+    import os as _os
+    from src.tool_execution import _is_sensitive_path
+    path = (content or "").strip()
+    if not session_id:
+        return {"error": "set_project: no session context", "exit_code": 1}
+    if not path:
+        return {"error": "set_project: path is required", "exit_code": 1}
+    resolved = _os.path.realpath(_os.path.expanduser(path))
+    if not _os.path.isdir(resolved):
+        return {"error": f"set_project: '{path}' is not an existing directory", "exit_code": 1}
+    if _is_sensitive_path(resolved):
+        return {"error": f"set_project: '{path}' is inside a sensitive directory", "exit_code": 1}
+    from core.models import _session_manager as sm
+    if sm is None:
+        return {"error": "set_project: session manager unavailable", "exit_code": 1}
+    sess = sm.sessions.get(session_id) or sm.get_session(session_id)
+    if sess is None:
+        return {"error": "set_project: session not found", "exit_code": 1}
+    if sess.owner is not None and owner is not None and sess.owner != owner:
+        return {"error": "set_project: not your session", "exit_code": 1}
+    sm.set_session_project_root(session_id, resolved)
+    return {"project_root": resolved, "exit_code": 0, "output": f"Project root set to {resolved}"}
+
+
+async def do_get_project(content: str, session_id=None, owner=None) -> Dict:
+    """Return this session's active project root, or null if none is set."""
+    if not session_id:
+        return {"error": "get_project: no session context", "exit_code": 1}
+    from core.models import _session_manager as sm
+    if sm is None:
+        return {"project_root": None, "exit_code": 0}
+    sess = sm.sessions.get(session_id) or sm.get_session(session_id)
+    if sess is None:
+        return {"project_root": None, "exit_code": 0}
+    if sess.owner is not None and owner is not None and sess.owner != owner:
+        return {"error": "get_project: not your session", "exit_code": 1}
+    pr = getattr(sess, "project_root", None)
+    return {"project_root": pr, "exit_code": 0, "output": f"Project root: {pr or '(none)'}"}

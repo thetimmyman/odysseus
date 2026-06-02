@@ -73,7 +73,35 @@ def _is_sensitive_path(resolved: str) -> bool:
     return False
 
 
-def _tool_path_roots() -> list[str]:
+def _get_session_project_root(session_id, owner):
+    """Return the realpath of the active project_root for this session, or None.
+
+    Owner-checked and isdir-guarded. Reads SessionManager's in-RAM cache
+    directly (NOT get_session(), which would trigger a DB write per call).
+    Single source of truth for both the bash/python cwd and the file-tool
+    confinement root, so they can never diverge.
+    """
+    if not session_id:
+        return None
+    try:
+        from core.models import _session_manager as sm
+        if sm is None:
+            return None
+        sess = sm.sessions.get(session_id)
+        if sess is None:
+            return None
+        if sess.owner is not None and owner is not None and sess.owner != owner:
+            return None  # refuse cross-owner
+        pr = getattr(sess, "project_root", None)
+        if not pr:
+            return None
+        real = os.path.realpath(os.path.expanduser(pr))
+        return real if os.path.isdir(real) else None
+    except Exception:
+        return None
+
+
+def _tool_path_roots(session_id: Optional[str] = None, owner: Optional[str] = None) -> list[str]:
     """Return the list of directory roots that read_file / write_file
     may touch. Default: project data/ + system temp dirs. Extra roots
     are loaded from the ``tool_path_extra_roots`` setting.
@@ -107,6 +135,11 @@ def _tool_path_roots() -> list[str]:
     except Exception:
         pass
 
+    # Per-session project root — additive, scoped to THIS session only.
+    pr = _get_session_project_root(session_id, owner)
+    if pr:
+        roots.append(pr)
+
     # Deduplicate; resolve symlinks so containment is unambiguous.
     seen: set[str] = set()
     out: list[str] = []
@@ -122,7 +155,7 @@ def _tool_path_roots() -> list[str]:
     return out
 
 
-def _resolve_tool_path(raw_path: str) -> str:
+def _resolve_tool_path(raw_path: str, session_id: Optional[str] = None, owner: Optional[str] = None) -> str:
     """Resolve and confine a model-supplied path.
 
     Order of checks:
@@ -145,7 +178,7 @@ def _resolve_tool_path(raw_path: str) -> str:
             f"(e.g. .ssh, .gnupg) or matches a sensitive filename"
         )
 
-    for root in _tool_path_roots():
+    for root in _tool_path_roots(session_id, owner):
         if resolved == root:
             return resolved
         try:
@@ -396,11 +429,13 @@ async def _call_mcp_tool(
     tool: str,
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
+    session_id: Optional[str] = None,
+    owner: Optional[str] = None,
 ) -> Dict:
     """Route a legacy tool call through the MCP manager, with direct fallbacks."""
     mcp = get_mcp_manager()
     if not mcp:
-        return await _direct_fallback(tool, content, progress_cb=progress_cb) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
+        return await _direct_fallback(tool, content, progress_cb=progress_cb, session_id=session_id, owner=owner) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
 
     server_id, tool_name = _MCP_TOOL_MAP[tool]
     qualified = f"mcp__{server_id}__{tool_name}"
@@ -409,7 +444,7 @@ async def _call_mcp_tool(
 
     # If MCP server not connected, try direct fallback
     if isinstance(result, dict) and result.get("exit_code") == 1 and "not connected" in result.get("error", ""):
-        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb)
+        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb, session_id=session_id, owner=owner)
         if fallback:
             return fallback
 
@@ -436,6 +471,8 @@ async def _direct_fallback(
     tool: str,
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
+    session_id: Optional[str] = None,
+    owner: Optional[str] = None,
 ) -> Optional[Dict]:
     """In-process execution path for the eight tools that used to live as
     stdio MCP servers under mcp_servers/. Those servers were deleted in
@@ -463,6 +500,9 @@ async def _direct_fallback(
         "LINES": "40",
     }
 
+    # Per-session project root -> cwd for bash/python. None = inherit (unchanged).
+    _cwd = _get_session_project_root(session_id, owner) if tool in ("bash", "python") else None
+
     try:
         if tool == "bash":
             proc = await asyncio.create_subprocess_shell(
@@ -470,6 +510,7 @@ async def _direct_fallback(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=_subproc_env,
+                cwd=_cwd,
             )
             stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
                 proc,
@@ -496,6 +537,7 @@ async def _direct_fallback(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=_subproc_env,
+                cwd=_cwd,
             )
             stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
                 proc,
@@ -514,7 +556,7 @@ async def _direct_fallback(
         if tool == "read_file":
             raw_path = content.split("\n", 1)[0].strip()
             try:
-                path = _resolve_tool_path(raw_path)
+                path = _resolve_tool_path(raw_path, session_id, owner)
             except ValueError as e:
                 return {"error": f"read_file: {e}", "exit_code": 1}
             try:
@@ -539,7 +581,7 @@ async def _direct_fallback(
             raw_path = lines[0].strip()
             body = lines[1] if len(lines) > 1 else ""
             try:
-                path = _resolve_tool_path(raw_path)
+                path = _resolve_tool_path(raw_path, session_id, owner)
             except ValueError as e:
                 return {"error": f"write_file: {e}", "exit_code": 1}
             try:
@@ -694,7 +736,7 @@ async def execute_tool_block(
     """
     from src.tool_implementations import (
         do_create_document, do_update_document, do_edit_document,
-        do_edit_file, do_revert_file,
+        do_edit_file, do_revert_file, do_set_project, do_get_project,
         do_suggest_document, do_search_chats, do_manage_tasks,
         do_manage_skills, do_api_call, do_manage_endpoints,
         do_manage_mcp, do_manage_webhooks, do_manage_tokens,
@@ -773,7 +815,7 @@ async def execute_tool_block(
         _is_bg, _bg_cmd = _split_bg_marker(content)
         if _is_bg and _bg_cmd:
             from src import bg_jobs
-            rec = bg_jobs.launch(_bg_cmd, session_id=session_id)
+            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=_get_session_project_root(session_id, owner))
             short = _bg_cmd.strip().split(chr(10))[0][:80]
             desc = f"bash (background): {short}"
             result = {
@@ -795,7 +837,7 @@ async def execute_tool_block(
     if tool in _MCP_TOOL_MAP:
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
-        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb)
+        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb, session_id=session_id, owner=owner)
     elif tool == "create_document":
         title = content.split("\n")[0].strip()[:60]
         desc = f"create_document: {title}"
@@ -807,11 +849,17 @@ async def execute_tool_block(
         result = await do_edit_document(content, owner=owner)
         desc = f"edit_document: {result.get('title', '')}"
     elif tool == "edit_file":
-        result = await do_edit_file(content, owner=owner)
+        result = await do_edit_file(content, owner=owner, session_id=session_id)
         desc = f"edit_file: {result.get('path', '')}"
     elif tool == "revert_file":
-        result = await do_revert_file(content, owner=owner)
+        result = await do_revert_file(content, owner=owner, session_id=session_id)
         desc = f"revert_file: {result.get('path', '')}"
+    elif tool == "set_project":
+        result = await do_set_project(content, session_id=session_id, owner=owner)
+        desc = f"set_project: {result.get('project_root', '(error)')}"
+    elif tool == "get_project":
+        result = await do_get_project(content, session_id=session_id, owner=owner)
+        desc = f"get_project: {result.get('project_root') or 'none'}"
     elif tool == "suggest_document":
         result = await do_suggest_document(content, owner=owner)
         desc = f"suggest_document: {result.get('count', 0)} suggestions"

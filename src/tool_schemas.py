@@ -150,6 +150,28 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "set_project",
+            "description": "Set this session's active project root directory. After this, bash and python run with this directory as their working directory (so relative paths and `cd subdir` work), and read_file/write_file/edit_file may operate inside it in addition to the normal data/temp roots. The path must already exist and be a directory. Scoped to THIS session only and persists across turns until you change it. Note: ~ and absolute paths still resolve normally; only relative paths gain meaning relative to this root.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to an existing project root directory"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project",
+            "description": "Return this session's active project root directory, or null if none is set.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_document",
             "description": "Create a new document in the editor panel. Use this when the user asks to write, create, build, or generate code, scripts, programs, games, apps, or any substantial content (>15 lines) AND there is no already-open document/email draft that the request refers to. If an email compose draft is open, edit that draft instead of creating another document. NEVER put large code blocks directly in chat — use this tool instead.",
             "parameters": {
@@ -1155,6 +1177,10 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         content = path + "\n" + "\n".join(blocks)
     elif tool_type == "revert_file":
         content = args.get("path", "")
+    elif tool_type == "set_project":
+        content = args.get("path", "")
+    elif tool_type == "get_project":
+        content = ""
     elif tool_type == "create_document":
         parts = [args.get("title", "Untitled")]
         if args.get("language"):

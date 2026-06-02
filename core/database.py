@@ -95,6 +95,8 @@ class Session(TimestampMixin, Base):
 
     # Organization
     folder = Column(String, nullable=True, default=None)
+    # Per-session project root (cwd for bash/python; extra confinement root for file tools)
+    project_root = Column(String, nullable=True, default=None)
     
     # Headers stored as JSON
     headers = Column(JSON, default=dict)
@@ -901,6 +903,25 @@ def _migrate_add_mode_column():
     except Exception as e:
         logging.getLogger(__name__).warning(f"Migration check for mode failed: {e}")
 
+def _migrate_add_project_root_column():
+    """Add project_root column to sessions table if it doesn't exist."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(sessions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "project_root" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN project_root TEXT")
+            conn.commit()
+            logging.getLogger(__name__).info("Migrated: added 'project_root' column to sessions")
+        conn.close()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Migration check for project_root failed: {e}")
+
+
 def _migrate_add_folder_column():
     """Add folder column to sessions table if it doesn't exist."""
     import sqlite3
@@ -1520,6 +1541,7 @@ def init_db():
     _migrate_add_document_archived_column()
     _migrate_add_last_message_at_column()
     _migrate_add_folder_column()
+    _migrate_add_project_root_column()
     _migrate_add_token_columns()
     _migrate_add_mode_column()
     _migrate_add_multiuser_owner_columns()
