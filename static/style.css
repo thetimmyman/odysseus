@@ -35357,3 +35357,51 @@ body.theme-frosted .modal {
   font-family: 'Fira Code', ui-monospace, monospace;
   color: var(--accent, var(--red));
 }
+
+/* ===== Odysseus mobile safe-area TOP fix (iPhone notch / Dynamic Island) =====
+   Single source of truth for the top inset. In a normal browser tab env() is 0
+   (browser chrome owns the status-bar strip) -> these rules are a no-op; in the
+   installed PWA env() = the notch height -> every full-screen mobile surface that
+   pins to top:0 is nudged DOWN by the inset. The box is MOVED + SHRUNK, never
+   inner-padded (padding reflows nested sticky headers and breaks layout -- the
+   approach that previously shipped broken). Verified across 130+ Playwright
+   screenshots (7 modal panels + their sub-states/sub-modals, the doc/compose
+   editor pane, and the notes pane) at a simulated inset=59 with adversarial
+   vision review. */
+:root { --app-safe-top: env(safe-area-inset-top, 0px); }
+
+@media (max-width: 768px) {
+  /* 1) Full-height tool sheets: Brain, Email, Calendar, Tasks, Cookbook,
+        Settings, Library. They get height:100dvh + only padding-bottom:safe-area
+        was reserved -> the TOP grew under the status bar. Move + shrink the
+        content box. box-sizing:border-box (base .modal-content) keeps it bounded. */
+  #cookbook-modal .modal-content,
+  #tasks-modal .modal-content,
+  #calendar-modal .modal-content,
+  #memory-modal .memory-modal-content,
+  #settings-modal .settings-modal-content,
+  #email-lib-modal .modal-content,
+  #doclib-modal .doclib-modal-content {
+    height: calc(100vh - var(--app-safe-top, 0px)) !important;
+    height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+    max-height: calc(100vh - var(--app-safe-top, 0px)) !important;
+    max-height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+    margin-top: var(--app-safe-top, 0px) !important;
+  }
+
+  /* 2) Document / compose editor pane (email compose, doc editing) -- a fixed
+        full-screen sheet (inset:0), so its tab bar hit the notch. */
+  body.doc-view .doc-editor-pane {
+    top: var(--app-safe-top, 0px) !important;
+    height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+  }
+
+  /* 3) Notes pane -- same fixed full-screen sheet pattern. */
+  body.notes-view .notes-pane {
+    top: var(--app-safe-top, 0px) !important;
+    height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+    max-height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+  }
+}
+/* ===== end safe-area TOP fix ===== */
+
