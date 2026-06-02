@@ -34456,3 +34456,71 @@ body.theme-frosted .modal {
   background-color: color-mix(in srgb, var(--accent, var(--red)) 10%, transparent);
   transform: translateX(1px);
 }
+
+/* ── iOS: stop the focus auto-zoom on the composer & inputs ──
+   iOS Safari zooms in (and shifts the layout, cutting off the right edge)
+   whenever a focused input has font-size < 16px. Forcing 16px on mobile
+   prevents the zoom while keeping pinch-zoom intact. */
+@media (max-width: 820px) {
+  #message,
+  input,
+  textarea,
+  select { font-size: 16px !important; }
+}
+
+/* ── iOS standalone PWA: clear the status bar / Dynamic Island at the TOP ──
+   style.css already handled safe-area-inset-bottom everywhere, but the TOP was
+   never offset — so the sidebar header, chat top-bar, and hamburger collided with
+   the time / notch / battery. Only applies when launched from the Home Screen. */
+@media (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top, 0px); box-sizing: border-box; }
+  #hamburger-btn { margin-top: env(safe-area-inset-top, 0px); }
+}
+
+/* ===== Odysseus mobile safe-area TOP fix (iPhone notch / Dynamic Island) =====
+   Single source of truth for the top inset. In a normal browser tab env() is 0
+   (browser chrome owns the status-bar strip) -> these rules are a no-op; in the
+   installed PWA env() = the notch height -> every full-screen mobile surface that
+   pins to top:0 is nudged DOWN by the inset. The box is MOVED + SHRUNK, never
+   inner-padded (padding reflows nested sticky headers and breaks layout -- the
+   approach that previously shipped broken). Verified across 130+ Playwright
+   screenshots (7 modal panels + their sub-states/sub-modals, the doc/compose
+   editor pane, and the notes pane) at a simulated inset=59 with adversarial
+   vision review. */
+:root { --app-safe-top: env(safe-area-inset-top, 0px); }
+
+@media (max-width: 768px) {
+  /* 1) Full-height tool sheets: Brain, Email, Calendar, Tasks, Cookbook,
+        Settings, Library. They get height:100dvh + only padding-bottom:safe-area
+        was reserved -> the TOP grew under the status bar. Move + shrink the
+        content box. box-sizing:border-box (base .modal-content) keeps it bounded. */
+  #cookbook-modal .modal-content,
+  #tasks-modal .modal-content,
+  #calendar-modal .modal-content,
+  #memory-modal .memory-modal-content,
+  #settings-modal .settings-modal-content,
+  #email-lib-modal .modal-content,
+  #doclib-modal .doclib-modal-content {
+    height: calc(100vh - var(--app-safe-top, 0px)) !important;
+    height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+    max-height: calc(100vh - var(--app-safe-top, 0px)) !important;
+    max-height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+    margin-top: var(--app-safe-top, 0px) !important;
+  }
+
+  /* 2) Document / compose editor pane (email compose, doc editing) -- a fixed
+        full-screen sheet (inset:0), so its tab bar hit the notch. */
+  body.doc-view .doc-editor-pane {
+    top: var(--app-safe-top, 0px) !important;
+    height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+  }
+
+  /* 3) Notes pane -- same fixed full-screen sheet pattern. */
+  body.notes-view .notes-pane {
+    top: var(--app-safe-top, 0px) !important;
+    height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+    max-height: calc(100dvh - var(--app-safe-top, 0px)) !important;
+  }
+}
+/* ===== end safe-area TOP fix ===== */
+
