@@ -694,6 +694,7 @@ async def execute_tool_block(
     """
     from src.tool_implementations import (
         do_create_document, do_update_document, do_edit_document,
+        do_edit_file, do_revert_file,
         do_suggest_document, do_search_chats, do_manage_tasks,
         do_manage_skills, do_api_call, do_manage_endpoints,
         do_manage_mcp, do_manage_webhooks, do_manage_tokens,
@@ -805,6 +806,12 @@ async def execute_tool_block(
     elif tool == "edit_document":
         result = await do_edit_document(content, owner=owner)
         desc = f"edit_document: {result.get('title', '')}"
+    elif tool == "edit_file":
+        result = await do_edit_file(content, owner=owner)
+        desc = f"edit_file: {result.get('path', '')}"
+    elif tool == "revert_file":
+        result = await do_revert_file(content, owner=owner)
+        desc = f"revert_file: {result.get('path', '')}"
     elif tool == "suggest_document":
         result = await do_suggest_document(content, owner=owner)
         desc = f"suggest_document: {result.get('count', 0)} suggestions"
@@ -946,6 +953,7 @@ _FORMATTER_HANDLED_KEYS = {
     "response", "results", "session_id", "name", "model", "session_name",
     "success", "path", "action", "title", "doc_id", "version", "applied",
     "error", "output",
+    "diff", "skipped", "backup",
 }
 
 

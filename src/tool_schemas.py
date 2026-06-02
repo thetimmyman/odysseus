@@ -110,6 +110,46 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "edit_file",
+            "description": "Make targeted edits to an EXISTING file on disk via find/replace. Prefer this over write_file when changing PART of a file (fix a bug, edit a function, tweak config) \u2014 it does not rewrite the whole file. Each edit's `find` must match the current file content EXACTLY (including whitespace) and UNIQUELY; if it matches zero or multiple places that edit is REFUSED and the file is left unchanged (add more surrounding lines to make it unique). A .bak backup is written and a unified diff of the change is returned. Use revert_file to undo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the existing file to edit"},
+                    "edits": {
+                        "type": "array",
+                        "description": "Find/replace edits, applied in order",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "find": {"type": "string", "description": "Exact text to find (must be unique in the file)"},
+                                "replace": {"type": "string", "description": "Text to replace it with"}
+                            },
+                            "required": ["find", "replace"]
+                        }
+                    }
+                },
+                "required": ["path", "edits"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revert_file",
+            "description": "Undo the last edit_file change to a file by restoring its .bak backup.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the file to revert"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_document",
             "description": "Create a new document in the editor panel. Use this when the user asks to write, create, build, or generate code, scripts, programs, games, apps, or any substantial content (>15 lines) AND there is no already-open document/email draft that the request refers to. If an email compose draft is open, edit that draft instead of creating another document. NEVER put large code blocks directly in chat — use this tool instead.",
             "parameters": {
@@ -1105,6 +1145,16 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         content = args.get("path", "")
     elif tool_type == "write_file":
         content = args.get("path", "") + "\n" + args.get("content", "")
+    elif tool_type == "edit_file":
+        path = args.get("path", "")
+        blocks = []
+        for edit in args.get("edits", []):
+            blocks.append(
+                f'<<<FIND>>>\n{edit.get("find", "")}\n<<<REPLACE>>>\n{edit.get("replace", "")}\n<<<END>>>'
+            )
+        content = path + "\n" + "\n".join(blocks)
+    elif tool_type == "revert_file":
+        content = args.get("path", "")
     elif tool_type == "create_document":
         parts = [args.get("title", "Untitled")]
         if args.get("language"):

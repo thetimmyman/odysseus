@@ -1938,7 +1938,17 @@ export function addMessage(role, content, modelName, metadata) {
           for (const ev of roundTools) {
             const ok = (ev.exit_code === 0 || ev.exit_code == null);
             let outHtml = '';
-            if (ev.output && ev.output.trim()) {
+            if (ev.diff && ev.diff.trim()) {
+              const diffHtml = ev.diff.split('\n').map(function(ln){
+                let cls = 'agent-diff-ctx';
+                if (ln.slice(0,3) === '+++' || ln.slice(0,3) === '---') cls = 'agent-diff-file';
+                else if (ln.charAt(0) === '+') cls = 'agent-diff-add';
+                else if (ln.charAt(0) === '-') cls = 'agent-diff-del';
+                else if (ln.charAt(0) === '@') cls = 'agent-diff-hunk';
+                return '<span class="' + cls + '">' + esc(ln) + '</span>';
+              }).join('\n');
+              outHtml = `<div class="agent-diff"><pre>${diffHtml}</pre></div>`;
+            } else if (ev.output && ev.output.trim()) {
               outHtml = `<details class="agent-tool-output"><summary>Output</summary><pre>${esc(ev.output)}</pre></details>`;
             }
             if (ev.screenshot) {

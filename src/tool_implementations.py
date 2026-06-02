@@ -4088,3 +4088,150 @@ async def do_vault_unlock(content: str, owner: Optional[str] = None) -> Dict:
         pass
 
     return {"output": "Vault unlocked. Session saved.", "exit_code": 0}
+
+
+# ---------------------------------------------------------------------------
+# Filesystem edit_file / revert_file (surgical find/replace on disk files)
+# Added by PersonalOS: gives the agent a path to edit PART of a file (vs the
+# whole-file write_file) and surfaces a diff + .bak backup so changes are
+# reviewable and reversible. Reuses parse_edit_blocks() (FIND/REPLACE blocks).
+# ---------------------------------------------------------------------------
+async def do_edit_file(content: str, owner: Optional[str] = None) -> Dict:
+    """Apply targeted FIND/REPLACE edits to a file on disk.
+
+    `content`: first line = path; remainder = one or more
+    <<<FIND>>>...<<<REPLACE>>>...<<<END>>> blocks. Each FIND must match the
+    current file content EXACTLY and UNIQUELY — zero or multiple matches are
+    REFUSED (file untouched) rather than guessed. Writes <path>.bak before
+    changing the file and returns a unified diff of the change.
+    """
+    import os as _os
+    import shutil as _shutil
+    import difflib as _difflib
+    from src.tool_execution import _resolve_tool_path
+
+    lines = content.split("\n", 1)
+    raw_path = lines[0].strip()
+    body = lines[1] if len(lines) > 1 else ""
+    if not raw_path:
+        return {"error": "edit_file: path is required (first line)", "exit_code": 1}
+    try:
+        path = _resolve_tool_path(raw_path)
+    except ValueError as e:
+        return {"error": f"edit_file: {e}", "exit_code": 1}
+
+    edits = parse_edit_blocks(body)
+    if not edits:
+        return {"error": "edit_file: no <<<FIND>>>...<<<REPLACE>>>...<<<END>>> blocks found", "exit_code": 1}
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return {"error": f"edit_file: {path}: not found (use write_file to create it)", "exit_code": 1}
+    except OSError as e:
+        return {"error": f"edit_file: {path}: {e}", "exit_code": 1}
+
+    updated = original
+    applied = 0
+    failures = []
+    for idx, edit in enumerate(edits, 1):
+        find = edit["find"]
+        repl = edit["replace"]
+        if find == "":
+            failures.append(f"edit {idx}: empty FIND block")
+            continue
+        n = updated.count(find)
+        if n == 1:
+            updated = updated.replace(find, repl, 1)
+            applied += 1
+            continue
+        if n > 1:
+            failures.append(f"edit {idx}: FIND matched {n} places — add more surrounding context so it is unique")
+            continue
+        # Proven-safe fallback: weak models sometimes copy the "<n>\t" line-number
+        # gutter shown in context into FIND. Strip it; only use if it then matches
+        # exactly once (never corrupt a legitimately tab-prefixed file).
+        stripped = "\n".join(re.sub(r"^\d+\t", "", _l) for _l in find.split("\n"))
+        if stripped != find and updated.count(stripped) == 1:
+            updated = updated.replace(stripped, repl, 1)
+            applied += 1
+            continue
+        failures.append(f"edit {idx}: FIND not found: {find[:60]!r}")
+
+    if applied == 0:
+        return {"error": "edit_file: no edits applied — " + "; ".join(failures), "exit_code": 1}
+
+    bak = path + ".bak"
+    try:
+        _shutil.copyfile(path, bak)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+    except OSError as e:
+        return {"error": f"edit_file: write failed: {e}", "exit_code": 1}
+
+    diff = "".join(_difflib.unified_diff(
+        original.splitlines(keepends=True),
+        updated.splitlines(keepends=True),
+        fromfile=f"a/{_os.path.basename(path)}",
+        tofile=f"b/{_os.path.basename(path)}",
+    ))
+    diff_capped = diff if len(diff) <= 6000 else diff[:6000] + "\n... (diff truncated)"
+    summary = f"Edited {path} — {applied} change(s) applied"
+    if failures:
+        summary += f", {len(failures)} skipped"
+    note = ("\nSkipped: " + "; ".join(failures)) if failures else ""
+    return {
+        "output": summary + note + "\n\n" + diff_capped,
+        "exit_code": 0,
+        "action": "edit_file",
+        "path": path,
+        "applied": applied,
+        "skipped": len(failures),
+        "diff": diff,
+        "backup": bak,
+    }
+
+
+async def do_revert_file(content: str, owner: Optional[str] = None) -> Dict:
+    """Undo the last edit_file change by restoring <path>.bak."""
+    import os as _os
+    import difflib as _difflib
+    from src.tool_execution import _resolve_tool_path
+
+    raw_path = content.split("\n", 1)[0].strip()
+    if not raw_path:
+        return {"error": "revert_file: path is required", "exit_code": 1}
+    try:
+        path = _resolve_tool_path(raw_path)
+    except ValueError as e:
+        return {"error": f"revert_file: {e}", "exit_code": 1}
+    bak = path + ".bak"
+    if not _os.path.exists(bak):
+        return {"error": f"revert_file: no backup found for {path} (nothing to revert)", "exit_code": 1}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cur = f.read()
+    except OSError:
+        cur = ""
+    try:
+        with open(bak, "r", encoding="utf-8") as f:
+            prev = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(prev)
+    except OSError as e:
+        return {"error": f"revert_file: {e}", "exit_code": 1}
+    diff = "".join(_difflib.unified_diff(
+        cur.splitlines(keepends=True),
+        prev.splitlines(keepends=True),
+        fromfile=f"a/{_os.path.basename(path)}",
+        tofile=f"b/{_os.path.basename(path)}",
+    ))
+    return {
+        "output": f"Reverted {path} to backup ({len(prev)} bytes)\n\n" + diff,
+        "exit_code": 0,
+        "action": "edit_file",
+        "path": path,
+        "diff": diff,
+        "applied": 1,
+    }

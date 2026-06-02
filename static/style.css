@@ -35405,3 +35405,13 @@ body.theme-frosted .modal {
 }
 /* ===== end safe-area TOP fix ===== */
 
+
+
+/* Agent edit_file diff rendering in chat (PersonalOS) */
+.agent-diff { margin-top: 6px; border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 360px; }
+.agent-diff pre { margin: 0; padding: 8px 10px; font-family: var(--code-font, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; line-height: 1.45; white-space: pre; }
+.agent-diff .agent-diff-add  { display: block; background: rgba(46,160,67,0.20); }
+.agent-diff .agent-diff-del  { display: block; background: rgba(248,81,73,0.20); }
+.agent-diff .agent-diff-hunk { display: block; color: var(--accent, #6cb6ff); opacity: 0.9; }
+.agent-diff .agent-diff-file { display: block; opacity: 0.65; }
+.agent-diff .agent-diff-ctx  { display: block; opacity: 0.85; }
