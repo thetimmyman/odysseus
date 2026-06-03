@@ -104,7 +104,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         directory = arguments.get("directory", "").strip()
         if not directory:
             return [TextContent(type="text", text="Error: add_directory needs a directory path")]
-        directory = os.path.expanduser(directory)
+        directory = os.path.abspath(os.path.expanduser(directory))
         if not os.path.isdir(directory):
             return [TextContent(type="text", text=f"Error: Directory not found: {directory}")]
         if not _rag_manager:
