@@ -907,6 +907,13 @@
           <span class="grow">Theme</span>
         </div>
       </div>
+      <div class="section" id="project-files-section" style="display:none">
+        <div class="section-header-flex">
+          <span class="section-title" id="pf-section-title" style="cursor:pointer" title="Toggle project files"><svg class="section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Project Files</span>
+          <button type="button" class="section-header-btn" id="pf-refresh-btn" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+        </div>
+        <div id="project-files-tree" class="pf-tree" role="tree"></div>
+      </div>
     </div>
     <div class="sidebar-user-bar" id="sidebar-user-bar">
       <div class="user-bar-left" id="user-bar-profile">
@@ -2256,6 +2263,7 @@
 <script type="module" src="/static/js/spinner.js"></script>
 <script type="module" src="/static/js/tts-ai.js"></script>
 <script type="module" src="/static/js/document.js"></script>
+<script type="module" src="/static/js/projectFiles.js"></script>
 <script type="module" src="/static/js/gallery.js"></script>
 <script type="module" src="/static/js/chatRenderer.js"></script>
 <script type="module" src="/static/js/codeRunner.js"></script>

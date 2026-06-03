@@ -35415,3 +35415,18 @@ body.theme-frosted .modal {
 .agent-diff .agent-diff-hunk { display: block; color: var(--accent, #6cb6ff); opacity: 0.9; }
 .agent-diff .agent-diff-file { display: block; opacity: 0.65; }
 .agent-diff .agent-diff-ctx  { display: block; opacity: 0.85; }
+
+
+/* Project Files explorer (PersonalOS IDE step 3) */
+.pf-tree { max-height: 40vh; overflow-y: auto; overflow-x: auto; }
+.pf-row { display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; white-space: nowrap; user-select: none; }
+.pf-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.pf-row.is-folder { font-weight: 500; }
+.pf-chevron { width: 10px; flex-shrink: 0; opacity: 0.7; display: inline-flex; }
+.pf-row.is-folder .pf-chevron::before { content: '\25B6'; font-size: 8px; }
+.pf-row.is-folder.expanded .pf-chevron::before { content: '\25BC'; }
+.pf-icon { display: inline-flex; flex-shrink: 0; }
+.pf-name { overflow: hidden; text-overflow: ellipsis; }
+.pf-truncated, .pf-error { padding: 4px 8px; font-size: 11px; opacity: 0.6; }
+#pf-refresh-btn { background: none; border: none; color: inherit; cursor: pointer; opacity: 0.55; padding: 2px; display: inline-flex; align-items: center; }
+#pf-refresh-btn:hover { opacity: 1; }

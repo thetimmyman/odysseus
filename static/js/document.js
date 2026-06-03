@@ -3453,7 +3453,7 @@ import * as Modals from './modalManager.js';
     const prevId = activeDocId;
     if (prevId && prevId !== docId && docs.has(prevId)) {
       const prev = docs.get(prevId);
-      if (!(prev.content || '').trim() && !(prev.title || '').trim()) {
+      if (!prev.fsPath && !(prev.content || '').trim() && !(prev.title || '').trim()) {
         fetch(`${API_BASE}/api/document/${prevId}`, { method: 'DELETE' }).catch(() => {});
         docs.delete(prevId);
         _syncDocIndicator();
@@ -4389,6 +4389,18 @@ import * as Modals from './modalManager.js';
           if (doc && doc.language === 'email' && isOpen) {
             e.preventDefault();
             _sendEmail();
+          }
+        }
+      });
+    }
+    if (!window._docCtrlSBound) {
+      window._docCtrlSBound = true;
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+          const doc = activeDocId && docs.get(activeDocId);
+          if (doc && isOpen) {
+            e.preventDefault();
+            saveDocument();
           }
         }
       });
@@ -5886,6 +5898,25 @@ import * as Modals from './modalManager.js';
     requestAnimationFrame(() => requestAnimationFrame(() => {
       switchToDoc(doc.id);
     }));
+  }
+
+  // Open a FILESYSTEM file in the editor. Reuses injectFreshDoc's mount path
+  // (addDocToTabs -> _ensureDocPaneMounted -> double-rAF switchToDoc) so fs docs
+  // behave identically to DB docs. The fsPath marker routes saves to the FS.
+  export function openFileDoc({ path, name, content, language }) {
+    if (!path) return;
+    const id = 'fs:' + path;             // synthetic id; no UUID collision
+    if (language === 'email') language = 'text';   // never trip email special-case
+    injectFreshDoc({
+      id,
+      title: name || path.split('/').pop(),
+      language: language || 'markdown',
+      current_content: content,
+      version_count: 1,
+      session_id: sessionModule.getCurrentSessionId(),
+    });
+    const d = docs.get(id);
+    if (d) d.fsPath = path;
   }
 
   export async function replaceEmailReplyBody(docId, replyText) {
@@ -7956,6 +7987,26 @@ import * as Modals from './modalManager.js';
     const textarea = document.getElementById('doc-editor-textarea');
     if (!textarea) return;
 
+    // FILESYSTEM doc: route to the confined /api/project-files/write endpoint.
+    const _fsDoc = docs.get(activeDocId);
+    if (_fsDoc && _fsDoc.fsPath) {
+      try {
+        const res = await fetch(`${API_BASE}/api/project-files/write`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ session_id: _fsDoc.sessionId, path: _fsDoc.fsPath, content: textarea.value }),
+        });
+        if (!res.ok) { if (!silent && uiModule) uiModule.showError('Failed to save file'); return; }
+        _fsDoc.content = textarea.value;
+        _syncDocIndicator();
+        if (!silent && uiModule) uiModule.showToast('File saved');
+      } catch (e) {
+        if (!silent && uiModule) uiModule.showError('Failed to save file');
+      }
+      return;
+    }
+
     try {
       const res = await fetch(`${API_BASE}/api/document/${activeDocId}`, {
         method: 'PUT',
@@ -9547,6 +9598,7 @@ const documentModule = {
   newDocument,
   loadDocument,
   injectFreshDoc,
+  openFileDoc,
   ensurePaneMounted: _ensureDocPaneMounted,
   loadSessionDocs,
   ensureDocPanel,

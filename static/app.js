@@ -3422,6 +3422,10 @@ function startOdysseusApp() {
     if (_curSession && localStorage.getItem('odysseus-doc-open-' + _curSession) === '1') {
       documentModule.loadSessionDocs(_curSession);
     }
+  }
+  if (window.projectFilesModule) {
+    window.projectFilesModule.init(API_BASE);
+    window.projectFilesModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
   }  
   // Initialize search chat module
   if (searchChatModule) {
