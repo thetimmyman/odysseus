@@ -137,7 +137,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "revert_file",
-            "description": "Undo the last edit_file change to a file by restoring its .bak backup.",
+            "description": "Revert a file edited via edit_file back to its pre-edit baseline (the state captured before the FIRST edit_file change on it, i.e. undoes all edit_file changes to that file). Consumes the baseline so a later edit starts fresh.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -4164,7 +4164,8 @@ async def do_edit_file(content: str, owner: Optional[str] = None, session_id: Op
 
     bak = path + ".bak"
     try:
-        _shutil.copyfile(path, bak)
+        if not _os.path.exists(bak):
+            _shutil.copyfile(path, bak)  # baseline = state before the FIRST edit
         with open(path, "w", encoding="utf-8") as f:
             f.write(updated)
     except OSError as e:
@@ -4219,6 +4220,7 @@ async def do_revert_file(content: str, owner: Optional[str] = None, session_id: 
             prev = f.read()
         with open(path, "w", encoding="utf-8") as f:
             f.write(prev)
+        _os.remove(bak)  # consume the baseline; next edit starts a fresh one
     except OSError as e:
         return {"error": f"revert_file: {e}", "exit_code": 1}
     diff = "".join(_difflib.unified_diff(

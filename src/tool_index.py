@@ -70,7 +70,7 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "edit_file": "Make targeted find/replace edits to an existing file on disk without rewriting the whole file. Fix a bug, change a function, tweak config. Refuses ambiguous matches; keeps a .bak backup and returns a diff.",
     "set_project": "Set this session\u0027s active project root directory. bash/python then run with it as their working directory and file tools may read/write inside it. Use to point the agent at a repo or working folder. Persists for the session.",
     "get_project": "Return this session\u0027s active project root directory, or null if none is set.",
-    "revert_file": "Undo the last edit_file change by restoring the file\u0027s .bak backup.",
+    "revert_file": "Revert a file edited via edit_file back to its pre-edit baseline (undoes all edit_file changes to that file). Consumes the baseline backup.",
     "create_document": "Create a new document in the editor panel. For code, articles, text content longer than 15 lines, unless an already-open document/email draft is the obvious target. If an email compose draft is open, edit that draft instead of creating another document.",
     "edit_document": "Preferred tool for editing an existing document — targeted find-and-replace. Use for any small change: add a function, fix a bug, tweak a section, rename things.",
     "update_document": "Replace the entire active document content. ONLY for full rewrites (>50% changed). Do not use for small edits — use edit_document instead.",

@@ -70,6 +70,17 @@ def _is_sensitive_path(resolved: str) -> bool:
         if pat in filenames:
             return True
 
+    # App-internal secrets/data — block across ALL file tools so no user (or
+    # their agent) can read auth tokens, the Fernet master key, user prefs, or
+    # the SQLite DBs via read_file/write_file/edit_file/project-files. DATA_DIR
+    # is an allowed root for the agent's scratch space, but these files are not.
+    base = parts[-1] if parts else ""
+    if base in {".app_key", "sessions.json", "user_prefs.json", "api_tokens.json"}:
+        return True
+    for _dbp in ("app.db", "scheduled_emails.db"):
+        if base == _dbp or base.startswith(_dbp + "-") or base.startswith(_dbp + "."):
+            return True
+
     return False
 
 

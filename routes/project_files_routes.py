@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
@@ -18,17 +19,19 @@ MAX_ENTRIES = int(os.getenv("PROJECT_FILES_MAX_ENTRIES", "2000"))
 
 
 class _WriteBody(BaseModel):
-    session_id: str
+    session_id: Optional[str] = None
     path: str
     content: str
 
 
-def _confined(request: Request, session_id: str, raw_path=None):
+def _confined(request: Request, session_id: Optional[str], raw_path=None):
     """Return (owner, root, target_realpath). target == root when raw_path is None.
 
     Owner-checked (effective_user, bearer-aware) + cross-owner 404
     (_verify_session_owner) + root-confined via the agent's own _resolve_tool_path.
     """
+    if not session_id or not str(session_id).strip():
+        raise HTTPException(400, "session_id is required")
     owner = effective_user(request)                          # bearer-aware owner
     _verify_session_owner(request, session_id)               # 404 cross-owner (DB + ghost)
     root = _get_session_project_root(session_id, owner)      # None on missing/cross-owner/not-dir
@@ -51,8 +54,8 @@ def setup_project_files_routes():
     @router.get("/tree")
     def project_files_tree(
         request: Request,
-        session_id: str = Query(...),
-        path: str = Query(None),
+        session_id: Optional[str] = Query(None),
+        path: Optional[str] = Query(None),
     ):
         owner, root, target = _confined(request, session_id, path)
         if not os.path.isdir(target):
@@ -66,6 +69,8 @@ def setup_project_files_routes():
                         break
                     name = entry.name
                     if name.startswith("."):          # hide dotfiles by default
+                        continue
+                    if name.endswith(".odytmp"):       # hide our atomic-write temp files
                         continue
                     abspath = os.path.realpath(entry.path)
                     if _is_sensitive_path(abspath):    # .ssh/.env/etc never listed
@@ -92,21 +97,25 @@ def setup_project_files_routes():
     @router.get("/read")
     def project_files_read(
         request: Request,
-        session_id: str = Query(...),
+        session_id: Optional[str] = Query(None),
         path: str = Query(...),
     ):
         _, _, resolved = _confined(request, session_id, path)
         if os.path.isdir(resolved):
             raise HTTPException(400, "Path is a directory")
         try:
-            if os.path.getsize(resolved) > MAX_READ_BYTES:
-                raise HTTPException(413, "File too large to open in the editor")
+            # Single open + fstat + bounded read: the fd pins one inode, so a
+            # concurrent /write os.replace() can't swap the file under us (no
+            # TOCTOU), and we never read more than MAX_READ_BYTES.
             with open(resolved, "rb") as f:
-                head = f.read(8192)
-            if b"\x00" in head:                       # binary sniff
+                if os.fstat(f.fileno()).st_size > MAX_READ_BYTES:
+                    raise HTTPException(413, "File too large to open in the editor")
+                raw = f.read(MAX_READ_BYTES + 1)
+            if len(raw) > MAX_READ_BYTES:
+                raise HTTPException(413, "File too large to open in the editor")
+            if b"\x00" in raw[:8192]:                  # binary sniff on bytes actually read
                 raise HTTPException(415, "Binary file — not editable as text")
-            with open(resolved, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+            content = raw.decode("utf-8", errors="replace")
         except HTTPException:
             raise
         except OSError as e:
