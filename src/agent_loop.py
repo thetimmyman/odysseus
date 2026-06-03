@@ -14,7 +14,7 @@ import time
 import logging
 from typing import AsyncGenerator, List, Dict, Optional, Set
 
-from src.llm_core import stream_llm, stream_llm_with_fallback
+from src.llm_core import stream_llm, stream_llm_with_fallback, _is_ollama_native_url
 from src.model_context import estimate_tokens
 from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
@@ -531,8 +531,11 @@ def _recent_context_for_retrieval(messages: List[Dict], max_user: int = 3, max_c
         if isinstance(content, list):
             content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
         content = (content or "").strip()
-        # Skip injected tool-result envelopes — role=user but not human intent.
-        if not content or content.startswith("[Tool execution results]"):
+        # Skip injected envelopes — role=user but not human intent. Tool results
+        # are now wrapped via untrusted_context_message (metadata.trusted=False);
+        # keep the legacy "[Tool execution results]" prefix for older histories.
+        meta = msg.get("metadata") or {}
+        if not content or meta.get("trusted") is False or content.startswith("[Tool execution results]"):
             continue
         collected.append(content)
         if len(collected) >= max_user:
@@ -1159,8 +1162,14 @@ def _append_tool_results(
         if round_reasoning:
             msg["reasoning_content"] = round_reasoning
         messages.append(msg)
+        # Tool output (shell/python stdout, file reads, fetched pages, email
+        # bodies, MCP results) is sourced from outside the server. Wrap it as
+        # untrusted data so prompt-injection inside a tool result is treated as
+        # data, not instructions — same hardening as skills (#788) and the
+        # web/RAG context. THREAT_MODEL.md lists tool output as a surface that
+        # must go through untrusted_context_message.
         messages.append(
-            {"role": "user", "content": f"[Tool execution results]\n\n{tool_output_text}"}
+            untrusted_context_message("tool execution results", tool_output_text)
         )
 
 
@@ -1469,9 +1478,18 @@ async def stream_agent_loop(
     _model_no_tools = any(kw in _model_lc for kw in (
         "deepseek-r1",
     ))
+    # Native Ollama endpoints (/api/chat) handle tool schemas differently from
+    # the OpenAI-compat path. Models like gemma4, qwen3.5, ministral respond to
+    # tool schemas by emitting a single native tool_call token then stopping,
+    # rather than writing a fenced block — the agent loop sees 1 token and no
+    # recognised tool, so the round terminates immediately (issue #1567).
+    # Unless the endpoint is explicitly marked supports_tools=True by the user
+    # (via the endpoint settings toggle), treat Ollama-native as text-only so
+    # the fenced-block path is used instead of native function calling.
+    _is_ollama_native = _is_ollama_native_url(endpoint_url or "")
     if _endpoint_supports is True:
         _is_api_model = True
-    elif _endpoint_supports is False or _model_no_tools:
+    elif _endpoint_supports is False or _model_no_tools or _is_ollama_native:
         _is_api_model = False
     else:
         _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
