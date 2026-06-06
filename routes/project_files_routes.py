@@ -101,6 +101,8 @@ def setup_project_files_routes():
         path: str = Query(...),
     ):
         _, _, resolved = _confined(request, session_id, path)
+        if _is_sensitive_path(resolved):              # never read secrets (.env*, .ssh, app DBs…)
+            raise HTTPException(403, "Refusing to read a sensitive file")
         if os.path.isdir(resolved):
             raise HTTPException(400, "Path is a directory")
         try:

@@ -52,6 +52,12 @@ _SENSITIVE_FILE_PATTERNS: tuple[str, ...] = (
     "known_hosts",
 )
 
+# Any `.env*` file holds secrets and must never be read/listed/written by a file
+# tool — EXCEPT non-secret templates, identified by SUFFIX so `.env.local.example`
+# and `.env.production.sample` stay visible. (bare `.env` is also in the basenames
+# set above; this also catches `.env.local`, `.env.production`, `.env.*.local`, …)
+_ENV_TEMPLATE_SUFFIXES: tuple[str, ...] = (".example", ".sample", ".template", ".dist")
+
 
 def _is_sensitive_path(resolved: str) -> bool:
     """Return True if *resolved* falls under a sensitive directory or
@@ -80,6 +86,12 @@ def _is_sensitive_path(resolved: str) -> bool:
     for _dbp in ("app.db", "scheduled_emails.db"):
         if base == _dbp or base.startswith(_dbp + "-") or base.startswith(_dbp + "."):
             return True
+
+    # Any .env* secrets file (except non-secret templates). Closes a readback gap:
+    # only bare `.env` was caught before, so `.env.local`/`.env.production`/... were
+    # readable via the file tools (read_file/write_file/edit_file/project-files).
+    if base.startswith(".env") and not base.endswith(_ENV_TEMPLATE_SUFFIXES):
+        return True
 
     return False
 
