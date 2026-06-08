@@ -110,6 +110,115 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "edit_file",
+            "description": "Make targeted edits to an EXISTING file on disk via find/replace. Prefer this over write_file when changing PART of a file (fix a bug, edit a function, tweak config) \u2014 it does not rewrite the whole file. Each edit's `find` must match the current file content EXACTLY (including whitespace) and UNIQUELY; if it matches zero or multiple places that edit is REFUSED and the file is left unchanged (add more surrounding lines to make it unique). A .bak backup is written and a unified diff of the change is returned. Use revert_file to undo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the existing file to edit"},
+                    "edits": {
+                        "type": "array",
+                        "description": "Find/replace edits, applied in order",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "find": {"type": "string", "description": "Exact text to find (must be unique in the file)"},
+                                "replace": {"type": "string", "description": "Text to replace it with"}
+                            },
+                            "required": ["find", "replace"]
+                        }
+                    }
+                },
+                "required": ["path", "edits"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revert_file",
+            "description": "Revert a file edited via edit_file back to its pre-edit baseline (the state captured before the FIRST edit_file change on it, i.e. undoes all edit_file changes to that file). Consumes the baseline so a later edit starts fresh.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the file to revert"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_project",
+            "description": "Set this session's active project root directory. After this, bash and python run with this directory as their working directory (so relative paths and `cd subdir` work), and read_file/write_file/edit_file may operate inside it in addition to the normal data/temp roots. The path must already exist and be a directory. Scoped to THIS session only and persists across turns until you change it. Note: ~ and absolute paths still resolve normally; only relative paths gain meaning relative to this root.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to an existing project root directory"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project",
+            "description": "Return this session's active project root directory, or null if none is set.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search for a regex or literal string across files under a directory (a grep). Returns capped file:line:text matches. Use this to FIND where something is defined/used in a codebase instead of reading files blindly. Default directory is the session's project root (set_project first, or pass `dir`). Skips .git/node_modules/__pycache__/venvs and binary files. Output is capped (~200 matches / 50KB).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regex (default) or literal string (set fixed=true) to search for"},
+                    "dir": {"type": "string", "description": "Directory to search under (default: session project root)"},
+                    "glob": {"type": "string", "description": "Optional filename glob to restrict the search, e.g. *.py"},
+                    "ignore_case": {"type": "boolean", "description": "Case-insensitive match (default false)"},
+                    "fixed": {"type": "boolean", "description": "Treat pattern as a literal string, not a regex (default false)"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_files",
+            "description": "Find files matching a glob pattern under a directory (a glob). Returns capped relative paths. Use this to locate files by name/extension, e.g. all **/*.py. Default directory is the session's project root. Skips .git/node_modules/__pycache__/venvs and sensitive files. Output is capped (~500 paths).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "glob": {"type": "string", "description": "Glob pattern, e.g. **/*.py or test_*.py"},
+                    "dir": {"type": "string", "description": "Directory to search under (default: session project root)"}
+                },
+                "required": ["glob"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": "List the entries of ONE directory: each entry's name, whether it's a dir or file, and the file size. Use this to explore a project's layout. Default directory is the session's project root. Sensitive files are never listed. Output is capped (~1000 entries).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dir": {"type": "string", "description": "Directory to list (default: session project root)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_document",
             "description": "Create a new document in the editor panel. Use this when the user asks to write, create, build, or generate code, scripts, programs, games, apps, or any substantial content (>15 lines) AND there is no already-open document/email draft that the request refers to. If an email compose draft is open, edit that draft instead of creating another document. NEVER put large code blocks directly in chat — use this tool instead.",
             "parameters": {
@@ -442,8 +551,7 @@ FUNCTION_TOOL_SCHEMAS = [
                     "end": {"type": "string", "description": "list_events range end (ISO datetime); defaults to +14 days"},
                     "event_type": {"type": "string", "description": "Tag / category for the event. Common values: work, personal, health, travel, meal, social, admin, other. Aliases accepted: tag, category, type."},
                     "importance": {"type": "string", "enum": ["low", "normal", "high", "critical"], "description": "Priority level (defaults to 'normal')"},
-                    "reminder_minutes": {"type": "integer", "description": "For create_event: create an Odysseus reminder this many minutes before the event, e.g. 5 for 'reminder 5 min before'."},
-                    "rrule": {"type": "string", "description": "Recurrence rule in iCalendar RRULE format, e.g. 'FREQ=WEEKLY;BYDAY=MO' for weekly on Monday. Use with create_event or update_event."}
+                    "reminder_minutes": {"type": "integer", "description": "For create_event: create an Odysseus reminder this many minutes before the event, e.g. 5 for 'reminder 5 min before'."}
                 },
                 "required": ["action"]
             }
@@ -1106,6 +1214,22 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         content = args.get("path", "")
     elif tool_type == "write_file":
         content = args.get("path", "") + "\n" + args.get("content", "")
+    elif tool_type == "edit_file":
+        path = args.get("path", "")
+        blocks = []
+        for edit in args.get("edits", []):
+            blocks.append(
+                f'<<<FIND>>>\n{edit.get("find", "")}\n<<<REPLACE>>>\n{edit.get("replace", "")}\n<<<END>>>'
+            )
+        content = path + "\n" + "\n".join(blocks)
+    elif tool_type == "revert_file":
+        content = args.get("path", "")
+    elif tool_type == "set_project":
+        content = args.get("path", "")
+    elif tool_type == "get_project":
+        content = ""
+    elif tool_type in ("search_files", "find_files", "list_dir"):
+        content = json.dumps(args)
     elif tool_type == "create_document":
         parts = [args.get("title", "Untitled")]
         if args.get("language"):

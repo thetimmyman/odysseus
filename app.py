@@ -165,6 +165,7 @@ if AUTH_ENABLED:
         "/api/auth/settings",
         "/api/auth/integrations/presets",
         "/api/health",
+        "/api/ready",
         "/api/version",
         "/login",
     }
@@ -574,6 +575,18 @@ app.include_router(setup_cleanup_routes(session_manager))
 # Personal docs
 from routes.personal_routes import setup_personal_routes
 app.include_router(setup_personal_routes(personal_docs_mgr, rag_manager, rag_available))
+from routes.project_files_routes import setup_project_files_routes
+app.include_router(setup_project_files_routes())
+
+# Git review (in-browser working-tree diff + commit)
+from routes.git_routes import setup_git_routes
+app.include_router(setup_git_routes())
+
+# Argo agent-crew (define/run/stream/approve a crew voyage)
+from routes.crew_routes import setup_crew_routes
+app.include_router(setup_crew_routes())
+from routes.dev_preview_routes import setup_dev_preview_routes
+app.include_router(setup_dev_preview_routes())
 
 # Embedding model management
 from routes.embedding_routes import setup_embedding_routes
@@ -628,6 +641,12 @@ app.include_router(setup_calendar_routes())
 # Shell (user-facing command execution)
 from routes.shell_routes import setup_shell_routes
 app.include_router(setup_shell_routes())
+
+# Terminal (interactive PTY shell over a WebSocket — roadmap Tier 2 #6).
+# WS auth/origin/admin are enforced INSIDE the endpoint before accept(); the
+# HTTP AuthMiddleware (BaseHTTPMiddleware) does not run on the WebSocket scope.
+from routes.terminal_routes import setup_terminal_routes
+app.include_router(setup_terminal_routes())
 
 # Cookbook (model download/serve/cache, cookbook state sync)
 from routes.cookbook_routes import setup_cookbook_routes
@@ -873,6 +892,8 @@ async def startup_event():
             logger.warning(f"Tool index warmup failed (non-critical): {type(e).__name__}: {e}")
 
     _startup_tasks.append(asyncio.create_task(_warmup_tool_index()))
+    from src import dev_preview_proxy as _dpp, dev_preview as _dpm
+    _startup_tasks.append(asyncio.create_task(_dpp.serve(auth_manager, _dpm.PREVIEW_PORT, port=_dpm.PROXY_PORT)))
     # Warmup: ping all known LLM endpoints to prime connections
     async def _warmup_endpoints():
         try:

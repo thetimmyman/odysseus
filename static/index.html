@@ -906,6 +906,39 @@
           </svg>
           <span class="grow">Theme</span>
         </div>
+        <div class="list-item" id="tool-terminal-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <span class="grow">Terminal</span>
+        </div>
+        <div class="list-item" id="tool-argo-btn">
+          <svg width="14" height="14" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><path d="M16 4 L16 21"/><path d="M16 8 L23 21"/><path d="M4 23 Q10 19 16 23 Q22 27 28 23"/></svg>
+          <span class="grow">The Argo</span>
+        </div>
+        <div class="list-item" id="tool-preview-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="10 8 13 10.5 10 13"/></svg>
+          <span class="grow">Preview</span>
+        </div>
+      </div>
+      <div class="section" id="project-files-section" style="display:none">
+        <div class="section-header-flex">
+          <span class="section-title" id="pf-section-title" style="cursor:pointer" title="Toggle project files"><svg class="section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Project Files</span>
+          <button type="button" class="section-header-btn" id="pf-refresh-btn" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+        </div>
+        <div id="project-files-tree" class="pf-tree" role="tree"></div>
+      </div>
+      <div class="section" id="git-section" style="display:none">
+        <div class="section-header-flex">
+          <span class="section-title" id="git-section-title" style="cursor:pointer" title="Toggle git review"><svg class="section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Git Review</span>
+          <span class="git-branch" id="git-branch" style="font-size:10px;opacity:0.6;margin-left:auto;margin-right:6px"></span>
+          <button type="button" class="section-header-btn" id="git-refresh-btn" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+        </div>
+        <div id="git-status-list" class="git-status-list"></div>
+        <div id="git-diff-pane" class="git-diff-pane"></div>
+        <div class="git-commit-box">
+          <textarea id="git-commit-msg" class="git-commit-msg" rows="2" placeholder="Commit message (Ctrl+Enter)"></textarea>
+          <button type="button" class="git-commit-btn" id="git-commit-btn">Commit staged</button>
+        </div>
+      </div>
       </div>
     </div>
     <div class="sidebar-user-bar" id="sidebar-user-bar">
@@ -1730,6 +1763,26 @@
                 <input type="checkbox" checked data-ui-key="tool-theme"><span class="vis-switch"></span>
               </label>
               <label class="vis-row">
+                <span class="vis-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
+                <span class="vis-label">Terminal</span>
+                <input type="checkbox" checked data-ui-key="tool-terminal"><span class="vis-switch"></span>
+              </label>
+              <label class="vis-row">
+                <span class="vis-icon"><svg width="14" height="14" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4 L16 21"/><path d="M16 8 L23 21"/><path d="M4 23 Q10 19 16 23 Q22 27 28 23"/></svg></span>
+                <span class="vis-label">The Argo <span class="vis-hint">Agent crew</span></span>
+                <input type="checkbox" checked data-ui-key="tool-argo"><span class="vis-switch"></span>
+              </label>
+              <label class="vis-row">
+                <span class="vis-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="10 8 13 10.5 10 13"/></svg></span>
+                <span class="vis-label">Preview <span class="vis-hint">Dev Preview</span></span>
+                <input type="checkbox" checked data-ui-key="tool-preview"><span class="vis-switch"></span>
+              </label>
+              <label class="vis-row">
+                <span class="vis-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+                <span class="vis-label">Project Files <span class="vis-hint">File tree when a project is set</span></span>
+                <input type="checkbox" checked data-ui-key="tool-projectfiles"><span class="vis-switch"></span>
+              </label>
+              <label class="vis-row">
                 <span class="vis-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
                 <span class="vis-label">User <span class="vis-hint">Avatar &amp; name</span></span>
                 <input type="checkbox" checked data-ui-key="user-bar"><span class="vis-switch"></span>
@@ -2238,6 +2291,134 @@
 
 
 <!-- Load modules in this order -->
+  <div id="crew-overlay" class="crew-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="The Argo — agent-crew voyage log">
+    <div class="crew-modal">
+      <div class="crew-head">
+        <div class="crew-title">&#9973; The Argo <span class="crew-sub">&mdash; agent-crew voyage log</span></div>
+        <button type="button" class="crew-close" id="crew-close" title="Close" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="crew-composer">
+        <textarea id="crew-prompt" class="crew-prompt" rows="2" placeholder="Give Athena a quest&hellip;  (Ctrl+Enter to launch)"></textarea>
+        <div class="crew-composer-actions">
+          <label class="crew-writemode-label" title="Allow gated write/exec tools — each parks behind the Oracle's seal for your approval">
+            <input type="checkbox" id="crew-writemode"> write mode
+          </label>
+          <button type="button" class="crew-btn crew-btn-launch" id="crew-launch">Launch voyage</button>
+        </div>
+      </div>
+      <div class="crew-body">
+        <div class="crew-rail">
+          <div class="crew-rail-h">Voyages</div>
+          <div id="crew-runs" class="crew-runs"></div>
+        </div>
+        <div class="crew-main">
+          <div id="crew-voyage-prompt" class="crew-voyage-prompt" style="display:none"></div>
+          <div id="crew-approvals" class="crew-approvals" style="display:none"></div>
+          <div class="crew-stage-bar">
+            <button type="button" class="crew-btn crew-btn-stop" id="crew-stop" style="display:none">Stop voyage</button>
+          </div>
+          <div id="crew-timeline" class="crew-timeline"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="terminal-overlay" class="crew-overlay tool-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Terminal">
+    <div class="crew-modal term-modal">
+      <div class="crew-head">
+        <div class="crew-title">&gt;_ Terminal <span class="crew-sub">&mdash; <span id="terminal-status" class="terminal-status"></span></span></div>
+        <button type="button" class="crew-btn" id="terminal-connect-btn" title="Connect" style="margin-left:auto">Connect</button>
+        <button type="button" class="crew-btn crew-btn-stop" id="terminal-disconnect-btn" title="Disconnect" style="display:none">Stop</button>
+        <button type="button" class="crew-close" id="terminal-close" title="Close" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="term-body">
+        <div id="terminal-xterm" class="terminal-xterm"></div>
+      </div>
+    </div>
+  </div>
+  <div id="preview-overlay" class="crew-overlay tool-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Dev Preview">
+    <div class="crew-modal preview-modal">
+      <div class="crew-head">
+        <div class="crew-title">&#9658; Dev Preview <span class="crew-sub">&mdash; run &amp; preview an app</span></div>
+        <button type="button" class="crew-btn preview-status-btn" id="preview-status-btn" title="Settings &amp; security status" style="margin-left:auto;margin-right:8px">&#128274; Status</button>
+        <button type="button" class="crew-close" id="preview-close" title="Close" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="preview-banner preview-banner-ok" id="preview-banner">&#128274; Dev servers run <strong>loopback-only</strong> and are reachable ONLY through this <strong>admin-gated proxy</strong> &mdash; not your LAN, Tailscale, or sibling containers. The app renders below.<span id="preview-banner-port" style="display:none"></span></div>
+      <div class="preview-unmanaged" id="preview-unmanaged" style="display:none">&#9888; An <strong>unmanaged</strong> dev server is running on :3000 (the manager lost track of it). <button type="button" class="crew-btn crew-btn-stop" id="preview-unmanaged-stop">Stop it</button></div>
+      <div class="preview-status-panel" id="preview-status-panel" style="display:none">
+        <div class="preview-status-col">
+          <div class="preview-status-h">Security posture</div>
+          <div id="preview-security-list" class="preview-sec-list"></div>
+        </div>
+        <div class="preview-status-col">
+          <div class="preview-status-h">Workspace config</div>
+          <div id="preview-config-list" class="preview-cfg-list"></div>
+        </div>
+      </div>
+      <div class="crew-body preview-body">
+        <div class="crew-rail">
+          <div class="crew-rail-h">Apps</div>
+          <div id="preview-apps" class="crew-runs"></div>
+        </div>
+        <div class="crew-main preview-main">
+          <div id="preview-empty" class="preview-empty">Select an app from the left to install &amp; preview.</div>
+          <div id="preview-main-inner" style="display:none">
+            <div class="preview-toolbar">
+              <div class="preview-app-head">
+                <span class="preview-app-title" id="preview-app-title"></span>
+                <span class="preview-app-meta" id="preview-app-meta"></span>
+              </div>
+              <div class="preview-controls">
+                <button type="button" class="crew-btn" id="preview-install-btn">Install deps</button>
+                <select id="preview-script" class="preview-select" title="dev script"></select>
+                <button type="button" class="crew-btn crew-btn-launch" id="preview-start-btn">Start dev server</button>
+                <button type="button" class="crew-btn crew-btn-stop" id="preview-stop-btn" style="display:none">Stop</button>
+                <span class="preview-port" id="preview-port">:3000</span>
+                <a class="crew-btn" id="preview-open-btn" target="_blank" rel="noopener" style="display:none">Open &#8599;</a>
+                <button type="button" class="crew-btn preview-logs-toggle" id="preview-logs-toggle">Show logs</button>
+              </div>
+            </div>
+            <div class="preview-appcfg" id="preview-appcfg" style="display:none">
+              <div class="preview-appcfg-row">
+                <span class="preview-appcfg-item">Install <code id="preview-install-cmd">&mdash;</code></span>
+                <span class="preview-appcfg-item">Package mgr <code id="preview-appcfg-pm">npm</code></span>
+                <button type="button" class="preview-env-chip" id="preview-env-chip" title="Env-file status (.env.local vs .env.example) &mdash; key names only; values are never returned, logged, or shown">
+                  <span class="preview-env-dot" id="preview-env-dot"></span>
+                  <span id="preview-env-label">env</span>
+                  <span class="preview-env-caret" id="preview-env-caret">&#9656;</span>
+                </button>
+                <button type="button" class="preview-env-chip" id="preview-vaultmap-chip" title="Vault mappings &mdash; map an env key to a k3s/Vaultwarden locator (locators only, never values)">
+                  &#128273; mappings <span id="preview-vaultmap-count"></span>
+                  <span class="preview-env-caret" id="preview-vaultmap-caret">&#9656;</span>
+                </button>
+              </div>
+              <div class="preview-env-keys" id="preview-env-keys" style="display:none"></div>
+              <div class="preview-env-keys" id="preview-vaultmap-panel" style="display:none"></div>
+            </div>
+            <div class="preview-logs-wrap" id="preview-logs-wrap" style="display:none">
+              <div class="preview-logs-head">
+                <select id="preview-logs-kind" class="preview-select">
+                  <option value="run">server logs</option>
+                  <option value="install">install logs</option>
+                </select>
+              </div>
+              <pre class="preview-logs" id="preview-logs"></pre>
+            </div>
+            <div class="preview-frame-wrap">
+              <div class="preview-frame-empty" id="preview-frame-empty">Not running. Install deps (if needed), then Start the dev server.</div>
+              <div class="preview-tunnel" id="preview-tunnel" style="display:none">
+                <div class="preview-tunnel-h">&#128274; Bound to loopback &mdash; preview over an SSH tunnel</div>
+                <div class="preview-tunnel-p">The dev server is on the Framework’s <code>127.0.0.1:3000</code>, not your LAN. From your machine, run:</div>
+                <pre class="preview-tunnel-cmd" id="preview-tunnel-cmd"></pre>
+                <div class="preview-tunnel-p">then open <a class="preview-tunnel-local" target="_blank" rel="noopener" href="http://localhost:3000">http://localhost:3000</a> (or use <strong>Open localhost ↗</strong> above).</div>
+                <div class="preview-tunnel-p" style="opacity:.65;font-size:11px">Local :3000 busy? Change the first number (e.g. <code>3001</code>:127.0.0.1:3000) and open that port.</div>
+              </div>
+              <iframe id="preview-frame" class="preview-frame" style="display:none" referrerpolicy="no-referrer"></iframe>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 <script type="module" src="/static/js/storage.js"></script>
 <script type="module" src="/static/js/ui.js"></script>
 <script type="module" src="/static/js/markdown.js"></script>
@@ -2256,6 +2437,11 @@
 <script type="module" src="/static/js/spinner.js"></script>
 <script type="module" src="/static/js/tts-ai.js"></script>
 <script type="module" src="/static/js/document.js"></script>
+<script type="module" src="/static/js/projectFiles.js"></script>
+<script type="module" src="/static/js/gitPanel.js"></script>
+<script type="module" src="/static/js/terminal.js"></script>
+<script type="module" src="/static/js/crewPanel.js"></script>
+<script type="module" src="/static/js/devPreview.js"></script>
 <script type="module" src="/static/js/gallery.js"></script>
 <script type="module" src="/static/js/chatRenderer.js"></script>
 <script type="module" src="/static/js/codeRunner.js"></script>

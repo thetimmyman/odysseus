@@ -9,6 +9,7 @@ Extracted from agent_tools.py.
 
 import asyncio
 import collections
+import contextvars
 import json
 import logging
 import os
@@ -52,6 +53,14 @@ _SENSITIVE_FILE_PATTERNS: tuple[str, ...] = (
     "known_hosts",
 )
 
+# Any `.env*` file holds secrets and must never be read/listed/written by a file
+# tool — EXCEPT non-secret templates, identified by SUFFIX so `.env.local.example`
+# and `.env.production.sample` stay visible. The bare `.env` is already in
+# _SENSITIVE_BASENAMES; this also catches `.env.local`, `.env.production`,
+# `.env.*.local`, etc. (Dev Preview's masked editor is the only sanctioned path to
+# `.env.local`, via its own pinned-fd reader — not these tools.)
+_ENV_TEMPLATE_SUFFIXES: tuple[str, ...] = (".example", ".sample", ".template", ".dist")
+
 
 def _is_sensitive_path(resolved: str) -> bool:
     """Return True if *resolved* falls under a sensitive directory or
@@ -70,10 +79,75 @@ def _is_sensitive_path(resolved: str) -> bool:
         if pat in filenames:
             return True
 
+    # App-internal secrets/data — block across ALL file tools so no user (or
+    # their agent) can read auth tokens, the Fernet master key, user prefs, or
+    # the SQLite DBs via read_file/write_file/edit_file/project-files. DATA_DIR
+    # is an allowed root for the agent's scratch space, but these files are not.
+    base = parts[-1] if parts else ""
+    if base in {".app_key", "sessions.json", "user_prefs.json", "api_tokens.json"}:
+        return True
+    # Any .env* secrets file (except non-secret templates by suffix). Closes a
+    # readback gap: only bare `.env` was caught before, so `.env.local`/
+    # `.env.production`/... were readable via the file tools, defeating the masked
+    # editor's write-only model. Suffix match keeps `.env.local.example` visible.
+    if base.startswith(".env") and not base.endswith(_ENV_TEMPLATE_SUFFIXES):
+        return True
+    for _dbp in ("app.db", "scheduled_emails.db"):
+        if base == _dbp or base.startswith(_dbp + "-") or base.startswith(_dbp + "."):
+            return True
+
+    # Defense-in-depth: per-user app data files (bcrypt password hashes +
+    # is_admin, API keys, integrations, contacts, memory, per-user note pings).
+    # These live under DATA_DIR (an allowed root for scratch space) but must
+    # never be searched, listed, or read by any user or their agent. Matched by
+    # basename, case-insensitive.
+    base_lower = base.lower()
+    if base_lower in {
+        "auth.json", "integrations.json", "contacts.json",
+        "settings.json", "memory.json",
+    }:
+        return True
+    # note_pings_<email>.json family.
+    if base_lower.startswith("note_pings_") and base_lower.endswith(".json"):
+        return True
+    # SSH client config / public keys under any .ssh or ssh directory.
+    if base_lower == "config" or base_lower.endswith(".pub"):
+        for part in parts[:-1]:
+            if part.lower() in (".ssh", "ssh"):
+                return True
+
     return False
 
 
-def _tool_path_roots() -> list[str]:
+def _get_session_project_root(session_id, owner):
+    """Return the realpath of the active project_root for this session, or None.
+
+    Owner-checked and isdir-guarded. Reads SessionManager's in-RAM cache
+    directly (NOT get_session(), which would trigger a DB write per call).
+    Single source of truth for both the bash/python cwd and the file-tool
+    confinement root, so they can never diverge.
+    """
+    if not session_id:
+        return None
+    try:
+        from core.models import _session_manager as sm
+        if sm is None:
+            return None
+        sess = sm.sessions.get(session_id)
+        if sess is None:
+            return None
+        if sess.owner is not None and owner is not None and sess.owner != owner:
+            return None  # refuse cross-owner
+        pr = getattr(sess, "project_root", None)
+        if not pr:
+            return None
+        real = os.path.realpath(os.path.expanduser(pr))
+        return real if os.path.isdir(real) else None
+    except Exception:
+        return None
+
+
+def _tool_path_roots(session_id: Optional[str] = None, owner: Optional[str] = None) -> list[str]:
     """Return the list of directory roots that read_file / write_file
     may touch. Default: project data/ + system temp dirs. Extra roots
     are loaded from the ``tool_path_extra_roots`` setting.
@@ -107,6 +181,11 @@ def _tool_path_roots() -> list[str]:
     except Exception:
         pass
 
+    # Per-session project root — additive, scoped to THIS session only.
+    pr = _get_session_project_root(session_id, owner)
+    if pr:
+        roots.append(pr)
+
     # Deduplicate; resolve symlinks so containment is unambiguous.
     seen: set[str] = set()
     out: list[str] = []
@@ -122,7 +201,7 @@ def _tool_path_roots() -> list[str]:
     return out
 
 
-def _resolve_tool_path(raw_path: str) -> str:
+def _resolve_tool_path(raw_path: str, session_id: Optional[str] = None, owner: Optional[str] = None) -> str:
     """Resolve and confine a model-supplied path.
 
     Order of checks:
@@ -145,7 +224,7 @@ def _resolve_tool_path(raw_path: str) -> str:
             f"(e.g. .ssh, .gnupg) or matches a sensitive filename"
         )
 
-    for root in _tool_path_roots():
+    for root in _tool_path_roots(session_id, owner):
         if resolved == root:
             return resolved
         try:
@@ -170,6 +249,13 @@ def _resolve_tool_path(raw_path: str) -> str:
 # gets cancelled and the subprocess is killed by the finally block.
 DEFAULT_BASH_TIMEOUT = 60 * 60     # 1 hour
 DEFAULT_PYTHON_TIMEOUT = 60 * 60
+
+# Crew mode runs each worker under an overall wall-clock deadline; a single
+# in-flight bash/python tool must NOT be able to outlive that by an hour. When
+# _crew_mode is active we clamp the per-tool timeout to this tighter ceiling
+# (still the smaller of the default and this) so a cancelled crew can't leave a
+# subprocess running up to DEFAULT_BASH_TIMEOUT. Non-crew behaviour is unchanged.
+CREW_TOOL_TIMEOUT = 180            # 3 minutes — sane crew per-tool ceiling
 
 # How often to push a progress event while a long-running subprocess
 # is still in flight. The frontend cares about "alive" more than
@@ -396,11 +482,13 @@ async def _call_mcp_tool(
     tool: str,
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
+    session_id: Optional[str] = None,
+    owner: Optional[str] = None,
 ) -> Dict:
     """Route a legacy tool call through the MCP manager, with direct fallbacks."""
     mcp = get_mcp_manager()
     if not mcp:
-        return await _direct_fallback(tool, content, progress_cb=progress_cb) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
+        return await _direct_fallback(tool, content, progress_cb=progress_cb, session_id=session_id, owner=owner) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
 
     server_id, tool_name = _MCP_TOOL_MAP[tool]
     qualified = f"mcp__{server_id}__{tool_name}"
@@ -409,7 +497,7 @@ async def _call_mcp_tool(
 
     # If MCP server not connected, try direct fallback
     if isinstance(result, dict) and result.get("exit_code") == 1 and "not connected" in result.get("error", ""):
-        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb)
+        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb, session_id=session_id, owner=owner)
         if fallback:
             return fallback
 
@@ -432,10 +520,58 @@ def _split_bg_marker(content: str):
     return False, content
 
 
+# When a crew worker is dispatched, the orchestrator sets this contextvar so any
+# `#!bg` background marker is bypassed and the command runs FOREGROUND — a
+# detached setsid job would survive `agent_runs.stop()` and escape the crew's
+# budget/stop controls (hardening fix #3). Non-crew execution is unaffected:
+# the var defaults to False and the normal `#!bg` path is taken.
+_crew_mode: "contextvars.ContextVar[bool]" = contextvars.ContextVar("crew_mode", default=False)
+
+
+def set_crew_mode(active: bool):
+    """Set the crew-execution flag for the current context; returns the token so
+    the orchestrator can reset it in a finally (`_crew_mode.reset(token)`)."""
+    return _crew_mode.set(bool(active))
+
+
+def reset_crew_mode(token) -> None:
+    try:
+        _crew_mode.reset(token)
+    except Exception:
+        pass
+
+
+# When a crew worker is dispatched, the orchestrator also sets this contextvar
+# carrying the per-worker gate context: {crew_run_id, owner, agent_id,
+# write_mode, emit}. `emit` is an async callback (event_dict -> awaitable) that
+# surfaces a `crew_approval_request` onto the PARENT crew SSE stream. The
+# Oracle's-seal hook in `execute_tool_block` reads it; when it is set AND
+# `crew_approvals.needs_gate(...)` says a tool must be approved, the worker
+# parks on `crew_approvals.wait_for_approval(...)` and only executes the tool
+# if the human approves. Defaults to None so non-crew execution is unaffected.
+_crew_gate: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar("crew_gate", default=None)
+
+
+def set_crew_gate(ctx: Optional[dict]):
+    """Set the per-worker crew-gate context for the current context; returns the
+    token so the orchestrator can reset it in a finally (`_crew_gate.reset(token)`).
+    `ctx` carries {crew_run_id, owner, agent_id, write_mode, emit}."""
+    return _crew_gate.set(ctx)
+
+
+def reset_crew_gate(token) -> None:
+    try:
+        _crew_gate.reset(token)
+    except Exception:
+        pass
+
+
 async def _direct_fallback(
     tool: str,
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
+    session_id: Optional[str] = None,
+    owner: Optional[str] = None,
 ) -> Optional[Dict]:
     """In-process execution path for the eight tools that used to live as
     stdio MCP servers under mcp_servers/. Those servers were deleted in
@@ -463,6 +599,9 @@ async def _direct_fallback(
         "LINES": "40",
     }
 
+    # Per-session project root -> cwd for bash/python. None = inherit (unchanged).
+    _cwd = _get_session_project_root(session_id, owner) if tool in ("bash", "python") else None
+
     try:
         if tool == "bash":
             proc = await asyncio.create_subprocess_shell(
@@ -470,14 +609,16 @@ async def _direct_fallback(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=_subproc_env,
+                cwd=_cwd,
             )
+            _bash_timeout = min(DEFAULT_BASH_TIMEOUT, CREW_TOOL_TIMEOUT) if _crew_mode.get() else DEFAULT_BASH_TIMEOUT
             stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
                 proc,
-                timeout=DEFAULT_BASH_TIMEOUT,
+                timeout=_bash_timeout,
                 progress_cb=progress_cb,
             )
             if timed_out:
-                return {"error": f"bash: timed out after {DEFAULT_BASH_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
+                return {"error": f"bash: timed out after {_bash_timeout}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
             output = stdout.rstrip()
             err = stderr.rstrip()
             if err:
@@ -496,14 +637,16 @@ async def _direct_fallback(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=_subproc_env,
+                cwd=_cwd,
             )
+            _py_timeout = min(DEFAULT_PYTHON_TIMEOUT, CREW_TOOL_TIMEOUT) if _crew_mode.get() else DEFAULT_PYTHON_TIMEOUT
             stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
                 proc,
-                timeout=DEFAULT_PYTHON_TIMEOUT,
+                timeout=_py_timeout,
                 progress_cb=progress_cb,
             )
             if timed_out:
-                return {"error": f"python: timed out after {DEFAULT_PYTHON_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
+                return {"error": f"python: timed out after {_py_timeout}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
             output = stdout.rstrip()
             err = stderr.rstrip()
             if err:
@@ -514,7 +657,7 @@ async def _direct_fallback(
         if tool == "read_file":
             raw_path = content.split("\n", 1)[0].strip()
             try:
-                path = _resolve_tool_path(raw_path)
+                path = _resolve_tool_path(raw_path, session_id, owner)
             except ValueError as e:
                 return {"error": f"read_file: {e}", "exit_code": 1}
             try:
@@ -539,7 +682,7 @@ async def _direct_fallback(
             raw_path = lines[0].strip()
             body = lines[1] if len(lines) > 1 else ""
             try:
-                path = _resolve_tool_path(raw_path)
+                path = _resolve_tool_path(raw_path, session_id, owner)
             except ValueError as e:
                 return {"error": f"write_file: {e}", "exit_code": 1}
             try:
@@ -694,6 +837,8 @@ async def execute_tool_block(
     """
     from src.tool_implementations import (
         do_create_document, do_update_document, do_edit_document,
+        do_edit_file, do_revert_file, do_set_project, do_get_project,
+        do_search_files, do_find_files, do_list_dir,
         do_suggest_document, do_search_chats, do_manage_tasks,
         do_manage_skills, do_api_call, do_manage_endpoints,
         do_manage_mcp, do_manage_webhooks, do_manage_tokens,
@@ -764,15 +909,87 @@ async def execute_tool_block(
         logger.warning("Public tool policy blocked owner=%r tool=%s", owner, tool)
         return desc, result
 
+    # --- The Oracle's seal (Argo crew approval gate) ---------------------
+    # Only active when this execution is inside a crew worker (the
+    # orchestrator set `_crew_gate` for this context). If the tool is
+    # side-effecting per `crew_approvals.needs_gate(...)`, park the worker
+    # behind a human approval BEFORE any side effect runs. State lives only
+    # in `crew_approvals`; here we just open the gate, surface the request
+    # onto the parent SSE stream via the emit callback, and await the
+    # decision. A non-approval returns a refusal result instead of executing.
+    _gate_ctx = _crew_gate.get()
+    if _gate_ctx:
+        try:
+            from src import crew_approvals
+        except Exception:
+            crew_approvals = None
+        if crew_approvals is not None:
+            try:
+                _write_mode = bool(_gate_ctx.get('write_mode'))
+                _must_gate = crew_approvals.needs_gate(tool, content, _write_mode, owner)
+            except Exception:
+                # Fail CLOSED on a classifier error in write mode; open in read-only.
+                _must_gate = bool(_gate_ctx.get('write_mode'))
+            if _must_gate:
+                _crew_run_id = _gate_ctx.get('crew_run_id')
+                _agent_id = _gate_ctx.get('agent_id')
+                _emit = _gate_ctx.get('emit')
+                _norm = crew_approvals._normalize_tool(tool)
+                try:
+                    approval_id = await crew_approvals.open_gate(
+                        crew_run_id=_crew_run_id, owner=owner, agent_id=_agent_id,
+                        tool=tool, content=content,
+                        risk=_gate_ctx.get('risk') or 'external',
+                        conversation_id=session_id,
+                    )
+                except Exception as _e:
+                    desc = f"{tool}: BLOCKED"
+                    logger.error("crew gate open_gate failed tool=%s: %r", tool, _e)
+                    return desc, {"error": "Blocked by the Oracle's seal (gate error).", "exit_code": 1}
+                # Surface the approval card onto the PARENT crew SSE stream.
+                if _emit is not None:
+                    try:
+                        await _emit({
+                            "type": "crew_approval_request",
+                            "approval_id": approval_id,
+                            "tool": _norm,
+                            "risk": _gate_ctx.get('risk') or 'external',
+                            "agent_id": _agent_id,
+                        })
+                    except Exception as _e:
+                        logger.warning("crew gate emit failed: %r", _e)
+                # Block the worker until the human decides (or it expires).
+                try:
+                    _timeout = float(_gate_ctx.get('approval_timeout') or 1800)
+                    decision = await crew_approvals.wait_for_approval(
+                        approval_id, _crew_run_id, _timeout
+                    )
+                except Exception as _e:
+                    logger.error("crew gate wait failed tool=%s: %r", tool, _e)
+                    decision = "expired"
+                if decision != "approved":
+                    desc = f"{tool}: BLOCKED ({decision})"
+                    logger.info("crew gate %s tool=%s agent=%s", decision, tool, _agent_id)
+                    return desc, {
+                        "error": (
+                            "Blocked by the Oracle's seal: this action was "
+                            f"{decision} (not approved). The tool did not run."
+                        ),
+                        "exit_code": 1,
+                        "approval_id": approval_id,
+                        "approval_status": decision,
+                    }
+                # Approved — fall through to normal execution below.
+
     # Background execution: a `bash` block whose first line is the `#!bg`
     # marker runs DETACHED — returns a job id immediately so the chat stream
     # isn't held open for a multi-minute install/ffmpeg/download. The always-on
     # monitor re-invokes the agent with the full output when the job finishes.
-    if tool == "bash" and session_id:
+    if tool == "bash" and session_id and not _crew_mode.get():
         _is_bg, _bg_cmd = _split_bg_marker(content)
         if _is_bg and _bg_cmd:
             from src import bg_jobs
-            rec = bg_jobs.launch(_bg_cmd, session_id=session_id)
+            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=_get_session_project_root(session_id, owner))
             short = _bg_cmd.strip().split(chr(10))[0][:80]
             desc = f"bash (background): {short}"
             result = {
@@ -794,7 +1011,7 @@ async def execute_tool_block(
     if tool in _MCP_TOOL_MAP:
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
-        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb)
+        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb, session_id=session_id, owner=owner)
     elif tool == "create_document":
         title = content.split("\n")[0].strip()[:60]
         desc = f"create_document: {title}"
@@ -805,6 +1022,27 @@ async def execute_tool_block(
     elif tool == "edit_document":
         result = await do_edit_document(content, owner=owner)
         desc = f"edit_document: {result.get('title', '')}"
+    elif tool == "edit_file":
+        result = await do_edit_file(content, owner=owner, session_id=session_id)
+        desc = f"edit_file: {result.get('path', '')}"
+    elif tool == "revert_file":
+        result = await do_revert_file(content, owner=owner, session_id=session_id)
+        desc = f"revert_file: {result.get('path', '')}"
+    elif tool == "set_project":
+        result = await do_set_project(content, session_id=session_id, owner=owner)
+        desc = f"set_project: {result.get('project_root', '(error)')}"
+    elif tool == "get_project":
+        result = await do_get_project(content, session_id=session_id, owner=owner)
+        desc = f"get_project: {result.get('project_root') or 'none'}"
+    elif tool == "search_files":
+        result = await do_search_files(content, owner=owner, session_id=session_id)
+        desc = f"search_files: {result.get('match_count', 0)} match(es)"
+    elif tool == "find_files":
+        result = await do_find_files(content, owner=owner, session_id=session_id)
+        desc = f"find_files: {result.get('match_count', 0)} file(s)"
+    elif tool == "list_dir":
+        result = await do_list_dir(content, owner=owner, session_id=session_id)
+        desc = f"list_dir: {result.get('entry_count', 0)} entr(ies)"
     elif tool == "suggest_document":
         result = await do_suggest_document(content, owner=owner)
         desc = f"suggest_document: {result.get('count', 0)} suggestions"
@@ -946,6 +1184,8 @@ _FORMATTER_HANDLED_KEYS = {
     "response", "results", "session_id", "name", "model", "session_name",
     "success", "path", "action", "title", "doc_id", "version", "applied",
     "error", "output",
+    "diff", "skipped", "backup",
+    "match_count", "entry_count", "truncated",
 }
 
 

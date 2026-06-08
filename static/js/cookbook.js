@@ -401,17 +401,13 @@ export function _buildServeCmd(f, modelName, backend) {
     const ggufPath = f._gguf_path || 'model.gguf';
     const gpuId = f.gpu_id?.trim() || '';
     const py = _isWindows() ? 'python' : 'python3';
-    // CPU-only serve (-ngl 0): drop the GPU-only flags, otherwise the command
-    // mixes "zero GPU layers" with CUDA unified-memory + flash-attn and fails to
-    // start (issue #1291). Only affects the ngl=0 path; GPU serving is unchanged.
-    const _cpuOnly = String(f.ngl).trim() === '0';
     const lcPrefix = (() => {
       let p = '';
-      if (f.unified_mem && !_cpuOnly && !_isWindows()) p += `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 `;
+      if (f.unified_mem && !_isWindows()) p += `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 `;
       if (gpuId && !_isWindows()) p += `CUDA_VISIBLE_DEVICES=${gpuId} `;
       return p;
     })();
-    if (f.unified_mem && !_cpuOnly && _isWindows()) cmd += `$env:GGML_CUDA_ENABLE_UNIFIED_MEMORY="1"; `;
+    if (f.unified_mem && _isWindows()) cmd += `$env:GGML_CUDA_ENABLE_UNIFIED_MEMORY="1"; `;
     if (gpuId && _isWindows()) cmd += `$env:CUDA_VISIBLE_DEVICES="${gpuId}"; `;
     if (!_isWindows()) {
       // Resolve GGUF path once, fail loudly if nothing matched (prevents
@@ -443,7 +439,7 @@ export function _buildServeCmd(f, modelName, backend) {
       _lcExtra += ` --n-cpu-moe ${_ncm}`;
       _lcpExtra += ` --n_cpu_moe ${_ncm}`;   // llama-cpp-python uses underscores
     }
-    if (f.flash_attn && !_cpuOnly) {
+    if (f.flash_attn) {
       _lcExtra += ' --flash-attn on';
       _lcpExtra += ' --flash_attn true';
     }
@@ -1528,7 +1524,7 @@ function _renderRecipes() {
   html += '<option value="Q4_K_M">Q4</option><option value="Q8_0">Q8</option>';
   html += '<option value="Q6_K">Q6</option><option value="Q5_K_M">Q5</option>';
   html += '<option value="Q3_K_M">Q3</option><option value="Q2_K">Q2</option>';
-  html += '<option value="AWQ-4bit">AWQ</option><option value="FP8">FP8</option><option value="FP4">FP4</option><option value="NVFP4">NVFP4</option>';
+  html += '<option value="AWQ-4bit">AWQ</option><option value="FP8">FP8</option><option value="FP4">FP4</option>';
   html += '<option value="">Native</option></select>';
   // Engine filter: show only models whose serve engine matches. "llama.cpp"
   // (GGUF) runs everywhere incl. consumer AMD/Apple; vLLM/SGLang are CUDA /

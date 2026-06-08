@@ -12,13 +12,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     curl \
+    wget \
     git \
+    git-lfs \
     nodejs \
     npm \
     tmux \
     openssh-client \
+    ripgrep \
     gosu \
+    && git lfs install --system \
+    && git config --system --add safe.directory '*' \
     && rm -rf /var/lib/apt/lists/*
+
+# Chromium runtime libs for the built-in Browser MCP (@playwright/mcp).
+RUN npx -y playwright@latest install-deps chromium && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

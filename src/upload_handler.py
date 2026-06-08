@@ -31,28 +31,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# The extension is optional: save_upload builds the id as `{uuid.hex}{ext}`,
-# and a file with no extension (Dockerfile, README, ...) yields a bare 32-hex
-# id. Requiring `.ext` made those ids fail validation, so the stored file
-# could never be resolved or downloaded again.
-UPLOAD_ID_RE = re.compile(r"^[0-9a-fA-F]{32}(?:\.[A-Za-z0-9]+)?$")
+UPLOAD_ID_RE = re.compile(r"^[0-9a-fA-F]{32}\.[A-Za-z0-9]+$")
 
 
 def is_valid_upload_id(upload_id: str) -> bool:
     """Return True when *upload_id* matches the canonical uploads.json id format."""
     return UPLOAD_ID_RE.fullmatch(upload_id or "") is not None
-
-
-def count_recent_uploads(timestamps, now: float, window: float = 10.0) -> int:
-    """Number of upload events in *timestamps* within the last *window* seconds.
-
-    Used by the per-IP concurrency guard. The count is of genuine prior upload
-    events — it must NOT scale with how many files are in the *current* request,
-    or a single multi-file batch would reject itself (issue #1346)."""
-    if not timestamps:
-        return 0
-    cutoff = now - window
-    return sum(1 for t in timestamps if t > cutoff)
 
 
 class UploadHandler:
@@ -62,13 +46,7 @@ class UploadHandler:
         self.max_upload_size = 10 * 1024 * 1024  # 10MB
         self.max_concurrent_uploads = 3
         self.cleanup_days = 30
-        # Per-IP per-minute cap. save_upload() counts EACH file, and the chat
-        # composer lets a user attach up to MAX_FILES (10, static/js/fileHandler.js)
-        # in one batch — so this must comfortably exceed 10, or a single 6+ file
-        # attach is rejected mid-batch (issue #1346: "5 work, 6 fail"). Burst abuse
-        # is separately bounded by max_concurrent_uploads. Headroom for a few full
-        # batches per minute.
-        self.upload_rate_limit = 60  # max 60 file-uploads per minute per IP
+        self.upload_rate_limit = 5  # Max 5 uploads per minute per IP
         self.upload_rate_window = 60  # 60 seconds
         
         # Track upload rates
@@ -534,23 +512,11 @@ class UploadHandler:
         existing_key = None
         with self._index_lock:
             existing_files = self._load_upload_index()
-            stale_keys = []
             for key, info in existing_files.items():
                 if info.get("hash") == file_hash and info.get("owner") == owner:
-                    stored_path = info.get("path")
-                    if stored_path and os.path.exists(stored_path) and self._inside_upload_dir(stored_path):
-                        existing_key = key
-                        existing_file = info
-                        break
-                    stale_keys.append(key)
-            if stale_keys:
-                for key in stale_keys:
-                    existing_files.pop(key, None)
-                try:
-                    self._atomic_write_json(uploads_db_path, existing_files)
-                    logger.info("Removed %d stale upload index entries for missing duplicates", len(stale_keys))
-                except Exception as e:
-                    logger.warning(f"Failed to remove stale upload index entries: {e}")
+                    existing_key = key
+                    existing_file = info
+                    break
         if existing_file:
             logger.info(f"Duplicate file upload detected: {original_filename} -> {existing_file['id']}")
 

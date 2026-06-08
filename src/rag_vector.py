@@ -27,8 +27,14 @@ KEYWORD_WEIGHT = 0.3
 COLLECTION_NAME = "odysseus_rag"
 
 
-def _generate_doc_id(text: str) -> str:
-    return f"doc_{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
+def _generate_doc_id(text: str, owner: Optional[str] = None) -> str:
+    # Namespace the id by owner so two owners indexing byte-identical text get
+    # distinct rows (#1662). Otherwise the second owner's chunk collides with the
+    # first's id, is skipped on add, and never appears in their owner-scoped
+    # search. owner=None keeps the legacy content-only id, so existing rows and
+    # shared/legacy chunks are unchanged and need no re-index.
+    key = text if owner is None else f"{owner}\x00{text}"
+    return f"doc_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
 
 
 class VectorRAG:
@@ -104,8 +110,8 @@ class VectorRAG:
             return False
 
         try:
-            doc_id = _generate_doc_id(text)
-            # Check if already exists
+            doc_id = _generate_doc_id(text, metadata.get("owner"))
+            # Check if already exists (same owner + same text)
             existing = self._collection.get(ids=[doc_id])
             if existing["ids"]:
                 return True  # already exists
@@ -140,7 +146,7 @@ class VectorRAG:
             new_metas = []
             new_ids = []
             for t, m in valid:
-                doc_id = _generate_doc_id(t)
+                doc_id = _generate_doc_id(t, m.get("owner"))
                 existing = self._collection.get(ids=[doc_id])
                 if not existing["ids"]:
                     new_texts.append(t)
@@ -254,8 +260,11 @@ class VectorRAG:
             for i, doc in enumerate(all_docs["documents"]):
                 meta = all_docs["metadatas"][i]
                 if owner:
-                    doc_owner = meta.get("owner")
-                    if doc_owner and doc_owner != owner:
+                    # Match the primary path's strict where={"owner": owner}
+                    # filter. The old `if doc_owner and doc_owner != owner`
+                    # let docs with a missing/empty owner fall through, leaking
+                    # owner-less documents into another user's results.
+                    if meta.get("owner") != owner:
                         continue
                 doc_lower = doc.lower()
                 score = sum(1 for w in query_words if w in doc_lower)
@@ -374,20 +383,36 @@ class VectorRAG:
             return {'success': False, 'indexed_count': indexed, 'failed_count': failed, 'message': str(e)}
 
     def remove_directory(self, directory: str) -> Dict[str, Any]:
-        """Remove all chunks from a directory. O(1) per chunk via ChromaDB."""
+        """Remove all chunks under ``directory`` (recursively), and nothing else.
+
+        Selection is a Python-side path-boundary match on each chunk's stored
+        ``source`` full path, NOT a Chroma metadata ``where`` filter. No Chroma
+        metadata operator selects a scalar string by path prefix (``$contains``
+        targets document content / list membership, not a ``source`` substring),
+        and a plain substring would over-delete siblings — removing ``/docs``
+        must not touch ``/docs2`` or ``/docs_personal``. We therefore match
+        ``source == directory`` or ``source`` startswith ``directory + os.sep``,
+        the same boundary rule add_directory uses for exclusions. ``directory``
+        is abspath-normalized so it matches the absolute ``source`` that indexing
+        always stores, regardless of how the caller passed it in.
+        """
         if not self.healthy:
             return {"success": False, "message": "Collection not initialized"}
+        directory = os.path.abspath(directory)
         try:
-            # Use ChromaDB where filter to find all docs from this directory
-            results = self._collection.get(
-                where={"source": {"$contains": directory}} if "/" in directory else {"directory": directory},
-                include=["metadatas"],
-            )
-            if not results['ids']:
+            results = self._collection.get(include=["metadatas"])
+            ids = [
+                results["ids"][i]
+                for i, m in enumerate(results["metadatas"])
+                if isinstance(m, dict)
+                and isinstance(m.get("source"), str)
+                and (m["source"] == directory or m["source"].startswith(directory + os.sep))
+            ]
+            if not ids:
                 return {"success": True, "removed_count": 0, "message": "No docs found"}
 
-            self._collection.delete(ids=results['ids'])
-            n = len(results['ids'])
+            self._collection.delete(ids=ids)
+            n = len(ids)
             logger.info(f"Removed {n} chunks from {directory}")
             return {"success": True, "removed_count": n, "message": f"Removed {n} chunks"}
         except Exception as e:

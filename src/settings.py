@@ -96,14 +96,6 @@ DEFAULT_SETTINGS = {
     "research_run_timeout_seconds": 1800,
     "agent_max_tool_calls": 0,
     "agent_input_token_budget": 6000,
-    # Ceiling on the *auto-derived* input budget that #1230 introduced. Has
-    # no effect when `agent_input_token_budget` is explicitly set (the user's
-    # value is honoured regardless). Default matches
-    # `src.context_budget.DEFAULT_HARD_MAX`; lower this for cost-paranoid
-    # setups, raise it on premium APIs with very large windows that you
-    # want to actually use (e.g. 900_000 to fill a 1M-context model). See
-    # `compute_input_token_budget` in src/context_budget.py.
-    "agent_input_token_hard_max": 200_000,
     "agent_stream_timeout_seconds": 300,
     # Extra directory roots that read_file / write_file may access, in
     # addition to the built-in project data/ and system temp dirs. Each
@@ -184,10 +176,8 @@ def load_settings() -> dict:
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             saved = json.load(f)
-        if not isinstance(saved, dict):
-            raise ValueError("settings must be an object")
         merged = {**DEFAULT_SETTINGS, **saved}
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+    except (FileNotFoundError, json.JSONDecodeError):
         merged = dict(DEFAULT_SETTINGS)
     _settings_cache = (now, merged)
     return merged
@@ -215,8 +205,7 @@ def is_setting_overridden(key: str) -> bool:
     """
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-        return isinstance(saved, dict) and key in saved
+            return key in json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return False
 
@@ -267,10 +256,8 @@ def load_features() -> dict:
     try:
         with open(FEATURES_FILE, "r", encoding="utf-8") as f:
             saved = json.load(f)
-        if not isinstance(saved, dict):
-            raise ValueError("features must be an object")
         merged = {**DEFAULT_FEATURES, **saved}
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+    except (FileNotFoundError, json.JSONDecodeError):
         merged = dict(DEFAULT_FEATURES)
     _features_cache = (now, merged)
     return merged

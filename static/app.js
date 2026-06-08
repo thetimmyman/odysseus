@@ -532,13 +532,6 @@ function initializeEventListeners() {
         return;
       }
 
-      // Model picker popup — close before opening any modals
-      const modelPickerMenu = document.getElementById('model-picker-menu');
-      if (modelPickerMenu && modelPickerMenu.classList.contains('open')) {
-        modelPickerMenu.classList.remove('open');
-        return;
-      }
-
       // Close one modal at a time (last in DOM = topmost)
       // Map modal id → sidebar list-item id to clear active state
       const modalItemMap = {
@@ -550,7 +543,7 @@ function initializeEventListeners() {
       };
 
       // Dynamic modals (removed from DOM on close)
-      const dynamicModals = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal', 'email-lib-modal'];
+      const dynamicModals = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal'];
       for (const id of dynamicModals) {
         const m = document.getElementById(id);
         if (id === 'gallery-modal') {
@@ -2394,6 +2387,9 @@ function initializeEventListeners() {
     'tool-notes':          '#tool-notes-btn',
     'tool-tasks':          '#tool-tasks-btn',
     'tool-theme':          '#tool-theme-btn',
+    'tool-terminal':       '#tool-terminal-btn',
+    'tool-argo':           '#tool-argo-btn',
+    'tool-preview':        '#tool-preview-btn',
     'user-bar':            '#user-bar-profile',
     'sidebar-settings-btn':'#user-bar-settings',
     'chat-meta':           '.chat-meta-overlay',
@@ -2447,6 +2443,12 @@ function initializeEventListeners() {
     applyTextEmojis(state['text-emojis'] !== false);
     // Hide thinking sections toggle (show-thinking: checked=show, unchecked=hide)
     document.body.classList.toggle('hide-thinking', state['show-thinking'] === false);
+    // Project Files is a CONTEXTUAL sidebar section (projectFiles.js sets inline
+    // display based on whether a project root is set), so we can't use the generic
+    // display toggle — that would force-show an empty tree. Instead force-hide via a
+    // body class (+ CSS !important) when toggled off; default/on leaves the
+    // contextual logic in control.
+    document.body.classList.toggle('hide-project-files', state['tool-projectfiles'] === false);
   }
 
   // Rearrange toggles in session/model sort dropdowns
@@ -3429,7 +3431,26 @@ function startOdysseusApp() {
     if (_curSession && localStorage.getItem('odysseus-doc-open-' + _curSession) === '1') {
       documentModule.loadSessionDocs(_curSession);
     }
+  }
+  if (window.projectFilesModule) {
+    window.projectFilesModule.init(API_BASE);
+    window.projectFilesModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
   }  
+  if (window.gitPanelModule) {
+    window.gitPanelModule.init(API_BASE);
+    window.gitPanelModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
+  }
+  if (window.terminalModule) {
+    window.terminalModule.init(API_BASE);
+    window.terminalModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
+  }
+  if (window.crewPanelModule) {
+    window.crewPanelModule.init(API_BASE);
+    window.crewPanelModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
+  }
+  if (window.devPreviewModule) {
+    window.devPreviewModule.init(API_BASE);
+  }
   // Initialize search chat module
   if (searchChatModule) {
     searchChatModule.init(API_BASE);
@@ -4117,3 +4138,90 @@ if (document.readyState === 'loading') {
 } else {
   startOdysseusApp();
 }
+/* ============================================================================
+   Universal iPhone top safe-area — bootstrap + JS-positioned-surface floor.
+   PersonalOS / Humility, 2026-06-04.
+
+   PART 1 (bootstrap): a custom property holding env() does NOT resolve to a px
+   in getComputedStyle, so we PROBE the real inset (an off-screen div with
+   padding-top: env(safe-area-inset-top)) and write the resolved px into
+   --app-safe-top on <html>. Now var(--app-safe-top) is a real px for both the
+   CSS rules and the JS below, and a test can inject html{--app-safe-top:NN}.
+
+   PART 2 (clamp): ~20 dropdowns/popovers + every snap/dock/drag path set their
+   top inline from getBoundingClientRect with small px floors that ignore the
+   notch. CSS can't beat inline styles, so an observer nudges any fixed/absolute
+   element pinned ABOVE the safe area down to it (and shrinks full-height ones).
+   Only ever moves DOWN; on a non-notched device the inset is 0 and all no-op.
+   ============================================================================ */
+(function () {
+  'use strict';
+  var root = document.documentElement;
+
+  /* ---- PART 1: bootstrap --app-safe-top to the resolved px ---- */
+  var probe = null;
+  function measureInset() {
+    if (!probe) {
+      probe = document.createElement('div');
+      probe.setAttribute('aria-hidden', 'true');
+      probe.style.cssText =
+        'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;' +
+        'pointer-events:none;padding-top:env(safe-area-inset-top,0px);';
+      (document.body || root).appendChild(probe);
+    }
+    var v = parseFloat(getComputedStyle(probe).paddingTop);
+    return isNaN(v) ? 0 : v;
+  }
+  function syncVar() {
+    // Don't clobber a test/!important override (only set if our value differs).
+    var px = measureInset();
+    root.style.setProperty('--app-safe-top', px + 'px');
+    return px;
+  }
+
+  /* ---- PART 2: floor JS-inline-positioned surfaces ---- */
+  function safeTop() {
+    var v = getComputedStyle(root).getPropertyValue('--app-safe-top');
+    var n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
+  }
+  var FULLH = /100vh|100dvh|100%/;
+  function clamp(el) {
+    if (!el || el.nodeType !== 1 || !el.style) return;
+    var pos = el.style.position;
+    if (pos !== 'fixed' && pos !== 'absolute') return;   // only script-pinned overlays
+    var top = parseFloat(el.style.top);
+    if (isNaN(top)) return;                               // centered modals set no inline top -> skip
+    var s = safeTop();
+    if (s <= 0 || top >= s) return;                      // no notch, or already clear
+    el.style.top = s + 'px';
+    if (FULLH.test(el.style.height || '')) el.style.height = 'calc(100vh - ' + s + 'px)';
+    if (FULLH.test(el.style.maxHeight || '')) el.style.maxHeight = 'calc(100vh - ' + s + 'px)';
+  }
+  function scanAll() {
+    try {
+      var nodes = document.querySelectorAll('[style*="position"]');
+      for (var i = 0; i < nodes.length; i++) clamp(nodes[i]);
+    } catch (e) {}
+  }
+  var mo = new MutationObserver(function (muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var m = muts[i];
+      if (m.type === 'attributes') { clamp(m.target); continue; }
+      if (m.addedNodes) for (var j = 0; j < m.addedNodes.length; j++) clamp(m.addedNodes[j]);
+    }
+  });
+  function start() {
+    try {
+      syncVar();
+      mo.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
+      scanAll();
+      var resync = function () { syncVar(); scanAll(); };
+      window.addEventListener('resize', resync, { passive: true });
+      window.addEventListener('orientationchange', resync, { passive: true });
+      if (window.visualViewport) window.visualViewport.addEventListener('resize', resync, { passive: true });
+    } catch (e) {}
+  }
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();

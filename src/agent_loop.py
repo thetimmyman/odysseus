@@ -14,7 +14,7 @@ import time
 import logging
 from typing import AsyncGenerator, List, Dict, Optional, Set
 
-from src.llm_core import stream_llm, stream_llm_with_fallback
+from src.llm_core import stream_llm, stream_llm_with_fallback, _is_ollama_native_url
 from src.model_context import estimate_tokens
 from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
@@ -219,6 +219,24 @@ Read a file and return its contents.""",
 ```
 Write content to a file. First line is the path, rest is the content.""",
 
+    "search_files": """\
+```search_files
+{"pattern": "<regex or string>", "dir": "<optional dir>", "glob": "*.py", "ignore_case": false, "fixed": false}
+```
+Search a regex/string across files under a directory (a grep). Returns capped file:line:text matches. Use to FIND where something is defined/used instead of reading files blindly. `dir` defaults to the session project root (set_project first). Set `fixed: true` to match a literal string, `glob` to restrict by filename. Skips .git/node_modules/__pycache__/venvs and binaries; output is capped.""",
+
+    "find_files": """\
+```find_files
+{"glob": "**/*.py", "dir": "<optional dir>"}
+```
+Find files matching a glob pattern under a directory (a glob). Returns capped relative paths. Use to locate files by name/extension. `dir` defaults to the session project root. Skips junk dirs and sensitive files.""",
+
+    "list_dir": """\
+```list_dir
+{"dir": "<optional dir>"}
+```
+List the entries of ONE directory: name, dir-or-file, and size. Use to explore a project's layout. `dir` defaults to the session project root. Sensitive files are never listed.""",
+
     "create_document": """\
 ```create_document
 <title>
@@ -276,7 +294,7 @@ Generate an image. Line 1 = description, line 2 = model name, line 3 = WxH (e.g.
     "manage_webhooks": "- ```manage_webhooks``` — Configure outgoing webhooks (HTTP notifications on events like chat completion). Args (JSON): {\"action\": \"list|add|delete|enable|disable\", ...}",
     "manage_tokens": "- ```manage_tokens``` — Generate or revoke API access tokens for external integrations. Args (JSON): {\"action\": \"list|create|delete\", ...}",
     "manage_documents": "- ```manage_documents``` — List, read/open, delete, or tidy documents in the editor panel. Args (JSON): {\"action\": \"list|read|delete|tidy\", ...}. `list` returns rows like `[Title](#document-<id>) — lang, size, updated 5m ago` sorted MOST-RECENT FIRST; the user clicks the anchor to open. `read` (aliases: view/open/get) takes `document_id` and returns the content. When the user asks \"open/show/read my notes\" or \"what documents do I have\", use this — do NOT shell out, do NOT curl.",
-    "manage_research": "- ```manage_research``` — List, read/open, or delete saved DEEP RESEARCH results from the Library. Args (JSON): {\"action\": \"list|read|delete\", \"id\": \"<id>\", \"search\": \"...\"}. `list` returns rows like `[query](#research-<id>) — N sources` MOST-RECENT FIRST; the user clicks to open. `read` (aliases: open/view/get) takes `id` and returns the report text + sources. Use when the user says \"open/read/find/delete my research\" or \"that report\". This IS how you read a finished report: when the user refers to a just-completed deep-research job (\"check it out\", \"read that report\", \"summarize the research\") WITHOUT giving an id, call `manage_research` with `action:list` to get the most-recent id, then `action:read` with that id, and answer from the returned text. Do NOT `web_fetch`/`app_api` the `/api/research/report/{id}` URL — that endpoint renders HTML for the browser, not clean text — and do NOT start a fresh `web_search`/`trigger_research` just to read an existing report. To START new research, use trigger_research instead.",
+    "manage_research": "- ```manage_research``` — List, read/open, or delete saved DEEP RESEARCH results from the Library. Args (JSON): {\"action\": \"list|read|delete\", \"id\": \"<id>\", \"search\": \"...\"}. `list` returns rows like `[query](#research-<id>) — N sources` MOST-RECENT FIRST; the user clicks to open. `read` (aliases: open/view/get) takes `id` and returns the report + sources. Use when the user says \"open/read/find/delete my research\" or \"that report\". To START new research, use trigger_research instead.",
     "manage_settings": "- ```manage_settings``` — View/change the REAL app settings (same ones the Settings panel writes) AND turn tools on/off. Change a setting: `{\"action\":\"set\",\"key\":\"...\",\"value\":\"...\"}` — keys accept friendly aliases, e.g. voice→tts_voice, \"search engine\"→search_provider, \"default model\"→default_model, \"teacher model\"→teacher_model, \"task/background model\"→task_model, \"image quality\"→image_quality, \"reminder channel\"→reminder_channel (browser|email|ntfy), \"agent timeout\"/\"max tool calls\"/\"token budget\". Read: `{\"action\":\"get\",\"key\":\"...\"}`; see all: `{\"action\":\"list\"}`; reset one: `{\"action\":\"reset\",\"key\":\"...\"}`. Use this when the user asks to change ANY preference instead of making them open Settings. Secrets/API keys are read-only (tell them to set those in the panel). Tool toggles: `{\"action\":\"disable_tool|enable_tool\",\"tool\":\"shell\"}` (aliases: shell/search/browser/documents/memory/skills/images/tasks/notes/calendar/email), list disabled: `{\"action\":\"list_tools\"}`.",
     "manage_notes": """\
 ```manage_notes
@@ -315,10 +333,9 @@ Bulk delete/archive/mark emails. Use this for "delete all those" after listing e
 {"action": "create_event", "summary": "<event title>", "dtstart": "<natural language or ISO datetime>"}
 ```
 Calendar event management (CalDAV). Actions: `list_events`, `create_event`, `update_event`, `delete_event`, `list_calendars`. \
-For `create_event`: {summary, dtstart, dtend?, duration?, calendar?, location?, description?, reminder_minutes?, rrule?}. \
+For `create_event`: {summary, dtstart, dtend?, duration?, calendar?, location?, description?, reminder_minutes?}. \
 `dtstart` accepts natural language ("tomorrow at 1pm", "in 2 hours", "next monday 9am") or ISO ("2026-05-12T13:00:00"). \
 If `dtend` omitted, defaults to dtstart+1h (or +1d when `all_day: true`). \
-For a RECURRING event pass `rrule` as an iCalendar RRULE string, e.g. `"FREQ=WEEKLY;BYDAY=MO"` (every Monday), `"FREQ=DAILY;COUNT=10"`, or `"FREQ=MONTHLY;BYMONTHDAY=1"` — create ONE event with the rrule, do not loop creating many events. \
 If the user asks for a reminder/alarm before the event, pass `reminder_minutes` as an integer; do not write reminder text into the event description and do NOT also call `manage_notes` for the same reminder because calendar reminders are routed through Notes automatically. \
 `calendar` accepts a name ("Main") or short-id prefix.""",
     "create_session": "- ```create_session``` — Create a new chat. Line 1 = chat name, line 2 = model name. Use for background/parallel work.",
@@ -354,7 +371,7 @@ GENERIC LOOPBACK to ANY Odysseus internal endpoint. Use this whenever the user w
 - Sessions: `/api/sessions`, `/api/session/{id}`, `/api/session/{id}/truncate`
 - Themes: `/api/prefs/themes`, `/api/prefs/custom-themes`
 - Settings: `/api/settings`, `/api/prefs/{key}`
-- Research: `/api/research/start`, `/api/research/tasks` (note: `/api/research/report/{id}` renders HTML — to READ a report's text use the `manage_research` tool with `action:read`, not this endpoint)
+- Research: `/api/research/start`, `/api/research/tasks`, `/api/research/report/{id}`
 - Compare: `/api/compare/sessions`, `/api/compare/start`
 - Email: use named email tools (`list_email_accounts`, `list_emails`, `read_email`, `send_email`, `reply_to_email`). Do NOT use `/api/email/accounts`; it is owner-filtered in tool context and may falsely return empty.
 - Endpoints (model providers): `/api/endpoints`, `/api/endpoints/{id}`
@@ -532,8 +549,11 @@ def _recent_context_for_retrieval(messages: List[Dict], max_user: int = 3, max_c
         if isinstance(content, list):
             content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
         content = (content or "").strip()
-        # Skip injected tool-result envelopes — role=user but not human intent.
-        if not content or content.startswith("[Tool execution results]"):
+        # Skip injected envelopes — role=user but not human intent. Tool results
+        # are now wrapped via untrusted_context_message (metadata.trusted=False);
+        # keep the legacy "[Tool execution results]" prefix for older histories.
+        meta = msg.get("metadata") or {}
+        if not content or meta.get("trusted") is False or content.startswith("[Tool execution results]"):
             continue
         collected.append(content)
         if len(collected) >= max_user:
@@ -863,7 +883,7 @@ def _build_system_prompt(
                 # matter how often it's been matched and applied.
                 for _sk in relevant_skills:
                     try:
-                        sm.record_use(_sk.get('name', ''), owner=owner)
+                        sm.record_use(_sk.get('name', ''))
                     except Exception:
                         pass
                 lines.append("## Relevant skills for this request")
@@ -1160,8 +1180,14 @@ def _append_tool_results(
         if round_reasoning:
             msg["reasoning_content"] = round_reasoning
         messages.append(msg)
+        # Tool output (shell/python stdout, file reads, fetched pages, email
+        # bodies, MCP results) is sourced from outside the server. Wrap it as
+        # untrusted data so prompt-injection inside a tool result is treated as
+        # data, not instructions — same hardening as skills (#788) and the
+        # web/RAG context. THREAT_MODEL.md lists tool output as a surface that
+        # must go through untrusted_context_message.
         messages.append(
-            {"role": "user", "content": f"[Tool execution results]\n\n{tool_output_text}"}
+            untrusted_context_message("tool execution results", tool_output_text)
         )
 
 
@@ -1315,30 +1341,6 @@ async def _run_verifier_subagent(
     return [r.strip() for r in reasons.split(";") if r.strip()]
 
 
-def _empty_response_fallback(
-    full_response: str,
-    round_reasoning: str,
-    tool_events: list,
-) -> tuple:
-    """Return (final_response, sse_chunk_or_none) for the end-of-loop empty-response guard.
-
-    When a thinking model routes all tokens to reasoning_content (leaving
-    content=""), full_response is empty but round_reasoning has content.
-    The reasoning was already streamed as {thinking:true} chunks — do not
-    re-emit it as a normal delta.  Just persist it and yield nothing.
-
-    Returns:
-        (final_response: str, chunk: str | None)
-            chunk is the SSE string to yield, or None if nothing should be emitted.
-    """
-    if full_response.strip() or tool_events:
-        return full_response, None
-    if round_reasoning.strip():
-        return round_reasoning, None
-    _error_msg = "The model returned an empty response. Please try again or switch to a different model."
-    return _error_msg, f'data: {json.dumps({"delta": _error_msg})}\n\n'
-
-
 async def stream_agent_loop(
     endpoint_url: str,
     model: str,
@@ -1357,6 +1359,7 @@ async def stream_agent_loop(
     relevant_tools: Optional[Set[str]] = None,
     fallbacks: Optional[List[tuple]] = None,
     _is_teacher_run: bool = False,
+    crew_ctx: Optional[dict] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -1377,6 +1380,13 @@ async def stream_agent_loop(
         disabled_tools.update(public_blocked_tools)
         # MCP tools are namespaced dynamically, so hide all MCP schemas for
         # public/non-admin users rather than trying to enumerate every tool.
+        mcp_mgr = None
+    # Read-only crew role: reuse the same disable mechanism to hide ALL MCP
+    # schemas so the worker is offered no MCP tool and genuinely never trips the
+    # approval gate. Only when crew_ctx says this is a read-only role; a
+    # write-mode crew keeps MCP available (the approval gate is the control
+    # there). No effect when crew_ctx is None — normal behavior is preserved.
+    if crew_ctx and not crew_ctx.get("gate_writes", False):
         mcp_mgr = None
 
     _t0 = time.time()
@@ -1494,9 +1504,18 @@ async def stream_agent_loop(
     _model_no_tools = any(kw in _model_lc for kw in (
         "deepseek-r1",
     ))
+    # Native Ollama endpoints (/api/chat) handle tool schemas differently from
+    # the OpenAI-compat path. Models like gemma4, qwen3.5, ministral respond to
+    # tool schemas by emitting a single native tool_call token then stopping,
+    # rather than writing a fenced block — the agent loop sees 1 token and no
+    # recognised tool, so the round terminates immediately (issue #1567).
+    # Unless the endpoint is explicitly marked supports_tools=True by the user
+    # (via the endpoint settings toggle), treat Ollama-native as text-only so
+    # the fenced-block path is used instead of native function calling.
+    _is_ollama_native = _is_ollama_native_url(endpoint_url or "")
     if _endpoint_supports is True:
         _is_api_model = True
-    elif _endpoint_supports is False or _model_no_tools:
+    elif _endpoint_supports is False or _model_no_tools or _is_ollama_native:
         _is_api_model = False
     else:
         _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
@@ -1512,23 +1531,13 @@ async def stream_agent_loop(
     _t3 = time.time()
     try:
         from src.context_compactor import trim_for_context
-        from src.context_budget import compute_input_token_budget, DEFAULT_HARD_MAX
+        from src.context_budget import compute_input_token_budget
         from src.settings import is_setting_overridden
 
         soft_budget = int(get_setting("agent_input_token_budget", 6000) or 0)
         if soft_budget > 0:
             before_trim_tokens = estimate_tokens(messages)
             reserve_tokens = min(max(max_tokens or 1024, 512), 2048)
-            # Honour the configurable ceiling for the auto-derived budget path.
-            # No-op when the user has an explicit `agent_input_token_budget`
-            # (that branch ignores hard_max). Falls back to DEFAULT_HARD_MAX
-            # on missing/malformed values so misconfig can't zero the budget.
-            try:
-                hard_max = int(get_setting("agent_input_token_hard_max", DEFAULT_HARD_MAX) or DEFAULT_HARD_MAX)
-            except (TypeError, ValueError):
-                hard_max = DEFAULT_HARD_MAX
-            if hard_max <= 0:
-                hard_max = DEFAULT_HARD_MAX
             # Scale the default budget to the model's context window so long-context
             # models aren't silently capped at 6000; an explicit user setting is
             # still honoured (clamped to the window). (#1170)
@@ -1536,7 +1545,6 @@ async def stream_agent_loop(
                 soft_budget,
                 context_length,
                 is_setting_overridden("agent_input_token_budget"),
-                hard_max=hard_max,
             )
             trimmed_messages = trim_for_context(
                 messages,
@@ -2081,7 +2089,21 @@ async def stream_agent_loop(
                 yield (
                     f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": round_num, **evt})}\n\n'
                 )
-            desc, result = await _tool_task
+            # Cancel-on-close: if the parent stream is torn down (crew wall-clock
+            # deadline cancel, user stop -> GeneratorExit/CancelledError), CANCEL
+            # the in-flight tool task and AWAIT it before re-raising — otherwise
+            # the abandoned task's bash/python subprocess keeps running (up to the
+            # tool timeout). The subprocess's own CancelledError finally then kills
+            # the child.
+            try:
+                desc, result = await _tool_task
+            except (asyncio.CancelledError, GeneratorExit):
+                _tool_task.cancel()
+                try:
+                    await _tool_task
+                except BaseException:
+                    pass
+                raise
 
             # Extract structured web sources from web_search tool output.
             # web_search returns {"output": ..., "exit_code": 0}; check "output"
@@ -2168,6 +2190,8 @@ async def stream_agent_loop(
 
             # Emit tool_output (include ui_event data if present)
             tool_output_data = {"type": "tool_output", "tool": block.tool_type, "command": cmd_display, "output": output_text, "exit_code": result.get("exit_code")}
+            if "diff" in result:
+                tool_output_data["diff"] = result["diff"]
             if "ui_event" in result:
                 tool_output_data["ui_event"] = result["ui_event"]
                 for k in ("toggle_name", "state", "mode", "model", "endpoint_url", "theme_name", "colors"):
@@ -2250,11 +2274,10 @@ async def stream_agent_loop(
 
     # If the response is completely empty and no tools were executed,
     # yield a fallback message so the user is not left hanging.
-    full_response, _fallback_chunk = _empty_response_fallback(
-        full_response, round_reasoning, tool_events
-    )
-    if _fallback_chunk:
-        yield _fallback_chunk
+    if not full_response.strip() and not tool_events:
+        _error_msg = "The model returned an empty response. Please try again or switch to a different model."
+        yield f'data: {json.dumps({"delta": _error_msg})}\n\n'
+        full_response = _error_msg
 
     # --- Final metrics ---
     total_duration = time.time() - total_start

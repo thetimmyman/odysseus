@@ -69,8 +69,6 @@ _TOOL_CODE_RE = re.compile(
 # fullwidth (U+FF5C) and ascii '|' in any count.
 _DSML_PIPES = r"[｜|]+"
 def _normalize_dsml(text: str) -> str:
-    if not isinstance(text, str):
-        return ""
     if "DSML" not in text:
         return text
     t = text

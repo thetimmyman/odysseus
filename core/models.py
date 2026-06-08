@@ -52,6 +52,7 @@ class Session:
     headers: Optional[Dict[str, str]] = None
     history: List[ChatMessage] = None
     owner: Optional[str] = None
+    project_root: Optional[str] = None
     is_important: bool = False
     message_count: int = 0
 

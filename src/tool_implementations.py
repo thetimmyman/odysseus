@@ -88,31 +88,9 @@ def get_active_document():
     return _active_document_id
 
 
-def clear_active_document(doc_id: Optional[str] = None) -> bool:
-    """Clear the in-memory active-document pointer.
-
-    With ``doc_id`` given, only clears when it matches the current pointer, so a
-    different active document is left untouched. Returns True if it was cleared.
-
-    Called when a document is detached from its session or deleted (its tab is
-    closed): without this, the stale pointer makes the last-resort doc-injection
-    path re-surface a closed document in a later, unrelated chat — even one whose
-    session no longer matches — because an unlinked doc has session_id NULL (#1160).
-    """
-    global _active_document_id
-    if doc_id is None or _active_document_id == doc_id:
-        _active_document_id = None
-        return True
-    return False
-
-
 def _owned_document_query(query, Document, owner: Optional[str]):
     if owner is None:
-        # A bare Python `False` is not a valid SQL expression — SQLAlchemy 1.4
-        # deprecates it and 2.0 raises ArgumentError. Use the SQL `false()`
-        # literal to return zero rows for an unscoped (owner-less) query.
-        from sqlalchemy import false
-        return query.filter(false())
+        return query.filter(False)
     return query.filter(Document.owner == owner)
 
 
@@ -910,9 +888,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 )
 
             task_id = str(_uuid.uuid4())
-            # Guard each fallback with `or`: args.get("prompt", default) returns
-            # None when the key is present but null, and None[:50] raises.
-            name = args.get("name") or (args.get("prompt") or args.get("action_name") or "Task")[:50]
+            name = args.get("name") or args.get("prompt", args.get("action_name", "Task"))[:50]
 
             task = ScheduledTask(
                 id=task_id,
@@ -1215,17 +1191,7 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
             try:
                 srv = db2.query(McpServer).filter(McpServer.id == sid).first()
                 if srv:
-                    _args = json.loads(srv.args) if srv.args else []
-                    _env = json.loads(srv.env) if srv.env else {}
-                    await mcp.connect_server(
-                        server_id=sid,
-                        name=srv.name,
-                        transport=srv.transport,
-                        command=srv.command,
-                        args=_args,
-                        env=_env,
-                        url=srv.url,
-                    )
+                    await mcp.connect_server(sid)
                     st = mcp.get_server_status(sid)
                     return {"response": f"Reconnected '{srv.name}' ({st.get('tool_count', 0)} tools)", "exit_code": 0}
                 return {"error": f"Server {sid} not found", "exit_code": 1}
@@ -1537,14 +1503,7 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             "tavily_api_key", "serper_api_key", "app_public_url",
         }
         def _is_secret(k):
-            # `token` must be a suffix, not a substring: otherwise the int
-            # setting `agent_input_token_budget` (which even has a "token budget"
-            # alias to set it from chat) is wrongly classified as a credential.
-            return (
-                k in _SECRET_KEYS
-                or k.endswith("token")
-                or any(t in k for t in ("api_key", "_key", "secret", "password"))
-            )
+            return k in _SECRET_KEYS or any(t in k for t in ("api_key", "_key", "token", "secret", "password"))
 
         # Friendly aliases → real keys, so natural phrasing resolves.
         _ALIASES_SET = {
@@ -1567,10 +1526,7 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             "ntfy topic": "reminder_ntfy_topic",
             "agent tool calls": "agent_max_tool_calls", "max tool calls": "agent_max_tool_calls",
             "agent timeout": "agent_stream_timeout_seconds", "stream timeout": "agent_stream_timeout_seconds",
-            "token budget": "agent_input_token_budget", "input budget": "agent_input_token_budget",
-            "hard max": "agent_input_token_hard_max",
-            "token budget cap": "agent_input_token_hard_max",
-            "input budget cap": "agent_input_token_hard_max",
+            "token budget": "agent_input_token_budget",
         }
         def _resolve(k):
             k2 = (k or "").strip().lower()
@@ -4104,9 +4060,7 @@ async def do_vault_unlock(content: str, owner: Optional[str] = None) -> Dict:
     if not master_password:
         return {"error": "master_password is required", "exit_code": 1}
 
-    # Do not pass the master password as an argv element. Local process lists
-    # can expose argv to other users; stdin keeps the secret out of `ps`.
-    stdout, stderr, rc = await _run_bw(["unlock", "--raw"], input_text=master_password + "\n")
+    stdout, stderr, rc = await _run_bw(["unlock", master_password, "--raw"])
     if rc != 0:
         return {"error": f"Unlock failed: {stderr[:300]}", "exit_code": 1}
 
@@ -4134,3 +4088,703 @@ async def do_vault_unlock(content: str, owner: Optional[str] = None) -> Dict:
         pass
 
     return {"output": "Vault unlocked. Session saved.", "exit_code": 0}
+
+
+# ---------------------------------------------------------------------------
+# Filesystem edit_file / revert_file (surgical find/replace on disk files)
+# Added by PersonalOS: gives the agent a path to edit PART of a file (vs the
+# whole-file write_file) and surfaces a diff + .bak backup so changes are
+# reviewable and reversible. Reuses parse_edit_blocks() (FIND/REPLACE blocks).
+# ---------------------------------------------------------------------------
+async def do_edit_file(content: str, owner: Optional[str] = None, session_id: Optional[str] = None) -> Dict:
+    """Apply targeted FIND/REPLACE edits to a file on disk.
+
+    `content`: first line = path; remainder = one or more
+    <<<FIND>>>...<<<REPLACE>>>...<<<END>>> blocks. Each FIND must match the
+    current file content EXACTLY and UNIQUELY — zero or multiple matches are
+    REFUSED (file untouched) rather than guessed. Writes <path>.bak before
+    changing the file and returns a unified diff of the change.
+    """
+    import os as _os
+    import shutil as _shutil
+    import difflib as _difflib
+    from src.tool_execution import _resolve_tool_path
+
+    lines = content.split("\n", 1)
+    raw_path = lines[0].strip()
+    body = lines[1] if len(lines) > 1 else ""
+    if not raw_path:
+        return {"error": "edit_file: path is required (first line)", "exit_code": 1}
+    try:
+        path = _resolve_tool_path(raw_path, session_id, owner)
+    except ValueError as e:
+        return {"error": f"edit_file: {e}", "exit_code": 1}
+
+    edits = parse_edit_blocks(body)
+    if not edits:
+        return {"error": "edit_file: no <<<FIND>>>...<<<REPLACE>>>...<<<END>>> blocks found", "exit_code": 1}
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return {"error": f"edit_file: {path}: not found (use write_file to create it)", "exit_code": 1}
+    except OSError as e:
+        return {"error": f"edit_file: {path}: {e}", "exit_code": 1}
+
+    updated = original
+    applied = 0
+    failures = []
+    for idx, edit in enumerate(edits, 1):
+        find = edit["find"]
+        repl = edit["replace"]
+        if find == "":
+            failures.append(f"edit {idx}: empty FIND block")
+            continue
+        n = updated.count(find)
+        if n == 1:
+            updated = updated.replace(find, repl, 1)
+            applied += 1
+            continue
+        if n > 1:
+            failures.append(f"edit {idx}: FIND matched {n} places — add more surrounding context so it is unique")
+            continue
+        # Proven-safe fallback: weak models sometimes copy the "<n>\t" line-number
+        # gutter shown in context into FIND. Strip it; only use if it then matches
+        # exactly once (never corrupt a legitimately tab-prefixed file).
+        stripped = "\n".join(re.sub(r"^\d+\t", "", _l) for _l in find.split("\n"))
+        if stripped != find and updated.count(stripped) == 1:
+            updated = updated.replace(stripped, repl, 1)
+            applied += 1
+            continue
+        failures.append(f"edit {idx}: FIND not found: {find[:60]!r}")
+
+    if applied == 0:
+        return {"error": "edit_file: no edits applied — " + "; ".join(failures), "exit_code": 1}
+
+    bak = path + ".bak"
+    try:
+        if not _os.path.exists(bak):
+            _shutil.copyfile(path, bak)  # baseline = state before the FIRST edit
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+    except OSError as e:
+        return {"error": f"edit_file: write failed: {e}", "exit_code": 1}
+
+    diff = "".join(_difflib.unified_diff(
+        original.splitlines(keepends=True),
+        updated.splitlines(keepends=True),
+        fromfile=f"a/{_os.path.basename(path)}",
+        tofile=f"b/{_os.path.basename(path)}",
+    ))
+    diff_capped = diff if len(diff) <= 6000 else diff[:6000] + "\n... (diff truncated)"
+    summary = f"Edited {path} — {applied} change(s) applied"
+    if failures:
+        summary += f", {len(failures)} skipped"
+    note = ("\nSkipped: " + "; ".join(failures)) if failures else ""
+    return {
+        "output": summary + note + "\n\n" + diff_capped,
+        "exit_code": 0,
+        "action": "edit_file",
+        "path": path,
+        "applied": applied,
+        "skipped": len(failures),
+        "diff": diff,
+        "backup": bak,
+    }
+
+
+async def do_revert_file(content: str, owner: Optional[str] = None, session_id: Optional[str] = None) -> Dict:
+    """Undo the last edit_file change by restoring <path>.bak."""
+    import os as _os
+    import difflib as _difflib
+    from src.tool_execution import _resolve_tool_path
+
+    raw_path = content.split("\n", 1)[0].strip()
+    if not raw_path:
+        return {"error": "revert_file: path is required", "exit_code": 1}
+    try:
+        path = _resolve_tool_path(raw_path, session_id, owner)
+    except ValueError as e:
+        return {"error": f"revert_file: {e}", "exit_code": 1}
+    bak = path + ".bak"
+    if not _os.path.exists(bak):
+        return {"error": f"revert_file: no backup found for {path} (nothing to revert)", "exit_code": 1}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cur = f.read()
+    except OSError:
+        cur = ""
+    try:
+        with open(bak, "r", encoding="utf-8") as f:
+            prev = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(prev)
+        _os.remove(bak)  # consume the baseline; next edit starts a fresh one
+    except OSError as e:
+        return {"error": f"revert_file: {e}", "exit_code": 1}
+    diff = "".join(_difflib.unified_diff(
+        cur.splitlines(keepends=True),
+        prev.splitlines(keepends=True),
+        fromfile=f"a/{_os.path.basename(path)}",
+        tofile=f"b/{_os.path.basename(path)}",
+    ))
+    return {
+        "output": f"Reverted {path} to backup ({len(prev)} bytes)\n\n" + diff,
+        "exit_code": 0,
+        "action": "edit_file",
+        "path": path,
+        "diff": diff,
+        "applied": 1,
+    }
+
+
+async def do_set_project(content: str, session_id=None, owner=None) -> Dict:
+    """Set this session's active project root. bash/python then run with this
+    directory as cwd, and read_file/write_file/edit_file may operate inside it
+    in addition to the normal data/temp roots. Persists across turns for this
+    session. Path must already exist and be a directory."""
+    import os as _os
+    from src.tool_execution import _is_sensitive_path
+    path = (content or "").strip()
+    if not session_id:
+        return {"error": "set_project: no session context", "exit_code": 1}
+    if not path:
+        return {"error": "set_project: path is required", "exit_code": 1}
+    resolved = _os.path.realpath(_os.path.expanduser(path))
+    if not _os.path.isdir(resolved):
+        return {"error": f"set_project: '{path}' is not an existing directory", "exit_code": 1}
+    if _is_sensitive_path(resolved):
+        return {"error": f"set_project: '{path}' is inside a sensitive directory", "exit_code": 1}
+    from core.models import _session_manager as sm
+    if sm is None:
+        return {"error": "set_project: session manager unavailable", "exit_code": 1}
+    sess = sm.sessions.get(session_id) or sm.get_session(session_id)
+    if sess is None:
+        return {"error": "set_project: session not found", "exit_code": 1}
+    if sess.owner is not None and owner is not None and sess.owner != owner:
+        return {"error": "set_project: not your session", "exit_code": 1}
+    sm.set_session_project_root(session_id, resolved)
+    return {"project_root": resolved, "exit_code": 0, "output": f"Project root set to {resolved}"}
+
+
+async def do_get_project(content: str, session_id=None, owner=None) -> Dict:
+    """Return this session's active project root, or null if none is set."""
+    if not session_id:
+        return {"error": "get_project: no session context", "exit_code": 1}
+    from core.models import _session_manager as sm
+    if sm is None:
+        return {"project_root": None, "exit_code": 0}
+    sess = sm.sessions.get(session_id) or sm.get_session(session_id)
+    if sess is None:
+        return {"project_root": None, "exit_code": 0}
+    if sess.owner is not None and owner is not None and sess.owner != owner:
+        return {"error": "get_project: not your session", "exit_code": 1}
+    pr = getattr(sess, "project_root", None)
+    return {"project_root": pr, "exit_code": 0, "output": f"Project root: {pr or '(none)'}"}
+
+# ---------------------------------------------------------------------------
+# Read-only code-search tools (search_files / find_files / list_dir)
+# Added by PersonalOS: give the agent structured, confined repo exploration
+# (a grep, a glob, and a directory listing) WITHOUT having to shell out.
+# All three reuse the SAME confinement primitives as read_file/edit_file:
+#   - _resolve_tool_path()   confines a path to DATA_DIR + /tmp + the
+#                            session's project_root + tool_path_extra_roots,
+#                            resolving symlinks so an escape can't slip past.
+#   - _is_sensitive_path()   denies .app_key / sessions.json / user_prefs.json
+#                            / api_tokens.json / app.db / scheduled_emails.db
+#                            (+ sidecars) and .ssh/.gnupg/etc. across EVERY
+#                            entry we would list, match, or return.
+#   - _get_session_project_root() default search root = this session's project.
+# Output is hard-capped (matches, line length, total bytes) so a search can
+# never flood the model context. search_files prefers ripgrep (argv, never
+# shell=True) and falls back to a timeout-guarded Python `re` scan.
+# ---------------------------------------------------------------------------
+
+# Hard caps — keep a single search/listing from blowing the context window.
+_SEARCH_MAX_MATCHES = 200       # stop after this many file:line:text hits
+_SEARCH_MAX_LINE_LEN = 300      # truncate any single matched line to this
+_SEARCH_MAX_TOTAL_BYTES = 50_000  # total output ceiling
+_SEARCH_MAX_FILE_BYTES = 5_000_000  # skip files larger than this (Python path)
+_FIND_MAX_RESULTS = 500         # cap glob results
+_LIST_MAX_ENTRIES = 1000        # cap list_dir entries
+_SEARCH_TIMEOUT_S = 20          # wall-clock ceiling (regex backtracking guard)
+
+# Directories we never descend into — VCS metadata + the usual heavy junk.
+_SEARCH_SKIP_DIRS = {
+    ".git", ".hg", ".svn", "node_modules", "__pycache__",
+    ".venv", "venv", "env", "site-packages", ".mypy_cache",
+    ".pytest_cache", ".tox", ".ruff_cache", ".cache",
+    ".idea", ".vscode", "dist", "build", ".next", ".gradle",
+    "target",
+}
+
+
+def _glob_match(rel_path: str, basename: str, pattern: str) -> bool:
+    """Glob-match a file the way an agent expects.
+
+    - A pattern with no '/' (e.g. '*.py', 'test_*.py') matches the BASENAME at
+      ANY depth (so `find_files *.py` finds every .py in the tree).
+    - A pattern containing '/' or '**' is matched against the path RELATIVE to
+      the search root via pathlib semantics (so '**/*.py', 'src/*.py' work).
+    """
+    import fnmatch as _fnmatch
+    import pathlib as _pathlib
+    if "/" not in pattern:
+        return _fnmatch.fnmatch(basename, pattern)
+    try:
+        if _pathlib.PurePath(rel_path).match(pattern):
+            return True
+    except (ValueError, TypeError):
+        pass
+    # '**/' prefix should also match a top-level file: strip it and retry.
+    if pattern.startswith("**/"):
+        tail = pattern[3:]
+        if "/" not in tail and _fnmatch.fnmatch(basename, tail):
+            return True
+    return False
+
+
+def _looks_binary(chunk: bytes) -> bool:
+    """Heuristic: a NUL byte in the first chunk => treat as binary, skip it."""
+    return b"\x00" in chunk
+
+
+# Single line longer than this is truncated BEFORE matching — a pathological
+# regex like (a+)+$ against a multi-KB line is the actual DoS vector, so we
+# never feed the matcher an unbounded line.
+_SEARCH_MAX_MATCH_LINE_LEN = 2000
+
+# The third-party `regex` module supports a per-call match timeout
+# (regex.search(..., timeout=...) raises the BUILTIN TimeoutError), which is
+# PREEMPTIVE — unlike stdlib `re`, whose backtracking can pin a core with no
+# way to interrupt it between calls. We prefer it for the Python fallback scan
+# so a single hostile line can't run past the wall-clock deadline. If `regex`
+# is unavailable we fall back to stdlib `re`, where the per-line truncation
+# below (lines > _SEARCH_MAX_MATCH_LINE_LEN are clipped before matching) is the
+# backtracking guard. (`regex` is present in this image, so it is the live
+# path.)
+try:
+    import regex as _regex_mod  # type: ignore
+except Exception:  # pragma: no cover - import guard
+    _regex_mod = None
+
+
+def _resolve_search_root(raw_root, session_id, owner):
+    """Resolve the directory a search/listing should operate under.
+
+    These bulk tools are confined to the SESSION'S OWN project_root ONLY —
+    NOT the broad read_file roots (DATA_DIR + /tmp + extra roots). A bulk
+    grep/glob/listing over DATA_DIR would expose every user's auth.json,
+    settings.json, etc.; confining to project_root keeps a session inside its
+    own workspace.
+
+    Empty/'.'/None  => the session's project_root (refuse if unset).
+    Explicit dir    => resolved (relative paths are joined onto project_root)
+                       and REQUIRED to be inside project_root.
+    Returns (resolved_dir, error_str). On error, resolved_dir is None.
+    """
+    import os as _os
+    from src.tool_execution import (
+        _get_session_project_root, _is_sensitive_path,
+    )
+    proj = _get_session_project_root(session_id, owner)
+    if not proj:
+        return None, ("no project root set for this session — call set_project "
+                      "first (these tools only search within your project)")
+    raw = (raw_root or "").strip()
+    if raw in ("", ".", "./"):
+        return proj, None
+    # Explicit path: resolve (joining relatives onto project_root) and REQUIRE
+    # it to be inside project_root. No fall-back to DATA_DIR / /tmp.
+    expanded = _os.path.expanduser(raw)
+    candidate = expanded if _os.path.isabs(expanded) else _os.path.join(proj, expanded)
+    resolved = _os.path.realpath(candidate)
+    if resolved != proj:
+        try:
+            if _os.path.commonpath([resolved, proj]) != proj:
+                return None, f"'{raw}' is outside the project root"
+        except ValueError:
+            return None, f"'{raw}' is outside the project root"
+    if not _os.path.isdir(resolved):
+        return None, f"'{raw}' is not a directory"
+    if _is_sensitive_path(resolved):
+        return None, f"'{raw}' is inside a sensitive directory"
+    return resolved, None
+
+
+async def do_search_files(content: str, owner=None, session_id=None) -> Dict:
+    """Search for a regex/string across files under a directory (a grep).
+
+    `content` is JSON: {"pattern": "...", "dir": "<optional>",
+    "glob": "*.py" (optional), "ignore_case": false (optional),
+    "fixed": false (optional, treat pattern as a literal string)}.
+    Returns capped file:line:text matches. Prefers ripgrep (argv, never a
+    shell); falls back to a timeout-guarded Python scan. Default dir = the
+    session's project root. Sensitive files are never searched or returned.
+    """
+    import os as _os
+    import re as _re
+    import json as _json
+    import shutil as _shutil
+    import subprocess as _subprocess
+    from src.tool_execution import _is_sensitive_path
+
+    try:
+        args = _json.loads(content) if content and content.strip().startswith("{") else {}
+    except (ValueError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    pattern = str(args.get("pattern") or args.get("query") or "").strip()
+    if not pattern:
+        return {"error": "search_files: 'pattern' is required (JSON: {\"pattern\": \"...\"})", "exit_code": 1}
+    glob_pat = str(args.get("glob") or "").strip()
+    ignore_case = bool(args.get("ignore_case"))
+    fixed = bool(args.get("fixed") or args.get("literal"))
+
+    root, err = _resolve_search_root(args.get("dir") or args.get("path") or args.get("root"), session_id, owner)
+    if err:
+        return {"error": f"search_files: {err}", "exit_code": 1}
+
+    # Validate the regex up front (Python path needs it; rg path benefits from
+    # a clear error) — never feed an unvalidated pattern downstream.
+    if not fixed:
+        try:
+            compiled = _re.compile(pattern, _re.IGNORECASE if ignore_case else 0)
+        except _re.error as e:
+            return {"error": f"search_files: invalid regex: {e}", "exit_code": 1}
+    else:
+        compiled = None
+
+    def _blocking_search():
+        matches = []
+        total = 0
+        truncated = False
+        rg = _shutil.which("rg")
+        # ---- ripgrep path (preferred): argv only, never shell=True ----
+        if rg:
+            cmd = [
+                rg, "--line-number", "--no-heading", "--color", "never",
+                "--no-follow", "--no-config",
+                "--max-count", str(_SEARCH_MAX_MATCHES),
+                "--max-columns", str(_SEARCH_MAX_LINE_LEN),
+            ]
+            for d in sorted(_SEARCH_SKIP_DIRS):
+                cmd += ["--glob", f"!{d}/**", "--glob", f"!**/{d}/**"]
+            if glob_pat:
+                cmd += ["--glob", glob_pat]
+            if ignore_case:
+                cmd.append("--ignore-case")
+            if fixed:
+                cmd.append("--fixed-strings")
+            cmd += ["--", pattern, root]
+            try:
+                proc = _subprocess.run(
+                    cmd, cwd=root, capture_output=True, text=True,
+                    timeout=_SEARCH_TIMEOUT_S, shell=False,
+                )
+            except _subprocess.TimeoutExpired:
+                return None, True, "ripgrep timed out (pattern too expensive)"
+            # rg exit 1 = no matches (not an error); >1 = real error.
+            if proc.returncode not in (0, 1):
+                # Fall through to the Python scan rather than failing hard.
+                rg = None
+            else:
+                for line in proc.stdout.splitlines():
+                    if len(matches) >= _SEARCH_MAX_MATCHES or total >= _SEARCH_MAX_TOTAL_BYTES:
+                        truncated = True
+                        break
+                    # rg output: <path>:<lineno>:<text>
+                    head = line.split(":", 2)
+                    fpath = head[0] if head else line
+                    try:
+                        rp = _os.path.realpath(fpath)
+                    except OSError:
+                        continue
+                    # Symlink-escape guard: rg output is model-influenceable
+                    # (and a symlink can resolve out of root). Re-confine to
+                    # root the same way the Python branch does — BEFORE we ever
+                    # surface the hit or read the path's contents.
+                    try:
+                        outside = (rp != root and _os.path.commonpath([rp, root]) != root)
+                    except ValueError:
+                        outside = True
+                    if outside:
+                        continue
+                    if _is_sensitive_path(rp):
+                        continue  # never surface a sensitive file's contents
+                    rel = _os.path.relpath(rp, root)
+                    rest = (":" + head[1] + ":" + head[2]) if len(head) == 3 else (":" + ":".join(head[1:]))
+                    out_line = rel + rest
+                    if len(out_line) > _SEARCH_MAX_LINE_LEN:
+                        out_line = out_line[:_SEARCH_MAX_LINE_LEN] + " …"
+                    matches.append(out_line)
+                    total += len(out_line) + 1
+                return (matches, truncated, None)
+        # ---- Python fallback: PREEMPTIVELY timeout-guarded scan ----
+        # The `re` module's deadline can only be checked BETWEEN calls, so a
+        # single re.search() on a pathological pattern pins a core forever.
+        # When the `regex` module is present we compile with it and pass a
+        # per-call timeout so the matcher itself raises on a runaway line.
+        import time as _time
+        deadline = _time.monotonic() + _SEARCH_TIMEOUT_S
+        rx = None
+        if not fixed and _regex_mod is not None:
+            try:
+                rx = _regex_mod.compile(
+                    pattern, _regex_mod.IGNORECASE if ignore_case else 0
+                )
+            except Exception:
+                rx = None  # fall back to the pre-validated stdlib `compiled`
+
+        def _line_hits(line):
+            """Match one line, preemptively bounded. Lines longer than
+            _SEARCH_MAX_MATCH_LINE_LEN are truncated BEFORE matching so a
+            hostile regex can't backtrack over an unbounded buffer."""
+            if len(line) > _SEARCH_MAX_MATCH_LINE_LEN:
+                line = line[:_SEARCH_MAX_MATCH_LINE_LEN]
+            if fixed:
+                return pattern in line
+            if rx is not None:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("search deadline exceeded")
+                # The `regex` module raises the BUILTIN TimeoutError on timeout
+                # (it has no regex.TimeoutError attribute) — let it propagate;
+                # the caller treats TimeoutError as "deadline hit, stop here".
+                return bool(rx.search(line, timeout=remaining))
+            # No `regex` module: stdlib `re` (deadline checked between lines
+            # only — the truncation above is the backtracking guard here).
+            return bool(compiled.search(line))
+
+        for dirpath, dirnames, filenames in _os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SEARCH_SKIP_DIRS]
+            for fn in filenames:
+                if _time.monotonic() > deadline:
+                    return matches, True, None
+                if len(matches) >= _SEARCH_MAX_MATCHES or total >= _SEARCH_MAX_TOTAL_BYTES:
+                    truncated = True
+                    return matches, truncated, None
+                fpath = _os.path.join(dirpath, fn)
+                try:
+                    rp = _os.path.realpath(fpath)
+                except OSError:
+                    continue
+                # Symlink-escape guard: realpath must still be under root.
+                if rp != root and _os.path.commonpath([rp, root]) != root:
+                    continue
+                if _is_sensitive_path(rp):
+                    continue
+                if glob_pat:
+                    _rel_for_glob = _os.path.relpath(rp, root)
+                    if not _glob_match(_rel_for_glob, fn, glob_pat):
+                        continue
+                try:
+                    if _os.path.getsize(rp) > _SEARCH_MAX_FILE_BYTES:
+                        continue
+                except OSError:
+                    continue
+                rel = _os.path.relpath(rp, root)
+                # Stream the file line-by-line instead of read()+splitlines():
+                # never materialize the whole (up to 5MB) file in RAM.
+                try:
+                    with open(rp, "rb") as fh:
+                        # 4096-byte binary sniff, then rewind and stream lines.
+                        head_bytes = fh.read(4096)
+                        if _looks_binary(head_bytes):
+                            continue
+                        fh.seek(0)
+                        lineno = 0
+                        for raw_line in fh:
+                            lineno += 1
+                            if _time.monotonic() > deadline:
+                                return matches, True, None
+                            line = raw_line.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
+                            try:
+                                hit = _line_hits(line)
+                            except TimeoutError:
+                                return matches, True, None
+                            if not hit:
+                                continue
+                            snippet = line if len(line) <= _SEARCH_MAX_LINE_LEN else line[:_SEARCH_MAX_LINE_LEN] + " …"
+                            out_line = f"{rel}:{lineno}:{snippet}"
+                            matches.append(out_line)
+                            total += len(out_line) + 1
+                            if len(matches) >= _SEARCH_MAX_MATCHES or total >= _SEARCH_MAX_TOTAL_BYTES:
+                                return matches, True, None
+                except OSError:
+                    continue
+        return matches, truncated, None
+
+    import asyncio as _asyncio
+    try:
+        matches, truncated, err2 = await _asyncio.to_thread(_blocking_search)
+    except Exception as e:
+        return {"error": f"search_files: {e}", "exit_code": 1}
+    if err2:
+        return {"error": f"search_files: {err2}", "exit_code": 1}
+
+    if not matches:
+        return {"output": f"No matches for {pattern!r} under {root}", "exit_code": 0, "match_count": 0}
+    body = "\n".join(matches)
+    note = f"\n... (truncated at {len(matches)} matches / caps reached)" if truncated else ""
+    header = f"{len(matches)} match(es) for {pattern!r} under {root}:\n"
+    return {"output": header + body + note, "exit_code": 0, "match_count": len(matches), "truncated": truncated}
+
+
+async def do_find_files(content: str, owner=None, session_id=None) -> Dict:
+    """Find files matching a glob pattern under a directory (a glob).
+
+    `content` is JSON: {"glob": "**/*.py", "dir": "<optional>"}.
+    Returns capped relative paths. Default dir = the session's project root.
+    Sensitive files and the usual junk dirs are skipped. Symlink escapes are
+    re-checked against the root after realpath resolution.
+    """
+    import os as _os
+    import json as _json
+    import fnmatch as _fnmatch
+    from src.tool_execution import _is_sensitive_path
+
+    try:
+        args = _json.loads(content) if content and content.strip().startswith("{") else {}
+    except (ValueError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    pattern = str(args.get("glob") or args.get("pattern") or "").strip()
+    if not pattern:
+        return {"error": "find_files: 'glob' is required (JSON: {\"glob\": \"**/*.py\"})", "exit_code": 1}
+
+    root, err = _resolve_search_root(args.get("dir") or args.get("path") or args.get("root"), session_id, owner)
+    if err:
+        return {"error": f"find_files: {err}", "exit_code": 1}
+
+    def _blocking_find():
+        results = []
+        truncated = False
+        # Match against the path RELATIVE to root so "**/*.py" and "*.py"
+        # both behave intuitively. fnmatch is platform-stable here.
+        for dirpath, dirnames, filenames in _os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SEARCH_SKIP_DIRS]
+            for fn in filenames:
+                if len(results) >= _FIND_MAX_RESULTS:
+                    truncated = True
+                    return results, truncated
+                fpath = _os.path.join(dirpath, fn)
+                try:
+                    rp = _os.path.realpath(fpath)
+                except OSError:
+                    continue
+                # Symlink-escape guard.
+                if rp != root and _os.path.commonpath([rp, root]) != root:
+                    continue
+                if _is_sensitive_path(rp):
+                    continue
+                rel = _os.path.relpath(rp, root)
+                if _glob_match(rel, fn, pattern):
+                    results.append(rel)
+        return results, truncated
+
+    import asyncio as _asyncio
+    try:
+        results, truncated = await _asyncio.to_thread(_blocking_find)
+    except Exception as e:
+        return {"error": f"find_files: {e}", "exit_code": 1}
+
+    results.sort()
+    if not results:
+        return {"output": f"No files matching {pattern!r} under {root}", "exit_code": 0, "match_count": 0}
+    body = "\n".join(results)
+    note = f"\n... (truncated at {_FIND_MAX_RESULTS} results)" if truncated else ""
+    header = f"{len(results)} file(s) matching {pattern!r} under {root}:\n"
+    return {"output": header + body + note, "exit_code": 0, "match_count": len(results), "truncated": truncated}
+
+
+async def do_list_dir(content: str, owner=None, session_id=None) -> Dict:
+    """List entries of ONE directory (names + dir/file + size).
+
+    `content` is JSON: {"dir": "<optional>"} (or a bare path). Default dir =
+    the session's project root. Sensitive files are never listed. Symlinks
+    are resolved and re-confined to the root.
+    """
+    import os as _os
+    import json as _json
+    from src.tool_execution import _is_sensitive_path
+
+    raw = (content or "").strip()
+    target = raw
+    if raw.startswith("{"):
+        try:
+            args = _json.loads(raw)
+            if isinstance(args, dict):
+                target = str(args.get("dir") or args.get("path") or args.get("root") or "").strip()
+        except (ValueError, TypeError):
+            target = ""
+
+    root, err = _resolve_search_root(target, session_id, owner)
+    if err:
+        return {"error": f"list_dir: {err}", "exit_code": 1}
+
+    def _blocking_list():
+        import stat as _stat
+        rows = []
+        truncated = False
+        try:
+            names = sorted(_os.listdir(root))
+        except OSError as e:
+            return None, str(e), False
+        for name in names:
+            if len(rows) >= _LIST_MAX_ENTRIES:
+                truncated = True
+                break
+            full = _os.path.join(root, name)
+            try:
+                rp = _os.path.realpath(full)
+            except OSError:
+                continue
+            # Symlink-escape guard: a symlink whose target resolves outside
+            # root would otherwise leak the existence + exact size of an
+            # out-of-root file (e.g. a link to /etc/hostname). Re-confine to
+            # root, mirroring search/find — BEFORE the sensitive check.
+            try:
+                outside = (rp != root and _os.path.commonpath([rp, root]) != root)
+            except ValueError:
+                outside = True
+            if outside:
+                continue
+            # Skip anything sensitive — never even reveal its name/size.
+            if _is_sensitive_path(rp):
+                continue
+            # Use lstat/islink so we NEVER follow a symlink for type/size — a
+            # link is reported as a link, not as its (out-of-root) target.
+            try:
+                is_link = _os.path.islink(full)
+                st = _os.lstat(full)
+            except OSError:
+                continue
+            if is_link:
+                rows.append(f"[link] {name} -> (symlink)")
+                continue
+            is_dir = _stat.S_ISDIR(st.st_mode)
+            kind = "dir " if is_dir else "file"
+            if is_dir:
+                rows.append(f"[{kind}] {name}/")
+            else:
+                rows.append(f"[{kind}] {name} ({st.st_size} bytes)")
+        return rows, None, truncated
+
+    import asyncio as _asyncio
+    try:
+        rows, oserr, truncated = await _asyncio.to_thread(_blocking_list)
+    except Exception as e:
+        return {"error": f"list_dir: {e}", "exit_code": 1}
+    if oserr:
+        return {"error": f"list_dir: {root}: {oserr}", "exit_code": 1}
+
+    if not rows:
+        return {"output": f"(empty directory) {root}", "exit_code": 0, "entry_count": 0}
+    note = f"\n... (truncated at {_LIST_MAX_ENTRIES} entries)" if truncated else ""
+    header = f"{len(rows)} entr(ies) in {root}:\n"
+    return {"output": header + "\n".join(rows) + note, "exit_code": 0, "entry_count": len(rows), "truncated": truncated}
+
