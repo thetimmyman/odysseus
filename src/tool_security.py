@@ -16,6 +16,15 @@ NON_ADMIN_BLOCKED_TOOLS = {
     "python",
     "read_file",
     "write_file",
+    # PersonalOS (2026-06-10): fork-added developer/IDE tools - file editing &
+    # project binding are admin-only, same policy as bash/read_file/write_file.
+    "edit_file",
+    "revert_file",
+    "set_project",
+    "get_project",
+    "search_files",
+    "find_files",
+    "list_dir",
     "search_chats",
     "manage_memory",
     "manage_skills",

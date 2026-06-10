@@ -555,7 +555,7 @@ def setup_chat_routes(
             _privs = request.app.state.auth_manager.get_privileges(_user)
         if _privs:
             if not _privs.get("can_use_bash", True):
-                disabled_tools.update({"bash", "python", "read_file", "write_file"})
+                disabled_tools.update({"bash", "python", "read_file", "write_file", "edit_file", "revert_file", "set_project", "get_project", "search_files", "find_files", "list_dir"})  # PersonalOS: + fork IDE tools
             if not _privs.get("can_use_browser", True):
                 disabled_tools.add("builtin_browser")
             if not _privs.get("can_use_documents", True):

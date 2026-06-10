@@ -84,7 +84,8 @@ def _is_sensitive_path(resolved: str) -> bool:
     # the SQLite DBs via read_file/write_file/edit_file/project-files. DATA_DIR
     # is an allowed root for the agent's scratch space, but these files are not.
     base = parts[-1] if parts else ""
-    if base in {".app_key", "sessions.json", "user_prefs.json", "api_tokens.json"}:
+    if base in {".app_key", "sessions.json", "user_prefs.json", "api_tokens.json",
+                ".credentials.json", ".claude.json"}:  # PersonalOS 2026-06-10: Claude Code OAuth tokens
         return True
     # Any .env* secrets file (except non-secret templates by suffix). Closes a
     # readback gap: only bare `.env` was caught before, so `.env.local`/
