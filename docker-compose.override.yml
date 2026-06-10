@@ -1,0 +1,6 @@
+services:
+  odysseus:
+    environment:
+      - PATH=/app/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+      - CLAUDE_CONFIG_DIR=/app/.local/share/claude
+      - GIT_SSH_COMMAND=ssh -F /app/.ssh/config

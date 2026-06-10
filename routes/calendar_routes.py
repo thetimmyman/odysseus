@@ -454,7 +454,12 @@ def _expand_rrule(
 
     # Parse the rrule, applying it to the base dtstart.
     try:
-        rule = rrulestr(ev.rrule, dtstart=ev.dtstart)
+        # PersonalOS 2026-06-10: stored dtstart is naive-UTC; CalDAV rrules keep
+        # the source UTC 'Z' on UNTIL, which dateutil rejects against a naive
+        # dtstart -> recurring series collapse to a single occurrence. Strip the Z.
+        import re as _re_rr
+        _rrule_fixed = _re_rr.sub(r'(UNTIL=\d{8}T\d{6})Z', r'\1', ev.rrule, flags=_re_rr.IGNORECASE)
+        rule = rrulestr(_rrule_fixed, dtstart=ev.dtstart)
     except Exception as ex:
         logger.warning(
             "Failed to parse rrule=%r for event %s: %s", ev.rrule, ev.uid, ex

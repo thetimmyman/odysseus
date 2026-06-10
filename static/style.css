@@ -7559,7 +7559,13 @@ button.hamburger {
   border-collapse: collapse;
   margin: 0.5em 0;
   font-size: 0.9em;
-  width: auto;
+  /* PersonalOS 2026-06-10: scroll wide tables horizontally on mobile instead of
+     collapsing columns into one-letter-per-line vertical soup. */
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .msg th {
   background: color-mix(in srgb, var(--fg) 7%, transparent);
@@ -35482,7 +35488,9 @@ body {
 }
 @media (max-width: 768px) {
   .chat-container {
-    padding-top: max(42px, calc(42px + var(--app-safe-top))) !important;
+    /* PersonalOS 2026-06-10: body already pads safe-top; this was re-adding it
+       (double-counting the notch). Keep 42px breathing room, drop the dup inset. */
+    padding-top: 42px !important;
   }
 }
 
@@ -35898,3 +35906,50 @@ a.crew-btn{text-decoration:none;display:inline-flex;align-items:center}
 .preview-vm-loc-inputs { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .preview-vm-locinput { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border, #2c2f37); background: var(--bg, #15171c); color: var(--fg, #e8e8ea); width: 130px; }
 .preview-vm-locinput:focus, .preview-vm-form .preview-select:focus { outline: none; border-color: var(--color-accent, #6ea8ff); }
+
+
+/* ===== PersonalOS 2026-06-10 mobile UX audit fixes (appended; latest source order) ===== */
+
+/* Images never exceed the message bubble width (defensive net for raw <img>) */
+.msg img,.msg .body img{max-width:100%;height:auto;}
+
+@media (max-width: 768px){
+  /* Tables: nowrap cells only on mobile (desktop prose tables should wrap) */
+  .msg th,.msg td{white-space:nowrap;}
+  /* Gallery sheet: shrink below the notch like the other full-screen sheets */
+  #gallery-modal .modal-content,
+  #gallery-modal .gallery-modal-content{
+    height:calc(100vh - var(--app-safe-top,0px)) !important;
+    height:calc(100dvh - var(--app-safe-top,0px)) !important;
+    max-height:calc(100vh - var(--app-safe-top,0px)) !important;
+    max-height:calc(100dvh - var(--app-safe-top,0px)) !important;
+    margin-top:var(--app-safe-top,0px) !important;
+  }
+  /* Compact single-line code: drop the 200px button gutter; slim buttons to a
+     bottom strip so the command uses the full bubble width. */
+  pre.pre-compact{padding-right:8px !important;padding-bottom:26px !important;}
+  pre.pre-compact .copy-code{right:6px !important;top:auto !important;bottom:3px !important;}
+  pre.pre-compact .edit-code{right:60px !important;top:auto !important;bottom:3px !important;}
+  pre.pre-compact .run-code{right:116px !important;top:auto !important;bottom:3px !important;}
+  /* New-chat button: match the 44px hamburger hit box (was 32px) */
+  .mobile-new-chat-btn{min-width:44px !important;min-height:44px !important;width:44px !important;height:44px !important;}
+}
+
+/* iPad/iPhone (coarse pointer): composer clears the home indicator + bigger send target.
+   On iPhone the 768px rule already pads the bar; this adds it for iPad (>768px) too. */
+@media (hover: none) and (pointer: coarse){
+  .chat-input-bar{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px)) !important;}
+  .send-btn{width:48px !important;height:48px !important;border-radius:12px;}
+}
+
+/* Crew / Dev-Preview full-bleed overlays (admin only): clear the notch via the
+   operator's move+shrink doctrine (never inner-pad). */
+@media (max-width: 720px){
+  .crew-overlay > .crew-modal,
+  .preview-modal{
+    box-sizing:border-box;
+    margin-top:max(0px,var(--app-safe-top)) !important;
+    height:calc(100dvh - max(0px,var(--app-safe-top))) !important;
+  }
+}
+/* ===== end PersonalOS mobile UX audit fixes ===== */

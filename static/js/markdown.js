@@ -371,6 +371,24 @@ export function processWithThinking(text) {
 /**
  * Convert markdown to HTML
  */
+const _EMOJI_NAMES = {
+  'check mark': '✅', 'white check mark': '✅', 'heavy check mark': '✔️',
+  'cross mark': '❌', 'cross mark button': '❎',
+  'warning': '⚠️', 'warning sign': '⚠️',
+  'white_check_mark': '✅', 'heavy_check_mark': '✔️', 'x': '❌',
+};
+function normalizeEmojiNames(text) {
+  if (!text || text.indexOf(':') < 0) return text;
+  // Skip inline-code spans (pairing matches the downstream backtick converter).
+  return text.split(/(`[^`]+`)/).map(function (seg, i) {
+    if (i % 2 === 1) return seg;
+    return seg.replace(/:([a-z](?:[a-z _.-]*[a-z])?):/gi, function (m, name) {
+      var key = name.toLowerCase().replace(/_/g, ' ').trim();
+      return Object.prototype.hasOwnProperty.call(_EMOJI_NAMES, key) ? _EMOJI_NAMES[key] : m;
+    });
+  }).join('');
+}
+
 export function mdToHtml(src) {
   // CRITICAL: Extract allowed HTML blocks first (details/summary)
   const allowedHtmlBlocks = [];
@@ -526,12 +544,18 @@ export function mdToHtml(src) {
     });
   }
 
+  // PersonalOS 2026-06-10: normalize CLDR emoji shortcodes (code already placeholdered)
+  s = normalizeEmojiNames(s);
+
   // Handle pipe tables
   s = s.replace(/(?:^|\n)([^\n]*\|[^\n]*\|[^\n]*)(?:\n([^\n]*\|[^\n]*\|[^\n]*))*/g, (table) => {
     if (table.includes('___CODE_BLOCK_') || table.includes('___ALLOWED_HTML_')) return table;
 
     const rows = table.trim().split('\n');
     if (rows.length < 2) return table;
+    // PersonalOS 2026-06-10: drop the GFM separator row (|---|:--:|) so its
+    // literal dashes/colons don't render as a visible table row.
+    if (rows[1] && /-/.test(rows[1]) && /^\s*\|?[\s:|-]+\|?\s*$/.test(rows[1])) rows.splice(1, 1);
 
     let html = '<table style="border-collapse: collapse; width: 100%; margin: 10px 0;">';
 
@@ -544,8 +568,8 @@ export function mdToHtml(src) {
 
       cells.forEach(cell => {
         const tag = idx === 0 ? 'th' : 'td';
-        const style = idx === 1 ? 'style="border-top: 2px solid var(--red);"' : '';
-        html += `<${tag} ${style} style="padding: 8px; text-align: left; border-bottom: 1px solid var(--border);">${cell.trim()}</${tag}>`;
+        const extra = idx === 1 ? 'border-top: 2px solid var(--red); ' : '';
+        html += `<${tag} style="${extra}padding: 8px; text-align: left; border-bottom: 1px solid var(--border);">${cell.trim()}</${tag}>`;
       });
 
       html += '</tr>';
@@ -577,11 +601,11 @@ export function mdToHtml(src) {
        .replace(/^# (.*)$/gm, '<h1>$1</h1>');
 
   // Ordered lists (1. 2. 3. etc.)
-  s = s.replace(/^(\d+)\. (.*)$/gm, '<oli>$2</oli>');
+  s = s.replace(/^[ \t]*(\d+)\. (.*)$/gm, '<oli>$2</oli>');
   s = s.replace(/(?:^|\n)(<oli>[\s\S]*?)(?=\n(?!<oli>)|$)/g, m => `<ol>${m.trim().replace(/<\/?oli>/g, (t) => t === '<oli>' ? '<li>' : '</li>')}</ol>`);
 
   // Unordered lists
-  s = s.replace(/^(?:- |\* )(.*)$/gm, '<uli>$1</uli>');
+  s = s.replace(/^[ \t]*(?:- |\* )(.*)$/gm, '<uli>$1</uli>');
   s = s.replace(/(^|\n)((?:<uli>[^\n]*<\/uli>(?:\n|$))+)/g, (_, prefix, block) =>
     `${prefix}<ul>${block.trim().replace(/<\/?uli>/g, (t) => t === '<uli>' ? '<li>' : '</li>')}</ul>`);
 
