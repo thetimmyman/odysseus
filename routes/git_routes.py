@@ -25,6 +25,7 @@ project_root confinement and routes/shell_routes.py for the admin gate.
 """
 
 import os
+import re
 import logging
 import subprocess
 import tempfile
@@ -50,6 +51,8 @@ GIT_TIMEOUT_S = int(os.getenv("GIT_REVIEW_TIMEOUT_S", "30"))
 # before we ever build an argv. No passthrough, no plumbing-by-name.
 _ALLOWED_SUBCOMMANDS = {
     "status", "diff", "add", "reset", "commit", "rev-parse", "ls-files",
+    # PersonalOS 2026-06-10: branch + remote ops for the mobile ship loop.
+    "branch", "checkout", "switch", "for-each-ref", "symbolic-ref", "push", "pull", "fetch",
 }
 
 
@@ -61,6 +64,29 @@ class _PathBody(BaseModel):
 class _CommitBody(BaseModel):
     session_id: Optional[str] = None
     message: str
+
+
+class _BranchBody(BaseModel):
+    session_id: Optional[str] = None
+    name: str
+
+
+class _PushBody(BaseModel):
+    session_id: Optional[str] = None
+    set_upstream: bool = True
+    skip_hooks: bool = False
+
+
+_BRANCH_RE = re.compile(r"^(?!-)(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
+
+
+def _valid_branch(name: str) -> str:
+    name = (name or "").strip()
+    if not name or name.endswith((".lock", "/")) or name.startswith("/"):
+        raise HTTPException(400, "invalid branch name")
+    if not _BRANCH_RE.match(name):
+        raise HTTPException(400, "invalid branch name")
+    return name
 
 
 def _require_admin(request: Request):
@@ -144,6 +170,9 @@ def _run_git(cwd: str, args: list, *, input_bytes: Optional[bytes] = None) -> su
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",
         "GIT_TERMINAL_PROMPT": "0",
+        # PersonalOS 2026-06-10: let network ops find the deploy key (app HOME=/root,
+        # key in /app/.ssh) without depending on ambient HOME/ssh-config lookup.
+        "GIT_SSH_COMMAND": os.getenv("GIT_SSH_COMMAND", "ssh -F /app/.ssh/config"),
         "GIT_AUTHOR_NAME": "Odysseus",
         "GIT_AUTHOR_EMAIL": "odysseus@localhost",
         "GIT_COMMITTER_NAME": "Odysseus",
@@ -406,5 +435,84 @@ def setup_git_routes():
         if rp.returncode == 0:
             sha = _decode(rp.stdout).strip() or None
         return {"ok": True, "commit": sha, "output": _decode(res.stdout)[:1000]}
+
+    # ---- PersonalOS 2026-06-10: branch + remote ops (mobile ship loop) ----
+
+    @router.get("/branches")
+    def git_branches(request: Request, session_id: Optional[str] = Query(None)):
+        _require_admin(request)
+        root = _owner_root(request, session_id)
+        _git_toplevel(root)
+        cur = _run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+        current = _decode(cur.stdout).strip() if cur.returncode == 0 else None
+        res = _run_git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "--count=500"])
+        if res.returncode != 0:
+            raise HTTPException(400, f"git branch list failed: {_decode(res.stderr)[:300]}")
+        branches = [b for b in _decode(res.stdout).splitlines() if b.strip()]
+        return {"branches": branches, "current": current}
+
+    @router.post("/branch")
+    def git_branch_create(request: Request, body: _BranchBody):
+        _require_admin(request)
+        _reject_cross_site(request)
+        root = _owner_root(request, body.session_id)
+        _git_toplevel(root)
+        name = _valid_branch(body.name)
+        res = _run_git(root, ["checkout", "-b", name])
+        if res.returncode != 0:
+            raise HTTPException(400, f"create branch failed: {_decode(res.stderr)[:400]}")
+        return {"ok": True, "branch": name, "output": _decode(res.stderr or res.stdout)[:500]}
+
+    @router.post("/checkout")
+    def git_checkout(request: Request, body: _BranchBody):
+        _require_admin(request)
+        _reject_cross_site(request)
+        root = _owner_root(request, body.session_id)
+        _git_toplevel(root)
+        name = _valid_branch(body.name)
+        res = _run_git(root, ["checkout", name])
+        if res.returncode != 0:
+            raise HTTPException(400, f"checkout failed: {_decode(res.stderr)[:400]}")
+        return {"ok": True, "branch": name, "output": _decode(res.stderr or res.stdout)[:500]}
+
+    @router.post("/push")
+    def git_push(request: Request, body: _PushBody):
+        _require_admin(request)
+        _reject_cross_site(request)
+        root = _owner_root(request, body.session_id)
+        _git_toplevel(root)
+        cur = _run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+        branch = _decode(cur.stdout).strip()
+        if cur.returncode != 0 or not branch or branch == "HEAD":
+            raise HTTPException(400, "cannot determine current branch (detached HEAD?)")
+        args = ["push"]
+        if body.skip_hooks:
+            args.append("--no-verify")
+        if body.set_upstream:
+            args += ["-u", "origin", branch]
+        else:
+            args += ["origin", branch]
+        res = _run_git(root, args)
+        out = (_decode(res.stdout) + "\n" + _decode(res.stderr)).strip()
+        if res.returncode != 0:
+            # Surface hook/auth failure verbatim so the UI can offer skip-hooks.
+            raise HTTPException(400, f"push failed: {out[:800]}")
+        return {"ok": True, "branch": branch, "output": out[:1000]}
+
+    @router.post("/pull")
+    def git_pull(request: Request, body: _PathBody):
+        _require_admin(request)
+        _reject_cross_site(request)
+        root = _owner_root(request, body.session_id)
+        _git_toplevel(root)
+        cur = _run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+        branch = _decode(cur.stdout).strip()
+        if cur.returncode != 0 or not branch or branch == "HEAD":
+            raise HTTPException(400, "cannot determine current branch (detached HEAD?)")
+        res = _run_git(root, ["pull", "--ff-only", "origin", branch])
+        out = (_decode(res.stdout) + "\n" + _decode(res.stderr)).strip()
+        if res.returncode != 0:
+            raise HTTPException(400, f"pull failed: {out[:800]}")
+        return {"ok": True, "branch": branch, "output": out[:1000]}
 
     return router
