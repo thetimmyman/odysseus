@@ -114,7 +114,15 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
 
     try:
         bundle = build_context_bundle(task)
-        run_dir = os.path.join(ARCHIVE_ROOT, task.id)
+        # Nested under run_id, not just task.id: the attempt counter restarts
+        # at 1 on every execute_candidates() call, so without this, re-running
+        # the same task_id (the exact "iterate and re-run" workflow
+        # load_or_replace_task exists to support) would silently overwrite a
+        # prior run's archived prompt/response/patch.diff files on disk --
+        # while old RoutingModelRun rows still point at that now-clobbered
+        # path via artifacts.response_text_path, corrupting the audit trail
+        # Phase 2 scoring depends on.
+        run_dir = os.path.join(ARCHIVE_ROOT, task.id, run_id)
         os.makedirs(run_dir, exist_ok=True)
 
         for candidate in candidates:
