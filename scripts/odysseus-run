@@ -4,11 +4,18 @@ mode: direct completions, no agent/tool-calling loop, no patch application
 (Phase 1: passive routing). Persists one RoutingModelRun per attempt
 (including failures) and archives prompt/response under data/routing/runs/.
 
-    odysseus-run --task task.json --mode scout [--save] [--models id1,id2] [--budget N] [--allow-premium]
+    odysseus-run --task task.json --mode scout [--models id1,id2] [--budget N] [--allow-premium]
     odysseus-run --task-id TASK_ID --mode scout [--models id1,id2] [--budget N] [--allow-premium]
 
-Only `--mode scout` is implemented -- `solve` (patch extraction/application)
-is Phase 3+, not built yet.
+A `--task` is always persisted as a RoutingTask row (unlike `odysseus-route
+preview`'s optional `--save`): RoutingRun/RoutingModelRun both FK-reference
+the task, so there is no code path where executing candidates without a
+persisted task row is possible.
+
+Only `--mode scout` is implemented -- `solve` (patch application/worktree/
+verification/rollback) is Phase 4+, not built yet. Patch *extraction* and
+shape validation (Phase 3) already run automatically here for patch-shaped
+task types -- see src/routing_patch.py.
 """
 from __future__ import annotations
 import os, sys
@@ -40,7 +47,7 @@ def cmd_run(args):
         if args.task:
             with open(args.task) as f:
                 data = json.load(f)
-            row = load_or_replace_task(db, data, save=args.save)
+            row = load_or_replace_task(db, data, save=True)
         elif args.task_id:
             row = db.get(RoutingTask, args.task_id)
             if not row:
@@ -78,9 +85,8 @@ def cmd_run(args):
 
 def _build_parser():
     p = common_parser("odysseus-run", "Execute the top-K routing candidates for a task (scout mode).")
-    p.add_argument("--task", help="path to a task JSON file (OdysseusTask shape)")
+    p.add_argument("--task", help="path to a task JSON file (OdysseusTask shape) -- always persisted")
     p.add_argument("--task-id", help="a previously-saved RoutingTask id")
-    p.add_argument("--save", action="store_true", help="persist the task as a RoutingTask row (only with --task)")
     p.add_argument("--mode", default="scout", choices=["scout", "solve"],
                    help="execution mode -- only 'scout' is implemented in Phase 1/2")
     p.add_argument("--models", help="comma-separated model ids to restrict execution to (e.g. from the routed candidate list)")

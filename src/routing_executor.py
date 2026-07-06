@@ -26,6 +26,8 @@ from src.routing_budget import (
     check_task_budget, estimate_cost_usd,
 )
 from src.routing_context import build_context_bundle, estimate_tokens
+from src.routing_engine import ROLE_BY_TASK, _PATCH_SHAPED_TASK_TYPES
+from src.routing_patch import extract_diff, validate_patch_shape
 from src.routing_prompts import build_prompt
 
 ARCHIVE_ROOT = os.path.join(
@@ -47,11 +49,19 @@ def _classify_llm_error(exc: Exception) -> dict:
     return {"rate_limited": rate_limited, "errored": not rate_limited, "error_message": msg[:2000]}
 
 
-def _role_for_profile(profile) -> str:
-    """Pick one representative role to render the prompt for, preferring
-    whichever of this profile's roles has a dedicated template in
-    routing_prompts.py."""
+def _role_for_profile(profile, task) -> str:
+    """Pick one representative role to render the prompt for. The TASK, not
+    the profile, determines which prompt template is appropriate -- a
+    bug_debug task needs the debugger prompt (asks for root cause + patch)
+    even from a profile that's also assigned "reviewer", so this first
+    tries ROLE_BY_TASK[task.task_type] (the same desired-roles list
+    route_task() scores candidates against) intersected with the profile's
+    own roles, before falling back to a fixed generic preference order for
+    task types with no strong role preference."""
     roles = json.loads(profile.roles) if profile.roles else []
+    for preferred in ROLE_BY_TASK.get(task.task_type, []):
+        if preferred in roles:
+            return preferred
     for preferred in ("implementer", "reviewer", "debugger", "scout", "planner", "escalation"):
         if preferred in roles:
             return preferred
@@ -104,7 +114,15 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
 
     try:
         bundle = build_context_bundle(task)
-        run_dir = os.path.join(ARCHIVE_ROOT, task.id)
+        # Nested under run_id, not just task.id: the attempt counter restarts
+        # at 1 on every execute_candidates() call, so without this, re-running
+        # the same task_id (the exact "iterate and re-run" workflow
+        # load_or_replace_task exists to support) would silently overwrite a
+        # prior run's archived prompt/response/patch.diff files on disk --
+        # while old RoutingModelRun rows still point at that now-clobbered
+        # path via artifacts.response_text_path, corrupting the audit trail
+        # Phase 2 scoring depends on.
+        run_dir = os.path.join(ARCHIVE_ROOT, task.id, run_id)
         os.makedirs(run_dir, exist_ok=True)
 
         for candidate in candidates:
@@ -146,7 +164,7 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 os.makedirs(attempt_dir, exist_ok=True)
                 prompt_path = os.path.join(attempt_dir, "prompt.md")
 
-                role = _role_for_profile(profile)
+                role = _role_for_profile(profile, task)
                 prompt_text = build_prompt(role, task, bundle)
                 with open(prompt_path, "w") as f:
                     f.write(prompt_text)
@@ -180,22 +198,48 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 with open(response_path, "w") as f:
                     f.write(response_text)
 
+                artifacts = {"response_text_path": response_path, "prompt_path": prompt_path}
+                patch_validation = None
+                patch_summary = None
+                # Phase 3 (extraction/shape-validation only -- no apply/verify/
+                # rollback, that's Phase 4): only meaningful for task types that
+                # would produce a patch at all.
+                if task.task_type in _PATCH_SHAPED_TASK_TYPES:
+                    diff_text = extract_diff(response_text)
+                    patch_validation = validate_patch_shape(diff_text, task.repo_path)
+                    if patch_validation["extracted"]:
+                        patch_path = os.path.join(attempt_dir, "patch.diff")
+                        with open(patch_path, "w") as f:
+                            f.write(diff_text)
+                        artifacts["patch_path"] = patch_path
+                    patch_summary = {
+                        "extracted": patch_validation["extracted"],
+                        "allowed": patch_validation["allowed"],
+                        "file_count": patch_validation["file_count"],
+                        "changed_lines": patch_validation["changed_lines"],
+                        "reasons": patch_validation["reasons"],
+                    }
+
                 from core.database import RoutingModelRun
                 db.add(RoutingModelRun(
                     id=model_run_id, run_id=run_id, model_profile_id=profile.id,
                     input_tokens=input_tokens, output_tokens=output_tokens,
                     tokens_estimated=tokens_estimated, cost_usd=cost, latency_ms=latency_ms,
                     completed=True, rate_limited=False, errored=False,
-                    artifacts=json.dumps({"response_text_path": response_path, "prompt_path": prompt_path}),
+                    artifacts=json.dumps(artifacts),
+                    patch_validation=json.dumps(patch_validation) if patch_validation is not None else None,
                 ))
                 spent_so_far += cost
                 if profile.is_premium:
                     premium_spent += cost
-                summaries.append({
+                summary_entry = {
                     "model_run_id": model_run_id, "profile_id": profile.id, "model": profile.model,
                     "status": "completed", "cost_usd": round(cost, 4), "latency_ms": latency_ms,
                     "tokens_estimated": tokens_estimated,
-                })
+                }
+                if patch_summary is not None:
+                    summary_entry["patch"] = patch_summary
+                summaries.append(summary_entry)
             except Exception as e:
                 latency_ms = int((time.time() - t0) * 1000)
                 classification = _classify_llm_error(e)
