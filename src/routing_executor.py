@@ -26,7 +26,7 @@ from src.routing_budget import (
     check_task_budget, estimate_cost_usd,
 )
 from src.routing_context import build_context_bundle, estimate_tokens
-from src.routing_engine import _PATCH_SHAPED_TASK_TYPES
+from src.routing_engine import ROLE_BY_TASK, _PATCH_SHAPED_TASK_TYPES
 from src.routing_patch import extract_diff, validate_patch_shape
 from src.routing_prompts import build_prompt
 
@@ -49,11 +49,19 @@ def _classify_llm_error(exc: Exception) -> dict:
     return {"rate_limited": rate_limited, "errored": not rate_limited, "error_message": msg[:2000]}
 
 
-def _role_for_profile(profile) -> str:
-    """Pick one representative role to render the prompt for, preferring
-    whichever of this profile's roles has a dedicated template in
-    routing_prompts.py."""
+def _role_for_profile(profile, task) -> str:
+    """Pick one representative role to render the prompt for. The TASK, not
+    the profile, determines which prompt template is appropriate -- a
+    bug_debug task needs the debugger prompt (asks for root cause + patch)
+    even from a profile that's also assigned "reviewer", so this first
+    tries ROLE_BY_TASK[task.task_type] (the same desired-roles list
+    route_task() scores candidates against) intersected with the profile's
+    own roles, before falling back to a fixed generic preference order for
+    task types with no strong role preference."""
     roles = json.loads(profile.roles) if profile.roles else []
+    for preferred in ROLE_BY_TASK.get(task.task_type, []):
+        if preferred in roles:
+            return preferred
     for preferred in ("implementer", "reviewer", "debugger", "scout", "planner", "escalation"):
         if preferred in roles:
             return preferred
@@ -148,7 +156,7 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 os.makedirs(attempt_dir, exist_ok=True)
                 prompt_path = os.path.join(attempt_dir, "prompt.md")
 
-                role = _role_for_profile(profile)
+                role = _role_for_profile(profile, task)
                 prompt_text = build_prompt(role, task, bundle)
                 with open(prompt_path, "w") as f:
                     f.write(prompt_text)
