@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""odysseus-run — execute the top-K routing candidates for a task in scout
+mode: direct completions, no agent/tool-calling loop, no patch application
+(Phase 1: passive routing). Persists one RoutingModelRun per attempt
+(including failures) and archives prompt/response under data/routing/runs/.
+
+    odysseus-run --task task.json --mode scout [--save] [--models id1,id2] [--budget N] [--allow-premium]
+    odysseus-run --task-id TASK_ID --mode scout [--models id1,id2] [--budget N] [--allow-premium]
+
+Only `--mode scout` is implemented -- `solve` (patch extraction/application)
+is Phase 3+, not built yet.
+"""
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run
+quiet_logs()
+
+import json
+
+try:
+    from core.database import SessionLocal, RoutingTask
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src.routing_context import build_context_bundle
+from src.routing_engine import route_task
+from src.routing_executor import execute_candidates
+from src.routing_task_io import load_or_replace_task
+
+
+def cmd_run(args):
+    if args.mode != "scout":
+        fail(f"--mode {args.mode!r} is not implemented yet (Phase 1/2 only supports scout mode)")
+
+    db = SessionLocal()
+    try:
+        if args.task:
+            with open(args.task) as f:
+                data = json.load(f)
+            row = load_or_replace_task(db, data, save=args.save)
+        elif args.task_id:
+            row = db.get(RoutingTask, args.task_id)
+            if not row:
+                fail(f"no task with id {args.task_id!r}")
+        else:
+            fail("one of --task or --task-id is required")
+            return
+
+        if args.budget is not None:
+            row.max_cost_usd = args.budget
+            db.commit()
+
+        bundle = build_context_bundle(row)
+        decision = route_task(db, row, bundle)
+        candidates = decision["candidates"]
+        if args.models:
+            # Matches against both `model` (the slug, e.g. "nvidia/nemotron-...")
+            # and `profile_id` (e.g. "nemotron-super-free") -- both are shown
+            # side-by-side in `odysseus-route preview` output and either reads
+            # naturally as "the model id" to a user copying from that JSON.
+            wanted = set(args.models.split(","))
+            candidates = [c for c in candidates if c["model"] in wanted or c["profile_id"] in wanted]
+            if not candidates:
+                fail(f"none of the requested models {sorted(wanted)} matched a routed candidate's "
+                     f"model or profile_id -- run `odysseus-route preview` to see valid values")
+
+        max_attempts = args.max_attempts or row.max_attempts or 3
+        result = execute_candidates(db, row, candidates, max_attempts, allow_premium_override=args.allow_premium)
+        row.status = result["status"]
+        db.commit()
+        emit(result, args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser("odysseus-run", "Execute the top-K routing candidates for a task (scout mode).")
+    p.add_argument("--task", help="path to a task JSON file (OdysseusTask shape)")
+    p.add_argument("--task-id", help="a previously-saved RoutingTask id")
+    p.add_argument("--save", action="store_true", help="persist the task as a RoutingTask row (only with --task)")
+    p.add_argument("--mode", default="scout", choices=["scout", "solve"],
+                   help="execution mode -- only 'scout' is implemented in Phase 1/2")
+    p.add_argument("--models", help="comma-separated model ids to restrict execution to (e.g. from the routed candidate list)")
+    p.add_argument("--max-attempts", type=int, help="override the task's max_attempts")
+    p.add_argument("--budget", type=float, help="override the task's max_cost_usd for this run")
+    p.add_argument("--allow-premium", action="store_true",
+                   help="bypass the global premium budget block for this run's premium candidates")
+    p.set_defaults(func=cmd_run)
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))

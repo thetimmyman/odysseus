@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""odysseus-score — manually score a RoutingModelRun (Phase 2). Any subset of
+the 8 score fields may be provided; unspecified fields are left as-is.
+
+    odysseus-score set MODEL_RUN_ID [--root-cause-accuracy N] [--patch-correctness N]
+        [--minimality N] [--test-awareness N] [--repo-convention-fit N]
+        [--hallucination-control N] [--plan-quality N] [--adversarial-review-quality N]
+        [--refused true|false]
+    odysseus-score show MODEL_RUN_ID
+"""
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run
+quiet_logs()
+
+import json
+
+try:
+    from core.database import SessionLocal, RoutingModelRun
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src.routing_scoring import ALL_SCORE_FIELDS, record_manual_score, score_run
+
+
+_FIELD_FLAGS = {f: f"--{f.replace('_', '-')}" for f in ALL_SCORE_FIELDS}
+
+
+def cmd_set(args):
+    db = SessionLocal()
+    try:
+        new_scores = {}
+        for field in ALL_SCORE_FIELDS:
+            val = getattr(args, field)
+            if val is not None:
+                if not (0 <= val <= 5):
+                    fail(f"{_FIELD_FLAGS[field]} must be between 0 and 5, got {val}")
+                new_scores[field] = val
+        if not new_scores and args.refused is None:
+            fail("provide at least one score field or --refused")
+
+        updated = record_manual_score(db, args.id, new_scores) if new_scores else None
+
+        if args.refused is not None:
+            row = db.get(RoutingModelRun, args.id)
+            if not row:
+                fail(f"no RoutingModelRun with id {args.id!r}")
+            row.refused = args.refused.lower() == "true"
+            db.commit()
+
+        row = db.get(RoutingModelRun, args.id)
+        emit({
+            "model_run_id": args.id,
+            "scores": json.loads(row.scores) if row.scores else {},
+            "refused": row.refused,
+        }, args)
+    finally:
+        db.close()
+
+
+def cmd_show(args):
+    db = SessionLocal()
+    try:
+        row = db.get(RoutingModelRun, args.id)
+        if not row:
+            fail(f"no RoutingModelRun with id {args.id!r}")
+        scores = json.loads(row.scores) if row.scores else {}
+        from core.database import RoutingRun, RoutingTask
+        run_row = db.get(RoutingRun, row.run_id)
+        task_row = db.get(RoutingTask, run_row.task_id) if run_row else None
+        emit({
+            "model_run_id": row.id, "model_profile_id": row.model_profile_id,
+            "completed": row.completed, "rate_limited": row.rate_limited,
+            "errored": row.errored, "refused": row.refused,
+            "cost_usd": row.cost_usd, "latency_ms": row.latency_ms,
+            "scores": scores,
+            "weighted_score": score_run(scores, task_row.task_type) if task_row else None,
+            "artifacts": json.loads(row.artifacts) if row.artifacts else {},
+        }, args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser("odysseus-score", "Manually score a RoutingModelRun (Phase 2).")
+    common = p._common_parents[0]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    ps = sub.add_parser("set", parents=[common])
+    ps.add_argument("id", help="a RoutingModelRun id")
+    for field, flag in _FIELD_FLAGS.items():
+        ps.add_argument(flag, dest=field, type=float, default=None)
+    ps.add_argument("--refused", choices=["true", "false"], default=None,
+                     help="mark whether this run refused to answer (not auto-detected)")
+    ps.set_defaults(func=cmd_set)
+
+    psh = sub.add_parser("show", parents=[common])
+    psh.add_argument("id")
+    psh.set_defaults(func=cmd_show)
+
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))
