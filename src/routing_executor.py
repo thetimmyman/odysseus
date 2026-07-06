@@ -136,6 +136,12 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 max_tokens=profile.max_output_tokens or 4096,
                 headers=headers, timeout=120, bypass_cache=True,
             )
+            # Some providers/models return a null `content` field (a genuine
+            # empty completion, not an HTTP error) -- record it as a real,
+            # scoreable "completed but empty" outcome rather than crashing on
+            # the file write below. A model that does this often should score
+            # poorly over time via historical_score(), not silently vanish.
+            response_text = response_text or ""
             latency_ms = int((time.time() - t0) * 1000)
             tokens_estimated = usage is None
             input_tokens = usage["input_tokens"] if usage else estimate_tokens(prompt_text)
