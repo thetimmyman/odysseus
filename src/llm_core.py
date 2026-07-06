@@ -753,10 +753,40 @@ def normalize_model_id(endpoint_url: str, requested: str, timeout: int = LLMConf
             return a
     return None
 
-def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
-             max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None, 
-             timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None) -> str:
-    """Synchronous LLM call with optional prompt type enhancement."""
+def _extract_usage(provider: str, data: dict) -> Optional[Dict[str, int]]:
+    """Best-effort token-usage extraction, normalized to
+    {"input_tokens": int, "output_tokens": int} regardless of provider dialect.
+    Returns None when the response body doesn't carry usage (caller should
+    fall back to a heuristic estimate and flag it as such)."""
+    try:
+        if provider == "anthropic":
+            usage = data.get("usage") or {}
+            if "input_tokens" in usage or "output_tokens" in usage:
+                return {"input_tokens": usage.get("input_tokens", 0),
+                        "output_tokens": usage.get("output_tokens", 0)}
+        elif provider == "ollama":
+            if "prompt_eval_count" in data or "eval_count" in data:
+                return {"input_tokens": data.get("prompt_eval_count", 0),
+                        "output_tokens": data.get("eval_count", 0)}
+        else:
+            usage = data.get("usage") or {}
+            if "prompt_tokens" in usage or "completion_tokens" in usage:
+                return {"input_tokens": usage.get("prompt_tokens", 0),
+                        "output_tokens": usage.get("completion_tokens", 0)}
+    except Exception:
+        pass
+    return None
+
+
+def _llm_call_core(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
+                    max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
+                    timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None,
+                    bypass_cache: bool = False) -> tuple:
+    """Shared implementation behind `llm_call`/`llm_call_with_usage`. Returns
+    (response_text, usage_dict_or_None). `bypass_cache=True` skips the
+    in-memory response cache entirely (both read and write) — needed for
+    callers that measure latency or require an independent re-run rather than
+    a cached echo of an earlier identical request."""
     h = _provider_headers(_detect_provider(url))
     # Tolerate headers that arrive as a JSON string (some sessions stored them
     # double-encoded) — otherwise h.update() throws "dictionary update sequence
@@ -786,10 +816,11 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
 
     provider = _detect_provider(url)
     cache_key = _get_cache_key(url, model, messages_copy, temperature, max_tokens)
-    cached_response = _get_cached_response(cache_key)
-    if cached_response:
-        logger.debug(f"Returning cached response for key: {cache_key}")
-        return cached_response
+    if not bypass_cache:
+        cached_response = _get_cached_response(cache_key)
+        if cached_response:
+            logger.debug(f"Returning cached response for key: {cache_key}")
+            return cached_response, None
 
     if provider == "anthropic":
         target_url = _normalize_anthropic_url(url)
@@ -828,10 +859,36 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
             response = _parse_ollama_response(data)
         else:
             response = data["choices"][0]["message"]["content"]
-        _set_cached_response(cache_key, response)
-        return response
+        if not bypass_cache:
+            _set_cached_response(cache_key, response)
+        return response, _extract_usage(provider, data)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(502, f"Unexpected schema from {target_url}: {str(data)[:400]}")
+
+
+def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
+             max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
+             timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None,
+             bypass_cache: bool = False) -> str:
+    """Synchronous LLM call with optional prompt type enhancement."""
+    response, _usage = _llm_call_core(url, model, messages, temperature, max_tokens, headers,
+                                       timeout, prompt_type, bypass_cache=bypass_cache)
+    return response
+
+
+def llm_call_with_usage(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
+                         max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
+                         timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None,
+                         bypass_cache: bool = False) -> tuple:
+    """Like `llm_call`, but returns (response_text, usage_dict_or_None). Usage
+    is only present when the provider's response body includes it (most
+    OpenAI-dialect and Anthropic non-streaming responses do; callers should
+    fall back to a token-count heuristic and flag the estimate when it's
+    None)."""
+    return _llm_call_core(url, model, messages, temperature, max_tokens, headers,
+                           timeout, prompt_type, bypass_cache=bypass_cache)
 
 
 def llm_call_with_fallback(candidates, messages, **kwargs) -> str:
