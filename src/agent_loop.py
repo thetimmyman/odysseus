@@ -1660,6 +1660,19 @@ async def stream_agent_loop(
     _THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
 
+    # Redundant-read detector. Distinct from the loop-breaker above: that one
+    # only fires when a repeat comes with NO text, but a model can pad an
+    # identical re-read with a sentence of narration each time and evade it
+    # (observed: re-reading the same file 4x back-to-back). Tracks read-only
+    # calls seen since the last effectful (write) tool — a re-read is only
+    # ever wasteful if nothing changed since the last time it was read; a
+    # re-read AFTER an edit is a legitimate check and must not be flagged.
+    _READ_ONLY_TOOLS = frozenset({"read_file", "list_dir", "search_files", "find_files", "get_project"})
+    _read_only_seen_since_write = set()
+    _redundant_read_count = 0
+    _redundant_nudge_sent = False
+    _REDUNDANT_READ_THRESHOLD = 3
+
     # Document streaming state (persists across rounds)
     _doc_acc = ""          # accumulated tool-call JSON arguments
     _doc_opened = False    # whether doc_stream_open was sent
@@ -2083,6 +2096,34 @@ async def stream_agent_loop(
             full_response += "\n\n"
             yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
             continue
+
+        # Redundant-read detector (state initialized above, near the other
+        # loop-breaker state). A write clears the tracked set — a re-read
+        # right after an edit is a legitimate check, not waste.
+        for _b in tool_blocks:
+            if _b.tool_type in _READ_ONLY_TOOLS:
+                _read_sig = f"{_b.tool_type}:{(_b.content or '').strip()}"
+                if _read_sig in _read_only_seen_since_write:
+                    _redundant_read_count += 1
+                else:
+                    _read_only_seen_since_write.add(_read_sig)
+            elif _b.tool_type in _VERIFIER_EFFECTFUL_TOOLS:
+                _read_only_seen_since_write.clear()
+                _redundant_read_count = 0
+        if (_redundant_read_count >= _REDUNDANT_READ_THRESHOLD
+                and not _redundant_nudge_sent):
+            _redundant_nudge_sent = True
+            logger.info(f"[agent] redundant-read nudge on round {round_num}: "
+                        f"{_redundant_read_count} repeat read(s) since last write")
+            messages.append({
+                "role": "system",
+                "content": (
+                    "You've re-read the same file or directory multiple times without "
+                    "making any change in between. You already have that information "
+                    "from earlier in this turn — stop re-reading it and either act on "
+                    "it now (edit_file/write_file) or move on to a genuinely new step."
+                ),
+            })
 
         # Pre-stream document content for fenced tool blocks (non-native path)
         # Native path already streamed via tool_call_delta above
