@@ -1094,8 +1094,31 @@ def _build_base_prompt(
 
 
 
+_XML_TOOL_CALL_RE = re.compile(r"<function=([a-zA-Z_]\w*)>(.*?)</function>", re.DOTALL)
+_XML_TOOL_PARAM_RE = re.compile(r"<parameter=([a-zA-Z_]\w*)>(.*?)</parameter>", re.DOTALL)
+
+
+def _parse_xml_style_tool_calls(text: str) -> list:
+    """Fallback for models (seen on a Qwen3.6 GGUF served via llama-server --jinja)
+    that emit tool calls as literal `<function=name><parameter=k>v</parameter></function>`
+    text instead of populating the API's own tool_calls field. Without this, that
+    text is neither a native call nor a recognized fenced block, so it silently
+    becomes inert and the turn just ends looking "stuck" mid-task. Converts each
+    match into a ToolBlock via the same converter a real native call would use."""
+    blocks = []
+    for name, body in _XML_TOOL_CALL_RE.findall(text or ""):
+        args = {k: v.strip() for k, v in _XML_TOOL_PARAM_RE.findall(body)}
+        block = function_call_to_tool_block(name, json.dumps(args))
+        if block:
+            blocks.append(block)
+        else:
+            logger.warning(f"  -> FAILED to convert XML-style tool call: {name} args={args}")
+    return blocks
+
+
 def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num: int):
-    """Choose native function calls or fenced code block parsing. Returns (tool_blocks, used_native)."""
+    """Choose native function calls, the XML-tag fallback, or fenced code block
+    parsing. Returns (tool_blocks, used_native)."""
     used_native = False
     if native_tool_calls:
         tool_blocks = []
@@ -1111,9 +1134,14 @@ def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num
         if tool_blocks:
             used_native = True
     if not used_native:
-        tool_blocks = parse_tool_blocks(round_response)
+        tool_blocks = _parse_xml_style_tool_calls(round_response)
         if tool_blocks:
-            logger.info(f"Agent round {round_num}: {len(tool_blocks)} fenced tool block(s) detected")
+            logger.info(f"Agent round {round_num}: {len(tool_blocks)} XML-style tool call(s) recovered from "
+                        f"text (model emitted <function=...> tags instead of the API tool_calls field)")
+        else:
+            tool_blocks = parse_tool_blocks(round_response)
+            if tool_blocks:
+                logger.info(f"Agent round {round_num}: {len(tool_blocks)} fenced tool block(s) detected")
 
     resp_preview = round_response[:200].replace('\n', '\\n') if round_response else "(empty)"
     logger.info(f"Agent round {round_num} summary: {len(round_response)} chars, "
