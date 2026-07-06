@@ -32,19 +32,29 @@ def task_kwargs_from_json(data: dict) -> dict:
 
 
 def load_or_replace_task(db, data: dict, save: bool):
-    """Build a RoutingTask row from JSON; if `save`, persist it (replacing
-    any existing row with the same id, so re-running the same task file is
-    idempotent rather than erroring on a primary-key collision)."""
+    """Build a RoutingTask row from JSON; if `save`, persist it -- updating an
+    existing row with the same id IN PLACE rather than delete-then-recreate.
+    RoutingRun.task_id is ON DELETE CASCADE, so a delete+recreate on a
+    repeated task id would silently wipe out every prior RoutingRun/
+    RoutingModelRun (including Phase 2 scores) for that task -- exactly the
+    re-run-to-iterate workflow this function exists to support. Updating in
+    place preserves that history."""
     from core.database import RoutingTask
 
     kwargs = task_kwargs_from_json(data)
-    row = RoutingTask(**kwargs)
     if save:
         existing = db.get(RoutingTask, kwargs["id"])
         if existing:
-            db.delete(existing)
+            for field, value in kwargs.items():
+                if field == "id":
+                    continue
+                setattr(existing, field, value)
             db.commit()
+            db.refresh(existing)
+            return existing
+        row = RoutingTask(**kwargs)
         db.add(row)
         db.commit()
         db.refresh(row)
-    return row
+        return row
+    return RoutingTask(**kwargs)

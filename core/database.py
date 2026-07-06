@@ -2,7 +2,7 @@ import os
 import logging
 import sqlite3
 from datetime import datetime
-from sqlalchemy import event, create_engine, Column, String, Text, Boolean, DateTime, Integer, Float, ForeignKey, JSON, Index, func, text
+from sqlalchemy import event, create_engine, Column, String, Text, Boolean, DateTime, Integer, Float, ForeignKey, JSON, Index, UniqueConstraint, func, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
@@ -376,6 +376,12 @@ class RoutingModelProfile(Base):
 
     __table_args__ = (
         Index('ix_routing_model_profiles_enabled', 'enabled'),
+        # Note: SQLite (like standard SQL) treats NULL != NULL for uniqueness,
+        # so this does not stop two placeholder profiles (model_endpoint_id
+        # NULL) for the same model string -- only real, endpoint-bound
+        # duplicates are prevented. Acceptable: placeholders are seeded from
+        # a small, hand-curated list with distinct model ids.
+        UniqueConstraint('model_endpoint_id', 'model', name='uq_routing_model_profiles_endpoint_model'),
     )
 
 

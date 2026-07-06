@@ -6,7 +6,7 @@ bundle; historical performance comes from routing_scoring.historical_score()
 import json
 from typing import Dict, List, Optional
 
-from src.routing_budget import estimate_cost_usd
+from src.routing_budget import DEFAULT_MAX_OUTPUT_TOKENS, estimate_cost_usd
 from src.routing_scoring import historical_score
 
 # Desired roles per RoutingTask.task_type. Keyed on the OdysseusTask-style
@@ -68,7 +68,11 @@ def score_model_for_task(profile, task, bundle: dict, hist_score: Optional[float
             score -= 15
             reasons.append("free model penalized for high/release-blocking risk (-15)")
 
-    requires_patch = task.task_type in _PATCH_SHAPED_TASK_TYPES
+    # Excludes task types where "implementer" is already a desired_role (e.g.
+    # "implementation" itself) -- otherwise the same underlying fact (profile
+    # has the implementer role) earns +25 twice: once here and once via the
+    # role-match bonus above, for the identical signal.
+    requires_patch = task.task_type in _PATCH_SHAPED_TASK_TYPES and "implementer" not in desired_roles
     if requires_patch and "implementer" in profile_roles:
         score += 25
         reasons.append("implementer role for patch-shaped task (+25)")
@@ -83,7 +87,7 @@ def score_model_for_task(profile, task, bundle: dict, hist_score: Optional[float
         score += 20
         reasons.append("1M+ context for long-context task (+20)")
 
-    estimated_cost = estimate_cost_usd(profile, estimated_input_tokens, profile.max_output_tokens or 2048)
+    estimated_cost = estimate_cost_usd(profile, estimated_input_tokens, profile.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
     if estimated_cost == 0:
         score += 10
         reasons.append("free (+10)")

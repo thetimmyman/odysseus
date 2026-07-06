@@ -22,6 +22,14 @@ DEFAULT_BUDGET_CONFIG = {
     "premium_weekly_max_usd": 20.0,
 }
 
+# Shared with routing_engine.py's cost-based scoring so the estimate used to
+# RANK a candidate matches the actual generation cap used at call time
+# (routing_executor.py passes profile.max_output_tokens or this same
+# fallback to llm_call_with_usage) -- keeping one constant means a future
+# change to the default can't silently make ranking under- or
+# over-estimate true worst-case spend.
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
 
 def load_budget_config() -> dict:
     """Reads config/routing_budget.json if present (no versioned/audited UI
@@ -58,9 +66,11 @@ def _period_spend(db, since: datetime, premium_only: bool = False) -> float:
     return sum(r.cost_usd or 0.0 for r in q.all())
 
 
-def check_global_budget(db, profile, config: Optional[dict] = None) -> dict:
-    """Hard-block check against daily/weekly (+ premium-specific) caps.
-    Returns {"allowed": bool, "reason": str|None}."""
+def check_general_budget(db, config: Optional[dict] = None) -> dict:
+    """Hard-block check against the plain daily/weekly caps -- applies to
+    EVERY candidate regardless of free/paid/premium tier, and is never
+    overridable (unlike check_premium_budget below). Returns
+    {"allowed": bool, "reason": str|None}."""
     cfg = config or load_budget_config()
     now = datetime.utcnow()
     day_start = now - timedelta(hours=24)
@@ -74,14 +84,39 @@ def check_global_budget(db, profile, config: Optional[dict] = None) -> dict:
     if weekly_spend >= cfg["weekly_max_usd"]:
         return {"allowed": False, "reason": f"weekly spend ${weekly_spend:.2f} >= cap ${cfg['weekly_max_usd']:.2f}"}
 
-    if profile.is_premium:
-        premium_daily = _period_spend(db, day_start, premium_only=True)
-        if premium_daily >= cfg["premium_daily_max_usd"]:
-            return {"allowed": False, "reason": f"premium daily spend ${premium_daily:.2f} >= cap ${cfg['premium_daily_max_usd']:.2f}"}
-        premium_weekly = _period_spend(db, week_start, premium_only=True)
-        if premium_weekly >= cfg["premium_weekly_max_usd"]:
-            return {"allowed": False, "reason": f"premium weekly spend ${premium_weekly:.2f} >= cap ${cfg['premium_weekly_max_usd']:.2f}"}
+    return {"allowed": True, "reason": None}
 
+
+def check_premium_budget(db, config: Optional[dict] = None) -> dict:
+    """Hard-block check against the premium-specific daily/weekly caps only.
+    This is the check `--allow-premium` is meant to bypass -- callers must
+    still always call check_general_budget() too, since that one is never
+    overridable."""
+    cfg = config or load_budget_config()
+    now = datetime.utcnow()
+    day_start = now - timedelta(hours=24)
+    week_start = now - timedelta(days=7)
+
+    premium_daily = _period_spend(db, day_start, premium_only=True)
+    if premium_daily >= cfg["premium_daily_max_usd"]:
+        return {"allowed": False, "reason": f"premium daily spend ${premium_daily:.2f} >= cap ${cfg['premium_daily_max_usd']:.2f}"}
+    premium_weekly = _period_spend(db, week_start, premium_only=True)
+    if premium_weekly >= cfg["premium_weekly_max_usd"]:
+        return {"allowed": False, "reason": f"premium weekly spend ${premium_weekly:.2f} >= cap ${cfg['premium_weekly_max_usd']:.2f}"}
+
+    return {"allowed": True, "reason": None}
+
+
+def check_global_budget(db, profile, config: Optional[dict] = None) -> dict:
+    """Convenience wrapper combining both checks unconditionally (general
+    caps always apply; premium caps apply only when `profile.is_premium`).
+    routing_executor.py does NOT use this directly -- it calls the two
+    checks separately so `--allow-premium` can skip only the premium one."""
+    general = check_general_budget(db, config)
+    if not general["allowed"]:
+        return general
+    if profile.is_premium:
+        return check_premium_budget(db, config)
     return {"allowed": True, "reason": None}
 
 

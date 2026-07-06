@@ -57,10 +57,15 @@ def cmd_run(args):
         decision = route_task(db, row, bundle)
         candidates = decision["candidates"]
         if args.models:
+            # Matches against both `model` (the slug, e.g. "nvidia/nemotron-...")
+            # and `profile_id` (e.g. "nemotron-super-free") -- both are shown
+            # side-by-side in `odysseus-route preview` output and either reads
+            # naturally as "the model id" to a user copying from that JSON.
             wanted = set(args.models.split(","))
-            candidates = [c for c in candidates if c["model"] in wanted]
+            candidates = [c for c in candidates if c["model"] in wanted or c["profile_id"] in wanted]
             if not candidates:
-                fail(f"none of the requested models {sorted(wanted)} are in the routed candidate list")
+                fail(f"none of the requested models {sorted(wanted)} matched a routed candidate's "
+                     f"model or profile_id -- run `odysseus-route preview` to see valid values")
 
         max_attempts = args.max_attempts or row.max_attempts or 3
         result = execute_candidates(db, row, candidates, max_attempts, allow_premium_override=args.allow_premium)

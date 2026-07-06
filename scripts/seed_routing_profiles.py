@@ -122,12 +122,23 @@ def main():
     db = SessionLocal()
     try:
         for spec in PROFILES:
+            existing = db.get(RoutingModelProfile, spec["id"])
             endpoint_id = None
             if spec.get("endpoint_name"):
                 endpoint_id = _find_endpoint_id(db, spec["endpoint_name"])
                 if not endpoint_id:
-                    print(f"warning: endpoint {spec['endpoint_name']!r} not found -- "
-                          f"seeding {spec['id']!r} disabled", file=sys.stderr)
+                    print(f"warning: endpoint {spec['endpoint_name']!r} not found", file=sys.stderr)
+                    # Don't silently disable a profile that was already working
+                    # against a (presumably still-valid) endpoint just because
+                    # this endpoint_name lookup failed this run -- e.g. the
+                    # endpoint was renamed and the spec list above is stale.
+                    # Leave it untouched and move on rather than clobbering it.
+                    if existing and existing.enabled and existing.model_endpoint_id:
+                        print(f"  -- leaving existing profile {spec['id']!r} untouched "
+                              f"(currently enabled={existing.enabled}, endpoint={existing.model_endpoint_id!r})",
+                              file=sys.stderr)
+                        continue
+                    print(f"  -- seeding {spec['id']!r} disabled", file=sys.stderr)
 
             # Explicit enabled=False (the paid placeholders) always wins;
             # otherwise a profile is only enabled if its endpoint resolved.
@@ -146,7 +157,6 @@ def main():
                 enabled=enabled,
                 notes=spec.get("notes"),
             )
-            existing = db.get(RoutingModelProfile, spec["id"])
             if existing:
                 for k, v in fields.items():
                     setattr(existing, k, v)
