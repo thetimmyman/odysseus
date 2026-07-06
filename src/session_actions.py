@@ -53,6 +53,14 @@ async def run_auto_sort(owner: str, skip_llm: bool = False) -> str:
         for row in rows:
             if getattr(row, 'is_important', False):
                 continue
+            # A session with an in-flight generation looks identical to a
+            # just-abandoned one (1 user message, 0 assistant messages yet) —
+            # without this check, a long-running agent turn can have its own
+            # session deleted out from under it purely by unlucky timing
+            # against this sweep's every-5th-session-created trigger.
+            from src import agent_runs
+            if agent_runs.is_active(row.id):
+                continue
             if (row.name or "").strip() == "Incognito":
                 deleted_throwaway += 1
                 db.delete(row)

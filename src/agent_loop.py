@@ -1311,6 +1311,13 @@ def _compute_final_metrics(
 _VERIFIER_EFFECTFUL_TOOLS = {
     "create_document", "update_document", "edit_document",
     "bash", "python", "write_file",
+    # edit_file (surgical find/replace) was missing here — it's the PRIMARY
+    # coding tool (agent_tools.py TOOL_TAGS), so real code edits were never
+    # double-checked by the completion verifier at all. Same gap made the
+    # auto-continue check (which backs off once _effectful_used flips true)
+    # correctly keep nudging through pure edit_file turns, but the verifier
+    # should now also sanity-check them once they're done.
+    "edit_file",
 }
 _VERIFIER_MAX_ROUNDS = 2  # cap re-verify cycles per turn — never loop forever
 
