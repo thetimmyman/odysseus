@@ -28,7 +28,17 @@ _FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"(^|/)\.next(/|$)"),
 ]
 
-_FENCE_RE = re.compile(r"```(?:diff|patch)?[ \t]*\r?\n(.*?)```", re.DOTALL)
+# Matches ANY fenced code block regardless of language tag ("python", "diff",
+# no tag at all, ...) -- deliberately NOT anchored to a "diff"/"patch" tag in
+# the regex itself. A response typically contains more than one fenced block
+# (e.g. an "Evidence" block showing the ORIGINAL buggy code, then a "Patch"
+# block with the actual diff); anchoring the opening delimiter to a specific
+# tag while leaving the closing delimiter untagged caused an untagged/
+# differently-tagged EARLIER fence (like "```python") to pair with the
+# actual diff's closing fence instead of its own, corrupting extraction.
+# Matching every fence correctly and filtering by content afterward (via
+# _looks_diff_shaped) avoids that mispairing entirely.
+_FENCE_RE = re.compile(r"```[^\n]*\r?\n(.*?)```", re.DOTALL)
 _DIFF_GIT_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _HEADER_RE = re.compile(r"^--- (\S+)\r?\n\+\+\+ (\S+)", re.MULTILINE)
 
@@ -37,10 +47,29 @@ def _looks_diff_shaped(text: str) -> bool:
     return bool(_DIFF_GIT_RE.search(text) or _HEADER_RE.search(text))
 
 
+def _trim_to_diff_end(text: str) -> str:
+    """A bare (unfenced) diff embedded in prose has no closing delimiter to
+    bound it, unlike a fenced block -- trim at the first line that doesn't
+    look like unified-diff content (a header, hunk marker, +/-/context line,
+    a "no newline" marker, or a blank line inside a hunk). Everything before
+    that is the diff; everything from there on is trailing commentary that
+    would otherwise get baked into the patch.diff artifact."""
+    lines = text.splitlines()
+    end = 0
+    for line in lines:
+        if line == "" or line.startswith(("diff --git ", "index ", "--- ", "+++ ", "@@", "+", "-", " ", "\\")):
+            end += 1
+        else:
+            break
+    return "\n".join(lines[:end]).rstrip()
+
+
 def extract_diff(response_text: str) -> Optional[str]:
-    """Look for a fenced ```diff/```patch code block first (how most models
-    wrap patch output); fall back to bare unified-diff markers appearing
-    directly in the text. Returns None if nothing diff-shaped is found."""
+    """Look for a fenced code block containing a diff first (how most models
+    wrap patch output, whatever tag they give the fence or none at all);
+    fall back to bare unified-diff markers appearing directly in the text,
+    trimmed at the point the diff content ends. Returns None if nothing
+    diff-shaped is found."""
     if not response_text:
         return None
     for block in _FENCE_RE.findall(response_text):
@@ -48,7 +77,8 @@ def extract_diff(response_text: str) -> Optional[str]:
             return block.strip()
     match = _DIFF_GIT_RE.search(response_text) or _HEADER_RE.search(response_text)
     if match:
-        return response_text[match.start():].strip()
+        trimmed = _trim_to_diff_end(response_text[match.start():])
+        return trimmed or None
     return None
 
 
