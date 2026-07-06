@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants (kept here — sub-modules import from here)
 # ---------------------------------------------------------------------------
-MAX_AGENT_ROUNDS = 20
+MAX_AGENT_ROUNDS = 40  # was 20 - real multi-file repo tasks routinely need more exploration rounds
 SHELL_TIMEOUT = 60
 PYTHON_TIMEOUT = 30
 MAX_OUTPUT_CHARS = 10_000

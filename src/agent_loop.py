@@ -1596,6 +1596,17 @@ async def stream_agent_loop(
     _effectful_used = False
     _verifier_rounds = 0
     _verifier_instruction = _extract_last_user_message(messages)
+    # Abandoned-task auto-continue: weak local models sometimes narrate a
+    # multi-step plan or partial analysis then end the turn without ever
+    # calling the tool that would carry it out (e.g. describe a fix in
+    # prose but never call edit_file). Unlike the verifier above, this
+    # doesn't require an effectful tool to have run yet — it catches the
+    # turn ending with NO tool call at all after already being clearly
+    # mid-task. Bounded to a couple of nudges per turn so a genuinely
+    # finished (or pure Q&A) turn is never held hostage.
+    _auto_continues_used = 0
+    _MAX_AUTO_CONTINUES = 2
+    _MIN_CALLS_FOR_ABANDON_CHECK = 2
     real_input_tokens = 0   # Accumulated real usage from API
     real_output_tokens = 0
     last_round_input_tokens = 0  # Last round's input tokens (for context % peak)
@@ -1959,6 +1970,28 @@ async def stream_agent_loop(
                     # never re-verify an unchanged state in a loop.
                     _effectful_used = False
                     continue
+            if (not _force_answer
+                    and not _effectful_used
+                    and total_tool_calls >= _MIN_CALLS_FOR_ABANDON_CHECK
+                    and _auto_continues_used < _MAX_AUTO_CONTINUES
+                    and get_setting("agent_auto_continue_on_stall", True)):
+                _auto_continues_used += 1
+                _note = "\n\n_Continuing — this looked unfinished._\n\n"
+                yield f'data: {json.dumps({"delta": _note})}\n\n'
+                full_response += _note
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "You ended your last turn without calling any tool, but you were "
+                        "in the middle of an active task (you'd already made "
+                        f"{total_tool_calls} tool call(s) this turn) and hadn't yet made any "
+                        "actual change (no edit_file/write_file/create_document call). If "
+                        "there's more to do, use the appropriate tool now instead of just "
+                        "describing it. If you are genuinely finished, say so explicitly "
+                        "and do not call any more tools."
+                    ),
+                })
+                continue
             break  # no tools — done
 
         # ── Loop-breaker (Terminus-style stall detector) ──────────────
