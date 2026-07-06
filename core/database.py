@@ -458,7 +458,8 @@ class RoutingModelRun(Base):
     errored = Column(Boolean, nullable=False, default=False)
     error_message = Column(Text, nullable=True)
     scores = Column(Text, nullable=True)      # JSON dict, 8 fields 0-5 each, all nullable pre-scoring
-    artifacts = Column(Text, nullable=True)   # JSON dict: response_text_path, summary_path
+    artifacts = Column(Text, nullable=True)   # JSON dict: response_text_path, summary_path, patch_path
+    patch_validation = Column(Text, nullable=True)  # JSON dict from routing_patch.validate_patch_shape; set only for patch-shaped task types
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

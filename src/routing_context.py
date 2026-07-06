@@ -26,11 +26,11 @@ _SECRET_PATTERNS = [
 ]
 
 
-def _looks_like_secret(rel_path: str) -> bool:
+def looks_like_secret(rel_path: str) -> bool:
     return any(p.search(rel_path) for p in _SECRET_PATTERNS)
 
 
-def _safe_repo_path(repo_path: str, rel_path: str) -> Optional[str]:
+def safe_repo_path(repo_path: str, rel_path: str) -> Optional[str]:
     """Resolve `rel_path` relative to `repo_path`, refusing to let it escape
     the repo root via an absolute path or `..` traversal. Matches the
     realpath+commonpath jailing convention already used elsewhere in this
@@ -56,9 +56,9 @@ def _resolve_log_entry(repo_path: str, entry: str):
     escape repo_path (absolute or `..` traversal) is treated as literal
     content instead of being read -- same containment rule as
     build_context_bundle's file loop."""
-    safe_path = _safe_repo_path(repo_path, entry)
+    safe_path = safe_repo_path(repo_path, entry)
     if safe_path is not None and os.path.isfile(safe_path):
-        if _looks_like_secret(entry):
+        if looks_like_secret(entry):
             return f"<<refused: {entry!r} matches a secret-file pattern, not sent to the model>>", entry
         try:
             with open(safe_path, "r", errors="replace") as f:
@@ -134,10 +134,10 @@ def build_context_bundle(task) -> dict:
             continue
         seen_paths.add(rel_path)
 
-        safe_path = _safe_repo_path(task.repo_path, rel_path)
+        safe_path = safe_repo_path(task.repo_path, rel_path)
         if safe_path is None:
             content = f"<<refused: {rel_path!r} resolves outside repo_path, not read>>"
-        elif _looks_like_secret(rel_path):
+        elif looks_like_secret(rel_path):
             content = f"<<refused: {rel_path!r} matches a secret-file pattern, not sent to the model>>"
         else:
             try:

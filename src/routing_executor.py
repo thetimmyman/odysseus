@@ -26,6 +26,8 @@ from src.routing_budget import (
     check_task_budget, estimate_cost_usd,
 )
 from src.routing_context import build_context_bundle, estimate_tokens
+from src.routing_engine import _PATCH_SHAPED_TASK_TYPES
+from src.routing_patch import extract_diff, validate_patch_shape
 from src.routing_prompts import build_prompt
 
 ARCHIVE_ROOT = os.path.join(
@@ -180,22 +182,48 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 with open(response_path, "w") as f:
                     f.write(response_text)
 
+                artifacts = {"response_text_path": response_path, "prompt_path": prompt_path}
+                patch_validation = None
+                patch_summary = None
+                # Phase 3 (extraction/shape-validation only -- no apply/verify/
+                # rollback, that's Phase 4): only meaningful for task types that
+                # would produce a patch at all.
+                if task.task_type in _PATCH_SHAPED_TASK_TYPES:
+                    diff_text = extract_diff(response_text)
+                    patch_validation = validate_patch_shape(diff_text, task.repo_path)
+                    if patch_validation["extracted"]:
+                        patch_path = os.path.join(attempt_dir, "patch.diff")
+                        with open(patch_path, "w") as f:
+                            f.write(diff_text)
+                        artifacts["patch_path"] = patch_path
+                    patch_summary = {
+                        "extracted": patch_validation["extracted"],
+                        "allowed": patch_validation["allowed"],
+                        "file_count": patch_validation["file_count"],
+                        "changed_lines": patch_validation["changed_lines"],
+                        "reasons": patch_validation["reasons"],
+                    }
+
                 from core.database import RoutingModelRun
                 db.add(RoutingModelRun(
                     id=model_run_id, run_id=run_id, model_profile_id=profile.id,
                     input_tokens=input_tokens, output_tokens=output_tokens,
                     tokens_estimated=tokens_estimated, cost_usd=cost, latency_ms=latency_ms,
                     completed=True, rate_limited=False, errored=False,
-                    artifacts=json.dumps({"response_text_path": response_path, "prompt_path": prompt_path}),
+                    artifacts=json.dumps(artifacts),
+                    patch_validation=json.dumps(patch_validation) if patch_validation is not None else None,
                 ))
                 spent_so_far += cost
                 if profile.is_premium:
                     premium_spent += cost
-                summaries.append({
+                summary_entry = {
                     "model_run_id": model_run_id, "profile_id": profile.id, "model": profile.model,
                     "status": "completed", "cost_usd": round(cost, 4), "latency_ms": latency_ms,
                     "tokens_estimated": tokens_estimated,
-                })
+                }
+                if patch_summary is not None:
+                    summary_entry["patch"] = patch_summary
+                summaries.append(summary_entry)
             except Exception as e:
                 latency_ms = int((time.time() - t0) * 1000)
                 classification = _classify_llm_error(e)

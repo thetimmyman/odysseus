@@ -79,6 +79,7 @@ def cmd_show(args):
             "scores": scores,
             "weighted_score": score_run(scores, task_row.task_type) if task_row else None,
             "artifacts": json.loads(row.artifacts) if row.artifacts else {},
+            "patch_validation": json.loads(row.patch_validation) if row.patch_validation else None,
         }, args)
     finally:
         db.close()
