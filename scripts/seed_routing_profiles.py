@@ -23,6 +23,52 @@ def _find_endpoint_id(db, name: str):
 
 
 PROFILES = [
+    # Local Framework GPU models -- zero marginal cost, private, no
+    # third-party data exposure. Roles/notes come from the 2026-07-06
+    # 10-test gauntlet (isolated-clone real bug fix graded against a
+    # held-back oracle suite + fact-checked design proposal + adversarial
+    # review + implementation), NOT the lighter OpenRouter bulk-task
+    # benchmark the free-tier profiles below are seeded from -- keep that
+    # distinction when updating notes from a future benchmark.
+    {
+        "id": "qwen3-coder-next",
+        "endpoint_name": "Framework llama.cpp (Qwen3-Coder-Next, GPU)",
+        "model": "qwen3-coder-next",
+        "roles": ["implementer", "debugger"],
+        "context_window": 131_072,
+        "max_output_tokens": 4096,
+        "is_free": True,
+        "notes": (
+            "Local Framework GPU model, current Odysseus coding default. "
+            "2026-07-06 10-test gauntlet vs qwen3.6-35b-a3b-ud-q4km: decisive "
+            "win on raw code generation (6/6 vs 1/6 on the synthetic hard "
+            "gauntlet), roughly tied on a real production bug fix (test7, "
+            "graded against a held-back 26-test oracle suite). Only one local "
+            "model fits in GPU memory at a time -- verify `llamacpp-coder` is "
+            "the container currently up before routing here."
+        ),
+    },
+    {
+        "id": "qwen36-35b-a3b-ud-q4km",
+        "endpoint_name": "Framework llama.cpp (Qwen3.6-35B-A3B UD-Q4_K_M, GPU)",
+        "model": "qwen3.6-35b-a3b-ud-q4km",
+        "roles": ["planner"],
+        "context_window": 32_768,
+        "max_output_tokens": 4096,
+        "is_free": True,
+        "notes": (
+            "Local Framework GPU model. 2026-07-06 10-test gauntlet vs "
+            "qwen3-coder-next: only edged ahead on design-proposal/plan "
+            "quality (test8), not on writing correct code -- do NOT give this "
+            "an implementer role. Never converged on a written deliverable for "
+            "the adversarial-review task (test9) even after nudges, for "
+            "either model -- looks like a real behavioral limit on very "
+            "open-ended/unbounded tasks, not a routing or prompt fix, so no "
+            "reviewer role either until that's re-tested. Only one local model "
+            "fits in GPU memory at a time -- currently NOT the one loaded "
+            "(check `docker ps llamacpp-qwen36-35b` before routing here)."
+        ),
+    },
     {
         "id": "nemotron-super-free",
         "endpoint_name": "openrouter-bench",
