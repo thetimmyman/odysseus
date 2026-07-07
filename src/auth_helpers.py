@@ -137,6 +137,53 @@ def require_privilege(request: Request, key: str) -> str:
     return user
 
 
+def require_admin_cookie(request: Request) -> str:
+    """Cookie-only admin gate for the Argo crew approval routes (the Oracle's
+    seal). Deliberately does NOT delegate to ``core.middleware.require_admin``,
+    which honours the internal-tool loopback token and ``current_user ==
+    "internal-tool"`` — an ``app_api``/loopback path could otherwise ride that
+    into ``/approve`` and approve a destructive ``bash``/email side effect.
+
+    Rejects, in order:
+      * any bearer-token caller (``request.state.api_token`` truthy),
+      * the ``api`` / ``internal-tool`` pseudo-users,
+      * a present internal-tool loopback header,
+    THEN requires a real cookie user with ``auth_manager.is_admin(user)``.
+
+    Raises ``HTTPException(403)`` on any failure; returns the admin username on
+    success. Desktop-admin-only for the MVP (Decision A) — phone/remote
+    approval via a ``crew_approve`` scope is a deliberate Tier-2 follow-up.
+    """
+    # 1. Reject bearer tokens outright (companion/mobile tokens default to
+    #    scopes="chat" and no route checks scopes — see hardening fix #4).
+    if getattr(request.state, "api_token", False):
+        raise HTTPException(403, "Admin cookie session required")
+
+    # 2. Reject the sandboxed / loopback pseudo-users.
+    user = get_current_user(request)
+    if user in ("api", "internal-tool"):
+        raise HTTPException(403, "Admin cookie session required")
+
+    # 3. Reject any internal-tool loopback marker on the request, even if the
+    #    middleware did not stamp current_user (belt-and-suspenders).
+    try:
+        from core.middleware import INTERNAL_TOOL_HEADER
+        if request.headers.get(INTERNAL_TOOL_HEADER):
+            raise HTTPException(403, "Admin cookie session required")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # 4. Require a real, admin cookie user.
+    auth_manager = getattr(request.app.state, "auth_manager", None)
+    if auth_manager is None:
+        raise HTTPException(403, "Admin only")
+    if not user or not auth_manager.is_admin(user):
+        raise HTTPException(403, "Admin only")
+    return user
+
+
 def owner_filter(query, model_cls, user: str, *, include_shared: bool = True):
     """Filter `query` so only rows owned by `user` (and optionally null-owner
     'shared' rows) come through. No-op when `user` is empty (single-user

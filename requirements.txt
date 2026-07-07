@@ -43,3 +43,11 @@ qrcode[pil]
 croniter
 pytest
 pytest-asyncio
+
+# code-search fallback: preemptive per-call regex timeout (ReDoS guard)
+regex>=2024.0.0
+
+# WebSocket protocol implementation for uvicorn — required by the integrated
+# terminal (routes/terminal_routes.py). Uvicorn ships NO websocket lib by
+# default; without this the PTY WS handshake fails at the ASGI layer.
+websockets>=12.0

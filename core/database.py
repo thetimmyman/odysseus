@@ -24,7 +24,7 @@ class TimestampMixin:
     @declared_attr
     def created_at(cls):
         return Column(DateTime, default=utcnow_naive, nullable=False)
-    
+
     @declared_attr
     def updated_at(cls):
         return Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive, nullable=False)
@@ -86,26 +86,28 @@ class Session(TimestampMixin, Base):
     Represents a chat session with its configuration and metadata.
     """
     __tablename__ = "sessions"
-    
+
     # Primary key
     id = Column(String, primary_key=True, index=True)
-    
+
     # Session metadata
     name = Column(String, nullable=False)
     endpoint_url = Column(String, nullable=False)
     model = Column(String, nullable=False)
     owner = Column(String, nullable=True, index=True)  # username; null = legacy/shared
-    
+
     # Configuration flags
     rag = Column(Boolean, default=False)
     archived = Column(Boolean, default=False)
 
     # Organization
     folder = Column(String, nullable=True, default=None)
-    
+    # Per-session project root (cwd for bash/python; extra confinement root for file tools)
+    project_root = Column(String, nullable=True, default=None)
+
     # Headers stored as JSON
     headers = Column(JSON, default=dict)
-    
+
     # Timestamps are provided by TimestampMixin
     last_accessed = Column(DateTime, default=func.now(), onupdate=func.now())
     # Timestamp of the last actual MESSAGE in this session. Set explicitly
@@ -114,14 +116,14 @@ class Session(TimestampMixin, Base):
     # opening the chat (all of which bump updated_at and last_accessed).
     # The "Last active" sort uses this.
     last_message_at = Column(DateTime, nullable=True, default=None)
-    
-    
+
+
     # Indexes - optimized composites
     __table_args__ = (
         Index('ix_sessions_active', 'archived', 'last_accessed'),
         Index('ix_sessions_search', 'name', 'archived'),
     )
-    
+
     # Properties
     is_important = Column(Boolean, default=False)
     message_count = Column(Integer, default=0)
@@ -132,12 +134,12 @@ class Session(TimestampMixin, Base):
 
     # Relationship to chat messages
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
-    
+
     @property
     def is_active(self):
         """Check if session is active (not archived)"""
         return not self.archived
-    
+
     def to_dict(self):
         """Convert session to dictionary for JSON serialization"""
         return {
@@ -165,13 +167,13 @@ class ChatMessage(Base):
     Represents individual chat messages within a session.
     """
     __tablename__ = "chat_messages"
-    
+
     # Primary key - using String to support UUIDs
     id = Column(String, primary_key=True, index=True)
-    
+
     # Foreign key to Session
     session_id = Column(String, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+
     # Message content
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
@@ -179,10 +181,10 @@ class ChatMessage(Base):
 
     # Timestamp
     timestamp = Column(DateTime, default=utcnow_naive)
-    
+
     # Relationship to Session
     session = relationship("Session", back_populates="messages")
-    
+
     # Indexes - optimized composite
     __table_args__ = (
         Index('ix_messages_session_time', 'session_id', 'timestamp'),  # Composite for efficient message retrieval
@@ -535,6 +537,9 @@ class CrewMember(TimestampMixin, Base):
     sort_order    = Column(Integer, default=0)
     is_default_assistant = Column(Boolean, default=False)   # singleton per-owner "personal assistant"
     timezone      = Column(String, nullable=True)           # IANA tz name (e.g. "America/New_York") for scheduled check-ins
+    # --- Argo crew grouping (NULL for both = the existing solo personal-assistant; preserves current semantics) ---
+    crew_id       = Column(String, ForeignKey("crews.id", ondelete="CASCADE"), nullable=True, index=True)  # parent Argo grouping; NULL = solo assistant
+    role_kind     = Column(String, nullable=True)           # "planner" | "worker" | "critic"; NULL = solo assistant
 
     session = relationship("Session", foreign_keys=[session_id],
                            backref=backref("crew_member", uselist=False))
@@ -643,19 +648,116 @@ class TaskRun(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Argo agent-crew (Tier-1) data model.
+# A Crew groups CrewMember role-definitions; a CrewRun is one voyage (mirrors
+# TaskRun); CrewAgentRun is a per-worker child run; CrewApproval persists the
+# async human-approval gate ("the Oracle's seal").
+# ---------------------------------------------------------------------------
+class Crew(TimestampMixin, Base):
+    """Parent grouping for an Argo agent-crew. Single-owner (security anchor)."""
+    __tablename__ = "crews"
+
+    id          = Column(String, primary_key=True, index=True)
+    owner       = Column(String, nullable=False, index=True)   # single owner of the whole crew (security anchor; NOT nullable)
+    name        = Column(String, nullable=False, default="The Argo")
+    description = Column(Text, nullable=True)
+    is_active   = Column(Boolean, default=True)
+    max_agents       = Column(Integer, nullable=True)   # total spawn ceiling; NULL => orchestrator default
+    max_total_rounds = Column(Integer, nullable=True)
+    token_budget     = Column(Integer, nullable=True)
+    wall_clock_s     = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index('ix_crews_owner_active', 'owner', 'is_active'),
+    )
+
+
+class CrewRun(Base):
+    """Record of a single crew voyage. Mirrors TaskRun; id is an unguessable UUID
+    (it is also the agent_runs key for the parent SSE stream)."""
+    __tablename__ = "crew_runs"
+
+    id          = Column(String, primary_key=True, index=True)   # unguessable UUID (also the agent_runs stream key)
+    crew_id     = Column(String, ForeignKey("crews.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner       = Column(String, nullable=False, index=True)     # NEVER null for a real user (security anchor)
+    prompt      = Column(Text, nullable=True)                    # the quest given to Athena
+    status      = Column(String, default="running")             # running|success|error|stopped|blocked
+    started_at  = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    result      = Column(Text, nullable=True)                   # Athena's final synthesis
+    error       = Column(Text, nullable=True)
+    tokens_used = Column(Integer, nullable=True)
+    plan        = Column(Text, nullable=True)                   # JSON: Athena's decomposed subtasks
+    blackboard_dir = Column(String, nullable=True)              # realpath of the Mnemosyne scratch dir (under project_root)
+    session_id  = Column(String, nullable=True)                 # the owner's session whose project_root confines the run
+
+    __table_args__ = (
+        Index('ix_crew_runs_owner_started', 'owner', 'started_at'),
+    )
+
+
+class CrewAgentRun(Base):
+    """Per-worker child run within a CrewRun."""
+    __tablename__ = "crew_agent_runs"
+
+    id             = Column(String, primary_key=True, index=True)
+    crew_run_id    = Column(String, ForeignKey("crew_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    crew_member_id = Column(String, nullable=True)    # links to crew_members.id (the role definition)
+    agent_id       = Column(String, nullable=False)   # the SSE re-tag id (e.g. "argonaut-1")
+    role           = Column(String, nullable=True)    # "Helmsman"/"Lookout"/etc + role_kind
+    subtask        = Column(Text, nullable=True)
+    status         = Column(String, default="running")# running|success|error|blocked
+    started_at     = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at    = Column(DateTime, nullable=True)
+    result         = Column(Text, nullable=True)
+    error          = Column(Text, nullable=True)
+    tokens_used    = Column(Integer, nullable=True)
+    rounds         = Column(Integer, nullable=True)
+    model          = Column(String, nullable=True)    # resolved at dispatch
+    steps          = Column(Text, nullable=True)      # JSON log of agent tool calls
+
+    __table_args__ = (
+        Index('ix_crew_agent_runs_parent', 'crew_run_id', 'started_at'),
+    )
+
+
+class CrewApproval(Base):
+    """The Oracle's seal — a persisted async human-approval gate for a parked
+    side-effecting tool call. action_args is SECRET-REDACTED before INSERT."""
+    __tablename__ = "crew_approvals"
+
+    id              = Column(String, primary_key=True, index=True)   # unguessable UUID
+    crew_run_id     = Column(String, ForeignKey("crew_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner           = Column(String, nullable=False, index=True)     # only this owner may approve
+    agent_id        = Column(String, nullable=True)
+    conversation_id = Column(String, nullable=True)
+    tool            = Column(String, nullable=True)    # NORMALIZED tool name (mcp__ prefix stripped)
+    action_args     = Column(Text, nullable=True)      # JSON of the parked tool block content, SECRET-REDACTED
+    risk            = Column(String, nullable=True)    # "destructive"|"external"|"spend"|"scope"|"conflict"
+    status          = Column(String, default="pending")# pending|approved|rejected|expired
+    created_at      = Column(DateTime, nullable=False, default=datetime.utcnow)
+    decided_by      = Column(String, nullable=True)
+    decided_at      = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('ix_crew_approvals_run', 'crew_run_id', 'status'),
+    )
+
+
 class Memory(Base):
     """
     SQLAlchemy model for Memory table.
     Represents persistent memory entries with metadata.
     """
     __tablename__ = "memories"
-    
+
     # Primary key
     id = Column(String, primary_key=True, index=True)
-    
+
     # Memory content
     text = Column(Text, nullable=False)
-    
+
     # Categorization
     category = Column(String, default='fact')
     source = Column(String, default='user')
@@ -996,6 +1098,25 @@ def _migrate_add_mode_column():
         conn.close()
     except Exception as e:
         logging.getLogger(__name__).warning(f"Migration check for mode failed: {e}")
+
+def _migrate_add_project_root_column():
+    """Add project_root column to sessions table if it doesn't exist."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(sessions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "project_root" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN project_root TEXT")
+            conn.commit()
+            logging.getLogger(__name__).info("Migrated: added 'project_root' column to sessions")
+        conn.close()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Migration check for project_root failed: {e}")
+
 
 def _migrate_add_folder_column():
     """Add folder column to sessions table if it doesn't exist."""
@@ -1456,6 +1577,50 @@ def _migrate_add_assistant_columns():
         logging.getLogger(__name__).warning(f"assistant columns migration: {e}")
 
 
+def _migrate_add_crew_grouping_columns():
+    """Add crew_id + role_kind to crew_members for the Argo crew layer.
+    NULL for both = the existing solo personal-assistant (semantics preserved).
+    Named distinctly from the unrelated _migrate_add_crew_member_id (which adds
+    crew_member_id to sessions/scheduled_tasks)."""
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(crew_members)"))]
+            if "crew_id" not in cols:
+                conn.execute(text("ALTER TABLE crew_members ADD COLUMN crew_id TEXT"))
+                conn.commit()
+                logging.getLogger(__name__).info("Added crew_id column to crew_members")
+            if "role_kind" not in cols:
+                conn.execute(text("ALTER TABLE crew_members ADD COLUMN role_kind TEXT"))
+                conn.commit()
+                logging.getLogger(__name__).info("Added role_kind column to crew_members")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"crew grouping columns migration: {e}")
+
+
+def _migrate_expire_orphan_crew_approvals():
+    """Server-start sweep: agent_runs durability is in-memory only, so after a
+    restart any CrewApproval still 'pending' has lost its in-process asyncio.Event
+    and can never be resolved. Mark pending rows whose parent CrewRun is terminal
+    (or missing) as 'expired'. Idempotent; no-op if the table doesn't exist yet."""
+    try:
+        with engine.connect() as conn:
+            tbls = [r[0] for r in conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('crew_approvals','crew_runs')"))]
+            if "crew_approvals" not in tbls:
+                return
+            r = conn.execute(text(
+                "UPDATE crew_approvals SET status='expired' "
+                "WHERE status='pending' AND ("
+                "  crew_run_id NOT IN (SELECT id FROM crew_runs) OR "
+                "  crew_run_id IN (SELECT id FROM crew_runs WHERE status NOT IN ('running','blocked'))"
+                ")"))
+            conn.commit()
+            if r.rowcount:
+                logging.getLogger(__name__).info(f"Expired {r.rowcount} orphaned pending crew approval(s) on startup")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"orphan crew approval sweep: {e}")
+
+
 
 
 
@@ -1644,6 +1809,7 @@ def init_db():
     _migrate_add_document_archived_column()
     _migrate_add_last_message_at_column()
     _migrate_add_folder_column()
+    _migrate_add_project_root_column()
     _migrate_add_token_columns()
     _migrate_add_mode_column()
     _migrate_add_multiuser_owner_columns()
@@ -1661,6 +1827,8 @@ def init_db():
     _migrate_drop_ping_notes_tasks()
     _migrate_add_crew_member_id()
     _migrate_add_assistant_columns()
+    _migrate_add_crew_grouping_columns()        # Argo: crew_id + role_kind on crew_members
+    _migrate_expire_orphan_crew_approvals()     # Argo: clear phantom pending approvals after restart
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()
     _migrate_add_calendar_metadata()
@@ -2014,16 +2182,16 @@ def bulk_insert_messages(session_id: str, messages: list):
 def cleanup_old_sessions(days: int = 30):
     """Remove sessions older than specified days"""
     from datetime import timedelta
-    
+
     with get_db_session() as db:
         cutoff_date = utcnow_naive() - timedelta(days=days)
-        
+
         deleted_count = db.query(Session).filter(
             Session.archived == True,
             Session.last_accessed < cutoff_date,
             Session.is_important == False
         ).delete()
-        
+
         return deleted_count
 
 def get_session_stats():
@@ -2041,18 +2209,18 @@ def get_session_stats():
 def get_detailed_stats():
     """Get comprehensive database statistics including file size"""
     stats = get_session_stats()  # Use existing function
-    
+
     # Add database file size
     db_size_mb = 0.0
     if "sqlite" in DATABASE_URL:
         db_path = DATABASE_URL.replace("sqlite:///", "")
         if not os.path.isabs(db_path):
             db_path = os.path.abspath(db_path)
-        
+
         if os.path.exists(db_path):
             db_size = os.path.getsize(db_path)
             db_size_mb = round(db_size / (1024 * 1024), 2)
-    
+
     stats['database_size_mb'] = db_size_mb
     return stats
 

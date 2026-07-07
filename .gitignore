@@ -89,3 +89,8 @@ docs/windows-port/
 compound.config.json
 *.error.log
 _scratch/
+
+# never commit data backups (contain sessions.json/auth.json/etc.)
+data.fresh-bak/
+data*-bak/
+data.*bak/

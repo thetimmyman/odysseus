@@ -591,20 +591,18 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      // Errors carry actionable text (e.g. "tmux is required …"); keep them up
-      // long enough to read, matching the serve path's duration (issue #1355).
-      uiModule.showToast('Download failed: HTTP ' + res.status, 9000);
+      uiModule.showToast('Download failed: HTTP ' + res.status);
       return;
     }
     const data = await res.json();
     if (!data.ok) {
-      uiModule.showToast('Download failed: ' + (data.error || ''), 9000);
+      uiModule.showToast('Download failed: ' + (data.error || ''));
       return;
     }
     _addTask(data.session_id, shortName, 'download', payload);
     uiModule.showToast(`Downloading ${shortName}...`);
   } catch (e) {
-    uiModule.showToast('Download failed: ' + e.message, 9000);
+    uiModule.showToast('Download failed: ' + e.message);
   }
 }
 

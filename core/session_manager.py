@@ -116,6 +116,7 @@ class SessionManager:
             headers=headers,
             history=[],
             owner=getattr(db_session, "owner", None),
+            project_root=getattr(db_session, "project_root", None),
             is_important=getattr(db_session, "is_important", False) or False,
         )
         session.message_count = getattr(db_session, "message_count", 0) or 0
@@ -174,6 +175,7 @@ class SessionManager:
             headers=headers,
             history=history,
             owner=getattr(db_session, 'owner', None),
+            project_root=getattr(db_session, 'project_root', None),
             is_important=getattr(db_session, 'is_important', False) or False,
         )
 
@@ -393,6 +395,7 @@ class SessionManager:
             session.rag = db_session.rag
             session.archived = db_session.archived
             session.owner = getattr(db_session, "owner", None)
+            session.project_root = getattr(db_session, "project_root", None)
             session.is_important = getattr(db_session, "is_important", False) or False
             session.message_count = getattr(db_session, "message_count", session.message_count) or 0
             return True
@@ -591,6 +594,27 @@ class SessionManager:
             raise
         finally:
             db.close()
+
+    def set_session_project_root(self, session_id: str, project_root):
+        """Persist this session's project_root (cwd + confinement root)."""
+        db = SessionLocal()
+        try:
+            db_session = db.query(DbSession).filter(DbSession.id == session_id).first()
+            if db_session:
+                db_session.project_root = project_root
+                db_session.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                if session_id in self.sessions:
+                    self.sessions[session_id].project_root = project_root
+            else:
+                raise KeyError(f"Session {session_id} not found")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error setting session project_root: {e}")
+            raise
+        finally:
+            db.close()
+
 
     # ------------------------------------------------------------------
     # Queries

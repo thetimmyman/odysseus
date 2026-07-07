@@ -1,10 +1,14 @@
 services:
   odysseus:
     build: .
+    init: true   # tini as PID1 reaps reparented dev-server children (no zombie leak)
+    pids_limit: 1024   # fork-bomb backstop for the terminal PTY (defense-in-depth)
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
+      - "${APP_BIND:-127.0.0.1}:${DEV_PREVIEW_PROXY_PORT:-7100}:${DEV_PREVIEW_PROXY_PORT:-7100}"   # Dev Preview: admin-gated proxy (dev server itself is container-loopback, UNpublished)
     volumes:
       - ./data:/app/data:z
+      - ${REPOS_HOST_DIR:-./repos}:/app/work:z
       - ./logs:/app/logs:z
       # Cookbook remote-server SSH identity. Odysseus can generate a key here;
       # add the shown public key to each remote server's authorized_keys.
@@ -53,6 +57,10 @@ services:
       - GOOGLE_PSE_CX=${GOOGLE_PSE_CX:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
+      # Dev Preview masked env editor: refuse plaintext non-loopback secret writes
+      # unless this is set true. Generic default = false (fail-closed). This box is
+      # a trusted LAN/Tailscale dev host served over HTTP, so .env sets it true.
+      - DEV_PREVIEW_ALLOW_INSECURE_ENV_WRITE=${DEV_PREVIEW_ALLOW_INSECURE_ENV_WRITE:-false}
       # PUID / PGID — the user/group the container drops to before
       # running uvicorn (entrypoint also chowns /app/data + /app/logs
       # to match, so bind-mounted files stay editable from the host).
@@ -63,12 +71,22 @@ services:
       # Find yours with:  id -u  /  id -g
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      - PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-/app/data/ms-playwright}
+      - npm_config_cache=${npm_config_cache:-/app/data/.npm}
     depends_on:
       searxng:
         condition: service_healthy
       chromadb:
         condition: service_started
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:7000/api/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "autoheal=true"
 
   chromadb:
     image: docker.io/chromadb/chroma:latest
@@ -81,12 +99,7 @@ services:
     restart: unless-stopped
 
   searxng:
-    # Pinned, not :latest — odysseus waits on searxng's healthcheck
-    # (depends_on: condition: service_healthy), so a broken upstream `latest`
-    # tag blocks the whole app from starting. 2026.6.2 crashes on boot with
-    # `KeyError: 'default_doi_resolver'`, failing the healthcheck (issue #1414).
-    # Bump this deliberately after verifying a newer tag boots clean.
-    image: docker.io/searxng/searxng:2026.5.31-7159b8aed
+    image: docker.io/searxng/searxng@sha256:c6dde203961b0b138d17ecbcef31026852a4210926564af48acf58352da38b42   # PINNED to a known-good digest (avoid :latest drift; review 2026-06-05)
     entrypoint:
       - /bin/sh
       - -c

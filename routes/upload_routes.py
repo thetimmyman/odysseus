@@ -8,7 +8,6 @@ from typing import List
 import logging
 from core.middleware import require_admin
 from src.auth_helpers import get_current_user
-from src.upload_handler import count_recent_uploads
 
 logger = logging.getLogger(__name__)
 
@@ -50,32 +49,29 @@ def setup_upload_routes(upload_handler):
             raise HTTPException(404, "File not found")
 
         raise HTTPException(404, "File not found")
-    
+
     @router.post("")
     async def api_upload(request: Request, files: List[UploadFile] = File(...)):
         """Upload files with enhanced security and organization."""
         if not files:
             raise HTTPException(400, "No files uploaded")
-            
+
         client_ip = request.client.host if request.client else "unknown"
         out = []
 
-        # Limit concurrent uploads per IP. Count genuine recent upload events —
-        # NOT the number of files in this batch. The previous check summed over
-        # `files`, so a single multi-file request counted itself as N concurrent
-        # uploads and tripped the limit (issue #1346: "attach more than one file
-        # → the model doesn't even see them"). save_upload still enforces the
-        # per-minute sliding-window rate limit per file.
-        recent_uploads = count_recent_uploads(
-            upload_handler.upload_rate_log.get(client_ip, []), time.time()
+        # Limit concurrent uploads per IP
+        ip_upload_count = sum(
+            1 for f in files
+            if client_ip in upload_handler.upload_rate_log and
+            any(now > time.time() - 10 for now in upload_handler.upload_rate_log[client_ip][-len(files):])
         )
 
-        if recent_uploads >= upload_handler.max_concurrent_uploads:
+        if ip_upload_count >= upload_handler.max_concurrent_uploads:
             raise HTTPException(
                 status_code=429,
                 detail=f"Maximum concurrent uploads ({upload_handler.max_concurrent_uploads}) exceeded"
             )
-        
+
         for u in files:
             try:
                 meta = upload_handler.save_upload(u, client_ip, owner=get_current_user(request))
@@ -95,12 +91,12 @@ def setup_upload_routes(upload_handler):
             except Exception as e:
                 logger.error(f"Failed to process upload {u.filename}: {str(e)}")
                 continue
-        
+
         if not out:
             raise HTTPException(500, "All file uploads failed")
-            
+
         return {"files": out}
-    
+
     @router.post("/cleanup")
     async def manual_cleanup(request: Request):
         """Manually trigger cleanup of old uploads."""
@@ -268,5 +264,5 @@ def setup_upload_routes(upload_handler):
         while True:
             await asyncio.sleep(3600)
             upload_handler.cleanup_rate_limits()
-    
+
     return router, periodic_rate_limit_cleanup

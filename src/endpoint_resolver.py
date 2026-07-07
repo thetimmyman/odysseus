@@ -317,7 +317,7 @@ def resolve_endpoint(
 
 
 def resolve_endpoint_by_id(
-    ep_id: str, model: Optional[str] = None, owner: Optional[str] = None
+    ep_id: str, model: Optional[str] = None
 ) -> Optional[Tuple[str, str, Dict]]:
     """Resolve a specific endpoint id (+ optional model) to (chat_url, model, headers).
 
@@ -328,14 +328,10 @@ def resolve_endpoint_by_id(
         return None
     db = SessionLocal()
     try:
-        q = db.query(ModelEndpoint).filter(
+        ep = db.query(ModelEndpoint).filter(
             ModelEndpoint.id == ep_id,
             ModelEndpoint.is_enabled == True,
-        )
-        if owner:
-            from src.auth_helpers import owner_filter
-            q = owner_filter(q, ModelEndpoint, owner)
-        ep = q.first()
+        ).first()
         if not ep:
             return None
         try:
@@ -362,14 +358,14 @@ def resolve_endpoint_by_id(
         db.close()
 
 
-def resolve_chat_fallback_candidates(owner: Optional[str] = None) -> list:
+def resolve_chat_fallback_candidates() -> list:
     """Build the configured default-chat fallback chain as a list of
     (chat_url, model, headers) tuples, skipping any that can't resolve.
 
     The primary model is NOT included — callers prepend their session's
     current (url, model, headers) so per-session model overrides are honored.
     """
-    return _resolve_fallback_candidates("default_model_fallbacks", owner=owner)
+    return _resolve_fallback_candidates("default_model_fallbacks")
 
 
 def resolve_utility_fallback_candidates(owner: Optional[str] = None) -> list:
@@ -385,9 +381,9 @@ def resolve_utility_fallback_candidates(owner: Optional[str] = None) -> list:
     return _resolve_fallback_candidates("utility_model_fallbacks", owner=owner)
 
 
-def resolve_vision_fallback_candidates(owner: Optional[str] = None) -> list:
+def resolve_vision_fallback_candidates() -> list:
     """Configured fallback chain for the Vision model (`vision_model_fallbacks`)."""
-    return _resolve_fallback_candidates("vision_model_fallbacks", owner=owner)
+    return _resolve_fallback_candidates("vision_model_fallbacks")
 
 
 def _resolve_fallback_candidates(setting_key: str, owner: Optional[str] = None) -> list:
@@ -401,7 +397,7 @@ def _resolve_fallback_candidates(setting_key: str, owner: Optional[str] = None) 
     for entry in chain:
         if not isinstance(entry, dict):
             continue
-        resolved = resolve_endpoint_by_id(entry.get("endpoint_id", ""), entry.get("model", ""), owner=owner)
+        resolved = resolve_endpoint_by_id(entry.get("endpoint_id", ""), entry.get("model", ""))
         if resolved:
             out.append(resolved)
     return out

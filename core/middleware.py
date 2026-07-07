@@ -107,6 +107,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             )
         else:
             response.headers["X-Frame-Options"] = "DENY"
+            # Allow ONLY the admin-gated Dev Preview proxy (same host, :PROXY_PORT)
+            # to be iframed by the Odysseus SPA — nothing else.
+            _pp = os.environ.get("DEV_PREVIEW_PROXY_PORT", "7100")
+            _hh = request.headers.get("host") or ""
+            _rh = (_hh.split("]")[0] + "]") if _hh.startswith("[") else (_hh.rsplit(":", 1)[0] if ":" in _hh else _hh)
+            _preview_frame = f" http://{_rh}:{_pp}" if _rh else ""
             # NOTE: `style-src 'unsafe-inline'` is intentionally retained.
             # `static/index.html` and `static/login.html` ship inline <style>
             # blocks, and several JS modules build runtime `style=""` attrs.
@@ -121,7 +127,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "img-src 'self' data: blob:; "
                 "media-src 'self' blob:; "
                 "connect-src 'self'; "
-                "frame-src 'self'; "
+                f"frame-src 'self'{_preview_frame}; "
                 "frame-ancestors 'none'"
             )
         return response

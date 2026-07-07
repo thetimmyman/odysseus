@@ -1721,7 +1721,7 @@ async function _loadEmails({ force = false, useCache = true } = {}) {
 async function _loadScheduled(grid, sp) {
   const res = await fetch(`${API_BASE}/api/email/scheduled`);
   const data = await res.json();
-  if (sp) sp.destroy();
+  sp.destroy();
   const items = data.scheduled || [];
   grid.innerHTML = '';
   const stats = document.getElementById('email-lib-stats');
@@ -4585,6 +4585,11 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
       },
     },
     {
+      label: 'Spam & block similar…',
+      icon: _spamIcon,
+      submenu: 'spamrule',
+    },
+    {
       label: 'Move to Trash',
       icon: _trashIcon,
       action: async () => {
@@ -4624,6 +4629,10 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
         _showLibRemindSubmenu(em, dropdown);
         return;
       }
+      if (a.submenu === 'spamrule') {
+        _showLibSpamSubmenu(em, dropdown, closeAndRemove);
+        return;
+      }
       dropdown.remove();
       anchor.classList.remove('reader-more-active');
       a.action();
@@ -4655,6 +4664,84 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
   setTimeout(() => document.addEventListener('click', close, true), 10);
 }
 
+function _showLibSpamSubmenu(em, parentDropdown, onConfirmed) {
+  parentDropdown.innerHTML = '';
+  parentDropdown.style.minWidth = '236px';
+  const from = (em.from_address || em.from || '').trim();
+  const addrMatch = /<([^>]+)>/.exec(from);
+  const addr = (addrMatch ? addrMatch[1] : from).trim();
+  const domain = addr.includes('@') ? addr.split('@').pop().toLowerCase().replace(/[>\s]+$/, '') : '';
+
+  const header = document.createElement('div');
+  header.className = 'dropdown-item-compact';
+  header.style.cssText = 'opacity:0.5;font-size:10px;pointer-events:none;text-transform:uppercase;letter-spacing:0.5px;';
+  header.innerHTML = '<span>Spam &amp; block future</span>';
+  parentDropdown.appendChild(header);
+
+  const sel = { sender: false, domain: !!domain, content: false };
+  const opts = [
+    { key: 'sender', label: 'Block sender', sub: addr.slice(0, 24) },
+    { key: 'domain', label: 'Block sender domain', sub: domain || '(unknown)' },
+    { key: 'content', label: 'Block similar content', sub: 'AI similarity' },
+  ];
+  for (const o of opts) {
+    const disabled = (o.key === 'domain' && !domain);
+    if (disabled) sel.domain = false;
+    const item = document.createElement('div');
+    item.className = 'dropdown-item-compact';
+    item.style.cssText = disabled ? 'opacity:0.4;cursor:not-allowed;' : 'cursor:pointer;';
+    const render = () => {
+      item.innerHTML =
+        '<span style="width:16px;display:inline-flex;justify-content:center;">' + (sel[o.key] ? '\u2611' : '\u2610') + '</span>' +
+        '<span>' + o.label + '</span>' +
+        '<span style="margin-left:auto;opacity:0.45;font-size:10px;max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + o.sub + '</span>';
+    };
+    render();
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (disabled) return;
+      sel[o.key] = !sel[o.key];
+      render();
+    });
+    parentDropdown.appendChild(item);
+  }
+
+  const confirmItem = document.createElement('div');
+  confirmItem.className = 'dropdown-item-compact dropdown-item-danger';
+  confirmItem.style.cssText = 'cursor:pointer;justify-content:center;font-weight:600;margin-top:2px;border-top:1px solid var(--border);';
+  confirmItem.innerHTML = '<span>Move to Spam &amp; create rule</span>';
+  confirmItem.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!sel.sender && !sel.domain && !sel.content) {
+      import('./ui.js').then(m => m.showToast && m.showToast('Pick at least one block option')).catch(() => {});
+      return;
+    }
+    parentDropdown.remove();
+    await _libMarkSpamAndBlock(em, sel, onConfirmed);
+  });
+  parentDropdown.appendChild(confirmItem);
+}
+
+async function _libMarkSpamAndBlock(em, criteria, onConfirmed) {
+  const ui = await import('./ui.js');
+  try {
+    const folder = (typeof state !== 'undefined' && state._libFolder) ? state._libFolder : 'INBOX';
+    const res = await fetch(
+      `${API_BASE}/api/email/spam-rule/${em.uid}?folder=${encodeURIComponent(folder)}${_acct()}`,
+      { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(criteria) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      ui.showError && ui.showError('Spam rule failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    const extra = data.swept > 0 ? ` + ${data.swept} similar` : '';
+    ui.showToast && ui.showToast(`Moved to Spam${extra} \u2014 rule created`);
+    if (typeof onConfirmed === 'function') await onConfirmed();
+  } catch (err) {
+    ui.showError && ui.showError('Spam rule failed: ' + (err && err.message ? err.message : err));
+  }
+}
+
 function _showCardMenu(em, anchor) {
   document.querySelectorAll('.email-card-dropdown').forEach(d => d.remove());
 
@@ -4674,6 +4761,7 @@ function _showCardMenu(em, anchor) {
   const isSentFolder = /sent/i.test(state._libFolder);
 
   const _newTabIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+  const _spamRuleIco = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
   const actions = [
     { label: 'Open', icon: _replyIcon, action: async () => {
       // Just expand inline (same as tapping the row).
@@ -4765,6 +4853,9 @@ function _showCardMenu(em, anchor) {
     },
   });
 
+  if (!isSentFolder) {
+    actions.push({ label: 'Spam & block similar…', icon: _spamRuleIco, submenu: 'spamrule' });
+  }
   actions.push(
     { label: 'Delete', icon: _delIcon, danger: true, action: async () => {
       const subject = em.subject || '(no subject)';
@@ -4778,6 +4869,12 @@ function _showCardMenu(em, anchor) {
     }},
   );
 
+  const _removeThisCard = async () => {
+    await _animateEmailCardRemoval([em.uid]);
+    state._libEmails = state._libEmails.filter(e => String(e.uid) !== String(em.uid));
+    _renderGrid();
+    _libCacheWriteBack();
+  };
   for (const a of actions) {
     const item = document.createElement('div');
     item.className = 'dropdown-item-compact' + (a.danger ? ' dropdown-item-danger' : '');
@@ -4787,6 +4884,10 @@ function _showCardMenu(em, anchor) {
       e.stopPropagation();
       if (a.submenu === 'remind') {
         _showLibRemindSubmenu(em, dropdown);
+        return;
+      }
+      if (a.submenu === 'spamrule') {
+        _showLibSpamSubmenu(em, dropdown, _removeThisCard);
         return;
       }
       dropdown.remove();

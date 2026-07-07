@@ -550,7 +550,12 @@ async def do_send_to_session(content: str, session_id: Optional[str] = None, own
     message = lines[1].strip()
 
     sess = _session_manager.get_session(target_sid)
-    if not sess:
+    # Owner-scope the lookup: an agent acting for `owner` must not read from or
+    # write into another user's session. Return the same "not found" message
+    # whether the session is missing or owned by someone else, so a caller can't
+    # probe which ids exist. `owner` is None on single-user / no-auth installs,
+    # where the guard is a no-op (behavior unchanged). Mirrors do_manage_session.
+    if not sess or (owner is not None and getattr(sess, "owner", None) != owner):
         return {"error": f"Session '{target_sid}' not found"}
 
     # Owner-scope: reject access to another user's session

@@ -263,6 +263,34 @@ def list_for_session(session_id: str) -> List[Dict[str, Any]]:
     return [r for r in refresh().values() if r.get("session_id") == session_id]
 
 
+def kill_for_session(session_id: str) -> List[str]:
+    """Forcibly terminate every still-running detached job for `session_id` and
+    mark its record terminal. Used by the Argo crew on stop/budget-exceed so a
+    `#!bg`-launched setsid job (which survives `agent_runs.stop()`) can't outlive
+    the crew run.
+
+    Reuses the private `_kill` (which calls `core.platform_compat.kill_process_tree`)
+    per running record, then flips status to "killed" with `ended_at` set so
+    `refresh()`/`pending_followups()` treat it as finished. Idempotent and safe
+    when the session has no jobs (returns [] then). Returns the killed job ids."""
+    jobs = _load()
+    now = time.time()
+    killed: List[str] = []
+    for rec in jobs.values():
+        if rec.get("session_id") != session_id:
+            continue
+        if rec.get("status") == "running":
+            _kill(rec.get("pid"))                 # kill_process_tree(pid)
+            rec["status"] = "killed"
+            rec["exit_code"] = -1
+            rec["ended_at"] = now
+            rec["killed"] = True
+            killed.append(rec["id"])
+    if killed:
+        _save(jobs)
+    return killed
+
+
 def result_text(rec: Dict[str, Any]) -> str:
     """Human/agent-readable summary of a finished job, for the follow-up."""
     out = _read_output(rec)

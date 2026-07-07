@@ -1730,6 +1730,10 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
       }
       const docInd = document.getElementById('doc-indicator-btn');
       if (docInd) docInd.classList.toggle('visible', hasDocs);
+      if (window.projectFilesModule) window.projectFilesModule.refresh(id);
+      if (window.gitPanelModule) window.gitPanelModule.refresh(id);
+      if (window.terminalModule) window.terminalModule.refresh(id);
+      if (window.crewPanelModule) window.crewPanelModule.refresh(id);
       if (hasDocs) {
         // Wait for session UI to settle, then slide in documents
         setTimeout(() => window.documentModule.loadSessionDocs(id, { restoreMode: true }), 300);

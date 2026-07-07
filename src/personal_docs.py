@@ -46,12 +46,12 @@ class PersonalDocsConfig:
     )
     DEFAULT_K: int = 5
     STOP_WORDS: Set[str] = None
-    
+
     def __post_init__(self):
         if self.STOP_WORDS is None:
             self.STOP_WORDS = set("""
-            the a an is are was were be been being to of in for on at by with from 
-            and or if then else when while as it this that those these i you he she 
+            the a an is are was were be been being to of in for on at by with from
+            and or if then else when while as it this that those these i you he she
             we they my your our their me him her us them
             """.split())
 
@@ -77,11 +77,6 @@ def split_chunks(text: str, size: int = config.CHUNK_SIZE, overlap: int = config
     while i < n:
         j = min(i + size, n)
         chunks.append(text[i:j])
-        if j >= n:
-            # Reached the end. Without this, the next start (j - overlap) is
-            # still > i, so the loop appended one extra chunk duplicating the
-            # last `overlap` chars of the text.
-            break
         i = j - overlap if j - overlap > i else j
     return chunks
 
@@ -91,7 +86,7 @@ def tokenize(s: str) -> Set[str]:
     return set(t for t in tokens if t not in config.STOP_WORDS and len(t) > 1)
 
 def load_personal_index(
-    personal_dir: str, 
+    personal_dir: str,
     extensions: Tuple[str, ...] = config.DEFAULT_EXTENSIONS
 ) -> List[Dict[str, Any]]:
     """Load and index personal documents."""
@@ -186,11 +181,6 @@ def retrieve_personal(personal_index: List[Dict], query: str, k: int = 5,
     # Fall back to keyword search
     return retrieve_personal_keyword(personal_index, query, k)
 
-
-def _string_list(values) -> list[str]:
-    return [value for value in values or [] if isinstance(value, str)]
-
-
 class PersonalDocsManager:
     """Manager class for personal document indexing and retrieval."""
 
@@ -211,10 +201,7 @@ class PersonalDocsManager:
         try:
             if os.path.exists(self.directories_file):
                 with open(self.directories_file, 'r', encoding="utf-8") as f:
-                    directories = json.load(f)
-                if not isinstance(directories, list):
-                    raise ValueError("indexed directories must be a list")
-                self.indexed_directories = _string_list(directories)
+                    self.indexed_directories = json.load(f)
                 logger.info(f"Loaded {len(self.indexed_directories)} indexed directories")
             else:
                 self.indexed_directories = []
@@ -226,7 +213,7 @@ class PersonalDocsManager:
         """Save the list of indexed directories to persistent storage."""
         try:
             with open(self.directories_file, 'w', encoding="utf-8") as f:
-                json.dump(_string_list(self.indexed_directories), f, indent=2)
+                json.dump(self.indexed_directories, f, indent=2)
             logger.info(f"Saved {len(self.indexed_directories)} indexed directories")
         except Exception as e:
             logger.error(f"Error saving directories: {e}")
@@ -236,10 +223,7 @@ class PersonalDocsManager:
         try:
             if os.path.exists(self._excluded_file):
                 with open(self._excluded_file, 'r', encoding="utf-8") as f:
-                    excluded = json.load(f)
-                if not isinstance(excluded, list):
-                    raise ValueError("excluded files must be a list")
-                self.excluded_files = set(_string_list(excluded))
+                    self.excluded_files = set(json.load(f))
             else:
                 self.excluded_files = set()
         except Exception as e:
@@ -249,7 +233,7 @@ class PersonalDocsManager:
     def _save_excluded(self):
         try:
             with open(self._excluded_file, 'w', encoding="utf-8") as f:
-                json.dump(_string_list(self.excluded_files), f)
+                json.dump(list(self.excluded_files), f)
         except Exception as e:
             logger.error(f"Error saving excluded files: {e}")
 
@@ -279,7 +263,7 @@ class PersonalDocsManager:
             self.indexed_directories.append(directory)
             self.save_directories()
             logger.info(f"Added directory to tracking: {directory}")
-            
+
             # If RAG manager is available, index the directory immediately.
             # Callers that already indexed with owner metadata can pass
             # index=False so we do not create a second ownerless copy.
@@ -289,7 +273,7 @@ class PersonalDocsManager:
                     logger.info(f"Indexed {result.get('indexed_count', 0)} chunks from {directory}")
                 except Exception as e:
                     logger.error(f"Failed to index directory {directory}: {e}")
-            
+
             # Refresh the local index to include the new directory
             self.refresh_index()
         else:
@@ -299,15 +283,15 @@ class PersonalDocsManager:
         """Remove a directory from the tracking list."""
         # Normalize the path
         directory = os.path.abspath(directory)
-        
+
         if directory in self.indexed_directories:
             self.indexed_directories.remove(directory)
             self.save_directories()
             logger.info(f"Removed directory from tracking: {directory}")
-            
+
             # Refresh the index to exclude the removed directory
             self.refresh_index()
-            
+
             # Targeted delete of just this directory's chunks. This previously
             # called rag_manager.rebuild_index(), which delete+recreates the
             # entire shared collection (every owner + the base index) and then
@@ -373,12 +357,12 @@ class PersonalDocsManager:
         total_docs = len(self.index)
         total_chunks = sum(len(doc.get('chunks', [])) for doc in self.index)
         total_size = sum(doc.get('size', 0) for doc in self.index)
-        
+
         extensions = {}
         for doc in self.index:
             ext = os.path.splitext(doc['path'])[1]
             extensions[ext] = extensions.get(ext, 0) + 1
-        
+
         return {
             'total_documents': total_docs,
             'total_chunks': total_chunks,
@@ -389,16 +373,16 @@ class PersonalDocsManager:
             'base_directory': self.personal_dir,
             'additional_directories': self.indexed_directories
         }
-        
+
     def index_all_directories(self):
         """Re-index all tracked directories in the RAG system."""
         if not self.rag_manager:
             logger.warning("No RAG manager available for indexing")
             return
-        
+
         success_count = 0
         failure_count = 0
-        
+
         # Index the base personal directory
         try:
             result = self.rag_manager.index_personal_documents(self.personal_dir)
@@ -408,14 +392,14 @@ class PersonalDocsManager:
         except Exception as e:
             failure_count += 1
             logger.error(f"Failed to index base directory {self.personal_dir}: {e}")
-        
+
         # Index additional directories
         for directory in self.indexed_directories:
             if not os.path.exists(directory):
                 logger.warning(f"Skipping non-existent directory: {directory}")
                 failure_count += 1
                 continue
-            
+
             try:
                 result = self.rag_manager.index_personal_documents(directory)
                 if result.get('success'):
@@ -427,6 +411,6 @@ class PersonalDocsManager:
             except Exception as e:
                 failure_count += 1
                 logger.error(f"Failed to index directory {directory}: {e}")
-        
+
         logger.info(f"Indexing complete: {success_count} succeeded, {failure_count} failed")
         return {"success": success_count, "failed": failure_count}

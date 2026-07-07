@@ -480,7 +480,7 @@ function initializeEventListeners() {
 
   // Settings dropdown removed — items are now inline in sidebar section
 
-  
+
 
 
   // Close popups one by one with Escape key (topmost first)
@@ -536,13 +536,6 @@ function initializeEventListeners() {
         return;
       }
 
-      // Model picker popup — close before opening any modals
-      const modelPickerMenu = document.getElementById('model-picker-menu');
-      if (modelPickerMenu && modelPickerMenu.classList.contains('open')) {
-        modelPickerMenu.classList.remove('open');
-        return;
-      }
-
       // Close one modal at a time (last in DOM = topmost)
       // Map modal id → sidebar list-item id to clear active state
       const modalItemMap = {
@@ -554,7 +547,7 @@ function initializeEventListeners() {
       };
 
       // Dynamic modals (removed from DOM on close)
-      const dynamicModals = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal', 'email-lib-modal'];
+      const dynamicModals = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal'];
       for (const id of dynamicModals) {
         const m = document.getElementById(id);
         if (id === 'gallery-modal') {
@@ -1383,42 +1376,42 @@ function initializeEventListeners() {
   const cancelRenameAi = el('cancel-rename-ai');
   const saveAiName = el('save-ai-name');
   const aiNameInput = el('ai-name-input');
-  
+
   if (renameAiOption) {
     renameAiOption.addEventListener('click', () => {
       const currentName = aiNameInput.value;
       renameAiModal.classList.remove('hidden');
     });
   }
-  
+
   if (closeRenameAi) {
     closeRenameAi.addEventListener('click', () => {
       renameAiModal.classList.add('hidden');
     });
   }
-  
+
   if (cancelRenameAi) {
     cancelRenameAi.addEventListener('click', () => {
       renameAiModal.classList.add('hidden');
     });
   }
-  
+
   if (saveAiName) {
     saveAiName.addEventListener('click', async () => {
       const newName = aiNameInput.value.trim();
-      
+
       if (!newName) {
         uiModule.showError('Please enter a name for the AI');
         return;
       }
-      
+
       try {
         const response = await fetch(`${API_BASE}/api/ai/name`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ name: newName })
         });
-        
+
         const result = await response.json();
         if (result.success) {
           uiModule.showToast(`AI renamed to ${newName}`);
@@ -1449,36 +1442,36 @@ function initializeEventListeners() {
   const cancelRenameSession = el('cancel-rename-session');
   const saveSessionName = el('save-session-name');
   const sessionNameInput = el('session-name-input');
-  
+
   // Close handlers for rename session modal
   if (closeRenameSession) {
     closeRenameSession.addEventListener('click', () => {
       renameSessionModal.classList.add('hidden');
     });
   }
-  
+
   if (cancelRenameSession) {
     cancelRenameSession.addEventListener('click', () => {
       renameSessionModal.classList.add('hidden');
     });
   }
-  
+
   if (saveSessionName) {
     saveSessionName.addEventListener('click', async () => {
       const newName = sessionNameInput.value.trim();
-      
+
       if (!newName) {
         uiModule.showError('Please enter a name for the session');
         return;
       }
-      
+
       try {
         const response = await fetch(`${API_BASE}/api/session/${sessionModule.getCurrentSessionId()}`, {
           method: 'PATCH',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ name: newName })
         });
-        
+
         const result = await response.json();
         if (response.ok) {
           uiModule.showToast(`Session renamed to ${newName}`);
@@ -1501,7 +1494,7 @@ function initializeEventListeners() {
       }
     });
   }
-  
+
   if (closeMemoryBtn) {
     closeMemoryBtn.addEventListener('click', () => {
       dismissModal(memoryModal);
@@ -1522,7 +1515,7 @@ function initializeEventListeners() {
   if (addMemBtn) {
     addMemBtn.addEventListener('click', memoryModule.addNewMemory);
   }
-  
+
   const memorySearchInput = el('memory-search');
   if (memorySearchInput) {
     memorySearchInput.addEventListener('input', () => {
@@ -1530,7 +1523,7 @@ function initializeEventListeners() {
       memoryModule.updateMemoryCount();
     });
   }
-  
+
   const newMemoryInput = el('new-memory-input');
   if (newMemoryInput) {
     newMemoryInput.addEventListener('keypress', (e) => {
@@ -2495,6 +2488,9 @@ function initializeEventListeners() {
     'tool-notes':          '#tool-notes-btn',
     'tool-tasks':          '#tool-tasks-btn',
     'tool-theme':          '#tool-theme-btn',
+    'tool-terminal':       '#tool-terminal-btn',
+    'tool-argo':           '#tool-argo-btn',
+    'tool-preview':        '#tool-preview-btn',
     'user-bar':            '#user-bar-profile',
     'sidebar-settings-btn':'#user-bar-settings',
     'chat-meta':           '.chat-meta-overlay',
@@ -2546,6 +2542,12 @@ function initializeEventListeners() {
     applyTextEmojis(state['text-emojis'] === true);
     // Hide thinking sections toggle (show-thinking: checked=show, unchecked=hide)
     document.body.classList.toggle('hide-thinking', state['show-thinking'] === false);
+    // Project Files is a CONTEXTUAL sidebar section (projectFiles.js sets inline
+    // display based on whether a project root is set), so we can't use the generic
+    // display toggle — that would force-show an empty tree. Instead force-hide via a
+    // body class (+ CSS !important) when toggled off; default/on leaves the
+    // contextual logic in control.
+    document.body.classList.toggle('hide-project-files', state['tool-projectfiles'] === false);
   }
 
   // Rearrange toggles in session/model sort dropdowns
@@ -3001,7 +3003,7 @@ function initializeEventListeners() {
       ragModule.addRagDirectory(uiModule.showToast, uiModule.showError);
     });
   }
-  
+
   const directoryInput = el('rag-directory');
   if (directoryInput) {
     directoryInput.addEventListener('keypress', (e) => {
@@ -3424,7 +3426,7 @@ function initializeEventListeners() {
     adminModule, settingsModule, searchChatModule,
     _closeCompareIfActive, _deactivateIncognito, API_BASE
   });
-  
+
 }
 
 // ============================================
@@ -3484,7 +3486,26 @@ function startOdysseusApp() {
     if (_curSession && localStorage.getItem('odysseus-doc-open-' + _curSession) === '1') {
       documentModule.loadSessionDocs(_curSession);
     }
-  }  
+  }
+  if (window.projectFilesModule) {
+    window.projectFilesModule.init(API_BASE);
+    window.projectFilesModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
+  }
+  if (window.gitPanelModule) {
+    window.gitPanelModule.init(API_BASE);
+    window.gitPanelModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
+  }
+  if (window.terminalModule) {
+    window.terminalModule.init(API_BASE);
+    window.terminalModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
+  }
+  if (window.crewPanelModule) {
+    window.crewPanelModule.init(API_BASE);
+    window.crewPanelModule.refresh(sessionModule && sessionModule.getCurrentSessionId());
+  }
+  if (window.devPreviewModule) {
+    window.devPreviewModule.init(API_BASE);
+  }
   // Initialize search chat module
   if (searchChatModule) {
     searchChatModule.init(API_BASE);
@@ -3892,7 +3913,7 @@ function startOdysseusApp() {
     e.preventDefault();
     _hideDropHighlight();
   });
-  
+
   // Make the attachment strip also a drop target
   const attachStrip = el('attach-strip');
   attachStrip.addEventListener('dragover', (e) => {
@@ -3900,18 +3921,18 @@ function startOdysseusApp() {
     attachStrip.style.backgroundColor = 'rgba(0, 170, 255, 0.1)';
     attachStrip.style.borderRadius = '4px';
   });
-  
+
   attachStrip.addEventListener('drop', (e) => {
     e.preventDefault();
     attachStrip.style.backgroundColor = '';
-    
+
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
     uiModule.showToast(`Added ${files.length} file${files.length > 1 ? 's' : ''} to chat`);
 
   });
-  
+
   attachStrip.addEventListener('dragleave', (e) => {
     e.preventDefault();
     attachStrip.style.backgroundColor = '';
@@ -4028,12 +4049,12 @@ function startOdysseusApp() {
   modelsModule.refreshProviders();
   ragModule.loadPersonalDocs();
   memoryModule.loadMemories(); // Ensure memories are loaded on page load
-  
+
   // Ensure the memory list is rendered after loading
   setTimeout(async () => {
     await memoryModule.loadMemories();
   }, 1000);
-  
+
   // Ensure proper initial state
   voiceRecorderModule.init();
   if (censorModule) censorModule.init();
@@ -4041,7 +4062,7 @@ function startOdysseusApp() {
   // Auto-focus message input on load
   const msgEl = document.getElementById('message');
   if (msgEl) msgEl.focus();
-  
+
   // Initialize mouse-based drag for sidebar sections
   const sidebar = document.getElementById('sidebar');
   const sidebarInner = sidebar ? sidebar.querySelector('.sidebar-inner') : sidebar;
@@ -4100,31 +4121,31 @@ function startOdysseusApp() {
   // Section collapse/expand + drag reorder (extracted to js/section-management.js)
   initSectionCollapse(Storage);
   initSectionDrag(Storage, loadUIVis);
-  
+
   // Handle drag over and out for individual sections
   const sections = document.querySelectorAll('.section[draggable="true"]');
   sections.forEach(section => {
     section.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      
+
       // Only show visual feedback if we're not dragging over the active element
       const activeId = e.dataTransfer.getData('text/plain');
       if (activeId && activeId !== section.id) {
         section.setAttribute('dnd-over', 'true');
       }
     });
-    
+
     section.addEventListener('dragleave', (e) => {
       // Check if we're actually leaving the element
       const rect = section.getBoundingClientRect();
-      if (e.clientY < rect.top || e.clientY > rect.bottom || 
+      if (e.clientY < rect.top || e.clientY > rect.bottom ||
           e.clientX < rect.left || e.clientX > rect.right) {
         section.setAttribute('dnd-over', 'false');
       }
     });
   });
-  
+
   // Restore saved order on load
   const savedOrder = Storage.get(Storage.KEYS.SECTION_ORDER);
   if (savedOrder) {
@@ -4156,7 +4177,7 @@ function startOdysseusApp() {
       console.error('Failed to restore sidebar order:', e);
     }
   }
-  
+
 
 
   if (window.hljs) {
@@ -4172,3 +4193,90 @@ if (document.readyState === 'loading') {
 } else {
   startOdysseusApp();
 }
+/* ============================================================================
+   Universal iPhone top safe-area — bootstrap + JS-positioned-surface floor.
+   PersonalOS / Humility, 2026-06-04.
+
+   PART 1 (bootstrap): a custom property holding env() does NOT resolve to a px
+   in getComputedStyle, so we PROBE the real inset (an off-screen div with
+   padding-top: env(safe-area-inset-top)) and write the resolved px into
+   --app-safe-top on <html>. Now var(--app-safe-top) is a real px for both the
+   CSS rules and the JS below, and a test can inject html{--app-safe-top:NN}.
+
+   PART 2 (clamp): ~20 dropdowns/popovers + every snap/dock/drag path set their
+   top inline from getBoundingClientRect with small px floors that ignore the
+   notch. CSS can't beat inline styles, so an observer nudges any fixed/absolute
+   element pinned ABOVE the safe area down to it (and shrinks full-height ones).
+   Only ever moves DOWN; on a non-notched device the inset is 0 and all no-op.
+   ============================================================================ */
+(function () {
+  'use strict';
+  var root = document.documentElement;
+
+  /* ---- PART 1: bootstrap --app-safe-top to the resolved px ---- */
+  var probe = null;
+  function measureInset() {
+    if (!probe) {
+      probe = document.createElement('div');
+      probe.setAttribute('aria-hidden', 'true');
+      probe.style.cssText =
+        'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;' +
+        'pointer-events:none;padding-top:env(safe-area-inset-top,0px);';
+      (document.body || root).appendChild(probe);
+    }
+    var v = parseFloat(getComputedStyle(probe).paddingTop);
+    return isNaN(v) ? 0 : v;
+  }
+  function syncVar() {
+    // Don't clobber a test/!important override (only set if our value differs).
+    var px = measureInset();
+    root.style.setProperty('--app-safe-top', px + 'px');
+    return px;
+  }
+
+  /* ---- PART 2: floor JS-inline-positioned surfaces ---- */
+  function safeTop() {
+    var v = getComputedStyle(root).getPropertyValue('--app-safe-top');
+    var n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
+  }
+  var FULLH = /100vh|100dvh|100%/;
+  function clamp(el) {
+    if (!el || el.nodeType !== 1 || !el.style) return;
+    var pos = el.style.position;
+    if (pos !== 'fixed' && pos !== 'absolute') return;   // only script-pinned overlays
+    var top = parseFloat(el.style.top);
+    if (isNaN(top)) return;                               // centered modals set no inline top -> skip
+    var s = safeTop();
+    if (s <= 0 || top >= s) return;                      // no notch, or already clear
+    el.style.top = s + 'px';
+    if (FULLH.test(el.style.height || '')) el.style.height = 'calc(100vh - ' + s + 'px)';
+    if (FULLH.test(el.style.maxHeight || '')) el.style.maxHeight = 'calc(100vh - ' + s + 'px)';
+  }
+  function scanAll() {
+    try {
+      var nodes = document.querySelectorAll('[style*="position"]');
+      for (var i = 0; i < nodes.length; i++) clamp(nodes[i]);
+    } catch (e) {}
+  }
+  var mo = new MutationObserver(function (muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var m = muts[i];
+      if (m.type === 'attributes') { clamp(m.target); continue; }
+      if (m.addedNodes) for (var j = 0; j < m.addedNodes.length; j++) clamp(m.addedNodes[j]);
+    }
+  });
+  function start() {
+    try {
+      syncVar();
+      mo.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
+      scanAll();
+      var resync = function () { syncVar(); scanAll(); };
+      window.addEventListener('resize', resync, { passive: true });
+      window.addEventListener('orientationchange', resync, { passive: true });
+      if (window.visualViewport) window.visualViewport.addEventListener('resize', resync, { passive: true });
+    } catch (e) {}
+  }
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();

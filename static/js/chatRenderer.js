@@ -1311,17 +1311,6 @@ export function showWelcomeScreen() {
   const cc = document.getElementById('chat-container');
   if (ws) ws.classList.remove('hidden');
   if (cc) cc.classList.add('welcome-active');
-  // Entering the New Chat / welcome state: discard any stale draft left in the
-  // composer from the previous session so the input starts empty (issue #1343).
-  // Switching between existing sessions loads them directly and does NOT call
-  // this, so genuine drafts are not erased. Reset the autosized height and fire
-  // an `input` event so the send button + autosize listeners update.
-  const _msg = document.getElementById('message');
-  if (_msg) {
-    _msg.value = '';
-    _msg.style.height = '';
-    _msg.dispatchEvent(new Event('input', { bubbles: true }));
-  }
   // Re-trigger the L→R clip-wipe reveal on the welcome name each time the
   // welcome screen is shown (new session, deleted last session, etc.) — without
   // this, the CSS animation only fires on initial DOM insertion.
@@ -2054,7 +2043,17 @@ export function addMessage(role, content, modelName, metadata) {
           for (const ev of roundTools) {
             const ok = (ev.exit_code === 0 || ev.exit_code == null);
             let outHtml = '';
-            if (ev.output && ev.output.trim()) {
+            if (ev.diff && ev.diff.trim()) {
+              const diffHtml = ev.diff.split('\n').map(function(ln){
+                let cls = 'agent-diff-ctx';
+                if (ln.slice(0,3) === '+++' || ln.slice(0,3) === '---') cls = 'agent-diff-file';
+                else if (ln.charAt(0) === '+') cls = 'agent-diff-add';
+                else if (ln.charAt(0) === '-') cls = 'agent-diff-del';
+                else if (ln.charAt(0) === '@') cls = 'agent-diff-hunk';
+                return '<span class="' + cls + '">' + esc(ln) + '</span>';
+              }).join('\n');
+              outHtml = `<div class="agent-diff"><pre>${diffHtml}</pre></div>`;
+            } else if (ev.output && ev.output.trim()) {
               outHtml = `<details class="agent-tool-output"><summary>Output</summary><pre>${esc(ev.output)}</pre></details>`;
             }
             const screenshotSrc = safeToolScreenshotSrc(ev.screenshot);
