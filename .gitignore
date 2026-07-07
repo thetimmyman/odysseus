@@ -94,3 +94,5 @@ _scratch/
 data.fresh-bak/
 data*-bak/
 data.*bak/
+*.bak-*
+*.bak2-*

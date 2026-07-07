@@ -599,12 +599,18 @@ export function mdToHtml(src, opts) {
     });
   }
 
+  // PersonalOS 2026-06-10: normalize CLDR emoji shortcodes (code already placeholdered)
+  s = normalizeEmojiNames(s);
+
   // Handle pipe tables
   s = s.replace(/(?:^|\n)([^\n]*\|[^\n]*\|[^\n]*)(?:\n([^\n]*\|[^\n]*\|[^\n]*))*/g, (table) => {
     if (table.includes('___CODE_BLOCK_') || table.includes('___ALLOWED_HTML_')) return table;
 
     const rows = table.trim().split('\n');
     if (rows.length < 2) return table;
+    // PersonalOS 2026-06-10: drop the GFM separator row (|---|:--:|) so its
+    // literal dashes/colons don't render as a visible table row.
+    if (rows[1] && /-/.test(rows[1]) && /^\s*\|?[\s:|-]+\|?\s*$/.test(rows[1])) rows.splice(1, 1);
 
     let html = '<table style="border-collapse: collapse; width: 100%; margin: 10px 0;">';
 
@@ -617,8 +623,8 @@ export function mdToHtml(src, opts) {
 
       cells.forEach(cell => {
         const tag = idx === 0 ? 'th' : 'td';
-        const style = idx === 1 ? 'style="border-top: 2px solid var(--red);"' : '';
-        html += `<${tag} ${style} style="padding: 8px; text-align: left; border-bottom: 1px solid var(--border);">${cell.trim()}</${tag}>`;
+        const extra = idx === 1 ? 'border-top: 2px solid var(--red); ' : '';
+        html += `<${tag} style="${extra}padding: 8px; text-align: left; border-bottom: 1px solid var(--border);">${cell.trim()}</${tag}>`;
       });
 
       html += '</tr>';
@@ -650,7 +656,7 @@ export function mdToHtml(src, opts) {
        .replace(/^# (.*)$/gm, '<h1>$1</h1>');
 
   // Ordered lists (1. 2. 3. etc.)
-  s = s.replace(/^(\d+)\. (.*)$/gm, '<oli>$2</oli>');
+  s = s.replace(/^[ \t]*(\d+)\. (.*)$/gm, '<oli>$2</oli>');
   s = s.replace(/(?:^|\n)(<oli>[\s\S]*?)(?=\n(?!<oli>)|$)/g, m => `<ol>${m.trim().replace(/<\/?oli>/g, (t) => t === '<oli>' ? '<li>' : '</li>')}</ol>`);
 
   // GitHub-style task lists (- [ ] / - [x]) → checkbox items. Must run before

@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from src.auth_helpers import effective_user
+from src.auth_helpers import effective_user, require_privilege
 from routes.session_routes import _verify_session_owner
 from src.tool_execution import (
     _get_session_project_root,
@@ -33,6 +33,9 @@ def _confined(request: Request, session_id: Optional[str], raw_path=None):
     if not session_id or not str(session_id).strip():
         raise HTTPException(400, "session_id is required")
     owner = effective_user(request)                          # bearer-aware owner
+    # PersonalOS (2026-06-10): the file explorer is a developer surface - gate on
+    # the same "developer tools" privilege as bash/edit_file (admins always pass).
+    require_privilege(request, "can_use_bash")
     _verify_session_owner(request, session_id)               # 404 cross-owner (DB + ghost)
     root = _get_session_project_root(session_id, owner)      # None on missing/cross-owner/not-dir
     if not root:

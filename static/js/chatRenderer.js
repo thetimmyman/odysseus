@@ -115,7 +115,7 @@ function buildAttachCards(attachments) {
           skel.style.aspectRatio = att.width + ' / ' + att.height;
           skel.style.width = 'auto';
           skel.style.height = 'auto';
-          skel.style.maxWidth = '300px';
+          skel.style.maxWidth = 'min(300px,100%)';
           skel.style.maxHeight = '200px';
           skel.style.minWidth = '80px';
         }
@@ -130,7 +130,7 @@ function buildAttachCards(attachments) {
         // full-resolution photo. Click still opens the full image.
         img.alt = att.name || 'Image';
         img.loading = 'lazy';
-        img.style.cssText = 'max-width:300px;max-height:200px;border-radius:6px;display:' + (att.previewUrl ? 'block' : 'none') + ';';
+        img.style.cssText = 'max-width:min(300px,100%);max-height:200px;border-radius:6px;display:' + (att.previewUrl ? 'block' : 'none') + ';';
         let _revealed = false;
         let _revealTimer = null;
         const _reveal = () => {
