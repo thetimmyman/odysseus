@@ -30,6 +30,8 @@ DEFAULT_PRIVILEGES = {
     "can_manage_memory": True,
     "max_messages_per_day": 0,
     "allowed_models": [],
+    # Section 14 break-glass privilege; must be explicitly granted.
+    "security_admin": False,
     "allowed_models_restricted": False,
 }
 
@@ -541,3 +543,10 @@ class AuthManager:
         if authenticated:
             result["privileges"] = self.get_privileges(username)
         return result
+
+# Section 14: do not auto-grant break-glass approval to normal admins.
+try:
+    ADMIN_PRIVILEGES.pop("security_admin", None)
+except NameError:
+    pass
+

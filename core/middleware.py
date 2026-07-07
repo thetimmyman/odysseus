@@ -54,6 +54,26 @@ def require_admin(request: Request):
         raise HTTPException(403, "Admin only")
 
 
+def require_security_admin(request: Request):
+    """Raise 403 unless the current user holds the `security_admin` privilege.
+
+    Section 14 break-glass: ONLY a security_admin may approve an Emergency
+    Override. Internal-tool loopback is intentionally NOT honored here --
+    break-glass approval must be a real authenticated human security_admin.
+    """
+    auth_mgr = getattr(request.app.state, "auth_manager", None)
+    if os.getenv("AUTH_ENABLED", "true").lower() == "false":
+        return
+    if not auth_mgr or not auth_mgr.is_configured:
+        raise HTTPException(403, "security_admin only")
+    user = getattr(request.state, "current_user", None)
+    if not user:
+        raise HTTPException(403, "security_admin only")
+    privs = auth_mgr.get_privileges(user) or {}
+    if not privs.get("security_admin"):
+        raise HTTPException(403, "security_admin only")
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add standard security headers to all responses."""
 
