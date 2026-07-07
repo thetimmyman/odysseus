@@ -2370,4 +2370,3 @@ class WorkflowReliabilitySignal(Base):
     __table_args__ = (
         Index("ix_wrs_subject", "subject_type", "subject_id", "created_at"),
     )
-
