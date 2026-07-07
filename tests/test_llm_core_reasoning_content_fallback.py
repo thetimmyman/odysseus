@@ -106,7 +106,14 @@ for _mod in [
     "core.models", "core.database",
 ]:
     if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()
+        _m = MagicMock()
+        # A bare MagicMock() synthesizes a MagicMock-valued __all__, which makes
+        # `from <mod> import *` (e.g. src/database.py: `from core.database import *`)
+        # raise `TypeError: Item in <mod>.__all__ must be str, not MagicMock`.
+        # Give the stub a clean __all__ so wildcard imports are a safe no-op,
+        # while MagicMock attribute access still works for explicit imports.
+        _m.__all__ = []
+        sys.modules[_mod] = _m
 
 from src.agent_loop import _empty_response_fallback  # noqa: E402
 

@@ -660,6 +660,11 @@ app.include_router(setup_hwfit_routes())
 from routes.compare_routes import setup_compare_routes
 app.include_router(setup_compare_routes(session_manager))
 
+# v0.5 Model Routing Harness control surface (coordinator wrapper, escalation,
+# emergency override, workflow reliability monitor)
+from routes.routing_harness_routes import setup_routing_harness_routes
+app.include_router(setup_routing_harness_routes())
+
 # User Preferences
 from routes.prefs_routes import setup_prefs_routes
 app.include_router(setup_prefs_routes())

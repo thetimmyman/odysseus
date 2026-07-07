@@ -30,10 +30,19 @@ DEFAULT_PRIVILEGES = {
     "can_manage_memory": True,
     "max_messages_per_day": 0,
     "allowed_models": [],
+    # Narrow, high-trust privilege required to approve Emergency Override
+    # (Section 14 break-glass). Default False even for admins; must be granted
+    # explicitly. Admins inherit it via ADMIN_PRIVILEGES unless narrowed.
+    "security_admin": False,
 }
 
-# Admins get everything
-ADMIN_PRIVILEGES = {k: (True if isinstance(v, bool) else (0 if isinstance(v, int) else [])) for k, v in DEFAULT_PRIVILEGES.items()}
+# Admins get everything *except* the narrow security_admin break-glass privilege,
+# which must be granted explicitly (Section 14). Keep it out of the derived set.
+ADMIN_PRIVILEGES = {
+    k: (True if isinstance(v, bool) else (0 if isinstance(v, int) else []))
+    for k, v in DEFAULT_PRIVILEGES.items()
+    if k != "security_admin"
+}
 
 DEFAULT_AUTH_PATH = os.path.join(
     Path(__file__).parent.parent, "data", "auth.json"

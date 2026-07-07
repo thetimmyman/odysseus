@@ -48,6 +48,9 @@ _db = _DBStub("core.database")
 _db.get_db_session = _get_db_session
 _db.ApiToken = _ApiToken
 sys.modules["core.database"] = _db  # overwrite any minimal stub from a sibling test
+# Explicit, clean __all__ so `from core.database import *` (in src/database.py)
+# is a no-op instead of triggering the stub's MagicMock-returning __getattr__.
+_db.__all__ = []
 
 for _name, _attrs in {
     "core.auth": {"AuthManager": MagicMock()},

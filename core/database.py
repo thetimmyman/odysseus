@@ -469,6 +469,75 @@ class RoutingModelRun(Base):
     )
 
 
+class CoordinatorAudit(Base):
+    """Section 6/8 audit archive: raw coordinator output + validation outcome.
+
+    Every coordinator decision (or fallback) is archived so the deterministic
+    harness stays replayable and auditable. Schema version and policy versions
+    are stored to fail-closed reproducibly."""
+    __tablename__ = "coordinator_audit"
+
+    id = Column(String, primary_key=True, index=True)
+    task_id = Column(String, nullable=False, index=True)
+    schema_version = Column(String, nullable=False, default="0.5")
+    raw_output = Column(Text, nullable=True)            # raw coordinator JSON text
+    validation_errors = Column(Text, nullable=True)    # JSON list[str]
+    fallback_path = Column(String, nullable=True)       # safe_scout | deterministic | repaired
+    applied_fallback = Column(Boolean, nullable=False, default=False)
+    policy_versions = Column(Text, nullable=True)       # JSON dict of policy versions
+    audit_notes = Column(Text, nullable=True)           # JSON list[str]
+    parsed_ok = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_coordinator_audit_task', 'task_id', 'created_at'),
+    )
+
+
+class EmergencyOverride(Base):
+    """Section 14 break-glass record. Tamper-evident: appends only, never
+    edited in place. Deactivation is a status flip, not a row overwrite."""
+    __tablename__ = "emergency_overrides"
+
+    id = Column(String, primary_key=True, index=True)
+    requested_by = Column(String, nullable=False)
+    approved_by = Column(String, nullable=False)        # must hold security_admin
+    reason = Column(Text, nullable=False)
+    forced_backend = Column(String, nullable=False, default="human_only_emergency")
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+    post_mortem_required = Column(Boolean, nullable=False, default=True)
+    post_mortem_done = Column(Boolean, nullable=False, default=False)
+    deactivated_at = Column(DateTime, nullable=True)
+    deactivated_by = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index('ix_emergency_overrides_active', 'active', 'expires_at'),
+    )
+
+
+class WorkflowReliabilitySignal(Base):
+    """Section 13 review-readiness signal. Advisory only; never reduces budget."""
+    __tablename__ = "workflow_reliability_signals"
+
+    id = Column(String, primary_key=True, index=True)
+    subject_type = Column(String, nullable=False)       # engineer|team|repo|task_type
+    subject_id = Column(String, nullable=False, index=True)
+    period_start = Column(String, nullable=False)
+    period_end = Column(String, nullable=False)
+    normalized_verification_failure_rate = Column(Float, nullable=False, default=0.0)
+    lesson_review_participation_rate = Column(Float, nullable=True)
+    avg_validated_lesson_quality = Column(Float, nullable=True)
+    confounders = Column(Text, nullable=True)            # JSON dict
+    recommended_action = Column(String, nullable=False, default="none")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_wrs_subject', 'subject_type', 'subject_id', 'created_at'),
+    )
+
+
 class McpServer(TimestampMixin, Base):
     """Admin-configured MCP (Model Context Protocol) tool servers."""
     __tablename__ = "mcp_servers"
