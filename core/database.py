@@ -7,6 +7,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy.orm import relationship, sessionmaker, backref
+from sqlalchemy import Float
 
 logger = logging.getLogger(__name__)
 
@@ -2306,3 +2307,66 @@ def archive_session(session_id: str):
 
 
 init_db()
+
+class CoordinatorAudit(Base):
+    """Audit archive for v0.5 coordinator wrapper decisions."""
+    __tablename__ = "coordinator_audit"
+
+    id = Column(String, primary_key=True, index=True)
+    task_id = Column(String, nullable=False, index=True)
+    schema_version = Column(String, nullable=False, default="0.5")
+    raw_output = Column(Text, nullable=True)
+    validation_errors = Column(Text, nullable=True)
+    fallback_path = Column(String, nullable=True)
+    applied_fallback = Column(Boolean, nullable=False, default=False)
+    policy_versions = Column(Text, nullable=True)
+    audit_notes = Column(Text, nullable=True)
+    parsed_ok = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_coordinator_audit_task", "task_id", "created_at"),
+    )
+
+
+class EmergencyOverride(Base):
+    """Section 14 break-glass record. Append-only in normal operation."""
+    __tablename__ = "emergency_overrides"
+
+    id = Column(String, primary_key=True, index=True)
+    requested_by = Column(String, nullable=False)
+    approved_by = Column(String, nullable=False)
+    reason = Column(Text, nullable=False)
+    forced_backend = Column(String, nullable=False, default="human_only_emergency")
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+    post_mortem_required = Column(Boolean, nullable=False, default=True)
+    post_mortem_done = Column(Boolean, nullable=False, default=False)
+    deactivated_at = Column(DateTime, nullable=True)
+    deactivated_by = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_emergency_overrides_active", "active", "expires_at"),
+    )
+
+
+class WorkflowReliabilitySignal(Base):
+    """Section 13 review-readiness signal. Advisory only; never reduces budget."""
+    __tablename__ = "workflow_reliability_signals"
+
+    id = Column(String, primary_key=True, index=True)
+    subject_type = Column(String, nullable=False)
+    subject_id = Column(String, nullable=False, index=True)
+    period_start = Column(String, nullable=False)
+    period_end = Column(String, nullable=False)
+    normalized_verification_failure_rate = Column(Float, nullable=False, default=0.0)
+    lesson_review_participation_rate = Column(Float, nullable=True)
+    avg_validated_lesson_quality = Column(Float, nullable=True)
+    confounders = Column(Text, nullable=True)
+    recommended_action = Column(String, nullable=False, default="none")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_wrs_subject", "subject_type", "subject_id", "created_at"),
+    )
