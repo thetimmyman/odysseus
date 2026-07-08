@@ -6,10 +6,27 @@ invocation with nothing destructive to gate yet) -- both ceilings below are
 hard blocks, bypassable only via an explicit CLI override flag
 (`--allow-premium`, wired in routing_executor.py)."""
 import json
+import logging
+import math
 import os
 from datetime import datetime, timedelta
 from typing import Optional
 
+from src import config_store
+
+_log = logging.getLogger(__name__)
+
+# Last successfully-loaded caps for THIS process. Used only to avoid silently
+# raising the effective spend ceiling when the live file becomes unreadable
+# after we've already read a good one (see load_budget_config).
+_last_good_caps: Optional[dict] = None
+
+# The BAKED default (tracked, human-diffable). The LIVE file no longer lives
+# here — it's seeded from this into config_store.live_path("routing_budget")
+# under the data/ volume so an in-app budget save survives a redeploy
+# (previously an edit written back to config/ was silently reverted on the
+# next image rebuild). _CONFIG_PATH is kept as the seed source only.
+_DOMAIN = "routing_budget"
 _CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "routing_budget.json"
 )
@@ -22,6 +39,18 @@ DEFAULT_BUDGET_CONFIG = {
     "premium_weekly_max_usd": 20.0,
 }
 
+# The five caps the versioned editor owns. daily/weekly are the non-overridable
+# general ceilings; premium_* are the --allow-premium-bypassable ones;
+# monthly_max_usd is ADVISORY (validated as positive but never enforced by a
+# check_* function — the UX labels it "not enforced").
+_CAP_KEYS = (
+    "daily_max_usd",
+    "weekly_max_usd",
+    "monthly_max_usd",
+    "premium_daily_max_usd",
+    "premium_weekly_max_usd",
+)
+
 # Shared with routing_engine.py's cost-based scoring so the estimate used to
 # RANK a candidate matches the actual generation cap used at call time
 # (routing_executor.py passes profile.max_output_tokens or this same
@@ -32,18 +61,116 @@ DEFAULT_MAX_OUTPUT_TOKENS = 4096
 
 
 def load_budget_config() -> dict:
-    """Reads config/routing_budget.json if present (no versioned/audited UI
-    yet -- that's Section 19, out of scope for Phase 1/2), else defaults."""
-    if os.path.exists(_CONFIG_PATH):
-        try:
-            with open(_CONFIG_PATH) as f:
-                cfg = json.load(f)
-            merged = dict(DEFAULT_BUDGET_CONFIG)
-            merged.update(cfg)
-            return merged
-        except Exception:
-            pass
+    """Reads the LIVE budget file from the data/ volume
+    (config_store.live_path("routing_budget")), seeded on first read from the
+    baked config/routing_budget.json. Re-reads every call (no cache — the
+    versioned editor must see a publish immediately). The DEFAULT overlay
+    guarantees every cap key is present even if the live file is partial.
+
+    Fail-SAFE direction (spec PR-A review, HIGH): a spend cap must never be
+    silently RAISED. DEFAULT_BUDGET_CONFIG is higher than any cap an admin
+    tightened below it, so degrading an *unreadable-but-present* live file to
+    DEFAULT would silently authorize spend the admin blocked. So:
+      - missing file  -> seed + DEFAULT (true first boot; the intended baseline).
+      - readable file -> its caps (remembered as last-known-good).
+      - present-but-unreadable -> HOLD last-known-good if this process has one;
+        only fall back to DEFAULT when we never had a good read, and log loudly.
+    The atomic writes in config_store make 'present-but-unreadable' essentially
+    external (corruption / an unmounted data volume), not self-inflicted."""
+    global _last_good_caps
+    config_store.seed_if_missing(_DOMAIN, baked_default_path=_CONFIG_PATH,
+                                 default_dict=DEFAULT_BUDGET_CONFIG)
+    raw = config_store.read_live(_DOMAIN)
+    if raw is not None:
+        merged = dict(DEFAULT_BUDGET_CONFIG)
+        merged.update(raw)
+        _last_good_caps = {k: merged[k] for k in _CAP_KEYS if k in merged}
+        return merged
+    # No parseable live file. Distinguish truly-missing from present-but-corrupt.
+    if config_store.live_status(_DOMAIN) == "unreadable" and _last_good_caps:
+        _log.warning(
+            "routing_budget: live file unreadable; holding last-known-good caps "
+            "rather than degrading UP to DEFAULT (would silently raise the cap)")
+        merged = dict(DEFAULT_BUDGET_CONFIG)
+        merged.update(_last_good_caps)
+        return merged
     return dict(DEFAULT_BUDGET_CONFIG)
+
+
+def validate_budget(d: dict) -> list:
+    """Fail-safe validator for a published budget. Returns [] when valid, else
+    a list of human-readable reasons (config_store.publish turns a non-empty
+    list into ValueError, which the route maps to HTTP 400 {detail:[...]}).
+
+    Rules: every cap is a positive number; premium_daily <= daily and
+    premium_weekly <= weekly (a premium sub-cap above its general cap can never
+    bind); monthly is ADVISORY — validated as positive but not enforced by any
+    check_* function (the editor labels it "not enforced")."""
+    if not isinstance(d, dict):
+        return ["budget config must be a JSON object"]
+    reasons = []
+    vals = {}
+    for k in _CAP_KEYS:
+        v = d.get(k)
+        # bool is an int subclass — a True/False slipping in as a cap is a bug.
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            reasons.append(f"{k} must be a number")
+            continue
+        # Reject NaN/Infinity: JSON allows the bare NaN/Infinity literals, and
+        # an infinite cap would make `spend >= cap` never fire (a spend cap that
+        # never blocks = fail-open). NaN is caught by `not (v > 0)` below, but
+        # +inf passes that, so screen non-finite explicitly.
+        if not math.isfinite(v):
+            reasons.append(f"{k} must be a finite number")
+            continue
+        if not (v > 0):
+            reasons.append(f"{k} must be a positive number")
+            continue
+        vals[k] = float(v)
+    if "premium_daily_max_usd" in vals and "daily_max_usd" in vals:
+        if vals["premium_daily_max_usd"] > vals["daily_max_usd"]:
+            reasons.append("premium_daily_max_usd must be <= daily_max_usd")
+    if "premium_weekly_max_usd" in vals and "weekly_max_usd" in vals:
+        if vals["premium_weekly_max_usd"] > vals["weekly_max_usd"]:
+            reasons.append("premium_weekly_max_usd must be <= weekly_max_usd")
+    return reasons
+
+
+def _bump_version(current) -> str:
+    """Auto-bump the server-owned version (never trust a client-supplied one):
+    increment the last dotted component of the current version, else fall back
+    to a UTC timestamp stamp."""
+    try:
+        parts = str(current).split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        return ".".join(parts)
+    except (ValueError, TypeError):
+        return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+
+
+def publish_budget(d: dict, actor: str) -> dict:
+    """Publish a new budget: take ONLY the five caps from the caller, stamp a
+    freshly server-bumped version (client version is ignored), and delegate to
+    config_store with validate_budget. Raises ValueError(reasons) on invalid
+    caps before any write. Returns the written dict."""
+    current_version = load_budget_config().get("version", "1.0")
+    new = {k: d.get(k) for k in _CAP_KEYS}
+    new["version"] = _bump_version(current_version)
+    return config_store.publish(_DOMAIN, new, actor=actor, validate_fn=validate_budget)
+
+
+def list_budget_versions() -> list:
+    """Archived budget snapshots newest-first ([{archive_name, version, ts,
+    actor}]), for the editor's version-history list."""
+    return config_store.list_versions(_DOMAIN)
+
+
+def rollback_budget(archive_name: str, actor: str) -> dict:
+    """Re-publish an archived budget snapshot (itself a logged publish).
+    Traversal-jailed inside the versions dir by config_store.rollback; the
+    republish is re-validated so a hand-corrupted archive can't go live."""
+    return config_store.rollback(_DOMAIN, archive_name, actor=actor,
+                                 validate_fn=validate_budget)
 
 
 def estimate_cost_usd(profile, input_tokens: int, output_tokens: int) -> float:

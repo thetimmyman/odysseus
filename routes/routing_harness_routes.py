@@ -607,14 +607,66 @@ def setup_routing_harness_routes():
             "policyVersions": routing_policy.policy_versions(),
         }
 
+    def _authorize_policy_candidate(request: Request, candidate: dict):
+        """Shared authorization for ANY path that makes a policy live — publish
+        AND rollback. Returns (actor, danger_changed).
+
+        A candidate that CHANGES a danger-zone value (sandbox image/allowlist,
+        sensitivity ceiling, coordinator provider/endpoint, ABSIS transport) vs
+        the current live policy is break-glass-class and gated on
+        security_admin ALONE — never stacked with require_admin_cookie, which
+        would make it un-callable (security_admin is popped out of the admin
+        privilege set, so an admin never holds it; see require_security_admin /
+        the Emergency endpoints). Safe-only changes keep the admin-cookie gate.
+        Also enforces the coordinator.provider=endpoint => enabled-ModelEndpoint
+        invariant. Extracting this means publish and rollback can never drift so
+        that one gates a danger-zone change the other waves through (the exact
+        bug where a plain admin could re-instate a security_admin-gated policy
+        by rolling back to it)."""
+        current = routing_policy.load_policy()
+        danger_changed = routing_policy.danger_zone_changes(candidate, current)
+        if danger_changed:
+            require_security_admin(request)
+            actor = get_current_user(request) or "security_admin"
+        else:
+            actor = require_admin_cookie(request) or "admin"
+
+        # coordinator.provider=endpoint must name an ENABLED ModelEndpoint
+        # (mirrors CoordinatorClient._resolve_endpoint) so a publish/rollback
+        # can't point the coordinator at a missing/disabled endpoint and
+        # silently degrade.
+        coord = candidate.get("coordinator") if isinstance(candidate, dict) else None
+        if isinstance(coord, dict) and coord.get("provider") == "endpoint":
+            name = coord.get("endpointName")
+            if not name:
+                raise HTTPException(
+                    400, "coordinator.provider='endpoint' requires coordinator.endpointName")
+            db = SessionLocal()
+            try:
+                ep = db.query(ModelEndpoint).filter(
+                    ModelEndpoint.name == name,
+                    ModelEndpoint.is_enabled == True,  # noqa: E712
+                ).first()
+            finally:
+                db.close()
+            if not ep:
+                raise HTTPException(
+                    400, f"coordinator.endpointName {name!r} does not resolve to an "
+                         "enabled ModelEndpoint")
+        return actor, danger_changed
+
     @router.post("/policy/publish")
     def policy_publish(body: PolicyPublishRequest, request: Request):
-        actor = require_admin_cookie(request)
+        actor, danger_changed = _authorize_policy_candidate(request, body.policy)
         try:
-            stored = routing_policy.publish_policy(body.policy, actor=actor or "admin")
+            stored = routing_policy.publish_policy(body.policy, actor=actor)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return {"policy": stored, "policyVersions": routing_policy.policy_versions()}
+        return {
+            "policy": stored,
+            "policyVersions": routing_policy.policy_versions(),
+            "dangerZoneChanged": danger_changed,
+        }
 
     @router.get("/policy/versions")
     def policy_versions_list(request: Request):
@@ -626,14 +678,30 @@ def setup_routing_harness_routes():
 
     @router.post("/policy/rollback")
     def policy_rollback(body: PolicyRollbackRequest, request: Request):
-        actor = require_admin_cookie(request)
+        # A rollback re-instates an archived policy, which can re-introduce a
+        # danger-zone value — so it must clear the SAME authorization bar as
+        # publishing that value directly. Read the target archive first, gate on
+        # its effective content, THEN apply. (Previously this was admin-cookie
+        # only, letting a plain admin re-instate a security_admin-gated policy by
+        # rolling back to an archived snapshot — the danger-zone bypass.)
+        try:
+            candidate = routing_policy.read_policy_version(body.archive)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        actor, danger_changed = _authorize_policy_candidate(request, candidate)
         try:
             stored = routing_policy.rollback_policy(body.archive, actor=actor or "admin")
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return {"policy": stored, "policyVersions": routing_policy.policy_versions()}
+        return {
+            "policy": stored,
+            "policyVersions": routing_policy.policy_versions(),
+            "dangerZoneChanged": danger_changed,
+        }
 
     # ---------- model-profile registry ----------
     def _profile_out(p: RoutingModelProfile, ep: Optional[ModelEndpoint]) -> dict:

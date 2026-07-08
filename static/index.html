@@ -931,6 +931,10 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h4"/><path d="M11 12c3 0 3-7 6-7"/><path d="M11 12c3 0 3 7 6 7"/></svg>
           <span class="grow">Routing Harness</span>
         </div>
+        <div class="list-item" id="tool-config-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span class="grow">Settings</span>
+        </div>
       </div>
       <div class="section" id="project-files-section" style="display:none">
         <div class="section-header-flex">
@@ -2770,6 +2774,66 @@
       </div>
     </div>
   </div>
+  <div id="config-overlay" class="crew-overlay tool-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="crew-modal harness-modal config-modal">
+      <div class="crew-head">
+        <div class="crew-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Settings <span class="crew-sub">&mdash; the app's configuration home</span></div>
+        <span class="cfg-dirty" id="cfg-dirty-flag" style="display:none">&#9679; unsaved changes</span>
+        <button type="button" class="crew-close" id="config-close" title="Close" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="admin-tabs harness-tabs" id="config-tabs" role="tablist">
+        <button type="button" class="admin-tab active" data-cfgtab="budget" role="tab">Budget</button>
+        <button type="button" class="admin-tab" data-cfgtab="effective" role="tab">Effective</button>
+      </div>
+      <div class="harness-body">
+
+        <div class="harness-panel" data-cfgpanel="budget">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to edit budget caps.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <span class="harness-note">Model-routing spend caps. Persisted under the data volume &mdash; edits survive a redeploy. Every publish archives the outgoing version.</span>
+              <span id="cfg-budget-chips" style="margin-left:auto"></span>
+            </div>
+
+            <div class="harness-detail-h">Current spend</div>
+            <div class="harness-stats" id="cfg-budget-spend"></div>
+
+            <div class="harness-detail-h">Caps</div>
+            <div class="cfg-caps-grid" id="cfg-budget-caps"></div>
+            <div class="preview-env-warn is-bad" id="cfg-budget-warn" style="display:none"></div>
+
+            <div class="harness-row" style="margin-top:4px">
+              <button type="button" class="crew-btn crew-btn-launch" id="cfg-budget-publish" disabled>Publish</button>
+              <button type="button" class="crew-btn" id="cfg-budget-revert" disabled>Revert edits</button>
+              <button type="button" class="crew-btn" id="cfg-budget-reload" style="margin-left:auto">Reload</button>
+            </div>
+
+            <div class="harness-detail-h">Archived versions</div>
+            <div id="cfg-budget-versions"></div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-cfgpanel="effective" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to view effective config.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <span class="harness-note">Read-only. Where each effective setting comes from, and whether a change takes effect live or needs a redeploy.</span>
+              <button type="button" class="crew-btn" id="cfg-effective-reload" style="margin-left:auto">Reload</button>
+            </div>
+            <div class="preview-env-warn" id="cfg-effective-redeploy-banner" style="display:none"></div>
+            <div class="harness-table-wrap" id="cfg-effective-tablewrap">
+              <table class="harness-table">
+                <thead><tr><th>setting</th><th>value</th><th>source</th><th>surface</th><th>editable where</th></tr></thead>
+                <tbody id="cfg-effective-rows"></tbody>
+              </table>
+            </div>
+            <div class="crew-empty" id="cfg-effective-empty" style="display:none">No effective-config facts returned.</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
 <script type="module" src="/static/js/storage.js"></script>
 <script type="module" src="/static/js/ui.js"></script>
 <script type="module" src="/static/js/markdown.js"></script>
@@ -2794,6 +2858,7 @@
 <script type="module" src="/static/js/crewPanel.js"></script>
 <script type="module" src="/static/js/devPreview.js"></script>
 <script type="module" src="/static/js/routingHarness.js"></script>
+<script type="module" src="/static/js/configPanel.js"></script>
 <script type="module" src="/static/js/gallery.js"></script>
 <script type="module" src="/static/js/chatRenderer.js"></script>
 <script type="module" src="/static/js/codeRunner.js"></script>

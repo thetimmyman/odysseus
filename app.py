@@ -686,6 +686,11 @@ app.include_router(setup_compare_routes(session_manager))
 from routes.routing_harness_routes import setup_routing_harness_routes
 app.include_router(setup_routing_harness_routes())
 
+# Settings config surface (PR-A): versioned Budget editor + read-only Effective
+# config, persisted under the data/ volume (survives redeploy).
+from routes.config_routes import setup_config_routes
+setup_config_routes(app)
+
 # User Preferences
 from routes.prefs_routes import setup_prefs_routes
 app.include_router(setup_prefs_routes())
