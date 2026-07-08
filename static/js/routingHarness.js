@@ -880,6 +880,251 @@ async function _verifLoad() {
   }
 }
 
+// --- Knowledge: evidence-grounded lessons (advisory only, never policy) ----------
+let _kbRows = [];            // last GET /knowledge payload
+let _kbSel = null;           // selected entry id
+
+const _KB_BADGE = {
+  draft: 'crew-st-block',
+  validated: 'crew-st-ok',
+  rejected: 'crew-st-err',
+  superseded: 'crew-st-stop',
+  expired: 'crew-st-stop',
+};
+
+async function _kbLoad() {
+  const tbody = _el('harness-kb-rows');
+  if (!tbody) return;
+  const status = _el('harness-kb-status').value;
+  try {
+    const q = status ? `?status=${encodeURIComponent(status)}` : '';
+    _kbRows = await _api(`/api/harness/knowledge${q}`);
+  } catch (e) {
+    if (_gate('knowledge', e)) return;
+    _err('Could not load knowledge entries: ' + (e.message || e));
+    return;
+  }
+  _ungate('knowledge');
+  tbody.innerHTML = '';
+  _el('harness-kb-empty').style.display = _kbRows.length ? 'none' : '';
+  _el('harness-kb-tablewrap').style.display = _kbRows.length ? '' : 'none';
+  for (const k of _kbRows) {
+    const tr = document.createElement('tr');
+    tr.className = 'is-clickable';
+    if (k.id === _kbSel) tr.classList.add('selected');
+    tr.dataset.kbId = k.id;
+    tr.appendChild(_td(_fmtTs(k.created_at), 'harness-nowrap'));
+    tr.appendChild(_td(k.title));
+    tr.appendChild(_td(_badge(k.status, _KB_BADGE[k.status] || 'crew-st-stop')));
+    tr.appendChild(_td(k.category || '—', 'harness-mono'));
+    tr.appendChild(_td(k.created_by, 'harness-mono'));
+    tr.appendChild(_td(_kbRowActions(k), 'harness-nowrap'));
+    tbody.appendChild(tr);
+  }
+  if (_kbSel && !_kbRows.some((k) => k.id === _kbSel)) {
+    _kbSel = null;
+    _el('harness-kb-detail').style.display = 'none';
+  } else if (_kbSel) {
+    _kbSelect(_kbSel);
+  }
+}
+
+// Per-status action buttons (validation queue: Validate/Reject on drafts).
+function _kbRowActions(k) {
+  const wrap = document.createElement('span');
+  const mk = (label, act, clear) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'preview-env-btn' + (clear ? ' preview-env-btn-clear' : '');
+    b.textContent = label;
+    b.dataset.act = act;
+    b.dataset.kbId = k.id;
+    return b;
+  };
+  if (k.status === 'draft') wrap.append(mk('Validate', 'validate'), mk('Reject', 'reject', true));
+  else if (k.status === 'validated') wrap.append(mk('Supersede', 'supersede'), mk('Expire', 'expire', true));
+  else if (k.status === 'expired') wrap.append(mk('Re-validate', 'revalidate'));
+  else wrap.textContent = '—';
+  return wrap;
+}
+
+function _kbSelect(id) {
+  _kbSel = id;
+  document.querySelectorAll('#harness-kb-rows tr').forEach((tr) => {
+    tr.classList.toggle('selected', tr.dataset.kbId === id);
+  });
+  const k = _kbRows.find((r) => r.id === id);
+  const pane = _el('harness-kb-detail');
+  if (!k || !pane) return;
+  pane.innerHTML = '';
+  pane.style.display = '';
+
+  const head = document.createElement('div');
+  head.className = 'harness-row';
+  head.appendChild(_badge(k.status, _KB_BADGE[k.status] || 'crew-st-stop'));
+  head.appendChild(_tag('advisory only — never policy', true));
+  pane.appendChild(head);
+
+  pane.appendChild(_kv('entry id', k.id, true));
+  pane.appendChild(_kv('title', k.title));
+  pane.appendChild(_kv('category', k.category, true));
+  const tags = document.createElement('span');
+  (k.tags || []).forEach((t) => tags.appendChild(_tag(t)));
+  if (!(k.tags || []).length) tags.textContent = '—';
+  pane.appendChild(_kv('tags', tags));
+  pane.appendChild(_kv('created by', k.created_by, true));
+  pane.appendChild(_kv('created', _fmtTs(k.created_at)));
+  pane.appendChild(_kv('source task', k.source_task_id, true));
+  pane.appendChild(_kv('source model run', k.source_model_run_id, true));
+  if (k.validated_by) pane.appendChild(_kv('validated', `${_fmtTs(k.validated_at)} by ${k.validated_by}`));
+  if (k.superseded_by_id) pane.appendChild(_kv('superseded by', k.superseded_by_id, true));
+  if (k.expired_at) pane.appendChild(_kv('expired', `${_fmtTs(k.expired_at)} — ${k.expires_rationale || '(no rationale)'}`));
+
+  pane.appendChild(_sectionH('Lesson body'));
+  pane.appendChild(_pre(k.body));
+
+  pane.appendChild(_sectionH(`Evidence (${(k.evidence || []).length})`));
+  pane.appendChild(_ul((k.evidence || []).map((ev) => typeof ev === 'string' ? ev : JSON.stringify(ev))));
+
+  if (k.audit_log) {
+    pane.appendChild(_sectionH('Lifecycle audit trail'));
+    pane.appendChild(_pre(k.audit_log));
+  }
+}
+
+async function _kbAction(id, act) {
+  let path = null;
+  let body = {};
+  if (act === 'validate') {
+    if (!window.confirm('Validate this draft? Validated entries appear in advisory retrieval (context for reviewers — never a gate).')) return;
+    path = 'validate';
+  } else if (act === 'revalidate') {
+    if (!window.confirm('Re-validate this EXPIRED entry? This is an explicit human decision; the expiry stays in the audit trail.')) return;
+    path = 'validate';
+    body = { revalidate_expired: true };
+  } else if (act === 'reject') {
+    if (!window.confirm('Reject this draft? Rejection is terminal.')) return;
+    path = 'reject';
+  } else if (act === 'supersede') {
+    const replacement = (window.prompt('Replacement entry id (the entry that supersedes this one):') || '').trim();
+    if (!replacement) return;
+    path = 'supersede';
+    body = { replacement_id: replacement };
+  } else if (act === 'expire') {
+    const rationale = (window.prompt('Expiry rationale (required — e.g. "substantial code change in area X"):') || '').trim();
+    if (!rationale) return;
+    path = 'expire';
+    body = { rationale };
+  }
+  if (!path) return;
+  try {
+    await _post(`/api/harness/knowledge/${encodeURIComponent(id)}/${path}`, body);
+    _toast('Entry updated');
+    await _kbLoad();
+  } catch (e) {
+    if (_gate('knowledge', e)) return;
+    _err('Action failed: ' + (e.message || e));
+  }
+}
+
+async function _kbCreate() {
+  const title = (_el('harness-kb-title').value || '').trim();
+  const body = _el('harness-kb-body').value || '';
+  if (!title || !body.trim()) { _err('title and body are required'); return; }
+  let evidence;
+  try {
+    evidence = JSON.parse(_el('harness-kb-evidence').value || 'null');
+  } catch (e) {
+    _err('Evidence: invalid JSON (' + (e.message || e) + ')');
+    return;
+  }
+  if (!Array.isArray(evidence) || !evidence.length) {
+    _err('Evidence is required: a non-empty JSON list of grounding references');
+    return;
+  }
+  const payload = {
+    title, body, evidence,
+    category: (_el('harness-kb-category').value || '').trim() || null,
+    tags: (_el('harness-kb-tags').value || '').split(',').map((s) => s.trim()).filter(Boolean),
+  };
+  try {
+    await _post('/api/harness/knowledge', payload);
+    _toast('Draft created');
+    ['harness-kb-title', 'harness-kb-category', 'harness-kb-tags', 'harness-kb-body', 'harness-kb-evidence']
+      .forEach((i) => { _el(i).value = ''; });
+    await _kbLoad();
+  } catch (e) {
+    if (_gate('knowledge', e)) return;
+    _err('Create failed: ' + (e.message || e));
+  }
+}
+
+async function _kbFromRun() {
+  const runId = (_el('harness-kb-runid').value || '').trim();
+  if (!runId) { _err('model run id is required'); return; }
+  try {
+    const entry = await _post('/api/harness/knowledge/draft-from-run', { model_run_id: runId });
+    _toast('Draft assembled from run');
+    _el('harness-kb-runid').value = '';
+    _kbSel = entry.id;
+    await _kbLoad();
+  } catch (e) {
+    if (_gate('knowledge', e)) return;
+    _err('Draft-from-run failed: ' + (e.message || e));
+  }
+}
+
+async function _kbRetrieve() {
+  const box = _el('harness-kb-retrieved');
+  const params = new URLSearchParams();
+  const cat = (_el('harness-kb-q-category').value || '').trim();
+  const tag = (_el('harness-kb-q-tag').value || '').trim();
+  const tt = (_el('harness-kb-q-tasktype').value || '').trim();
+  if (cat) params.set('category', cat);
+  if (tag) params.set('tag', tag);
+  if (tt) params.set('task_type', tt);
+  let r;
+  try {
+    r = await _api(`/api/harness/knowledge/retrieve${params.toString() ? '?' + params.toString() : ''}`);
+  } catch (e) {
+    if (_gate('knowledge', e)) return;
+    _err('Retrieve failed: ' + (e.message || e));
+    return;
+  }
+  box.innerHTML = '';
+  box.style.display = '';
+  const banner = document.createElement('div');
+  banner.className = 'harness-note';
+  banner.textContent = `ADVISORY ONLY — ${r.note || 'knowledge entries are advisory context, never policy'}`;
+  box.appendChild(banner);
+  const items = r.items || [];
+  if (!items.length) {
+    const e = document.createElement('div');
+    e.className = 'crew-empty';
+    e.textContent = 'No validated entries match.';
+    box.appendChild(e);
+    return;
+  }
+  for (const it of items) {
+    const k = it.entry || {};
+    const card = document.createElement('div');
+    card.className = 'admin-card';
+    const head = document.createElement('div');
+    head.className = 'harness-row';
+    head.appendChild(_tag('advisory', true));
+    const t = document.createElement('span');
+    t.className = 'harness-detail-h';
+    t.style.margin = '0';
+    t.textContent = k.title || '(untitled)';
+    head.appendChild(t);
+    card.appendChild(head);
+    card.appendChild(_kv('category', k.category, true));
+    card.appendChild(_kv('validated', `${_fmtTs(k.validated_at)} by ${k.validated_by || '?'}`));
+    card.appendChild(_pre(k.body));
+    box.appendChild(card);
+  }
+}
+
 // --- Emergency: break-glass overrides -------------------------------------------
 async function _loadEmergency() {
   try {
@@ -1006,6 +1251,7 @@ const _LOADERS = {
   budget: _loadBudget,
   route: null,               // pure form — nothing to prefetch
   tests: null,               // pure form — loads on demand by task/run id
+  knowledge: _kbLoad,
   emergency: _loadEmergency,
 };
 
@@ -1122,6 +1368,24 @@ function init(apiBase) {
   const example = JSON.stringify(_EXAMPLE_TASK, null, 2);
   if (_el('harness-budget-task')) _el('harness-budget-task').value = example;
   if (_el('harness-route-task')) _el('harness-route-task').value = example;
+
+  // Knowledge
+  _el('harness-kb-refresh')?.addEventListener('click', _kbLoad);
+  _el('harness-kb-status')?.addEventListener('change', _kbLoad);
+  _el('harness-kb-newtoggle')?.addEventListener('click', () => {
+    const card = _el('harness-kb-newcard');
+    card.style.display = card.style.display === 'none' ? '' : 'none';
+  });
+  _el('harness-kb-create')?.addEventListener('click', _kbCreate);
+  _el('harness-kb-fromrun')?.addEventListener('click', _kbFromRun);
+  _el('harness-kb-runid')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') _kbFromRun(); });
+  _el('harness-kb-retrieve')?.addEventListener('click', _kbRetrieve);
+  _el('harness-kb-rows')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (btn) { _kbAction(btn.dataset.kbId, btn.dataset.act); return; }
+    const tr = e.target.closest('tr[data-kb-id]');
+    if (tr) _kbSelect(tr.dataset.kbId);
+  });
 
   // Emergency
   _el('harness-em-refresh')?.addEventListener('click', _loadEmergency);

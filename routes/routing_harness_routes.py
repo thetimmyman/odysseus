@@ -30,6 +30,7 @@ from core.database import (
     CoordinatorAudit,
     EmergencyOverride,
     GeneratedTest,
+    KnowledgeBaseEntry,
     ModelEndpoint,
     RoutingModelProfile,
     RoutingModelRun,
@@ -70,6 +71,17 @@ from src.routing_reliability import (
     Confounders,
     compute_signal,
     ReliabilityInput,
+)
+from src.routing_knowledge import (
+    KnowledgeTransitionError,
+    create_draft,
+    draft_from_run,
+    entry_to_dict,
+    expire_entry,
+    reject_entry,
+    retrieve_validated,
+    supersede_entry,
+    validate_entry,
 )
 from src.routing_task_io import task_kwargs_from_json
 from src.secret_storage import hmac_sign
@@ -180,6 +192,37 @@ class ReliabilityRequest(BaseModel):
     lesson_review_participation_rate: float = 1.0
     avg_validated_lesson_quality: float = 0.0
     confounders: Dict[str, bool] = Field(default_factory=dict)
+
+
+class KnowledgeCreateRequest(BaseModel):
+    title: str
+    body: str
+    # REQUIRED non-empty (400 otherwise): run ids / model-run ids / manifest
+    # ids / artifact paths / verification results grounding the lesson.
+    evidence: List[Any] = Field(default_factory=list)
+    category: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    source_task_id: Optional[str] = None
+    source_model_run_id: Optional[str] = None
+    created_by: str = "human"
+
+
+class KnowledgeValidateRequest(BaseModel):
+    # Explicit human decision required to re-validate an EXPIRED entry;
+    # never a default (draft validation ignores it).
+    revalidate_expired: bool = False
+
+
+class KnowledgeSupersedeRequest(BaseModel):
+    replacement_id: str
+
+
+class KnowledgeExpireRequest(BaseModel):
+    rationale: str
+
+
+class KnowledgeDraftFromRunRequest(BaseModel):
+    model_run_id: str
 
 
 def _now():
@@ -1096,5 +1139,145 @@ def setup_routing_harness_routes():
         finally:
             db.close()
         return {"id": rid, **sig.to_dict()}
+
+    # ---------- knowledge base (spec Phase 6 / Section 19) ----------
+    # Lessons are ADVISORY context only — nothing served here may gate, veto,
+    # or block any routing/verification decision (src/routing_knowledge
+    # docstring + tests/test_routing_knowledge.py enforce the invariant).
+    @router.get("/knowledge")
+    def knowledge_list(request: Request, status: Optional[str] = None,
+                       category: Optional[str] = None, limit: int = 100):
+        """List entries (any status — this is the admin curation surface, not
+        the advisory retrieval surface). Drafts float to the top so the list
+        doubles as the validation queue."""
+        require_admin_cookie(request)
+        limit = max(1, min(int(limit), 500))
+        db = SessionLocal()
+        try:
+            q = db.query(KnowledgeBaseEntry)
+            if status:
+                q = q.filter(KnowledgeBaseEntry.status == status)
+            if category:
+                q = q.filter(KnowledgeBaseEntry.category == category)
+            rows = q.order_by(KnowledgeBaseEntry.created_at.desc(),
+                              KnowledgeBaseEntry.id.desc()).limit(limit).all()
+            # Validation queue ordering: drafts first, then everything else,
+            # each newest-first (stable sort preserves the SQL ordering).
+            rows.sort(key=lambda r: 0 if r.status == "draft" else 1)
+            return [entry_to_dict(r) for r in rows]
+        finally:
+            db.close()
+
+    @router.get("/knowledge/retrieve")
+    def knowledge_retrieve(request: Request, category: Optional[str] = None,
+                           tag: Optional[str] = None,
+                           task_type: Optional[str] = None, limit: int = 20):
+        """The advisory retrieval surface: VALIDATED entries only, each
+        wrapped with an explicit advisory label. Suitable as review context
+        for a task's area (e.g. filter by the task's task_type/category) —
+        and for nothing else: never an input to gates or verification."""
+        require_admin_cookie(request)
+        db = SessionLocal()
+        try:
+            items = retrieve_validated(db, category=category, tag=tag,
+                                       task_type=task_type, limit=limit)
+            return {
+                "advisory": True,
+                "note": "knowledge entries are advisory context, never policy",
+                "items": items,
+            }
+        finally:
+            db.close()
+
+    @router.post("/knowledge")
+    def knowledge_create(body: KnowledgeCreateRequest, request: Request):
+        """Create a draft lesson. Evidence is REQUIRED non-empty (400)."""
+        require_admin_cookie(request)
+        db = SessionLocal()
+        try:
+            try:
+                row = create_draft(
+                    db, title=body.title, body=body.body,
+                    evidence=body.evidence, category=body.category,
+                    tags=body.tags or None,
+                    source_task_id=body.source_task_id,
+                    source_model_run_id=body.source_model_run_id,
+                    created_by=body.created_by,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            return entry_to_dict(row)
+        finally:
+            db.close()
+
+    @router.post("/knowledge/draft-from-run")
+    def knowledge_draft_from_run(body: KnowledgeDraftFromRunRequest, request: Request):
+        """Assemble a draft lesson from a model run's archived artifacts —
+        a mechanical template (no LLM call), evidence auto-populated with
+        the run/model-run/manifest ids and the persisted verification
+        verdict. A human or lesson-generator model edits before validation."""
+        require_admin_cookie(request)
+        db = SessionLocal()
+        try:
+            model_run = db.get(RoutingModelRun, body.model_run_id)
+            if not model_run:
+                raise HTTPException(404, f"no model run with id {body.model_run_id!r}")
+            try:
+                row = draft_from_run(db, model_run)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            return entry_to_dict(row)
+        finally:
+            db.close()
+
+    def _knowledge_transition(entry_id, fn, *args, **kwargs):
+        """Shared 404/409/400 mapping for the lifecycle actions."""
+        db = SessionLocal()
+        try:
+            try:
+                row = fn(db, entry_id, *args, **kwargs)
+            except LookupError as e:
+                raise HTTPException(404, str(e))
+            except KnowledgeTransitionError as e:
+                raise HTTPException(409, str(e))
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            return entry_to_dict(row)
+        finally:
+            db.close()
+
+    @router.post("/knowledge/{entry_id}/validate")
+    def knowledge_validate(entry_id: str, request: Request,
+                           body: Optional[KnowledgeValidateRequest] = None):
+        """draft -> validated (human action; actor = the admin cookie user).
+        Re-validating an EXPIRED entry additionally requires the explicit
+        revalidate_expired flag in the body — a deliberate human decision."""
+        actor = require_admin_cookie(request) or "admin"
+        reval = bool(body and body.revalidate_expired)
+        return _knowledge_transition(entry_id, validate_entry, actor,
+                                     revalidate_expired=reval)
+
+    @router.post("/knowledge/{entry_id}/reject")
+    def knowledge_reject(entry_id: str, request: Request):
+        """draft -> rejected (terminal)."""
+        actor = require_admin_cookie(request) or "admin"
+        return _knowledge_transition(entry_id, reject_entry, actor)
+
+    @router.post("/knowledge/{entry_id}/supersede")
+    def knowledge_supersede(entry_id: str, body: KnowledgeSupersedeRequest,
+                            request: Request):
+        """validated -> superseded, with the replacement link (terminal)."""
+        actor = require_admin_cookie(request) or "admin"
+        return _knowledge_transition(entry_id, supersede_entry, actor,
+                                     body.replacement_id)
+
+    @router.post("/knowledge/{entry_id}/expire")
+    def knowledge_expire(entry_id: str, body: KnowledgeExpireRequest,
+                         request: Request):
+        """validated -> expired, rationale required (e.g. "substantial code
+        change in area X")."""
+        actor = require_admin_cookie(request) or "admin"
+        return _knowledge_transition(entry_id, expire_entry, actor,
+                                     body.rationale)
 
     return router

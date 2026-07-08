@@ -2487,6 +2487,7 @@
         <button type="button" class="admin-tab" data-rhtab="budget">Budget</button>
         <button type="button" class="admin-tab" data-rhtab="route">Route preview</button>
         <button type="button" class="admin-tab" data-rhtab="tests">Tests</button>
+        <button type="button" class="admin-tab" data-rhtab="knowledge">Knowledge</button>
         <button type="button" class="admin-tab" data-rhtab="emergency">Emergency</button>
       </div>
       <div class="harness-body">
@@ -2649,6 +2650,63 @@
                 <button type="button" class="crew-btn" id="harness-verif-load">Load result</button>
               </div>
               <div id="harness-verif-detail" class="harness-detail" style="display:none;margin-top:8px"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="knowledge" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="preview-env-warn">ADVISORY ONLY &mdash; knowledge entries are review context for humans and lesson-aware prompts. They never gate, veto, or block any routing or verification decision. Every entry must be grounded in evidence (run ids, artifact paths, verification results).</div>
+            <div class="harness-row">
+              <select id="harness-kb-status" class="preview-env-keyinput" title="status filter">
+                <option value="">all statuses</option>
+                <option value="draft" selected>draft (validation queue)</option>
+                <option value="validated">validated</option>
+                <option value="rejected">rejected</option>
+                <option value="superseded">superseded</option>
+                <option value="expired">expired</option>
+              </select>
+              <button type="button" class="crew-btn" id="harness-kb-refresh">Refresh</button>
+              <button type="button" class="crew-btn" id="harness-kb-newtoggle" style="margin-left:auto">New draft</button>
+            </div>
+            <div class="admin-card" id="harness-kb-newcard" style="display:none">
+              <div class="harness-note">Drafts start unvalidated. Evidence is required &mdash; a JSON list of grounding references (run ids, model-run ids, manifest ids, artifact paths, verification results). Or assemble one mechanically from an archived model run below.</div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-kb-title" class="preview-env-keyinput harness-wide" placeholder="title" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-kb-category" class="preview-env-keyinput" placeholder="category (e.g. task type)" autocomplete="off" spellcheck="false">
+                <input type="text" id="harness-kb-tags" class="preview-env-keyinput" placeholder="tags (comma-separated)" autocomplete="off" spellcheck="false">
+              </div>
+              <textarea id="harness-kb-body" class="crew-prompt harness-mono" rows="6" placeholder="lesson body" spellcheck="false" style="margin-top:8px"></textarea>
+              <textarea id="harness-kb-evidence" class="crew-prompt harness-mono" rows="3" placeholder='evidence (JSON list, required) e.g. [{"type":"model_run","id":"..."}]' spellcheck="false" style="margin-top:8px"></textarea>
+              <div class="harness-row" style="margin-top:8px">
+                <button type="button" class="crew-btn crew-btn-launch" id="harness-kb-create">Create draft</button>
+              </div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-kb-runid" class="preview-env-keyinput harness-wide" placeholder="model run id" autocomplete="off" spellcheck="false">
+                <button type="button" class="crew-btn" id="harness-kb-fromrun">Draft from run</button>
+              </div>
+            </div>
+            <div class="harness-table-wrap" id="harness-kb-tablewrap">
+              <table class="harness-table">
+                <thead><tr><th>created</th><th>title</th><th>status</th><th>category</th><th>created by</th><th></th></tr></thead>
+                <tbody id="harness-kb-rows"></tbody>
+              </table>
+            </div>
+            <div class="crew-empty" id="harness-kb-empty" style="display:none">No knowledge entries yet &mdash; create a draft above or build one from an archived model run.</div>
+            <div class="harness-detail" id="harness-kb-detail" style="display:none"></div>
+            <div class="admin-card">
+              <div class="harness-detail-h" style="margin-top:0">Retrieve validated (advisory)</div>
+              <div class="harness-note">The advisory retrieval surface: validated entries only, each explicitly labeled advisory. This is what review tooling may show alongside a task &mdash; context, never policy.</div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-kb-q-category" class="preview-env-keyinput" placeholder="category" autocomplete="off" spellcheck="false">
+                <input type="text" id="harness-kb-q-tag" class="preview-env-keyinput" placeholder="tag" autocomplete="off" spellcheck="false">
+                <input type="text" id="harness-kb-q-tasktype" class="preview-env-keyinput" placeholder="task type" autocomplete="off" spellcheck="false">
+                <button type="button" class="crew-btn" id="harness-kb-retrieve">Retrieve</button>
+              </div>
+              <div id="harness-kb-retrieved" style="display:none;margin-top:8px"></div>
             </div>
           </div>
         </div>
