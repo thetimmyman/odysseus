@@ -1,6 +1,6 @@
 {
   "routingPolicyVersion": "1.1",
-  "verificationPolicyVersion": "1.0",
+  "verificationPolicyVersion": "1.1",
   "uiConfigVersion": "1.0",
   "coordinator": {
     "provider": "external",
@@ -12,6 +12,11 @@
   "maxUntrustedTokens": 256,
   "rawOutputMaxBytes": 262144,
   "remoteSensitivityCeiling": "confidential",
+  "verification": {
+    "defaultMode": "regression_guard",
+    "equivalenceStdoutComparison": true,
+    "overconfidenceThreshold": 0.8
+  },
   "sandbox": {
     "image": "python:3.12-slim",
     "cpus": 2,
