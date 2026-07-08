@@ -517,6 +517,7 @@ class _RecordingEndpointClient:
     asked to decide() and exposes a settable _chat_url so the Section 9 locality
     gate can be exercised. transmitted stays empty when the gate blocks."""
     transmitted = []
+    repair_calls = 0
     chat_url = None  # class-level so from_policy() picks up the test's setting
 
     def __init__(self):
@@ -539,6 +540,7 @@ class _RecordingEndpointClient:
         })
 
     def repair_fn(self, raw, errors):
+        type(self).repair_calls += 1
         return None
 
     @classmethod
@@ -552,6 +554,7 @@ def test_coordinator_decide_restricted_data_never_sent_to_nonlocal_endpoint(monk
     the result degrades to the deterministic tier, and the audit trail records
     coordinator_remote_blocked."""
     _RecordingEndpointClient.transmitted = []
+    _RecordingEndpointClient.repair_calls = 0
     _RecordingEndpointClient.chat_url = "https://openrouter.ai/api/v1/chat/completions"  # remote
     monkeypatch.setattr(rh, "CoordinatorClient", _RecordingEndpointClient)
     _app, client, S = _make_app_and_client()
@@ -566,8 +569,11 @@ def test_coordinator_decide_restricted_data_never_sent_to_nonlocal_endpoint(monk
     r = client.post("/api/harness/coordinator/decide", headers=ADMIN, json={"task_id": "task-restr"})
     assert r.status_code == 200, r.text
     body = r.json()
-    # Nothing was transmitted to the remote endpoint.
+    # Nothing was transmitted to the remote endpoint — not via decide()...
     assert _RecordingEndpointClient.transmitted == []
+    # ...and not via the repair tier either (repair would hit the same excluded
+    # remote endpoint), so it must not have been wired when locality-blocked.
+    assert _RecordingEndpointClient.repair_calls == 0
     # Degraded truthfully and recorded WHY.
     assert body["decideError"] and "coordinator_remote_blocked" in body["decideError"]
     assert any("coordinator_remote_blocked" in n for n in body["auditNotes"])

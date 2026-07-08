@@ -179,7 +179,8 @@ def generate_and_wrap_decision(
         )
 
     decide_error: Optional[str] = None
-    if not coordinator_endpoint_permits_sensitivity(task, client):
+    locality_blocked = not coordinator_endpoint_permits_sensitivity(task, client)
+    if locality_blocked:
         # Fail closed: over-ceiling data must not reach a non-local coordinator.
         # Skip the model call entirely and let the wrapper fall to the
         # deterministic (local-only) tier; record why in the audit trail.
@@ -209,8 +210,14 @@ def generate_and_wrap_decision(
         sandbox_ok=sandbox_ok,
         task_id=task.id,
     )
+    # When the endpoint was locality-blocked, do NOT wire repair_fn: the schema
+    # repair tier would call that same excluded remote endpoint (with the schema
+    # + validation errors — not the task payload, so not a data leak, but a
+    # pointless network call to an endpoint we just decided must not serve this
+    # task). Go straight to the deterministic local tier.
+    repair_fn = None if locality_blocked else client.repair_fn
     result = wrap_coordinator_output(
-        raw, gctx, repair_fn=client.repair_fn, deterministic_fn=deterministic_fn
+        raw, gctx, repair_fn=repair_fn, deterministic_fn=deterministic_fn
     )
     # Redact BEFORE store/return: validationErrors/auditNotes can carry
     # model-controlled fragments (parse_decision interpolates offending enum
