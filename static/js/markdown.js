@@ -436,6 +436,29 @@ export function processWithThinking(text) {
   return _useSvgEmoji() ? svgifyEmoji(html) : html;
 }
 
+// PersonalOS 2026-06-10: normalize CLDR emoji shortcodes (":check mark:",
+// ":warning sign:", underscore variants) to their emoji before rendering.
+// Restored from the deployed fork baseline (72b0677) — the dev-branch rebuild
+// kept the normalizeEmojiNames() call site below but dropped this definition,
+// which made mdToHtml throw a ReferenceError on every render.
+const _EMOJI_NAMES = {
+  'check mark': '✅', 'white check mark': '✅', 'heavy check mark': '✔️',
+  'cross mark': '❌', 'cross mark button': '❎',
+  'warning': '⚠️', 'warning sign': '⚠️',
+  'white_check_mark': '✅', 'heavy_check_mark': '✔️', 'x': '❌',
+};
+function normalizeEmojiNames(text) {
+  if (!text || text.indexOf(':') < 0) return text;
+  // Skip inline-code spans (pairing matches the downstream backtick converter).
+  return text.split(/(`[^`]+`)/).map(function (seg, i) {
+    if (i % 2 === 1) return seg;
+    return seg.replace(/:([a-z](?:[a-z _.-]*[a-z])?):/gi, function (m, name) {
+      var key = name.toLowerCase().replace(/_/g, ' ').trim();
+      return Object.prototype.hasOwnProperty.call(_EMOJI_NAMES, key) ? _EMOJI_NAMES[key] : m;
+    });
+  }).join('');
+}
+
 /**
  * Convert markdown to HTML
  */

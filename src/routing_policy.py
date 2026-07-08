@@ -17,10 +17,10 @@ from src.routing_budget import load_budget_config
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY_PATH = os.path.join(_ROOT, "config", "routing_policy.json")
-# Sibling of routing_executor.ARCHIVE_ROOT (data/routing/runs). Resolved with
-# the same repo-root expression rather than imported: routing_executor imports
-# this module for RunManifest policy stamping, so importing its constant back
-# would be circular (and drags llm_core/DB into a pure-config module).
+# Sibling of routing_executor's archive root (data/routing/runs). Resolved
+# with the same repo-root expression rather than imported: routing_executor
+# imports this module for RunManifest policy stamping, so importing back from
+# it would be circular (and drags llm_core/DB into a pure-config module).
 POLICY_VERSIONS_DIR = os.path.join(_ROOT, "data", "routing", "policy_versions")
 
 DEFAULT_POLICY = {
@@ -37,6 +37,29 @@ DEFAULT_POLICY = {
     "maxUntrustedTokens": 256,
     "rawOutputMaxBytes": 262144,
     "remoteSensitivityCeiling": "confidential",
+    # Phase 3 Safe Execution (spec Section 15): resource limits + command
+    # allowlist for routing_sandbox.run_in_sandbox. allowedCommands entries
+    # are normalized prefixes -- a command is allowed iff it equals an entry
+    # or starts with entry + " " (and carries no shell metacharacters).
+    "sandbox": {
+        "image": "python:3.12-slim",
+        "cpus": 2,
+        "memoryGb": 4,
+        "pidsLimit": 256,
+        "wallClockSeconds": 600,
+        "maxOutputBytes": 1048576,
+        "allowedCommands": [
+            "pytest",
+            "python -m pytest",
+            "python -m py_compile",
+            "npm test",
+            "node --check",
+            "ruff check",
+            "eslint",
+            "tsc --noEmit",
+            "make test",
+        ],
+    },
 }
 
 _REQUIRED_VERSION_KEYS = ("routingPolicyVersion", "verificationPolicyVersion", "uiConfigVersion")

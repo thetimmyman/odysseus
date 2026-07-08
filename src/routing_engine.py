@@ -4,7 +4,9 @@ spec's Section 6 (role map + scoreModelForTask). Scored against
 bundle; historical performance comes from routing_scoring.historical_score()
 (single source of truth -- don't reimplement that aggregate here)."""
 import json
+import re
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 from src.routing_budget import DEFAULT_MAX_OUTPUT_TOKENS, estimate_cost_usd
 from src.routing_scoring import historical_score
@@ -113,14 +115,59 @@ def score_model_for_task(profile, task, bundle: dict, hist_score: Optional[float
     }
 
 
+# Sensitivity rank order for the Section 9 hard filter. A task whose
+# data_sensitivity ranks ABOVE the policy's remoteSensitivityCeiling may only
+# route to endpoints on loopback/private networks.
+_SENSITIVITY_RANK = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3, "secret": 4}
+
+_PRIVATE_HOST_RE = re.compile(
+    r"^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal"
+    r"|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+"
+    r"|[^.]+\.local|[^.]+\.internal|[^.]+)$"  # bare hostnames (no dots) = LAN
+)
+
+
+def _endpoint_is_local(url: Optional[str]) -> bool:
+    """True when the endpoint host is loopback / RFC1918 / a bare LAN hostname.
+    Anything else (openrouter.ai, api.*, cloud hosts) counts as remote for the
+    data-sensitivity hard filter. A missing URL is NOT local — an unverifiable
+    destination must never receive restricted data (fail closed)."""
+    if not url:
+        return False
+    host = urlparse(url).hostname or ""
+    return bool(host) and bool(_PRIVATE_HOST_RE.match(host))
+
+
+def _remote_ceiling_rank() -> int:
+    try:
+        from src.routing_policy import load_policy
+        ceiling = load_policy().get("remoteSensitivityCeiling", "confidential")
+    except Exception:
+        ceiling = "confidential"
+    return _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK["confidential"])
+
+
 def route_task(db, task, bundle: dict) -> dict:
     """Return the ranked candidate chain for `task`, filtered by its
-    allow_free/paid/premium flags. `task` is a RoutingTask row."""
-    from core.database import RoutingModelProfile
+    allow_free/paid/premium flags and the Section 9 data-sensitivity hard
+    filter (a hard filter, not a score penalty: dataPolicyFit < 1.0 means the
+    candidate never enters ranking at all). `task` is a RoutingTask row."""
+    from core.database import ModelEndpoint, RoutingModelProfile
 
     profiles = db.query(RoutingModelProfile).filter(RoutingModelProfile.enabled == True).all()  # noqa: E712
 
+    sensitivity = getattr(task, "data_sensitivity", None) or "internal"
+    needs_local_only = _SENSITIVITY_RANK.get(sensitivity, 1) > _remote_ceiling_rank()
+    endpoint_urls = {}
+    if needs_local_only:
+        ep_ids = [p.model_endpoint_id for p in profiles if p.model_endpoint_id]
+        if ep_ids:
+            for ep in db.query(ModelEndpoint).filter(ModelEndpoint.id.in_(ep_ids)).all():
+                endpoint_urls[ep.id] = ep.base_url
+
     allowed = []
+    remote_excluded = 0
     for p in profiles:
         if p.is_premium:
             if not task.allow_premium_models:
@@ -131,6 +178,9 @@ def route_task(db, task, bundle: dict) -> dict:
         else:  # paid, not premium
             if not task.allow_paid_models:
                 continue
+        if needs_local_only and not _endpoint_is_local(endpoint_urls.get(p.model_endpoint_id)):
+            remote_excluded += 1
+            continue
         allowed.append(p)
 
     scored = [
@@ -139,4 +189,12 @@ def route_task(db, task, bundle: dict) -> dict:
     ]
     scored.sort(key=lambda s: s["score"], reverse=True)
 
-    return {"task_id": task.id, "candidates": scored}
+    return {
+        "task_id": task.id,
+        "candidates": scored,
+        "dataPolicy": {
+            "sensitivity": sensitivity,
+            "localOnly": needs_local_only,
+            "remoteCandidatesExcluded": remote_excluded,
+        },
+    }

@@ -24,7 +24,6 @@ silently mutates a file owned by a different user AND overwrites the
 import os
 import sys
 import textwrap
-import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -33,26 +32,19 @@ import pytest
 
 # ── module-load stubbing (matches other tests in this repo) ──────────
 # Stub heavy deps so importing the skills manager doesn't pull DB / FastAPI.
+# NOTE: do NOT stub core.atomic_io here. It is a tiny stdlib-only module, the
+# real SkillsManager._write_skill works fine with it, and a previous version of
+# this file replaced sys.modules["core.atomic_io"] with a fake whose
+# atomic_write_json wrote a literal "{}" — pytest imports every test module at
+# collection time, so that fake leaked into the WHOLE suite and corrupted every
+# JSON save that resolves core.atomic_io lazily (AuthManager auth.json,
+# PresetManager presets.json, ...), failing ~17 unrelated tests.
 for _mod in [
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.ext",
     "sqlalchemy.ext.declarative", "src.database",
-    "core.atomic_io",  # we'll patch atomic_write_text below
 ]:
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()
-
-
-# Provide a no-op atomic_write_text for SkillsManager._write_skill.
-def _fake_atomic_write_text(path, content, **kw):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(content, encoding="utf-8")
-
-_fake_core = types.ModuleType("core.atomic_io")
-_fake_core.atomic_write_text = _fake_atomic_write_text
-_fake_core.atomic_write_json = lambda p, d, **kw: Path(p).write_text(
-    "{}", encoding="utf-8"
-)
-sys.modules["core.atomic_io"] = _fake_core
 
 
 from services.memory.skills import SkillsManager  # noqa: E402
