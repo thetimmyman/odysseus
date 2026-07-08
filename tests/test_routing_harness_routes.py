@@ -287,10 +287,18 @@ def _policy(version):
     }
 
 
-def test_policy_publish_versions_rollback_roundtrip(tmp_path, monkeypatch):
+def _isolate_policy_paths(tmp_path, monkeypatch):
+    """Point the live/version/seed policy files at a tmp dir. BAKED points at a
+    nonexistent file so first-boot seeding is a no-op and the "no prior file"
+    archive semantics hold — the real repo config is never touched."""
     monkeypatch.setattr(rp, "POLICY_PATH", str(tmp_path / "routing_policy.json"))
     monkeypatch.setattr(rp, "POLICY_VERSIONS_DIR", str(tmp_path / "policy_versions"))
+    monkeypatch.setattr(rp, "BAKED_POLICY_PATH", str(tmp_path / "no_such_seed.json"))
     monkeypatch.setattr(rp, "_cache", None)
+
+
+def test_policy_publish_versions_rollback_roundtrip(tmp_path, monkeypatch):
+    _isolate_policy_paths(tmp_path, monkeypatch)
     _app, client = _make_app_and_client()
 
     # No file yet -> defaults served.
@@ -328,7 +336,8 @@ def test_policy_publish_versions_rollback_roundtrip(tmp_path, monkeypatch):
     assert json.loads(log[-1])["actor"] == "admin"
 
 
-def test_policy_publish_rejects_missing_version_keys():
+def test_policy_publish_rejects_missing_version_keys(tmp_path, monkeypatch):
+    _isolate_policy_paths(tmp_path, monkeypatch)
     _app, client = _make_app_and_client()
     r = client.post("/api/harness/policy/publish", headers=ADMIN,
                     json={"policy": {"routingPolicyVersion": "2.0"}})
@@ -336,13 +345,211 @@ def test_policy_publish_rejects_missing_version_keys():
 
 
 def test_policy_rollback_rejects_traversal(tmp_path, monkeypatch):
-    monkeypatch.setattr(rp, "POLICY_PATH", str(tmp_path / "routing_policy.json"))
-    monkeypatch.setattr(rp, "POLICY_VERSIONS_DIR", str(tmp_path / "policy_versions"))
-    monkeypatch.setattr(rp, "_cache", None)
+    _isolate_policy_paths(tmp_path, monkeypatch)
     _app, client = _make_app_and_client()
     r = client.post("/api/harness/policy/rollback", headers=ADMIN,
                     json={"archive": "../routing_policy.json"})
     assert r.status_code == 400
+
+
+# ---------- policy persistence fix (live file on the data volume) ----------
+def test_policy_seeded_from_baked_default_onto_data_volume(tmp_path, monkeypatch):
+    """First read seeds the data-volume live file from the baked default; a
+    later publish writes THAT file (not the baked one), so an edit persists
+    across a redeploy that only replaces the baked config/."""
+    baked = tmp_path / "baked_routing_policy.json"
+    baked.write_text(json.dumps(_policy("7.7")))
+    live = tmp_path / "data" / "routing" / "routing_policy.json"
+    monkeypatch.setattr(rp, "BAKED_POLICY_PATH", str(baked))
+    monkeypatch.setattr(rp, "POLICY_PATH", str(live))
+    monkeypatch.setattr(rp, "POLICY_VERSIONS_DIR", str(tmp_path / "data" / "routing" / "policy_versions"))
+    monkeypatch.setattr(rp, "_cache", None)
+    _app, client = _make_app_and_client()
+
+    g = client.get("/api/harness/policy", headers=ADMIN)
+    assert g.status_code == 200
+    assert g.json()["policy"]["routingPolicyVersion"] == "7.7"
+    # Seeded onto the data volume, not left only in the baked file.
+    assert live.exists(), "live policy must be seeded onto the data/ volume"
+
+    p = client.post("/api/harness/policy/publish", headers=ADMIN,
+                    json={"policy": _policy("7.8")})
+    assert p.status_code == 200, p.text
+    # The edit landed in the data-volume file; the baked default is untouched.
+    assert json.loads(live.read_text())["routingPolicyVersion"] == "7.8"
+    assert json.loads(baked.read_text())["routingPolicyVersion"] == "7.7"
+
+
+def test_policy_data_root_honors_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path / "vol"))
+    assert rp.data_root() == os.path.realpath(str(tmp_path / "vol"))
+    monkeypatch.delenv("ODYSSEUS_DATA_DIR", raising=False)
+    assert rp.data_root().endswith("/data")
+
+
+# ---------- policy validation hardening (spec PR-A) ----------
+def _valid_policy():
+    """A full, valid policy (version keys only — the merge fills the rest from
+    DEFAULT_POLICY); callers tweak one field to make it invalid."""
+    return _policy("2.0")
+
+
+@pytest.mark.parametrize("mutate, needle", [
+    (lambda p: p.setdefault("verification", {}).__setitem__("defaultMode", "nope"), "defaultMode"),
+    (lambda p: p.__setitem__("remoteSensitivityCeiling", "cosmic"), "remoteSensitivityCeiling"),
+    (lambda p: p.setdefault("coordinator", {}).__setitem__("temperature", 5), "temperature"),
+    (lambda p: p.__setitem__("maxUntrustedTokens", 99999), "maxUntrustedTokens"),
+    (lambda p: p.__setitem__("rawOutputMaxBytes", -1), "rawOutputMaxBytes"),
+    (lambda p: p.setdefault("sandbox", {}).__setitem__("mountLabel", "x"), "mountLabel"),
+    (lambda p: p.setdefault("sandbox", {}).__setitem__("cpus", 9999), "cpus"),
+    (lambda p: p.setdefault("sandbox", {}).__setitem__("memoryGb", 0), "memoryGb"),
+    (lambda p: p.setdefault("sandbox", {}).__setitem__("image", 123), "image"),
+])
+def test_policy_publish_rejects_invalid_field(tmp_path, monkeypatch, mutate, needle):
+    _isolate_policy_paths(tmp_path, monkeypatch)
+    _app, client = _make_app_and_client()
+    pol = _valid_policy()
+    mutate(pol)
+    r = client.post("/api/harness/policy/publish", headers=ADMIN, json={"policy": pol})
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]
+    # Fail-safe: a rejected publish never wrote the live file.
+    assert not (tmp_path / "routing_policy.json").exists()
+
+
+@pytest.mark.parametrize("knob", ["maxOutputBytes", "cpus", "memoryGb", "pidsLimit"])
+def test_policy_validate_rejects_non_finite_sandbox_knob(knob):
+    """Review fix #4 (MED): NaN/Infinity pass isinstance(float) and defeat every
+    range/clamp comparison (NaN<=0, NaN>clamp both False), so a non-finite knob
+    would validate and then crash int(NaN) on every sandbox run. _is_number's
+    math.isfinite must reject it before it is ever written."""
+    for bad in (float("nan"), float("inf")):
+        pol = _valid_policy()
+        pol.setdefault("sandbox", {})[knob] = bad
+        with pytest.raises(ValueError) as exc:
+            rp._validate_policy(pol)
+        assert knob in str(exc.value)
+
+
+@pytest.mark.parametrize("entry", [
+    "python", "python3", "bash", "node",            # bare interpreters
+    "python -c", "python3 -c 'x'", "bash -c foo",   # inline-code flag
+    "node -e code", "sh -c 'rm -rf /'",             # eval-ish
+    "pytest; rm -rf /",                             # shell metacharacter
+])
+def test_policy_publish_rejects_rce_allowlist_entry(tmp_path, monkeypatch, entry):
+    _isolate_policy_paths(tmp_path, monkeypatch)
+    _app, client = _make_app_and_client()
+    pol = _valid_policy()
+    pol["sandbox"] = {"allowedCommands": [entry]}
+    r = client.post("/api/harness/policy/publish", headers=ADMIN, json={"policy": pol})
+    assert r.status_code == 400, r.text
+    assert "allowedCommands" in r.json()["detail"]
+
+
+def test_policy_publish_preserves_code_only_sandbox_defaults(tmp_path, monkeypatch):
+    """A partial publish that only restates sandbox.image must NOT drop the
+    code-only defaults runAsHostUser / mountLabel (the merge preserves them)."""
+    _isolate_policy_paths(tmp_path, monkeypatch)
+    _app, client = _make_app_and_client()
+    pol = _valid_policy()
+    pol["sandbox"] = {"image": "python:3.12-slim"}  # no runAsHostUser / mountLabel
+    # image unchanged vs default -> not a danger-zone change -> admin-cookie ok.
+    r = client.post("/api/harness/policy/publish", headers=ADMIN, json={"policy": pol})
+    assert r.status_code == 200, r.text
+    stored = r.json()["policy"]["sandbox"]
+    assert stored["runAsHostUser"] is True
+    assert stored["mountLabel"] == "z"
+    assert stored["cpus"] == 2  # full sandbox shape filled from defaults
+
+
+# ---------- danger-zone gating (AUTH_ENABLED=true, real gate logic) ----------
+class TestPolicyDangerZoneGating:
+    """security_admin gating on danger-zone policy edits. Runs with auth ON so
+    require_security_admin/require_admin_cookie enforce for real (the disjoint
+    role model: admin != security_admin)."""
+
+    def setup_method(self):
+        os.environ["AUTH_ENABLED"] = "true"
+
+    def teardown_method(self):
+        os.environ["AUTH_ENABLED"] = "false"
+
+    def test_safe_change_as_admin_allowed(self, tmp_path, monkeypatch):
+        _isolate_policy_paths(tmp_path, monkeypatch)
+        _app, client = _make_app_and_client()
+        pol = _valid_policy()
+        pol.setdefault("coordinator", {})["temperature"] = 0.5  # safe field
+        r = client.post("/api/harness/policy/publish", headers=ADMIN, json={"policy": pol})
+        assert r.status_code == 200, r.text
+        assert r.json()["dangerZoneChanged"] == []
+
+    def test_danger_change_as_admin_forbidden(self, tmp_path, monkeypatch):
+        _isolate_policy_paths(tmp_path, monkeypatch)
+        _app, client = _make_app_and_client()
+        pol = _valid_policy()
+        pol["sandbox"] = {"image": "evil/backdoor:latest"}  # danger-zone
+        r = client.post("/api/harness/policy/publish", headers=ADMIN, json={"policy": pol})
+        assert r.status_code == 403, r.text
+        # Rejected before any write.
+        assert not (tmp_path / "routing_policy.json").exists()
+
+    def test_danger_change_as_security_admin_allowed(self, tmp_path, monkeypatch):
+        _isolate_policy_paths(tmp_path, monkeypatch)
+        _app, client = _make_app_and_client()
+        pol = _valid_policy()
+        pol["sandbox"] = {"image": "evil/backdoor:latest"}
+        r = client.post("/api/harness/policy/publish", headers=SEC_ADMIN, json={"policy": pol})
+        assert r.status_code == 200, r.text
+        assert r.json()["dangerZoneChanged"] == ["sandbox.image"]
+        assert r.json()["policy"]["sandbox"]["image"] == "evil/backdoor:latest"
+
+    def test_endpoint_provider_unregistered_name_rejected(self, tmp_path, monkeypatch):
+        _isolate_policy_paths(tmp_path, monkeypatch)
+        _app, client = _make_app_and_client()
+        pol = _valid_policy()
+        pol["coordinator"] = {"provider": "endpoint", "endpointName": "ghost", "temperature": 0.1}
+        # provider external->endpoint is danger-zone -> needs security_admin.
+        r = client.post("/api/harness/policy/publish", headers=SEC_ADMIN, json={"policy": pol})
+        assert r.status_code == 400, r.text
+        assert "ModelEndpoint" in r.json()["detail"]
+
+    def test_rollback_to_danger_archive_forbidden_for_plain_admin(self, tmp_path, monkeypatch):
+        """Review fix #3 (HIGH): the danger-zone gate must cover ROLLBACK too. A
+        plain admin must not be able to re-instate a security_admin-gated policy
+        by rolling back to an archived snapshot of it (the gate previously lived
+        only in publish, so /policy/rollback under the admin cookie defeated it)."""
+        _isolate_policy_paths(tmp_path, monkeypatch)
+        _app, client = _make_app_and_client()
+        # security_admin publishes a dangerous sandbox image, then tightens back
+        # to a safe policy (which archives the dangerous snapshot).
+        danger = _valid_policy()
+        danger["sandbox"] = {"image": "evil/backdoor:latest"}
+        assert client.post("/api/harness/policy/publish", headers=SEC_ADMIN,
+                           json={"policy": danger}).status_code == 200
+        assert client.post("/api/harness/policy/publish", headers=SEC_ADMIN,
+                           json={"policy": _valid_policy()}).status_code == 200
+
+        versions = client.get("/api/harness/policy/versions", headers=ADMIN).json()["versions"]
+        danger_archive = next(
+            (v["archive"] for v in versions
+             if rp.read_policy_version(v["archive"]).get("sandbox", {}).get("image")
+             == "evil/backdoor:latest"), None)
+        assert danger_archive, "dangerous snapshot was not archived"
+
+        # Plain admin rollback to the dangerous archive -> 403; live stays safe.
+        rb = client.post("/api/harness/policy/rollback", headers=ADMIN,
+                         json={"archive": danger_archive})
+        assert rb.status_code == 403, rb.text
+        live = client.get("/api/harness/policy", headers=ADMIN).json()["policy"]
+        assert live["sandbox"]["image"] != "evil/backdoor:latest"
+
+        # security_admin CAN roll it back (and the response flags the danger change).
+        rb2 = client.post("/api/harness/policy/rollback", headers=SEC_ADMIN,
+                          json={"archive": danger_archive})
+        assert rb2.status_code == 200, rb2.text
+        assert rb2.json()["dangerZoneChanged"]
+        assert rb2.json()["policy"]["sandbox"]["image"] == "evil/backdoor:latest"
 
 
 # ---------- registry CRUD ----------
