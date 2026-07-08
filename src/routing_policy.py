@@ -37,6 +37,18 @@ DEFAULT_POLICY = {
     "maxUntrustedTokens": 256,
     "rawOutputMaxBytes": 262144,
     "remoteSensitivityCeiling": "confidential",
+    # Phase 4 mode-aware verification (spec Section 16, routing_verification):
+    # defaultMode is the terminal fallback when a task carries no
+    # verification_mode and its task_type maps to nothing;
+    # equivalenceStdoutComparison documents/enables the v1 byte-wise stdout
+    # equivalence check (refactor_equivalence only); overconfidenceThreshold
+    # is the metadata-only calibration flag cutoff (an overconfident FAILURE
+    # is flagged for WP6's stats — confidence never gates pass/fail).
+    "verification": {
+        "defaultMode": "regression_guard",
+        "equivalenceStdoutComparison": True,
+        "overconfidenceThreshold": 0.8,
+    },
     # Phase 3 Safe Execution (spec Section 15): resource limits + command
     # allowlist for routing_sandbox.run_in_sandbox. allowedCommands entries
     # are normalized prefixes -- a command is allowed iff it equals an entry

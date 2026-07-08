@@ -4,8 +4,10 @@ routes/routing_harness_routes.py — v0.5 harness control surface.
 
 Exposes the coordinator deterministic wrapper (+ its audit archive), routing
 and budget previews, the versioned policy config, the model-profile registry,
-escalation evaluation, emergency override (break-glass), and the workflow
-reliability monitor. All persistence lands in core/database.py models.
+the Section 16 generated-test registry (+ promote/demote authority grants and
+mode-aware verification), escalation evaluation, emergency override
+(break-glass), and the workflow reliability monitor. All persistence lands in
+core/database.py models.
 
 Auth: every endpoint is gated on require_admin_cookie (cookie admin only —
 bearer tokens and the internal-tool loopback are rejected; a harness route
@@ -27,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from core.database import (
     CoordinatorAudit,
     EmergencyOverride,
+    GeneratedTest,
     ModelEndpoint,
     RoutingModelProfile,
     RoutingModelRun,
@@ -61,6 +64,8 @@ from src.routing_escalation import (
     Risk,
 )
 from src.routing_redaction import redact_text
+from src.routing_sandbox import is_command_allowed
+from src.routing_verification import TestAuthority, is_blocking_eligible, verify_model_run
 from src.routing_reliability import (
     Confounders,
     compute_signal,
@@ -148,6 +153,22 @@ class EmergencyOverrideRequest(BaseModel):
     reason: str
     ttl_minutes: int = 60
     forced_backend: str = "human_only_emergency"
+
+
+class GeneratedTestCreateRequest(BaseModel):
+    task_id: str
+    authority: str  # a src.routing_verification.TestAuthority value
+    command: str    # must pass the sandbox allowlist (is_command_allowed)
+    origin_model_run_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class VerifyRequest(BaseModel):
+    model_run_id: str
+    allow_dirty: bool = False
+    # None = task.verification_mode, else infer_mode(task) — same chain as
+    # `odysseus-exec verify` without --mode.
+    mode: Optional[str] = None
 
 
 class ReliabilityRequest(BaseModel):
@@ -675,6 +696,159 @@ def setup_routing_harness_routes():
         finally:
             db.close()
         return out
+
+    # ---------- generated-test registry + mode-aware verification (Section 16) ----------
+    def _generated_test_out(t: GeneratedTest) -> dict:
+        return {
+            "id": t.id,
+            "task_id": t.task_id,
+            "authority": t.authority,
+            "command": t.command,
+            "origin_model_run_id": t.origin_model_run_id,
+            "promoted": t.promoted,
+            "promoted_by": t.promoted_by,
+            "promoted_at": t.promoted_at.isoformat() if t.promoted_at else None,
+            "notes": t.notes,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            # (authority == human_authored_acceptance_test) OR promoted — the
+            # only rows verification lets flip `passed`.
+            "blocking_eligible": is_blocking_eligible(t),
+        }
+
+    @router.get("/tests")
+    def generated_tests_list(request: Request, task_id: Optional[str] = None):
+        require_admin_cookie(request)
+        db = SessionLocal()
+        try:
+            q = db.query(GeneratedTest)
+            if task_id:
+                q = q.filter(GeneratedTest.task_id == task_id)
+            rows = q.order_by(GeneratedTest.created_at, GeneratedTest.id).all()
+            return [_generated_test_out(t) for t in rows]
+        finally:
+            db.close()
+
+    @router.post("/tests")
+    def generated_tests_create(body: GeneratedTestCreateRequest, request: Request):
+        """Register a test in the Section 16 registry. Generated rows start
+        promoted=False (authority weight 0 — advisory until a human promotes
+        them). The command is allowlist-checked here AND again at run time
+        (run_in_sandbox), so a later policy tightening still fails closed."""
+        require_admin_cookie(request)
+        valid_authorities = {a.value for a in TestAuthority}
+        if body.authority not in valid_authorities:
+            raise HTTPException(
+                400, f"invalid authority {body.authority!r} (allowed: "
+                     f"{'|'.join(sorted(valid_authorities))})")
+        if not is_command_allowed(body.command):
+            raise HTTPException(
+                400, f"command {body.command!r} is not allowed by the sandbox "
+                     "command allowlist (policy sandbox.allowedCommands)")
+        db = SessionLocal()
+        try:
+            if not db.get(RoutingTask, body.task_id):
+                raise HTTPException(404, f"no task with id {body.task_id!r}")
+            row = GeneratedTest(
+                id=str(uuid.uuid4()),
+                task_id=body.task_id,
+                authority=body.authority,
+                command=body.command,
+                origin_model_run_id=body.origin_model_run_id,
+                promoted=False,
+                notes=body.notes,
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return _generated_test_out(row)
+        finally:
+            db.close()
+
+    def _append_audit_note(row: GeneratedTest, entry: str) -> None:
+        row.notes = f"{row.notes}\n{entry}" if row.notes else entry
+
+    @router.post("/tests/{test_id}/promote")
+    def generated_tests_promote(test_id: str, request: Request):
+        """The HUMAN authority grant (spec Section 16): a promoted generated
+        test becomes blocking-eligible in verification. Persistent (promoted/
+        promoted_by/promoted_at columns) and auditable (notes trail entry
+        recording actor + timestamp)."""
+        actor = require_admin_cookie(request) or "admin"
+        db = SessionLocal()
+        try:
+            row = db.get(GeneratedTest, test_id)
+            if not row:
+                raise HTTPException(404, "generated test not found")
+            now = _now()
+            row.promoted = True
+            row.promoted_by = actor
+            row.promoted_at = now
+            _append_audit_note(row, f"[{now.isoformat()}] promoted by {actor}")
+            db.commit()
+            db.refresh(row)
+            return _generated_test_out(row)
+        finally:
+            db.close()
+
+    @router.post("/tests/{test_id}/demote")
+    def generated_tests_demote(test_id: str, request: Request):
+        """Revoke a promotion: the row returns to advisory (weight 0). The
+        promoted_by/promoted_at columns are cleared (they reflect CURRENT
+        state); the notes trail keeps the full promote/demote history."""
+        actor = require_admin_cookie(request) or "admin"
+        db = SessionLocal()
+        try:
+            row = db.get(GeneratedTest, test_id)
+            if not row:
+                raise HTTPException(404, "generated test not found")
+            row.promoted = False
+            row.promoted_by = None
+            row.promoted_at = None
+            _append_audit_note(row, f"[{_now().isoformat()}] demoted by {actor}")
+            db.commit()
+            db.refresh(row)
+            return _generated_test_out(row)
+        finally:
+            db.close()
+
+    @router.post("/verify")
+    def harness_verify(body: VerifyRequest, request: Request):
+        """Run Section 16 mode-aware verification for an archived model run
+        (routing_verification.verify_model_run) and return the persisted
+        VerificationResult.
+
+        NOTE: verification executes docker on the HOST. In the deployed
+        container docker is unavailable, so run_in_sandbox reports
+        docker_unavailable — that surfaces here as
+        verification.infrastructure_error (fail-closed: passed stays False,
+        but the result is flagged so it is never scored as "the patch broke
+        the tests"). The `odysseus-exec verify` CLI on the host is the real
+        execution surface for now; this endpoint exists for parity/automation
+        and for hosts running the app outside a container."""
+        require_admin_cookie(request)
+        db = SessionLocal()
+        try:
+            model_run = db.get(RoutingModelRun, body.model_run_id)
+            if not model_run:
+                raise HTTPException(404, f"no model run with id {body.model_run_id!r}")
+            run = db.get(RoutingRun, model_run.run_id)
+            task = db.get(RoutingTask, run.task_id) if run else None
+            if not task:
+                raise HTTPException(404, "could not resolve the model run's task (run/task deleted?)")
+            try:
+                result = verify_model_run(
+                    db, task, model_run,
+                    mode=body.mode, allow_dirty=body.allow_dirty,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            except RuntimeError as e:
+                # e.g. dirty source tree without allow_dirty — caller error,
+                # not a verification verdict.
+                raise HTTPException(409, str(e))
+            return {"model_run_id": model_run.id, "verification": result}
+        finally:
+            db.close()
 
     # ---------- workflow reliability monitor ----------
     @router.post("/reliability/signal")

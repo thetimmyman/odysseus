@@ -7,7 +7,7 @@ patch is a human action.
 
     odysseus-exec apply  --model-run MODEL_RUN_ID [--allow-dirty] [--keep-worktree]
     odysseus-exec run    --model-run MODEL_RUN_ID --cmd "pytest -q" [--allow-dirty] [--keep-worktree]
-    odysseus-exec verify --model-run MODEL_RUN_ID [--allow-dirty]
+    odysseus-exec verify --model-run MODEL_RUN_ID [--mode MODE] [--allow-dirty] [--keep-worktree]
 
 `apply` re-validates the archived patch's shape (routing_patch), creates a
 temp worktree at the task repo's HEAD (source tree must be clean unless
@@ -15,9 +15,17 @@ temp worktree at the task repo's HEAD (source tree must be clean unless
 worktree is KEPT for inspection; on failure it is reverted+removed unless
 --keep-worktree. `run` does the same then executes one sandboxed command and
 ALWAYS reverts+removes the worktree afterwards unless --keep-worktree.
-`verify` runs ALL of the task's inputs.test_commands, records the outcome in
-the model run's scores json ({"verification": ...}), and always cleans up.
-Every sandboxed command -- allowed or denied -- lands as a ToolCallRecord row.
+`verify` is MODE-AWARE (spec Section 16, routing_verification.verify_model_run):
+the verification mode (--mode override, else task.verification_mode, else
+inferred from task_type) decides which invariant layers run — existing tests,
+the original failing case, human acceptance tests + promoted generated tests,
+baseline fuzz (original vs patched worktree, new regressions only), strict
+stdout-equivalence (refactor_equivalence only), security assertions — records
+the VerificationResult in the model run's scores json ({"verification": ...})
+plus verification.json in the run's archive dir, and always cleans up
+(--keep-worktree keeps the PATCHED worktree only). analysis_only never
+accepts a patch. Every sandboxed command -- allowed or denied -- lands as a
+ToolCallRecord row.
 """
 from __future__ import annotations
 import os, sys
@@ -36,8 +44,14 @@ except ModuleNotFoundError as e:
     sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
     sys.exit(2)
 
+from src.routing_coordinator import VerificationMode
 from src.routing_patch import validate_patch_shape
 from src.routing_sandbox import run_in_sandbox
+from src.routing_verification import (
+    attempt_dir as _attempt_dir,       # shared with routing_verification so the
+    load_patch_text,                   # archive conventions never diverge
+    verify_model_run,
+)
 from src.routing_workdir import (
     apply_patch, create_worktree, remove_worktree, revert_worktree,
 )
@@ -61,27 +75,11 @@ def _load_chain(db, model_run_id):
 
 
 def _load_patch_text(row) -> str:
-    """The archived patch.diff located via artifacts.patch_path -- the same
-    convention odysseus-patch writes/reads."""
-    artifacts = json.loads(row.artifacts) if row.artifacts else {}
-    patch_path = artifacts.get("patch_path")
-    if not patch_path or not os.path.isfile(patch_path):
-        fail(f"no archived patch found for {row.id!r} (artifacts.patch_path missing or "
-             "unreadable) -- run `odysseus-patch extract` first")
-    with open(patch_path, "r", errors="replace") as f:
-        return f.read()
-
-
-def _attempt_dir(row):
-    """The model run's archive dir (where prompt.md/response.md live), so
-    sandbox stdout/stderr land next to the run's other artifacts. None when
-    the run predates archiving -- run_in_sandbox falls back to its default."""
-    artifacts = json.loads(row.artifacts) if row.artifacts else {}
-    for key in ("response_text_path", "patch_path", "prompt_path"):
-        p = artifacts.get(key)
-        if p:
-            return os.path.dirname(p)
-    return None
+    """routing_verification.load_patch_text with the CLI's fail() surface."""
+    try:
+        return load_patch_text(row)
+    except ValueError as e:
+        fail(str(e))
 
 
 def _update_artifacts(db, row, updates: dict) -> None:
@@ -231,56 +229,31 @@ def cmd_verify(args):
     _EMIT_ARGS = args
     db = SessionLocal()
     try:
-        row, run_row, task_row = _load_chain(db, args.model_run)
-        inputs = json.loads(task_row.inputs) if task_row.inputs else {}
-        test_commands = inputs.get("test_commands") or []
-        if not test_commands:
-            fail(f"task {task_row.id!r} has no inputs.test_commands to verify with")
-
-        worktree, _apply_result = _apply_into_worktree(
-            db, row, task_row, allow_dirty=args.allow_dirty, keep_on_failure=False,
-        )
-        results = []
+        row, _run_row, task_row = _load_chain(db, args.model_run)
+        # Mode-aware verification (spec Section 16): layer orchestration,
+        # sandbox execution, fail-closed semantics, scores/artifact
+        # persistence, and worktree cleanup all live in routing_verification.
+        # Mode chain: --mode > task.verification_mode > infer_mode(task).
         try:
-            attempt_dir = _attempt_dir(row)
-            for cmd in test_commands:
-                # Each command is allowlist-checked inside run_in_sandbox; a
-                # denied or timed-out command has exit_code None -> not 0 ->
-                # verification fails (fail-closed, never fail-open).
-                results.append(run_in_sandbox(worktree, cmd, run_id=run_row.id,
-                                              db=db, artifacts_dir=attempt_dir))
-            _record_tool_call_artifacts(db, row, results)
-        finally:
-            # ALWAYS revert+remove: verify never leaves a worktree behind,
-            # and NEVER commits anything.
-            _cleanup(task_row, worktree)
-
-        commands_summary = [
-            {"cmd": r["cmd"], "exit_code": r["exit_code"],
-             **({"error": r["error"]} if r["error"] else {})}
-            for r in results
-        ]
-        passed = bool(results) and all(r["exit_code"] == 0 for r in results)
-        scores = json.loads(row.scores) if row.scores else {}
-        scores["verification"] = {
-            "passed": passed,
-            "commands": commands_summary,
-            "completed_at": _now_iso(),
-        }
-        # Docker missing is infrastructure failure, not command failure --
-        # still fail-closed (passed=False), but flagged so a re-run on a
-        # docker-equipped host isn't scored as "the patch broke the tests".
-        if any(r["error"] == "docker_unavailable" for r in results):
-            scores["verification"]["infrastructure_error"] = "docker_unavailable"
-        row.scores = json.dumps(scores)
-        db.commit()
-
+            result = verify_model_run(
+                db, task_row, row,
+                mode=args.mode,
+                allow_dirty=args.allow_dirty,
+                keep_worktree=args.keep_worktree,
+            )
+        except ValueError as e:
+            # unknown mode / no archived patch — caller error, not a verdict
+            fail(str(e))
         emit({
             "model_run_id": row.id,
-            "applied": True,
-            "verification": scores["verification"],
-            "tool_call_record_ids": [r["tool_call_record_id"] for r in results],
+            "applied": result.get("patch_applied"),
+            "verification": result,
         }, args)
+        # A patch that never applied is the same failure class the old flat
+        # flow exited 1 on; a completed-but-failed verification still exits 0
+        # (the verdict lives in the JSON).
+        if result.get("patch_applied") is False:
+            sys.exit(1)
     finally:
         db.close()
 
@@ -311,8 +284,14 @@ def _build_parser():
 
     pv = sub.add_parser("verify", parents=[common])
     pv.add_argument("--model-run", required=True, help="a RoutingModelRun id")
+    pv.add_argument("--mode", choices=[m.value for m in VerificationMode], default=None,
+                    help="verification-mode override (default: task.verification_mode, "
+                         "else inferred from task_type)")
     pv.add_argument("--allow-dirty", action="store_true",
                     help="waive the clean-source-tree requirement")
+    pv.add_argument("--keep-worktree", action="store_true",
+                    help="keep the PATCHED worktree for inspection (the baseline "
+                         "worktree, when one was made, is always removed)")
     pv.set_defaults(func=cmd_verify)
 
     return p

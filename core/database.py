@@ -546,6 +546,35 @@ class ToolCallRecord(Base):
     )
 
 
+class GeneratedTest(Base):
+    """Spec Section 16 generated-test registry: tests produced around a
+    routing task (model-suggested amplifications, fuzz cases, human-authored
+    acceptance tests) with an explicit TestAuthority. Generated rows start
+    promoted=False and are ADVISORY (authority weight 0): they run and report
+    during verification but can NEVER block patch acceptance. Blocking
+    eligibility = (authority == "human_authored_acceptance_test") OR
+    promoted == True — promotion is the persistent, auditable human authority
+    grant (promoted_by/promoted_at columns + a notes trail appended by the
+    promote/demote routes). New table (no column migration needed) — created
+    by Base.metadata.create_all in init_db()."""
+    __tablename__ = "routing_generated_tests"
+
+    id = Column(String, primary_key=True, index=True)
+    task_id = Column(String, ForeignKey("routing_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    authority = Column(String, nullable=False)  # src.routing_verification.TestAuthority values
+    command = Column(Text, nullable=False)      # the sandbox command that runs it (allowlist-checked at creation AND at run time)
+    origin_model_run_id = Column(String, nullable=True)  # which model run suggested it, when generated
+    promoted = Column(Boolean, nullable=False, default=False)
+    promoted_by = Column(String, nullable=True)
+    promoted_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)         # append-only audit trail of promote/demote actions
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_routing_generated_tests_task_authority', 'task_id', 'authority'),
+    )
+
+
 class ProviderAuthSession(TimestampMixin, Base):
     """Encrypted OAuth/session credentials for refresh-aware model providers."""
     __tablename__ = "provider_auth_sessions"
