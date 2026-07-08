@@ -32,10 +32,16 @@ from src.routing_context import build_context_bundle, estimate_tokens
 from src.routing_engine import ROLE_BY_TASK, _PATCH_SHAPED_TASK_TYPES
 from src.routing_patch import extract_diff, validate_patch_shape
 from src.routing_prompts import build_prompt, render_context_block, render_universal_wrapper
+from src.routing_workdir import data_root
 
-ARCHIVE_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "routing", "runs"
-)
+
+def archive_root() -> str:
+    """data_root()/routing/runs — the per-run artifact archive. A function,
+    not a module constant (which this replaced), so the ODYSSEUS_DATA_DIR
+    override routing_workdir.data_root() honors is picked up per call: host
+    CLIs on the Framework must land artifacts under
+    /mnt/framework-data/odysseus-data, not the checkout's ./data."""
+    return os.path.join(data_root(), "routing", "runs")
 
 _RATE_LIMIT_RE = re.compile(r"->\s*429\b")
 
@@ -196,7 +202,7 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
         # while old RoutingModelRun rows still point at that now-clobbered
         # path via artifacts.response_text_path, corrupting the audit trail
         # Phase 2 scoring depends on.
-        run_dir = os.path.join(ARCHIVE_ROOT, task.id, run_id)
+        run_dir = os.path.join(archive_root(), task.id, run_id)
         os.makedirs(run_dir, exist_ok=True)
 
         # Section 18: manifest first, before any model is called -- a run that

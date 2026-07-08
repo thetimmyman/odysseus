@@ -1,5 +1,5 @@
 {
-  "routingPolicyVersion": "1.0",
+  "routingPolicyVersion": "1.1",
   "verificationPolicyVersion": "1.0",
   "uiConfigVersion": "1.0",
   "coordinator": {
@@ -11,5 +11,24 @@
   },
   "maxUntrustedTokens": 256,
   "rawOutputMaxBytes": 262144,
-  "remoteSensitivityCeiling": "confidential"
+  "remoteSensitivityCeiling": "confidential",
+  "sandbox": {
+    "image": "python:3.12-slim",
+    "cpus": 2,
+    "memoryGb": 4,
+    "pidsLimit": 256,
+    "wallClockSeconds": 600,
+    "maxOutputBytes": 1048576,
+    "allowedCommands": [
+      "pytest",
+      "python -m pytest",
+      "python -m py_compile",
+      "npm test",
+      "node --check",
+      "ruff check",
+      "eslint",
+      "tsc --noEmit",
+      "make test"
+    ]
+  }
 }
