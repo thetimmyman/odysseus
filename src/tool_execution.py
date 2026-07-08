@@ -234,6 +234,27 @@ def _tool_path_roots() -> list[str]:
     return out
 
 
+
+def _get_session_project_root(session_id: str, owner: str):
+    """Return the realpath of this session's project_root, or None.
+
+    Owner-checked: returns None if the session doesn't belong to *owner*
+    (cross-owner isolation). Returns None if no project_root is set.
+    """
+    from core.models import _session_manager as sm
+    if sm is None:
+        return None
+    sess = sm.get_session(session_id)
+    if sess is None:
+        return None
+    if sess.owner != owner:
+        return None
+    pr = getattr(sess, "project_root", None)
+    if not pr or not str(pr).strip():
+        return None
+    return os.path.realpath(pr)
+
+
 def _resolve_tool_path(raw_path: str) -> str:
     """Resolve and confine a model-supplied path.
 

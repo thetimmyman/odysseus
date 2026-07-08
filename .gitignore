@@ -96,3 +96,6 @@ data*-bak/
 data.*bak/
 *.bak-*
 *.bak2-*
+
+# Local secret vault — never commit
+/.odysseus/github_pat.txt
