@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""odysseus-route — preview the model routing chain for a task. No
+execution, no repo mutation (Phase 1: passive routing).
+
+    odysseus-route preview --task task.json [--save]
+    odysseus-route show TASK_ID
+"""
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run
+quiet_logs()
+
+import json
+
+try:
+    from core.database import SessionLocal, RoutingTask
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src.routing_context import build_context_bundle
+from src.routing_engine import route_task
+from src.routing_task_io import load_or_replace_task
+
+
+def cmd_preview(args):
+    with open(args.task) as f:
+        data = json.load(f)
+    db = SessionLocal()
+    try:
+        row = load_or_replace_task(db, data, save=args.save)
+        bundle = build_context_bundle(row)
+        decision = route_task(db, row, bundle)
+        emit({
+            "task_id": row.id,
+            "saved": args.save,
+            "context_token_estimate": bundle["metadata"]["token_estimate"],
+            "candidates": decision["candidates"],
+        }, args)
+    finally:
+        db.close()
+
+
+def cmd_show(args):
+    db = SessionLocal()
+    try:
+        row = db.get(RoutingTask, args.id)
+        if not row:
+            fail(f"no task with id {args.id!r}")
+        bundle = build_context_bundle(row)
+        decision = route_task(db, row, bundle)
+        emit({
+            "task_id": row.id, "title": row.title, "task_type": row.task_type,
+            "status": row.status,
+            "context_token_estimate": bundle["metadata"]["token_estimate"],
+            "candidates": decision["candidates"],
+        }, args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser("odysseus-route", "Preview the model routing chain for a task (no execution).")
+    common = p._common_parents[0]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pp = sub.add_parser("preview", parents=[common])
+    pp.add_argument("--task", required=True, help="path to a task JSON file (OdysseusTask shape)")
+    pp.add_argument("--save", action="store_true", help="persist the task as a RoutingTask row")
+    pp.set_defaults(func=cmd_preview)
+
+    ps = sub.add_parser("show", parents=[common])
+    ps.add_argument("id", help="a previously-saved RoutingTask id")
+    ps.set_defaults(func=cmd_show)
+
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))
