@@ -185,6 +185,18 @@ def test_publish_is_atomic_no_tmp_litter_and_complete_file():
         assert json.load(f)["x"] == 3
 
 
+def test_atomic_write_leaves_config_world_readable():
+    # mkstemp yields 0600; the in-place open('w') this replaced yielded 0644.
+    # A config written by one uid (e.g. a root `docker exec` / entrypoint seed
+    # before the gosu drop) must stay readable by the non-root app user, else
+    # the app fails safe to defaults and serves a stale value. Non-secret config.
+    import stat
+    config_store.publish("dom", {"x": 1, "version": "1.0"}, actor="a",
+                         validate_fn=_validate_positive)
+    mode = stat.S_IMODE(os.stat(config_store.live_path("dom")).st_mode)
+    assert mode & 0o044, f"config not group/other-readable: {oct(mode)}"
+
+
 def test_concurrent_publishes_no_corrupt_archives_or_lost_live(_data_dir):
     # Review fix #2: concurrent publishes on one domain used to interleave the
     # read-archive-write, losing updates and leaving torn archives. With the

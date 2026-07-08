@@ -102,6 +102,12 @@ def _atomic_write_json(path: str, obj: dict) -> None:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
+        # mkstemp creates 0600; the in-place open('w') this replaced yielded
+        # 0644. Restore 0644 so a config file written by one uid (e.g. a root
+        # `docker exec` maintenance write, or a root entrypoint seed before the
+        # gosu drop) stays readable by the non-root app user. These configs hold
+        # no secrets (credentials live encrypted in secret_storage, not here).
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -124,6 +130,7 @@ def _atomic_write_json_raw(path: str, raw: str) -> None:
             f.write(raw)
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)  # see _atomic_write_json — keep archives app-readable
         os.replace(tmp, path)
     except BaseException:
         try:

@@ -477,6 +477,11 @@ def publish_policy(new_policy: dict, actor: str) -> dict:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
+        # mkstemp yields 0600; the in-place open('w') this replaced yielded
+        # 0644. Restore 0644 so a policy written by one uid (root maintenance
+        # exec / entrypoint seed before the gosu drop) stays readable by the
+        # non-root app user. The policy holds no secrets.
+        os.chmod(_tmp_path, 0o644)
         os.replace(_tmp_path, POLICY_PATH)
     except BaseException:
         try:
