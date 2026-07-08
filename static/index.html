@@ -927,6 +927,10 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="10 8 13 10.5 10 13"/></svg>
           <span class="grow">Preview</span>
         </div>
+        <div class="list-item" id="tool-harness-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h4"/><path d="M11 12c3 0 3-7 6-7"/><path d="M11 12c3 0 3 7 6 7"/></svg>
+          <span class="grow">Routing Harness</span>
+        </div>
       </div>
       <div class="section" id="project-files-section" style="display:none">
         <div class="section-header-flex">
@@ -2470,6 +2474,176 @@
       </div>
     </div>
   </div>
+  <div id="harness-overlay" class="crew-overlay tool-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Routing Harness">
+    <div class="crew-modal harness-modal">
+      <div class="crew-head">
+        <div class="crew-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h4"/><path d="M11 12c3 0 3-7 6-7"/><path d="M11 12c3 0 3 7 6 7"/></svg> Routing Harness <span class="crew-sub">&mdash; decisions, registry, policy &amp; budget</span></div>
+        <button type="button" class="crew-close" id="harness-close" title="Close" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="admin-tabs harness-tabs" id="harness-tabs" role="tablist">
+        <button type="button" class="admin-tab active" data-rhtab="decisions">Decisions</button>
+        <button type="button" class="admin-tab" data-rhtab="registry">Registry</button>
+        <button type="button" class="admin-tab" data-rhtab="policy">Policy</button>
+        <button type="button" class="admin-tab" data-rhtab="budget">Budget</button>
+        <button type="button" class="admin-tab" data-rhtab="route">Route preview</button>
+        <button type="button" class="admin-tab" data-rhtab="emergency">Emergency</button>
+      </div>
+      <div class="harness-body">
+
+        <div class="harness-panel" data-rhpanel="decisions">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <input type="text" id="harness-audit-filter" class="preview-env-keyinput" placeholder="filter by task id" autocomplete="off" spellcheck="false">
+              <button type="button" class="crew-btn" id="harness-audit-refresh">Refresh</button>
+              <button type="button" class="crew-btn" id="harness-wrap-toggle" style="margin-left:auto">Wrap a decision</button>
+            </div>
+            <div class="admin-card" id="harness-wrap-card" style="display:none">
+              <div class="harness-note">Manual external-provider workflow: paste the coordinator's raw JSON decision. The deterministic wrapper validates it against the route schema, applies the Section&nbsp;8 fallback chain if needed, and archives the (redacted) raw output with an HMAC.</div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-wrap-task" class="preview-env-keyinput" placeholder="task id" autocomplete="off" spellcheck="false">
+                <label class="crew-writemode-label"><input type="checkbox" id="harness-wrap-approval"> approval_satisfied</label>
+                <label class="crew-writemode-label"><input type="checkbox" id="harness-wrap-remote"> remote_exception_approved</label>
+              </div>
+              <textarea id="harness-wrap-raw" class="crew-prompt harness-mono" rows="6" placeholder="raw coordinator output (JSON)" spellcheck="false" style="margin-top:8px"></textarea>
+              <div class="harness-row" style="margin-top:8px">
+                <button type="button" class="crew-btn crew-btn-launch" id="harness-wrap-submit">Wrap &amp; archive</button>
+              </div>
+              <div id="harness-wrap-result" style="display:none;margin-top:8px"></div>
+            </div>
+            <div class="harness-table-wrap" id="harness-audit-tablewrap">
+              <table class="harness-table">
+                <thead><tr><th>created</th><th>task</th><th>parsed</th><th>fallback path</th><th>schema</th></tr></thead>
+                <tbody id="harness-audit-rows"></tbody>
+              </table>
+            </div>
+            <div class="crew-empty" id="harness-audit-empty" style="display:none">No coordinator decisions archived yet &mdash; wrap one above or run the coordinator.</div>
+            <div class="harness-detail" id="harness-audit-detail" style="display:none"></div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="registry" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <button type="button" class="crew-btn" id="harness-registry-refresh">Refresh</button>
+              <button type="button" class="crew-btn" id="harness-registry-newtoggle" style="margin-left:auto">New profile</button>
+            </div>
+            <div class="admin-card" id="harness-registry-newcard" style="display:none">
+              <div class="harness-row">
+                <input type="text" id="harness-reg-id" class="preview-env-keyinput" placeholder="profile id" autocomplete="off" spellcheck="false">
+                <input type="text" id="harness-reg-model" class="preview-env-keyinput" placeholder="model" autocomplete="off" spellcheck="false">
+                <input type="text" id="harness-reg-roles" class="preview-env-keyinput" placeholder="roles (comma-separated)" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-reg-ctx" class="preview-env-keyinput harness-num" placeholder="ctx" autocomplete="off" title="context window (tokens)">
+                <input type="text" id="harness-reg-incost" class="preview-env-keyinput harness-num" placeholder="$/M in" autocomplete="off" title="input cost per Mtok (USD)">
+                <input type="text" id="harness-reg-outcost" class="preview-env-keyinput harness-num" placeholder="$/M out" autocomplete="off" title="output cost per Mtok (USD)">
+                <label class="crew-writemode-label"><input type="checkbox" id="harness-reg-free"> free</label>
+                <label class="crew-writemode-label"><input type="checkbox" id="harness-reg-premium"> premium</label>
+              </div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-reg-notes" class="preview-env-keyinput harness-wide" placeholder="notes" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="harness-row" style="margin-top:8px">
+                <button type="button" class="crew-btn crew-btn-launch" id="harness-reg-create">Create profile</button>
+              </div>
+            </div>
+            <div class="harness-table-wrap" id="harness-registry-tablewrap">
+              <table class="harness-table">
+                <thead><tr><th>profile</th><th>model</th><th>endpoint</th><th>roles</th><th>ctx</th><th>$/M in</th><th>$/M out</th><th>tier</th><th>enabled</th><th></th></tr></thead>
+                <tbody id="harness-registry-rows"></tbody>
+              </table>
+            </div>
+            <div class="crew-empty" id="harness-registry-empty" style="display:none">No model profiles registered &mdash; seed with scripts/seed_routing_profiles.py or create one above.</div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="policy" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <span class="harness-note">Live policy (config/routing_policy.json) &mdash; versioned; every publish archives the outgoing file.</span>
+              <span id="harness-policy-chips" style="margin-left:auto"></span>
+            </div>
+            <textarea id="harness-policy-json" class="crew-prompt harness-policy-editor" spellcheck="false"></textarea>
+            <div class="harness-row">
+              <button type="button" class="crew-btn crew-btn-launch" id="harness-policy-publish">Publish</button>
+              <button type="button" class="crew-btn" id="harness-policy-reload">Reload</button>
+            </div>
+            <div class="harness-detail-h">Archived versions</div>
+            <div id="harness-policy-versions"></div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="budget" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <span class="harness-note">Per-run spend vs the caps in config/routing_budget.json. The general cap is never overridable.</span>
+              <span id="harness-budget-chips" style="margin-left:auto"></span>
+            </div>
+            <div class="harness-stats" id="harness-budget-stats"></div>
+            <div class="admin-card">
+              <div class="harness-note">Per-task budget preview &mdash; what would happen if this task ran right now (nothing is persisted).</div>
+              <textarea id="harness-budget-task" class="crew-prompt harness-mono" rows="8" spellcheck="false" style="margin-top:8px"></textarea>
+              <div class="harness-row" style="margin-top:8px">
+                <button type="button" class="crew-btn crew-btn-launch" id="harness-budget-preview">Preview budget</button>
+              </div>
+              <div id="harness-budget-result" style="display:none;margin-top:8px"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="route" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="harness-note">Rank the enabled registry profiles for a task (same scoring as odysseus-route preview; the inline task is never persisted).</div>
+            <textarea id="harness-route-task" class="crew-prompt harness-mono" rows="10" spellcheck="false"></textarea>
+            <div class="harness-row">
+              <button type="button" class="crew-btn crew-btn-launch" id="harness-route-preview">Preview route</button>
+              <span class="harness-note" id="harness-route-tokens" style="display:none"></span>
+            </div>
+            <div class="harness-table-wrap" id="harness-route-tablewrap" style="display:none">
+              <table class="harness-table">
+                <thead><tr><th>#</th><th>profile</th><th>model</th><th>roles</th><th>score</th><th>est cost</th><th>reasons</th></tr></thead>
+                <tbody id="harness-route-rows"></tbody>
+              </table>
+            </div>
+            <div class="crew-empty" id="harness-route-empty" style="display:none"></div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="emergency" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="preview-env-warn">Break-glass overrides force the human_only_emergency backend. Creating or revoking one requires the security_admin privilege on top of the admin cookie (normal admin sessions are refused), the TTL is capped at 60 minutes, and every override requires a post-mortem.</div>
+            <div class="harness-row">
+              <span class="harness-detail-h" style="margin:0">Active overrides</span>
+              <button type="button" class="crew-btn" id="harness-em-refresh" style="margin-left:auto">Refresh</button>
+            </div>
+            <div id="harness-em-list"></div>
+            <div class="admin-card">
+              <div class="harness-detail-h" style="margin-top:0">Request override</div>
+              <div class="harness-row">
+                <input type="text" id="harness-em-requestedby" class="preview-env-keyinput" placeholder="requested by" autocomplete="off" spellcheck="false">
+                <input type="number" id="harness-em-ttl" class="preview-env-keyinput harness-num" min="1" max="60" value="30" title="TTL minutes (max 60)">
+                <span class="harness-note">TTL minutes (&le;60)</span>
+              </div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-em-reason" class="preview-env-keyinput harness-wide" placeholder="reason (required &mdash; recorded in the audit row)" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="harness-row" style="margin-top:8px">
+                <button type="button" class="crew-btn crew-btn-stop" id="harness-em-create">Activate break-glass</button>
+              </div>
+              <div id="harness-em-msg" style="display:none;margin-top:8px"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
 <script type="module" src="/static/js/storage.js"></script>
 <script type="module" src="/static/js/ui.js"></script>
 <script type="module" src="/static/js/markdown.js"></script>
@@ -2493,6 +2667,7 @@
 <script type="module" src="/static/js/terminal.js"></script>
 <script type="module" src="/static/js/crewPanel.js"></script>
 <script type="module" src="/static/js/devPreview.js"></script>
+<script type="module" src="/static/js/routingHarness.js"></script>
 <script type="module" src="/static/js/gallery.js"></script>
 <script type="module" src="/static/js/chatRenderer.js"></script>
 <script type="module" src="/static/js/codeRunner.js"></script>
