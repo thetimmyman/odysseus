@@ -133,11 +133,14 @@ class DecideRequest(BaseModel):
 
 class BenchmarkRunRequest(BaseModel):
     """Run the Phase 8 coordinator benchmark against a registered ModelEndpoint.
-    replays is capped server-side (this calls the LLM fixtures*replays times)."""
+    replays is capped server-side (this calls the LLM fixtures*replays times).
+    fixtures_path is deliberately NOT exposed over HTTP — the resident fixture
+    suite is the only thing the admin UI needs, and an arbitrary path is both a
+    500 vector (bad path / bad JSON) and an unbounded-fan-out lever. The CLI
+    (odysseus-coordinator-bench --fixtures) is the path-taking surface."""
     endpoint_name: str
     replays: Optional[int] = None
     model: Optional[str] = None
-    fixtures_path: Optional[str] = None
 
 
 class TaskRefRequest(BaseModel):
@@ -491,7 +494,7 @@ def setup_routing_harness_routes():
             try:
                 summary = execute_benchmark(
                     db, req.endpoint_name, replays=replays,
-                    fixtures_path=req.fixtures_path, model=req.model,
+                    fixtures_path=None, model=req.model,
                     base_policy=policy,
                 )
             except BenchmarkEndpointError as e:

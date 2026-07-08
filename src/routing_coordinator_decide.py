@@ -35,6 +35,46 @@ class ExternalProviderError(RuntimeError):
     not generated here. The route maps this to a 400; the CLI to a nonzero exit."""
 
 
+def _redact_obj(obj):
+    """Deep-redact every string value in a JSON-ish structure via
+    routing_redaction.redact_text, preserving shape. Applied to the OUTBOUND
+    coordinator payload so a credential that slipped into a task's title /
+    objective / inputs / constraints is masked before it is transmitted to the
+    coordinator model — the same pre-prompt scrub routing_context does before
+    any remote-eligible worker prompt (spec Section 9)."""
+    from src.routing_redaction import redact_text
+
+    if isinstance(obj, str):
+        return redact_text(obj)[0]
+    if isinstance(obj, dict):
+        return {k: _redact_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_obj(v) for v in obj]
+    return obj
+
+
+def coordinator_endpoint_permits_sensitivity(task, client) -> bool:
+    """Section 9 data-locality gate for the coordinator seat: a task whose
+    data_sensitivity ranks ABOVE the policy's remoteSensitivityCeiling may only
+    have its payload sent to a LOCAL coordinator endpoint. Mirrors exactly the
+    hard filter routing_engine.route_task applies to worker endpoints — the
+    /coordinator/decide path is a new surface that ships task content to a
+    model, so it must honour the same fail-closed boundary. An unresolvable
+    endpoint URL (client._chat_url is None) is NOT local, so restricted/secret
+    data is never sent to an unverifiable destination."""
+    from src.routing_engine import (
+        _SENSITIVITY_RANK,
+        _endpoint_is_local,
+        _remote_ceiling_rank,
+    )
+
+    sensitivity = getattr(task, "data_sensitivity", None) or "internal"
+    needs_local_only = _SENSITIVITY_RANK.get(sensitivity, 1) > _remote_ceiling_rank()
+    if not needs_local_only:
+        return True
+    return _endpoint_is_local(getattr(client, "_chat_url", None))
+
+
 def build_deterministic_route(db, task) -> Optional[Dict[str, Any]]:
     """Section 8 tier-2 fallback route builder: shape routing_engine.route_task()'s
     top candidates like a validated coordinator final route so downstream
@@ -119,8 +159,17 @@ def generate_and_wrap_decision(
     the same shape as /coordinator/wrap plus `generatedRaw` (REDACTED — never the
     verbatim model text) and `decideError` (set when the endpoint call itself
     failed and we degraded to the fallback chain). Never raises on an endpoint
-    failure — that degrades to deterministic/safe_scout."""
+    failure — that degrades to deterministic/safe_scout.
+
+    Section 9 data-locality gate: if the task's sensitivity ranks above the
+    policy's remote ceiling AND the coordinator endpoint is not local, the
+    payload is NEVER transmitted — we skip the model call and degrade to the
+    deterministic (local-only) router, mirroring the hard filter
+    routing_engine.route_task applies to worker endpoints. The outbound payload
+    is also credential-redacted before it leaves the process (defense in depth
+    for a secret that slipped into a non-secret task)."""
     from src import routing_policy
+    from src.routing_redaction import redact_text
     from src.routing_task_io import task_payload_from_row
 
     if not client.is_llm_backed():
@@ -129,13 +178,25 @@ def generate_and_wrap_decision(
             "/coordinator/wrap instead"
         )
 
-    payload = task_payload_from_row(task)
     decide_error: Optional[str] = None
-    try:
-        raw = client.decide(payload)
-    except Exception as e:  # noqa: BLE001 — endpoint failure degrades, never 500s
+    if not coordinator_endpoint_permits_sensitivity(task, client):
+        # Fail closed: over-ceiling data must not reach a non-local coordinator.
+        # Skip the model call entirely and let the wrapper fall to the
+        # deterministic (local-only) tier; record why in the audit trail.
         raw = ""
-        decide_error = str(e)
+        decide_error = (
+            "coordinator_remote_blocked: task data_sensitivity "
+            f"{getattr(task, 'data_sensitivity', None) or 'internal'!r} exceeds the "
+            "remote ceiling and the coordinator endpoint is not local; payload was "
+            "not transmitted"
+        )
+    else:
+        payload = _redact_obj(task_payload_from_row(task))
+        try:
+            raw = client.decide(payload)
+        except Exception as e:  # noqa: BLE001 — endpoint failure degrades, never 500s
+            raw = ""
+            decide_error = str(e)
 
     def deterministic_fn(_task_id: str) -> Optional[Dict[str, Any]]:
         return build_deterministic_route(db, task)
@@ -151,8 +212,17 @@ def generate_and_wrap_decision(
     result = wrap_coordinator_output(
         raw, gctx, repair_fn=client.repair_fn, deterministic_fn=deterministic_fn
     )
+    # Redact BEFORE store/return: validationErrors/auditNotes can carry
+    # model-controlled fragments (parse_decision interpolates offending enum
+    # values) and decide_error can echo an endpoint's error body — neither goes
+    # through the raw_output redaction path, so scrub them here to keep the
+    # redact-before-store bar for every persisted/returned field.
     if decide_error:
-        result.auditNotes = list(result.auditNotes) + [f"decide_failed:{decide_error}"]
+        red_err = redact_text(decide_error)[0]
+        result.auditNotes = list(result.auditNotes) + [f"decide_failed:{red_err}"]
+        decide_error = red_err
+    result.validationErrors = [redact_text(e)[0] for e in result.validationErrors]
+    result.auditNotes = [redact_text(n)[0] for n in result.auditNotes]
 
     pv = routing_policy.policy_versions()
     audit_id, redacted_raw, _applied = _persist_audit(db, task.id, raw, result, pv)
