@@ -428,6 +428,11 @@ class RoutingTask(Base):
     allow_paid_models = Column(Boolean, nullable=False, default=False)
     allow_premium_models = Column(Boolean, nullable=False, default=False)
     max_attempts = Column(Integer, nullable=False, default=3)
+    # v0.5 classification carried on the task itself so the hard gates
+    # (restricted/secret never remote) and RunManifest can read them without
+    # re-consulting a coordinator decision.
+    data_sensitivity = Column(String, nullable=False, default="internal")  # public|internal|confidential|restricted|secret
+    verification_mode = Column(String, nullable=True)  # regression_guard|bug_fix|feature_addition|refactor_equivalence|security_fix|analysis_only
     owner = Column(String, nullable=True, index=True)
     status = Column(String, nullable=False, default="pending", index=True)  # pending|running|succeeded|failed|needs_human|budget_blocked|escalated|cancelled
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -487,6 +492,25 @@ class RoutingModelRun(Base):
     __table_args__ = (
         Index('ix_routing_model_runs_run', 'run_id', 'created_at'),
         Index('ix_routing_model_runs_profile', 'model_profile_id', 'created_at'),
+    )
+
+
+class RunManifestRecord(Base):
+    """Spec Section 18 RunManifest: an immutable provenance snapshot per
+    RoutingRun (repo state, prompt/context hashes, policy versions in force,
+    artifact paths). Stored as one JSON blob, not columns -- it's write-once
+    audit evidence that gets read whole, never filtered/aggregated in SQL.
+    A copy also lands as manifest.json in the run's archive dir so the audit
+    trail survives DB loss (and vice versa)."""
+    __tablename__ = "routing_run_manifests"
+
+    id = Column(String, primary_key=True, index=True)
+    run_id = Column(String, ForeignKey("routing_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    manifest = Column(Text, nullable=False)  # JSON
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_routing_run_manifests_run', 'run_id', 'created_at'),
     )
 
 
@@ -941,6 +965,38 @@ def _migrate_add_last_message_at_column():
         logging.getLogger(__name__).info("Migrated: added + backfilled 'last_message_at' on sessions")
     except Exception as e:
         logging.getLogger(__name__).warning(f"last_message_at migration failed: {e}")
+
+def _migrate_add_routing_harness_columns():
+    """Add the v0.5 harness columns: coordinator_audit gains hmac +
+    redaction_applied (tamper-evidence + scrub flag on the audit archive),
+    routing_tasks gains data_sensitivity + verification_mode (classification
+    carried on the task for the hard gates / RunManifest). Guarded +
+    idempotent; skips a table that doesn't exist yet (create_all builds it
+    with the columns already in place)."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(coordinator_audit)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "hmac" not in columns:
+            conn.execute("ALTER TABLE coordinator_audit ADD COLUMN hmac TEXT")
+        if columns and "redaction_applied" not in columns:
+            conn.execute("ALTER TABLE coordinator_audit ADD COLUMN redaction_applied BOOLEAN DEFAULT 0")
+        cursor = conn.execute("PRAGMA table_info(routing_tasks)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "data_sensitivity" not in columns:
+            conn.execute("ALTER TABLE routing_tasks ADD COLUMN data_sensitivity TEXT DEFAULT 'internal'")
+        if columns and "verification_mode" not in columns:
+            conn.execute("ALTER TABLE routing_tasks ADD COLUMN verification_mode TEXT")
+        conn.commit()
+        conn.close()
+        logging.getLogger(__name__).info("Migrated: routing harness columns (coordinator_audit, routing_tasks)")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"routing harness columns migration failed: {e}")
+
 
 def _migrate_add_document_archived_column():
     """Add `archived` to documents (soft-archive flag). Guarded + idempotent."""
@@ -1962,6 +2018,7 @@ def init_db():
     _migrate_encrypt_signatures()
     _migrate_encrypt_endpoint_keys()
     _migrate_backfill_task_folders()
+    _migrate_add_routing_harness_columns()
 
 
 def _migrate_backfill_task_folders():
@@ -2436,13 +2493,17 @@ class CoordinatorAudit(Base):
     id = Column(String, primary_key=True, index=True)
     task_id = Column(String, nullable=False, index=True)
     schema_version = Column(String, nullable=False, default="0.5")
-    raw_output = Column(Text, nullable=True)
+    raw_output = Column(Text, nullable=True)   # stored REDACTED (routing_redaction) -- never the verbatim secret-bearing text
     validation_errors = Column(Text, nullable=True)
     fallback_path = Column(String, nullable=True)
     applied_fallback = Column(Boolean, nullable=False, default=False)
     policy_versions = Column(Text, nullable=True)
     audit_notes = Column(Text, nullable=True)
     parsed_ok = Column(Boolean, nullable=False, default=False)
+    # HMAC over the (redacted) raw_output via secret_storage.hmac_sign --
+    # tamper-evidence for the archive, not confidentiality.
+    hmac = Column(String, nullable=True)
+    redaction_applied = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (

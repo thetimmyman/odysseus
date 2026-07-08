@@ -26,6 +26,8 @@ def task_kwargs_from_json(data: dict) -> dict:
         allow_paid_models=routing.get("allowPaidModels", False),
         allow_premium_models=routing.get("allowPremiumModels", False),
         max_attempts=routing.get("maxAttempts", 3),
+        data_sensitivity=data.get("dataSensitivity", "internal"),
+        verification_mode=data.get("verificationMode"),
         owner=data.get("owner"),
         status="pending",
     )

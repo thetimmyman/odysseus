@@ -1,5 +1,6 @@
 {
   "_comment": "Model routing harness budget caps (Phase 1/2 -- read by src/routing_budget.py, no versioned/audited UI yet, that's spec Section 19 and out of scope for this pass). Hard blocks only, no approval-gate: a run either fits under these caps or gets status=budget_blocked, overridable per-run only via `odysseus-run --allow-premium` for the premium-specific caps.",
+  "version": "1.0",
   "daily_max_usd": 10.0,
   "weekly_max_usd": 50.0,
   "monthly_max_usd": 150.0,

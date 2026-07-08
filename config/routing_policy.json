@@ -1,0 +1,15 @@
+{
+  "routingPolicyVersion": "1.0",
+  "verificationPolicyVersion": "1.0",
+  "uiConfigVersion": "1.0",
+  "coordinator": {
+    "provider": "external",
+    "endpointName": null,
+    "model": null,
+    "temperature": 0.1,
+    "maxTokens": 2048
+  },
+  "maxUntrustedTokens": 256,
+  "rawOutputMaxBytes": 262144,
+  "remoteSensitivityCeiling": "confidential"
+}

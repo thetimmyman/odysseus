@@ -18,6 +18,8 @@ unchanged. That lets legacy rows coexist with new ones until a
 single migration pass rewrites them.
 """
 
+import hashlib
+import hmac as _hmac
 import os
 import logging
 from pathlib import Path
@@ -85,3 +87,13 @@ def decrypt(value: str) -> str:
 
 def is_encrypted(value: str) -> bool:
     return bool(value) and value.startswith(_PREFIX)
+
+
+def hmac_sign(text: str) -> str:
+    """HMAC-SHA256 hex digest of `text` (utf-8), keyed with the app key.
+
+    Used for tamper-evidence on audit archives (CoordinatorAuditEvent.hmac):
+    a row edited directly in the SQLite file no longer matches its digest.
+    Same threat model as encrypt()/decrypt() above — protects the at-rest
+    file, not a compromised process that can read the key."""
+    return _hmac.new(_load_or_create_key(), (text or "").encode("utf-8"), hashlib.sha256).hexdigest()
