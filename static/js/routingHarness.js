@@ -599,6 +599,58 @@ async function _loadBudget() {
   const chips = _el('harness-budget-chips');
   chips.innerHTML = '';
   chips.appendChild(_versionChips(s.policyVersions));
+  _loadObservability();
+}
+
+// --- Observability: Section 20 metrics (Budget tab subsection) -------------------
+const _OBS_METRICS = [
+  ['costPerSuccessfulPatchUsd', 'cost / accepted patch', 'usd'],
+  ['coordinatorSchemaValidityRate', 'schema validity', 'rate'],
+  ['coordinatorFallbackRate', 'fallback rate', 'rate'],
+  ['policyViolationRate', 'policy violations', 'rate'],
+  ['approvalGateMissRate', 'approval gate misses', 'rate'],
+  ['flakyTestRate', 'flaky tests', 'rate'],
+];
+
+function _obsValue(m, kind) {
+  if (!m || m.value == null) return 'n/a';
+  if (kind === 'usd') return _fmtUsd(m.value, 4);
+  return (m.value * 100).toFixed(1) + '%';
+}
+
+async function _loadObservability() {
+  const box = _el('harness-obs-stats');
+  if (!box) return;
+  const days = parseInt((_el('harness-obs-days') || {}).value, 10) || 30;
+  let r;
+  try {
+    r = await _api(`/api/harness/observability?days=${days}`);
+  } catch (e) {
+    if (_gate('budget', e)) return;
+    _err('Could not load observability metrics: ' + (e.message || e));
+    return;
+  }
+  box.innerHTML = '';
+  const metrics = r.metrics || {};
+  for (const [key, label, kind] of _OBS_METRICS) {
+    const m = metrics[key];
+    const card = document.createElement('div');
+    card.className = 'admin-card harness-stat';
+    if (m && m.note) card.title = m.note;
+    const k = document.createElement('div');
+    k.className = 'harness-stat-k';
+    k.textContent = label;
+    const v = document.createElement('div');
+    v.className = 'harness-stat-v';
+    v.textContent = _obsValue(m, kind);
+    const sub = document.createElement('div');
+    sub.className = 'harness-stat-sub';
+    sub.textContent = (m && m.numerator != null && m.denominator != null)
+      ? `${kind === 'usd' ? _fmtUsd(m.numerator, 2) : m.numerator} / ${m.denominator} · ${days}d`
+      : (m && m.value == null ? 'no data' : `${days}d`);
+    card.append(k, v, sub);
+    box.appendChild(card);
+  }
 }
 
 async function _budgetPreview() {
@@ -676,6 +728,155 @@ async function _routePreview() {
     _err('Route preview failed: ' + (e.message || e));
   } finally {
     btn.disabled = false;
+  }
+}
+
+// --- Tests: generated-test registry + verification viewer ------------------------
+let _testsTask = '';         // task id whose tests are currently listed
+
+async function _testsLoad(taskId) {
+  const id = (taskId != null ? taskId : (_el('harness-tests-task').value || '')).trim();
+  if (!id) { _err('task id is required'); return; }
+  _testsTask = id;
+  let rows;
+  try {
+    rows = await _api(`/api/harness/tests?task_id=${encodeURIComponent(id)}`);
+  } catch (e) {
+    if (_gate('tests', e)) return;
+    _err('Could not load generated tests: ' + (e.message || e));
+    return;
+  }
+  _ungate('tests');
+  const tbody = _el('harness-tests-rows');
+  tbody.innerHTML = '';
+  const empty = _el('harness-tests-empty');
+  empty.style.display = rows.length ? 'none' : '';
+  empty.textContent = `No generated tests registered for task ${id}.`;
+  _el('harness-tests-tablewrap').style.display = rows.length ? '' : 'none';
+  for (const t of rows) {
+    const tr = document.createElement('tr');
+    tr.appendChild(_td(t.authority, 'harness-mono'));
+    tr.appendChild(_td(t.command, 'harness-mono'));
+    tr.appendChild(_td(t.promoted
+      ? _badge(`promoted by ${t.promoted_by || '?'}`, 'crew-st-ok')
+      : _badge('advisory (weight 0)', 'crew-st-block')));
+    tr.appendChild(_td(_badge(t.blocking_eligible ? 'blocking eligible' : 'never blocks',
+      t.blocking_eligible ? 'crew-st-ok' : 'crew-st-stop')));
+    const act = document.createElement('button');
+    act.type = 'button';
+    act.className = 'preview-env-btn' + (t.promoted ? ' preview-env-btn-clear' : '');
+    act.textContent = t.promoted ? 'Demote' : 'Promote';
+    act.dataset.act = t.promoted ? 'demote' : 'promote';
+    act.dataset.testId = t.id;
+    tr.appendChild(_td(act, 'harness-nowrap'));
+    tbody.appendChild(tr);
+  }
+}
+
+async function _testsGrant(testId, action) {
+  const verb = action === 'promote' ? 'Promote' : 'Demote';
+  const msg = action === 'promote'
+    ? 'Promote this generated test? It becomes BLOCKING-eligible in verification (persistent, auditable human authority grant).'
+    : 'Demote this test back to advisory (weight 0)? The notes trail keeps the full history.';
+  if (!window.confirm(msg)) return;
+  try {
+    await _post(`/api/harness/tests/${encodeURIComponent(testId)}/${action}`, {});
+    _toast(verb + 'd');
+    await _testsLoad(_testsTask);
+  } catch (e) {
+    if (_gate('tests', e)) return;
+    _err(verb + ' failed: ' + (e.message || e));
+  }
+}
+
+function _verifLayer(layer) {
+  const card = document.createElement('div');
+  card.className = 'admin-card';
+  const head = document.createElement('div');
+  head.className = 'harness-row';
+  const name = document.createElement('span');
+  name.className = 'harness-detail-h';
+  name.style.margin = '0';
+  name.textContent = layer.layer || layer.source || 'layer';
+  head.appendChild(name);
+  head.appendChild(_tag(layer.blocking ? 'blocking' : 'advisory', layer.blocking));
+  if (layer.skipped) head.appendChild(_badge('skipped', 'crew-st-stop'));
+  else head.appendChild(_badge(layer.passed ? 'passed' : 'failed', layer.passed ? 'crew-st-ok' : 'crew-st-err'));
+  card.appendChild(head);
+  for (const c of layer.commands || []) {
+    const row = document.createElement('div');
+    row.className = 'harness-kv';
+    const k = document.createElement('span');
+    k.className = 'harness-kv-k harness-mono';
+    k.textContent = c.cmd;
+    const v = document.createElement('span');
+    v.className = 'harness-kv-v harness-mono';
+    const bits = [`exit ${c.exit_code == null ? '—' : c.exit_code}`];
+    if (c.original_exit_code !== undefined) bits.push(`orig exit ${c.original_exit_code == null ? '—' : c.original_exit_code}`);
+    if (c.new_regression != null) bits.push(c.new_regression ? 'NEW regression' : 'no new regression');
+    if (c.stdout_match != null) bits.push(c.stdout_match ? 'stdout match' : 'stdout MISMATCH');
+    if (c.advisory) bits.push('advisory');
+    if (c.error) bits.push(`error: ${c.error}`);
+    v.textContent = bits.join(' · ');
+    row.append(k, v);
+    card.appendChild(row);
+  }
+  if ((layer.notes || []).length) card.appendChild(_ul(layer.notes));
+  return card;
+}
+
+async function _verifLoad() {
+  const id = (_el('harness-verif-runid').value || '').trim();
+  if (!id) { _err('model run id is required'); return; }
+  const pane = _el('harness-verif-detail');
+  let r;
+  try {
+    r = await _api(`/api/harness/model-runs/${encodeURIComponent(id)}/verification`);
+  } catch (e) {
+    if (_gate('tests', e)) return;
+    if (e.status === 404) {
+      pane.innerHTML = '';
+      pane.style.display = '';
+      const note = document.createElement('div');
+      note.className = 'crew-empty';
+      note.textContent = e.message || 'No persisted verification for this model run.';
+      pane.appendChild(note);
+      return;
+    }
+    _err('Could not load verification: ' + (e.message || e));
+    return;
+  }
+  _ungate('tests');
+  const d = r.verification || {};
+  pane.innerHTML = '';
+  pane.style.display = '';
+  const head = document.createElement('div');
+  head.className = 'harness-row';
+  head.appendChild(_badge(d.passed ? 'passed' : 'failed', d.passed ? 'crew-st-ok' : 'crew-st-err'));
+  head.appendChild(_badge(d.patch_accepted ? 'patch accepted' : 'patch not accepted',
+    d.patch_accepted ? 'crew-st-ok' : 'crew-st-block'));
+  if (d.infrastructure_error) head.appendChild(_badge(`infra: ${d.infrastructure_error}`, 'crew-st-err'));
+  pane.appendChild(head);
+  pane.appendChild(_kv('mode', d.mode, true));
+  pane.appendChild(_kv('task id', r.task_id, true));
+  pane.appendChild(_kv('run id', r.run_id, true));
+  pane.appendChild(_kv('patch applied', d.patch_applied == null ? '—' : String(d.patch_applied)));
+  pane.appendChild(_kv('completed', _fmtTs(d.completed_at)));
+  if (d.confidence && d.confidence.value != null) {
+    pane.appendChild(_kv('confidence (metadata only)', String(d.confidence.value)));
+  }
+  const layers = d.layers || [];
+  pane.appendChild(_sectionH(`Layers (${layers.length})`));
+  if (!layers.length) {
+    const none = document.createElement('div');
+    none.className = 'harness-note';
+    none.textContent = 'no layers ran (analysis_only or patch rejected before layers)';
+    pane.appendChild(none);
+  }
+  for (const layer of layers) pane.appendChild(_verifLayer(layer));
+  if ((d.notes || []).length) {
+    pane.appendChild(_sectionH(`Notes (${d.notes.length})`));
+    pane.appendChild(_ul(d.notes));
   }
 }
 
@@ -804,6 +1005,7 @@ const _LOADERS = {
   policy: _loadPolicy,
   budget: _loadBudget,
   route: null,               // pure form — nothing to prefetch
+  tests: null,               // pure form — loads on demand by task/run id
   emergency: _loadEmergency,
 };
 
@@ -901,6 +1103,22 @@ function init(apiBase) {
   // Budget + Route preview
   _el('harness-budget-preview')?.addEventListener('click', _budgetPreview);
   _el('harness-route-preview')?.addEventListener('click', _routePreview);
+
+  // Observability (Budget tab subsection)
+  _el('harness-obs-refresh')?.addEventListener('click', _loadObservability);
+  _el('harness-obs-days')?.addEventListener('change', _loadObservability);
+
+  // Tests + verification viewer
+  _el('harness-tests-load')?.addEventListener('click', () => _testsLoad());
+  _el('harness-tests-task')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') _testsLoad(); });
+  _el('harness-tests-rows')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (btn && (btn.dataset.act === 'promote' || btn.dataset.act === 'demote')) {
+      _testsGrant(btn.dataset.testId, btn.dataset.act);
+    }
+  });
+  _el('harness-verif-load')?.addEventListener('click', _verifLoad);
+  _el('harness-verif-runid')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') _verifLoad(); });
   const example = JSON.stringify(_EXAMPLE_TASK, null, 2);
   if (_el('harness-budget-task')) _el('harness-budget-task').value = example;
   if (_el('harness-route-task')) _el('harness-route-task').value = example;

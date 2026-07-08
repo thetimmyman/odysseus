@@ -38,6 +38,9 @@ def cmd_preview(args):
             "saved": args.save,
             "context_token_estimate": bundle["metadata"]["token_estimate"],
             "candidates": decision["candidates"],
+            # WP3 known gap closed (WP6): surface route_task's Section 9
+            # data-policy verdict instead of silently dropping it.
+            "dataPolicy": decision["dataPolicy"],
         }, args)
     finally:
         db.close()
@@ -56,6 +59,7 @@ def cmd_show(args):
             "status": row.status,
             "context_token_estimate": bundle["metadata"]["token_estimate"],
             "candidates": decision["candidates"],
+            "dataPolicy": decision["dataPolicy"],
         }, args)
     finally:
         db.close()

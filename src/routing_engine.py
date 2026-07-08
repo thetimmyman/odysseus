@@ -152,7 +152,13 @@ def route_task(db, task, bundle: dict) -> dict:
     """Return the ranked candidate chain for `task`, filtered by its
     allow_free/paid/premium flags and the Section 9 data-sensitivity hard
     filter (a hard filter, not a score penalty: dataPolicyFit < 1.0 means the
-    candidate never enters ranking at all). `task` is a RoutingTask row."""
+    candidate never enters ranking at all). `task` is a RoutingTask row.
+
+    Routing fitness note (spec Phase 5): the only historical signal in the
+    ranking is routing_scoring.historical_score(), which aggregates
+    TASK-PERFORMANCE fields exclusively (task_perf_score_run). Lesson-gen
+    scores (plan_quality, adversarial_review_quality — see
+    routing_scoring.model_lesson_gen_by_task) never change this ordering."""
     from core.database import ModelEndpoint, RoutingModelProfile
 
     profiles = db.query(RoutingModelProfile).filter(RoutingModelProfile.enabled == True).all()  # noqa: E712
