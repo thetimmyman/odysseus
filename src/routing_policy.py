@@ -60,6 +60,19 @@ DEFAULT_POLICY = {
             "make test",
         ],
     },
+    # Phase 7 ABSIS integration (spec Section 7): transport config for the
+    # host-side absis_tacticus_job_queue dispatcher (src/routing_absis.py +
+    # scripts/odysseus-absis). Disabled until llm_inference/oracle_runner
+    # workers actually exist — the orchestrator fails unclaimable jobs within
+    # seconds, so enabling early only pollutes the queue.
+    "absis": {
+        "enabled": False,
+        "sshTarget": "minipc",
+        "kubectlExecPrefix": "sudo kubectl exec -n tacticus deploy/absis-orchestrator --",
+        "transportTimeoutSeconds": 30,
+        "note": ("no llm_inference/oracle_runner workers deployed as of 2026-07-08; "
+                 "enable after workers exist in tacticus-analytics"),
+    },
 }
 
 _REQUIRED_VERSION_KEYS = ("routingPolicyVersion", "verificationPolicyVersion", "uiConfigVersion")
