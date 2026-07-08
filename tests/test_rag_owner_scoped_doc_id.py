@@ -51,11 +51,26 @@ class _FakeCollection:
             self.rows[i] = (doc, meta)
 
 
+class _FakeLane:
+    """Minimal stand-in for src.embedding_lanes.EmbeddingLane: VectorRAG's
+    write paths only use .name, .collection and .encode()."""
+
+    def __init__(self, collection):
+        self.name = "fake"
+        self.collection = collection
+
+    def encode(self, texts):
+        return [[0.0] for _ in texts]
+
+
 def _make_rag():
     rag = VectorRAG.__new__(VectorRAG)  # skip Chroma connect
-    rag._collection = _FakeCollection()
+    fake = _FakeCollection()
+    # VectorRAG is lane-based since #3046: add_documents_batch iterates
+    # self._lanes and healthy checks bool(self._lanes).
+    rag._lanes = [_FakeLane(fake)]
+    rag._collection = fake
     rag._healthy = True
-    rag._embed = lambda texts: [[0.0] for _ in texts]
     return rag
 
 
