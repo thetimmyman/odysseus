@@ -58,16 +58,35 @@ def require_security_admin(request: Request):
     """Raise 403 unless the current user holds the `security_admin` privilege.
 
     Section 14 break-glass: ONLY a security_admin may approve an Emergency
-    Override. Internal-tool loopback is intentionally NOT honored here --
-    break-glass approval must be a real authenticated human security_admin.
+    Override. This is the SOLE gate on the emergency endpoints -- do NOT also
+    stack require_admin_cookie on them: `security_admin` is popped out of the
+    admin privilege set (see core/auth.py), so an is_admin user never holds it
+    and a security_admin holder is a distinct, deliberately-granted role. The
+    two gates together can never both pass, which would make break-glass
+    permanently un-callable.
+
+    Break-glass approval must be a real authenticated human security_admin, so
+    bearer tokens and the internal-tool loopback are rejected here even though
+    they carry an identity.
     """
-    auth_mgr = getattr(request.app.state, "auth_manager", None)
     if os.getenv("AUTH_ENABLED", "true").lower() == "false":
         return
+    # Reject non-human callers outright: an API bearer token or the loopback
+    # internal-tool must never reach a break-glass approval.
+    if getattr(request.state, "api_token", False):
+        raise HTTPException(403, "security_admin only")
+    try:
+        if request.headers.get(INTERNAL_TOOL_HEADER):
+            raise HTTPException(403, "security_admin only")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    auth_mgr = getattr(request.app.state, "auth_manager", None)
     if not auth_mgr or not auth_mgr.is_configured:
         raise HTTPException(403, "security_admin only")
     user = getattr(request.state, "current_user", None)
-    if not user:
+    if not user or user in ("api", "internal-tool"):
         raise HTTPException(403, "security_admin only")
     privs = auth_mgr.get_privileges(user) or {}
     if not privs.get("security_admin"):
