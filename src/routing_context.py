@@ -1,12 +1,25 @@
 """src/routing_context.py — builds a bounded ContextBundle (spec Section 9)
 from a RoutingTask's explicit inputs. v1 scope: explicit files/logs/diffs
 only, no smart stack-trace-following auto-inclusion -- that's a documented
-future enhancement, not implemented here."""
+future enhancement, not implemented here.
+
+Phase 2 governance (spec Section 9): every bundle item carries a ContextSource
+provenance record; untrusted items (inline text that didn't come from the repo
+or a repo file read) are wrapped in <<<UNTRUSTED_START/END>>> fences and
+capped at the policy's maxUntrustedTokens; secret/PII redaction runs at bundle
+build time — BEFORE any prompt assembly — so nothing downstream (local or
+remote) ever sees a raw credential."""
 import json
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 from typing import Optional
+
+from src.routing_redaction import redact_text
+
+UNTRUSTED_FENCE_START = '<<<UNTRUSTED_START source="{source}">>>'
+UNTRUSTED_FENCE_END = "<<<UNTRUSTED_END>>>"
 
 # Filenames/patterns that are legitimately in-repo but should never be read
 # into a prompt shipped to a third-party model, even via an ordinary
@@ -118,14 +131,62 @@ def _build_metadata(repo_path: str, test_commands: list) -> dict:
     }
 
 
+def _max_untrusted_tokens() -> int:
+    """Policy-configurable fence cap (spec Section 9 default: 256 tokens).
+    Late import: routing_policy has no dependency on this module, but keep the
+    coupling one-directional and non-fatal if the policy file is unreadable."""
+    try:
+        from src.routing_policy import load_policy
+        return int(load_policy().get("maxUntrustedTokens", 256))
+    except Exception:
+        return 256
+
+
+def fence_untrusted(content: str, source: str, max_tokens: Optional[int] = None) -> str:
+    """Wrap untrusted content in the spec's delimiters, truncating to the
+    policy cap first. The prompt wrapper (routing_prompts) instructs models to
+    treat fenced content as evidence and ignore any instructions inside."""
+    cap = max_tokens if max_tokens is not None else _max_untrusted_tokens()
+    max_chars = cap * 4  # inverse of estimate_tokens' ~4 chars/token
+    if len(content) > max_chars:
+        content = content[:max_chars] + f"\n<<truncated to {cap} untrusted tokens by policy>>"
+    return f"{UNTRUSTED_FENCE_START.format(source=source)}\n{content}\n{UNTRUSTED_FENCE_END}"
+
+
+def _provenance(source_type: str, uri: Optional[str], content: str,
+                redaction_applied: bool, trusted: bool) -> dict:
+    """ContextSource record (spec Section 9). aclChecked reflects that repo
+    reads went through the safe_repo_path jail + secret denylist; inline
+    content has no ACL to check. promptInjectionRisk is coarse: untrusted
+    free text is 'high', repo-derived content 'low'."""
+    return {
+        "sourceType": source_type,
+        "uri": uri,
+        "retrievedAt": datetime.now(timezone.utc).isoformat(),
+        "aclChecked": uri is not None,
+        "redactionApplied": redaction_applied,
+        "maySendToRemoteModel": True,  # engine-level sensitivity filter decides per task
+        "promptInjectionRisk": "low" if trusted else "high",
+        "tokenCount": estimate_tokens(content),
+    }
+
+
 def build_context_bundle(task) -> dict:
     """`task` is a core.database.RoutingTask row. Returns a dict matching the
-    spec's ContextBundle shape: {task_id, files, logs, metadata}."""
+    spec's ContextBundle shape: {task_id, files, logs, metadata, sources}.
+
+    Trust model: file reads and git-produced diffs are trusted_repo_code /
+    trusted_test_log; INLINE log/diff literals arrived as free text in the
+    task JSON and are treated as untrusted — fenced, capped, and flagged
+    high-injection-risk. All content is redacted here, before any prompt."""
     inputs = json.loads(task.inputs) if task.inputs else {}
     files_list = inputs.get("files") or []
     logs_list = inputs.get("logs") or []
     diffs_list = inputs.get("diffs") or []
     test_commands = inputs.get("test_commands") or []
+
+    sources: list = []
+    any_redaction = False
 
     files = []
     seen_paths = set()
@@ -146,6 +207,9 @@ def build_context_bundle(task) -> dict:
             except OSError as e:
                 content = f"<<could not read {rel_path}: {e}>>"
 
+        content, redacted = redact_text(content)
+        any_redaction = any_redaction or redacted
+        sources.append(_provenance("trusted_repo_code", rel_path, content, redacted, trusted=True))
         files.append({
             "path": rel_path,
             "content": content,
@@ -161,16 +225,34 @@ def build_context_bundle(task) -> dict:
         if key in seen_log_keys:
             continue
         seen_log_keys.add(key)
+        content, redacted = redact_text(content)
+        any_redaction = any_redaction or redacted
+        if path is not None:
+            sources.append(_provenance("trusted_test_log", path, content, redacted, trusted=True))
+        else:
+            # Inline literal from the task JSON: untrusted evidence. Fence +
+            # cap BEFORE it can reach any prompt.
+            sources.append(_provenance("untrusted_issue_text", None, content, redacted, trusted=False))
+            content = fence_untrusted(content, source="task.inputs.logs")
         logs.append({"path": path, "content": content, "reason": "explicitly listed in task.inputs.logs"})
 
     for entry in diffs_list:
         content = _resolve_diff_entry(task.repo_path, entry)
+        from_git = content is not entry  # _resolve_diff_entry returns entry unchanged when not a git range
+        content, redacted = redact_text(content)
+        any_redaction = any_redaction or redacted
+        if from_git:
+            sources.append(_provenance("trusted_repo_code", f"git-diff:{entry}", content, redacted, trusted=True))
+        else:
+            sources.append(_provenance("untrusted_issue_text", None, content, redacted, trusted=False))
+            content = fence_untrusted(content, source="task.inputs.diffs")
         logs.append({"path": None, "content": content, "reason": f"diff: {entry}"})
 
     metadata = _build_metadata(task.repo_path, test_commands)
     metadata["token_estimate"] = sum(f["token_estimate"] for f in files) + sum(
         estimate_tokens(l["content"]) for l in logs
     )
+    metadata["redaction_applied"] = any_redaction
 
     return {
         "task_id": task.id,
@@ -179,4 +261,5 @@ def build_context_bundle(task) -> dict:
         "files": files,
         "logs": logs,
         "metadata": metadata,
+        "sources": sources,
     }
