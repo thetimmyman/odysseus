@@ -2616,6 +2616,45 @@ class WorkflowReliabilitySignal(Base):
     )
 
 
+class KnowledgeBaseEntry(Base):
+    """Spec Phase 6 / Section 19 knowledge base: an evidence-grounded lesson
+    distilled from routing runs. Entries are ADVISORY context only — they may
+    inform review depth and lesson-aware prompts but NEVER gate, veto, or
+    block any routing/verification decision (enforced in src/routing_knowledge
+    and unit-tested). Lifecycle (enforced in src/routing_knowledge, not here):
+    draft -> validated|rejected (human action, actor recorded);
+    validated -> superseded (with replacement link) | expired (with rationale);
+    rejected/superseded are terminal; expired may be re-validated ONLY by an
+    explicit human action. Every entry MUST carry non-empty evidence (run ids /
+    model-run ids / manifest ids / artifact paths / verification results) —
+    creation without it is rejected. New table (no column migration) — created
+    by Base.metadata.create_all in init_db()."""
+    __tablename__ = "routing_knowledge_entries"
+
+    id = Column(String, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=False)                 # the lesson text
+    status = Column(String, nullable=False, default="draft", index=True)  # draft|validated|rejected|superseded|expired
+    category = Column(String, nullable=True, index=True)
+    tags = Column(Text, nullable=True)                  # JSON list of str
+    evidence = Column(Text, nullable=False)             # JSON list (REQUIRED non-empty) grounding the lesson
+    source_task_id = Column(String, ForeignKey("routing_tasks.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_model_run_id = Column(String, ForeignKey("routing_model_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by = Column(String, nullable=False, default="human")  # model label or "human"
+    validated_by = Column(String, nullable=True)
+    validated_at = Column(DateTime, nullable=True)
+    superseded_by_id = Column(String, ForeignKey("routing_knowledge_entries.id", ondelete="SET NULL"), nullable=True)
+    expires_rationale = Column(Text, nullable=True)     # e.g. "substantial code change in area X"
+    expired_at = Column(DateTime, nullable=True)
+    audit_log = Column(Text, nullable=True)             # append-only trail of lifecycle actions (actor + timestamp)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_routing_knowledge_status_category", "status", "category"),
+    )
+
+
 # Initialize the database by creating all tables. Must stay LAST in this
 # module: create_all only sees models already defined above this line.
 init_db()
