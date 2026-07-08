@@ -14,13 +14,22 @@ Guarantees exercised here:
 """
 import os
 
-# Disable auth so require_security_admin / require_admin return early in tests.
-os.environ["AUTH_ENABLED"] = "false"  # force (overrides any pre-set value)
-
+import pytest
 import sqlalchemy
 from sqlalchemy.orm import sessionmaker
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+# Disable auth so require_security_admin / require_admin return early — for
+# THESE tests only. core.middleware reads AUTH_ENABLED per request, so nothing
+# needs it at import time; the previous bare module-level
+# `os.environ["AUTH_ENABLED"] = "false"` executed during pytest COLLECTION and
+# leaked into the whole suite, silently disabling auth for every other test
+# (8 unrelated auth-rejection tests failed with DID NOT RAISE / 200-instead-of-401).
+@pytest.fixture(autouse=True)
+def _auth_disabled_env(monkeypatch):
+    monkeypatch.setenv("AUTH_ENABLED", "false")  # force (overrides any pre-set value)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in os.sys.path:
