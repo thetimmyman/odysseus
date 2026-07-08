@@ -19,14 +19,26 @@ import json
 import os
 import sys
 
-# Functional tests run with auth "disabled" (mirrors single-user deployments);
-# require_admin_cookie still demands a real admin cookie user regardless.
-os.environ["AUTH_ENABLED"] = "false"
-
+import pytest
 import sqlalchemy
 from sqlalchemy.orm import sessionmaker
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+# Functional tests run with auth "disabled" (mirrors single-user deployments);
+# require_admin_cookie still demands a real admin cookie user regardless.
+# Scoped to THIS module's tests via an autouse fixture: core.middleware reads
+# AUTH_ENABLED per request, so nothing needs it at import time — and a bare
+# module-level `os.environ["AUTH_ENABLED"] = "false"` executes during pytest
+# COLLECTION and leaks into the whole suite, silently disabling auth for every
+# other test (8 unrelated auth-rejection tests failed with DID NOT RAISE /
+# 200-instead-of-401). TestAuthEnabledGating's setup_method still overrides to
+# "true" per test (setup_method runs after autouse fixtures); the monkeypatch
+# teardown restores whatever was set before.
+@pytest.fixture(autouse=True)
+def _auth_disabled_env(monkeypatch):
+    monkeypatch.setenv("AUTH_ENABLED", "false")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:

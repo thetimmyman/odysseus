@@ -109,7 +109,11 @@ def clear_active_document(doc_id: Optional[str] = None) -> bool:
 
 def _owned_document_query(query, Document, owner: Optional[str]):
     if owner is None:
-        return query.filter(False)
+        # A bare Python `False` is not a valid SQL expression — SQLAlchemy 1.4
+        # deprecates it and 2.0 raises ArgumentError. Use the SQL `false()`
+        # literal to return zero rows for an unscoped (owner-less) query.
+        from sqlalchemy import false
+        return query.filter(false())
     return query.filter(Document.owner == owner)
 
 
@@ -1183,7 +1187,17 @@ async def do_manage_mcp(content: str, owner: Optional[str] = None) -> Dict:
             try:
                 srv = db2.query(McpServer).filter(McpServer.id == sid).first()
                 if srv:
-                    await mcp.connect_server(sid)
+                    _args = json.loads(srv.args) if srv.args else []
+                    _env = json.loads(srv.env) if srv.env else {}
+                    await mcp.connect_server(
+                        server_id=sid,
+                        name=srv.name,
+                        transport=srv.transport,
+                        command=srv.command,
+                        args=_args,
+                        env=_env,
+                        url=srv.url,
+                    )
                     st = mcp.get_server_status(sid)
                     return {"response": f"Reconnected '{srv.name}' ({st.get('tool_count', 0)} tools)", "exit_code": 0}
                 return {"error": f"Server {sid} not found", "exit_code": 1}
@@ -1495,7 +1509,14 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             "tavily_api_key", "serper_api_key", "app_public_url",
         }
         def _is_secret(k):
-            return k in _SECRET_KEYS or any(t in k for t in ("api_key", "_key", "token", "secret", "password"))
+            # `token` must be a suffix, not a substring: otherwise the int
+            # setting `agent_input_token_budget` (which even has a "token budget"
+            # alias to set it from chat) is wrongly classified as a credential.
+            return (
+                k in _SECRET_KEYS
+                or k.endswith("token")
+                or any(t in k for t in ("api_key", "_key", "secret", "password"))
+            )
 
         # Friendly aliases → real keys, so natural phrasing resolves.
         _ALIASES_SET = {

@@ -102,7 +102,10 @@ services:
     restart: unless-stopped
 
   searxng:
-    image: docker.io/searxng/searxng@sha256:c6dde203961b0b138d17ecbcef31026852a4210926564af48acf58352da38b42   # PINNED to a known-good digest (avoid :latest drift; review 2026-06-05)
+    # PINNED tag + digest (avoid :latest drift; review 2026-06-05). Docker pulls
+    # by the digest; the version tag documents which release it is and keeps the
+    # upstream pin regression guard (#1414 / tests/test_searxng_image_pinned.py).
+    image: docker.io/searxng/searxng:2026.5.31-7159b8aed@sha256:c6dde203961b0b138d17ecbcef31026852a4210926564af48acf58352da38b42
     entrypoint:
       - /bin/sh
       - -c
