@@ -1243,6 +1243,168 @@ async function _emRevoke(id) {
   }
 }
 
+// --- Benchmark: Phase 8 coordinator capstone -----------------------------------
+let _benchRuns = [];         // last GET /coordinator/benchmark payload
+let _benchSel = null;        // selected run id
+
+// Compact per-gate PASS/FAIL chips for a run's gates map.
+function _benchGateChips(gates) {
+  const wrap = document.createElement('span');
+  const entries = Object.entries(gates || {});
+  if (!entries.length) { wrap.textContent = '—'; return wrap; }
+  for (const [name, g] of entries) {
+    const short = name.replace(/_classification$|_selection$|_compliance$|_handling$/, '');
+    wrap.appendChild(_badge(short, g && g.passed ? 'crew-st-ok' : 'crew-st-err'));
+  }
+  return wrap;
+}
+
+function _benchPct(v) {
+  return v == null ? 'n/a' : (v * 100).toFixed(1) + '%';
+}
+
+async function _benchLoad() {
+  const tbody = _el('harness-bench-rows');
+  if (!tbody) return;
+  try {
+    _benchRuns = await _api('/api/harness/coordinator/benchmark?limit=100');
+  } catch (e) {
+    if (_gate('benchmark', e)) return;
+    _err('Could not load benchmark runs: ' + (e.message || e));
+    return;
+  }
+  _ungate('benchmark');
+  tbody.innerHTML = '';
+  _el('harness-bench-empty').style.display = _benchRuns.length ? 'none' : '';
+  _el('harness-bench-tablewrap').style.display = _benchRuns.length ? '' : 'none';
+  for (const r of _benchRuns) {
+    const tr = document.createElement('tr');
+    tr.className = 'is-clickable';
+    if (r.id === _benchSel) tr.classList.add('selected');
+    tr.dataset.benchId = r.id;
+    tr.appendChild(_td(_fmtTs(r.created_at), 'harness-nowrap'));
+    tr.appendChild(_td(r.endpoint_name, 'harness-mono'));
+    tr.appendChild(_td(r.model || '—', 'harness-mono'));
+    tr.appendChild(_td(String(r.replays), 'harness-nowrap'));
+    tr.appendChild(_td(String(r.fixtures_count), 'harness-nowrap'));
+    const gcell = document.createElement('span');
+    gcell.appendChild(_badge(r.passed_all_gates ? 'all gates' : 'gates failed',
+      r.passed_all_gates ? 'crew-st-ok' : 'crew-st-err'));
+    gcell.appendChild(_benchGateChips(r.gates));
+    tr.appendChild(_td(gcell));
+    tbody.appendChild(tr);
+  }
+  if (_benchSel && !_benchRuns.some((r) => r.id === _benchSel)) {
+    _benchSel = null;
+    _el('harness-bench-detail').style.display = 'none';
+  }
+}
+
+async function _benchSelect(id) {
+  _benchSel = id;
+  document.querySelectorAll('#harness-bench-rows tr').forEach((tr) => {
+    tr.classList.toggle('selected', tr.dataset.benchId === id);
+  });
+  const pane = _el('harness-bench-detail');
+  if (!pane) return;
+  let d;
+  try {
+    d = await _api(`/api/harness/coordinator/benchmark/${encodeURIComponent(id)}`);
+  } catch (e) {
+    if (_gate('benchmark', e)) return;
+    _err('Could not load benchmark detail: ' + (e.message || e));
+    return;
+  }
+  pane.innerHTML = '';
+  pane.style.display = '';
+
+  const head = document.createElement('div');
+  head.className = 'harness-row';
+  head.appendChild(_badge(d.passed_all_gates ? 'all gates passed' : 'gates failed',
+    d.passed_all_gates ? 'crew-st-ok' : 'crew-st-err'));
+  if (d.policy_versions) head.appendChild(_versionChips(d.policy_versions));
+  pane.appendChild(head);
+  pane.appendChild(_kv('run id', d.id, true));
+  pane.appendChild(_kv('endpoint', d.endpoint_name, true));
+  pane.appendChild(_kv('model', d.model, true));
+  pane.appendChild(_kv('replays', d.replays));
+  pane.appendChild(_kv('fixtures', d.fixtures_count));
+
+  pane.appendChild(_sectionH('Hard gates'));
+  const gwrap = document.createElement('div');
+  gwrap.className = 'harness-table-wrap';
+  const gtable = document.createElement('table');
+  gtable.className = 'harness-table';
+  gtable.innerHTML = '<thead><tr><th>gate</th><th>value</th><th>threshold</th><th>result</th></tr></thead>';
+  const gbody = document.createElement('tbody');
+  for (const [name, g] of Object.entries(d.gates || {})) {
+    const tr = document.createElement('tr');
+    tr.appendChild(_td(name, 'harness-mono'));
+    tr.appendChild(_td(_benchPct(g.value), 'harness-nowrap'));
+    tr.appendChild(_td(_benchPct(g.threshold), 'harness-nowrap'));
+    tr.appendChild(_td(_badge(g.passed ? 'pass' : 'fail', g.passed ? 'crew-st-ok' : 'crew-st-err')));
+    gbody.appendChild(tr);
+  }
+  gtable.appendChild(gbody);
+  gwrap.appendChild(gtable);
+  pane.appendChild(gwrap);
+
+  pane.appendChild(_sectionH('Per-dimension rates'));
+  const dwrap = document.createElement('div');
+  dwrap.className = 'harness-table-wrap';
+  const dtable = document.createElement('table');
+  dtable.className = 'harness-table';
+  dtable.innerHTML = '<thead><tr><th>dimension</th><th>rate</th><th>passed / total</th></tr></thead>';
+  const dbody = document.createElement('tbody');
+  for (const [name, m] of Object.entries(d.per_dimension || {})) {
+    const tr = document.createElement('tr');
+    tr.appendChild(_td(name, 'harness-mono'));
+    tr.appendChild(_td(_benchPct(m.value), 'harness-nowrap'));
+    const detail = (typeof m.passed === 'number' && m.total != null)
+      ? `${m.passed} / ${m.total}` : (m.total != null ? `n=${m.total}` : '—');
+    tr.appendChild(_td(detail, 'harness-nowrap'));
+    dbody.appendChild(tr);
+  }
+  dtable.appendChild(dbody);
+  dwrap.appendChild(dtable);
+  pane.appendChild(dwrap);
+}
+
+async function _benchRun() {
+  const endpoint = (_el('harness-bench-endpoint').value || '').trim();
+  if (!endpoint) { _err('ModelEndpoint name is required'); return; }
+  const replays = parseInt(_el('harness-bench-replays').value, 10);
+  if (isNaN(replays) || replays < 1 || replays > 20) { _err('replays must be 1–20'); return; }
+  const model = (_el('harness-bench-model').value || '').trim();
+  if (!window.confirm(`Run the benchmark against "${endpoint}"? This calls the endpoint model fixtures×${replays} times.`)) return;
+  const btn = _el('harness-bench-run');
+  btn.disabled = true;
+  const msg = _el('harness-bench-runmsg');
+  msg.style.display = 'none';
+  try {
+    const body = { endpoint_name: endpoint, replays };
+    if (model) body.model = model;
+    const r = await _post('/api/harness/coordinator/benchmark', body);
+    msg.className = 'preview-env-warn' + (r.passedAllGates ? '' : ' is-bad');
+    msg.textContent = r.passedAllGates
+      ? `All hard gates passed (${r.fixtures_count} fixtures × ${r.replays}).`
+      : `Gates failed: ${Object.entries(r.gates || {}).filter(([, g]) => !g.passed).map(([n]) => n).join(', ')}`;
+    msg.style.display = '';
+    _toast('Benchmark complete');
+    if (r.run_id) _benchSel = r.run_id;
+    await _benchLoad();
+    if (r.run_id) _benchSelect(r.run_id);
+  } catch (e) {
+    if (_gate('benchmark', e)) return;
+    // Surfaces the server's clear 400 (e.g. unresolvable endpoint) verbatim.
+    msg.className = 'preview-env-warn is-bad';
+    msg.textContent = 'Benchmark failed: ' + (e.message || e);
+    msg.style.display = '';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // --- tabs + overlay --------------------------------------------------------------
 const _LOADERS = {
   decisions: _loadAudit,
@@ -1252,6 +1414,7 @@ const _LOADERS = {
   route: null,               // pure form — nothing to prefetch
   tests: null,               // pure form — loads on demand by task/run id
   knowledge: _kbLoad,
+  benchmark: _benchLoad,
   emergency: _loadEmergency,
 };
 
@@ -1385,6 +1548,14 @@ function init(apiBase) {
     if (btn) { _kbAction(btn.dataset.kbId, btn.dataset.act); return; }
     const tr = e.target.closest('tr[data-kb-id]');
     if (tr) _kbSelect(tr.dataset.kbId);
+  });
+
+  // Benchmark
+  _el('harness-bench-refresh')?.addEventListener('click', _benchLoad);
+  _el('harness-bench-run')?.addEventListener('click', _benchRun);
+  _el('harness-bench-rows')?.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-bench-id]');
+    if (tr) _benchSelect(tr.dataset.benchId);
   });
 
   // Emergency

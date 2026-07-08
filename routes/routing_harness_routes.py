@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional
 
 from core.database import (
     CoordinatorAudit,
+    CoordinatorBenchmarkResult,
+    CoordinatorBenchmarkRun,
     EmergencyOverride,
     GeneratedTest,
     KnowledgeBaseEntry,
@@ -56,7 +58,18 @@ from src.routing_coordinator import (
     wrap_coordinator_output,
 )
 from src.routing_coordinator_client import CoordinatorClient
-from src.routing_engine import ROLE_BY_TASK, route_task
+from src.routing_coordinator_decide import (
+    ExternalProviderError,
+    build_deterministic_route,
+    generate_and_wrap_decision,
+)
+from src.routing_benchmark import (
+    BenchmarkEndpointError,
+    MAX_REPLAYS,
+    default_replays,
+    execute_benchmark,
+)
+from src.routing_engine import route_task
 from src.routing_escalation import (
     build_emergency_override,
     EscalationContext,
@@ -103,6 +116,28 @@ class WrapRequest(BaseModel):
     # satisfied flag is rejected by the gates.
     approval_satisfied: bool = False
     sandbox_ok: bool = True
+
+
+class DecideRequest(BaseModel):
+    """Generate a coordinator decision for a stored task from the resident
+    endpoint (same GateContext knobs as WrapRequest, minus raw output)."""
+    task_id: str
+    remote_exception_approved: bool = False
+    budget_ok: Optional[bool] = None
+    backend_available: bool = True
+    # Fail-closed default: an approval-requiring generated decision without an
+    # explicit satisfied flag is diverted by the gates.
+    approval_satisfied: bool = False
+    sandbox_ok: bool = True
+
+
+class BenchmarkRunRequest(BaseModel):
+    """Run the Phase 8 coordinator benchmark against a registered ModelEndpoint.
+    replays is capped server-side (this calls the LLM fixtures*replays times)."""
+    endpoint_name: str
+    replays: Optional[int] = None
+    model: Optional[str] = None
+    fixtures_path: Optional[str] = None
 
 
 class TaskRefRequest(BaseModel):
@@ -251,35 +286,10 @@ def _resolve_task(db, body: TaskRefRequest):
     raise HTTPException(400, "provide either task (inline dict) or task_id")
 
 
-def _deterministic_route(db, task) -> Optional[Dict[str, Any]]:
-    """Section 8 tier-2 fallback: shape routing_engine.route_task()'s top
-    candidates like a validated coordinator final route so downstream
-    consumers see one route schema regardless of which tier produced it."""
-    bundle = build_context_bundle(task)
-    candidates = route_task(db, task, bundle)["candidates"][:3]
-    if not candidates:
-        return None
-    desired = ROLE_BY_TASK.get(task.task_type, ["scout"])
-    chain = []
-    for cand in candidates:
-        roles = cand.get("roles") or []
-        role = next((r for r in desired if r in roles), roles[0] if roles else "scout")
-        chain.append({
-            "role": role,
-            "reason": "; ".join(cand.get("reasons") or []) or "ranked candidate",
-            "modelPreference": cand.get("model"),
-        })
-    return {
-        "backend": "odysseus_general_swe",
-        "modelRoleChain": chain,
-        "allowPremium": False,
-        "verificationMode": task.verification_mode or "analysis_only",
-        "dataSensitivity": task.data_sensitivity or "internal",
-        "approvalRequired": False,
-        "approved": False,
-        "rationale": ["deterministic router fallback"],
-        "schemaVersion": SCHEMA_VERSION,
-    }
+# Section 8 tier-2 fallback route builder lives in src.routing_coordinator_decide
+# now (single source of truth shared with the /coordinator/decide generation
+# path); aliased here to preserve the /coordinator/wrap call site.
+_deterministic_route = build_deterministic_route
 
 
 def setup_routing_harness_routes():
@@ -407,6 +417,132 @@ def setup_routing_harness_routes():
                 "hmac": r.hmac,
                 "redaction_applied": r.redaction_applied,
             }
+        finally:
+            db.close()
+
+    # ---------- server-side coordinator decision generation (Phase 8) ----------
+    @router.post("/coordinator/decide")
+    def coordinator_decide(req: DecideRequest, request: Request):
+        """Close the coordinator loop: GENERATE a decision from the resident
+        coordinator endpoint for a stored task, then run it through the SAME
+        deterministic wrapper + CoordinatorAudit archive as /coordinator/wrap.
+        400 when coordinator.provider is 'external' (decisions arrive via
+        /wrap). Endpoint failures degrade to the deterministic/safe_scout tier
+        and are audited — never a 500."""
+        require_admin_cookie(request)
+        policy = routing_policy.load_policy()
+        client = CoordinatorClient.from_policy(policy)
+        if not client.is_llm_backed():
+            raise HTTPException(
+                400,
+                "coordinator provider is 'external'; POST the decision to "
+                "/coordinator/wrap instead",
+            )
+        db = SessionLocal()
+        try:
+            task = db.get(RoutingTask, req.task_id)
+            if not task:
+                raise HTTPException(404, f"no task with id {req.task_id!r}")
+            budget_ok = req.budget_ok
+            if budget_ok is None:
+                budget_ok = check_general_budget(db)["allowed"]
+            try:
+                out = generate_and_wrap_decision(
+                    db, task, client,
+                    remote_exception_approved=req.remote_exception_approved,
+                    budget_ok=budget_ok,
+                    backend_available=req.backend_available,
+                    approval_satisfied=req.approval_satisfied,
+                    sandbox_ok=req.sandbox_ok,
+                )
+            except ExternalProviderError as e:
+                raise HTTPException(400, str(e))
+            return out
+        finally:
+            db.close()
+
+    # ---------- coordinator benchmark (Phase 8 capstone) ----------
+    def _benchmark_run_out(r: CoordinatorBenchmarkRun) -> dict:
+        return {
+            "id": r.id,
+            "endpoint_name": r.endpoint_name,
+            "model": r.model,
+            "replays": r.replays,
+            "fixtures_count": r.fixtures_count,
+            "passed_all_gates": r.passed_all_gates,
+            "gates": json.loads(r.gates) if r.gates else {},
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+
+    @router.post("/coordinator/benchmark")
+    def coordinator_benchmark_run(req: BenchmarkRunRequest, request: Request):
+        """Replay the coordinator fixture suite N times against a registered
+        ModelEndpoint, score the 12 dimensions, enforce the Section-20 hard
+        gates, and persist a CoordinatorBenchmarkRun. This calls the LLM
+        (fixtures * replays) times, so replays is capped at MAX_REPLAYS. An
+        unresolvable endpoint returns a clear 400 (never a 500). REPORTS the
+        gate verdict — never flips coordinator.provider (Tim's decision)."""
+        require_admin_cookie(request)
+        policy = routing_policy.load_policy()
+        replays = req.replays if req.replays is not None else default_replays(policy)
+        replays = max(1, min(int(replays), MAX_REPLAYS))
+        db = SessionLocal()
+        try:
+            try:
+                summary = execute_benchmark(
+                    db, req.endpoint_name, replays=replays,
+                    fixtures_path=req.fixtures_path, model=req.model,
+                    base_policy=policy,
+                )
+            except BenchmarkEndpointError as e:
+                raise HTTPException(400, str(e))
+            return summary
+        finally:
+            db.close()
+
+    @router.get("/coordinator/benchmark")
+    def coordinator_benchmark_list(request: Request, limit: int = 50,
+                                   endpoint_name: Optional[str] = None):
+        require_admin_cookie(request)
+        limit = max(1, min(int(limit), 500))
+        db = SessionLocal()
+        try:
+            q = db.query(CoordinatorBenchmarkRun)
+            if endpoint_name:
+                q = q.filter(CoordinatorBenchmarkRun.endpoint_name == endpoint_name)
+            rows = q.order_by(
+                CoordinatorBenchmarkRun.created_at.desc(),
+                CoordinatorBenchmarkRun.id.desc(),
+            ).limit(limit).all()
+            return [_benchmark_run_out(r) for r in rows]
+        finally:
+            db.close()
+
+    @router.get("/coordinator/benchmark/{run_id}")
+    def coordinator_benchmark_get(run_id: str, request: Request):
+        require_admin_cookie(request)
+        db = SessionLocal()
+        try:
+            r = db.get(CoordinatorBenchmarkRun, run_id)
+            if not r:
+                raise HTTPException(404, "benchmark run not found")
+            results = (
+                db.query(CoordinatorBenchmarkResult)
+                .filter(CoordinatorBenchmarkResult.run_id == run_id)
+                .order_by(CoordinatorBenchmarkResult.created_at, CoordinatorBenchmarkResult.id)
+                .all()
+            )
+            out = _benchmark_run_out(r)
+            out["per_dimension"] = json.loads(r.per_dimension) if r.per_dimension else {}
+            out["policy_versions"] = json.loads(r.policy_versions) if r.policy_versions else None
+            out["per_fixture"] = [{
+                "fixture_id": x.fixture_id,
+                "dimension": x.dimension,
+                "replays": x.replays,
+                "agreement": x.agreement,
+                "detail": json.loads(x.detail) if x.detail else None,
+            } for x in results]
+            return out
         finally:
             db.close()
 

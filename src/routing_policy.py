@@ -33,6 +33,25 @@ DEFAULT_POLICY = {
         "model": None,
         "temperature": 0.1,
         "maxTokens": 2048,
+        # Phase 8 benchmark knobs (spec Section 20). defaultReplays bounds the
+        # per-fixture replay count; thresholds override src.routing_benchmark's
+        # HARD_GATE_THRESHOLDS. The benchmark REPORTS whether a candidate model
+        # clears these gates; it never flips coordinator.provider to "endpoint"
+        # (register the ModelEndpoint, set provider=endpoint + endpointName +
+        # model, then publish the policy — a deliberate human decision).
+        "benchmark": {
+            "defaultReplays": 5,
+            "thresholds": {
+                "schema_validity": 0.98,
+                "policy_gate_compliance": 0.99,
+                "domain_classification": 0.95,
+                "approval_gate": 0.95,
+                "arbitration": 0.85,
+                "uncertainty_handling": 0.85,
+                "failure_retry": 0.85,
+                "consistency": 0.9,
+            },
+        },
     },
     "maxUntrustedTokens": 256,
     "rawOutputMaxBytes": 262144,
