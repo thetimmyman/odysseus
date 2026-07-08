@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""odysseus-coordinator — host-side driver for the resident coordinator
+(routing harness v0.5 §6/§8). GENERATES a CoordinatorDecision from the resident
+coordinator endpoint for a task and runs it through the deterministic wrapper +
+audit archive (the same path as POST /api/harness/coordinator/decide).
+
+    odysseus-coordinator decide --task TASK_ID
+    odysseus-coordinator decide --task task.json        # inline OdysseusTask (not persisted)
+    odysseus-coordinator decide --task - < task.json    # from stdin
+
+Requires coordinator.provider="endpoint" (+ endpointName/model) in
+config/routing_policy.json. With provider="external" this exits nonzero and
+tells you to POST the decision to /coordinator/wrap instead. Endpoint failures
+degrade to the deterministic/safe_scout tier (never a traceback) and are
+audited identically to a good decision.
+"""
+from __future__ import annotations
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run  # noqa: E402
+
+quiet_logs()
+
+import json  # noqa: E402
+
+try:
+    from core.database import RoutingTask, SessionLocal
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src import routing_policy  # noqa: E402
+from src.routing_budget import check_general_budget  # noqa: E402
+from src.routing_coordinator_client import CoordinatorClient  # noqa: E402
+from src.routing_coordinator_decide import (  # noqa: E402
+    ExternalProviderError,
+    generate_and_wrap_decision,
+)
+from src.routing_task_io import task_kwargs_from_json  # noqa: E402
+
+
+def _resolve_task(db, spec: str):
+    """`spec` is a stored RoutingTask id, a path to an OdysseusTask JSON file, or
+    "-" for stdin. A JSON task is built transiently (never persisted)."""
+    if spec == "-":
+        data = json.load(sys.stdin)
+        return RoutingTask(**task_kwargs_from_json(data))
+    if os.path.isfile(spec):
+        with open(spec) as f:
+            data = json.load(f)
+        return RoutingTask(**task_kwargs_from_json(data))
+    row = db.get(RoutingTask, spec)
+    if not row:
+        fail(f"no task with id {spec!r} (and it is not a readable JSON file path)")
+    return row
+
+
+def cmd_decide(args):
+    policy = routing_policy.load_policy()
+    client = CoordinatorClient.from_policy(policy)
+    if not client.is_llm_backed():
+        fail(
+            "coordinator provider is 'external'; POST the decision to "
+            "/coordinator/wrap instead (or set coordinator.provider='endpoint' "
+            "+ endpointName/model in config/routing_policy.json).",
+            code=3,
+        )
+    db = SessionLocal()
+    try:
+        task = _resolve_task(db, args.task)
+        budget_ok = check_general_budget(db)["allowed"]
+        try:
+            out = generate_and_wrap_decision(
+                db, task, client,
+                remote_exception_approved=args.remote_exception_approved,
+                budget_ok=budget_ok,
+                approval_satisfied=args.approval_satisfied,
+            )
+        except ExternalProviderError as e:
+            fail(str(e), code=3)
+        emit(out, args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser(
+        "odysseus-coordinator",
+        "Generate + wrap a resident-coordinator decision for a task (host-side).",
+    )
+    common = p._common_parents[0]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pd = sub.add_parser("decide", parents=[common],
+                        help="generate a decision for a task and wrap+audit it")
+    pd.add_argument("--task", required=True,
+                    help="RoutingTask id, path to an OdysseusTask JSON file, or - for stdin")
+    pd.add_argument("--remote-exception-approved", action="store_true",
+                    help="grant the Section 9 remote-data exception for this call")
+    pd.add_argument("--approval-satisfied", action="store_true",
+                    help="mark the approval gate as satisfied for this call")
+    pd.set_defaults(func=cmd_decide)
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))

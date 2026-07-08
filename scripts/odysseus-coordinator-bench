@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""odysseus-coordinator-bench — Phase 8 capstone runner for the v0.5 routing
+harness. Replays the coordinator fixture suite N times against a registered
+ModelEndpoint, scores the 12 weighted dimensions, enforces the Section-20 hard
+gates, persists a CoordinatorBenchmarkRun (+ per-fixture results) and archives
+fixtures/raw-decisions/scores under data/routing/benchmarks/<run_id>/.
+
+    odysseus-coordinator-bench run --endpoint NAME [--replays N] [--fixtures PATH] [--model M]
+    odysseus-coordinator-bench list [--endpoint NAME]
+    odysseus-coordinator-bench show RUN_ID
+
+`run` EXITS NONZERO if any hard gate fails (fail-truthful — a benchmark that
+can't clear the gates must not report success). This REPORTS whether a
+candidate has earned the coordinator seat; it never flips
+coordinator.provider (that stays a human decision).
+"""
+from __future__ import annotations
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run  # noqa: E402
+
+quiet_logs()
+
+import json  # noqa: E402
+
+try:
+    from core.database import CoordinatorBenchmarkResult, CoordinatorBenchmarkRun, SessionLocal
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src import routing_policy  # noqa: E402
+from src.routing_benchmark import (  # noqa: E402
+    BenchmarkEndpointError,
+    MAX_REPLAYS,
+    execute_benchmark,
+)
+
+
+def _fmt_rate(v):
+    return "  n/a " if v is None else f"{v * 100:5.1f}%"
+
+
+def _print_tables(summary: dict) -> None:
+    """Human-readable per-dimension + per-gate table to STDERR (stdout stays
+    clean JSON for piping)."""
+    w = sys.stderr.write
+    w("\n=== coordinator benchmark ===\n")
+    w(f"endpoint : {summary.get('endpoint_name')}  model: {summary.get('model')}\n")
+    w(f"replays  : {summary.get('replays')}   fixtures: {summary.get('fixtures_count')}\n")
+    if summary.get("run_id"):
+        w(f"run_id   : {summary.get('run_id')}\n")
+    w("\n--- per-dimension rates ---\n")
+    for dim, m in (summary.get("perDimension") or {}).items():
+        val = m.get("value") if isinstance(m, dict) else None
+        total = m.get("total") if isinstance(m, dict) else None
+        passed = m.get("passed") if isinstance(m, dict) else None
+        detail = f"{passed}/{total}" if isinstance(passed, int) and total is not None else f"n={total}"
+        w(f"  {dim:32s} {_fmt_rate(val)}   ({detail})\n")
+    w("\n--- hard gates ---\n")
+    for name, g in (summary.get("gates") or {}).items():
+        mark = "PASS" if g.get("passed") else "FAIL"
+        w(f"  [{mark}] {name:28s} {_fmt_rate(g.get('value'))} >= {g.get('threshold')}\n")
+    verdict = "ALL GATES PASSED" if summary.get("passedAllGates") else "GATES FAILED"
+    w(f"\n=> {verdict}\n\n")
+
+
+def cmd_run(args):
+    policy = routing_policy.load_policy()
+    replays = max(1, min(int(args.replays), MAX_REPLAYS))
+    db = SessionLocal()
+    try:
+        try:
+            summary = execute_benchmark(
+                db, args.endpoint, replays=replays,
+                fixtures_path=args.fixtures, model=args.model,
+                base_policy=policy,
+            )
+        except BenchmarkEndpointError as e:
+            fail(str(e), code=3)
+        _print_tables(summary)
+        emit(summary, args)
+        if not summary.get("passedAllGates"):
+            # Fail-truthful: nonzero exit so CI / the caller sees the gate failure.
+            sys.exit(1)
+    finally:
+        db.close()
+
+
+def cmd_list(args):
+    db = SessionLocal()
+    try:
+        q = db.query(CoordinatorBenchmarkRun)
+        if args.endpoint:
+            q = q.filter(CoordinatorBenchmarkRun.endpoint_name == args.endpoint)
+        rows = q.order_by(
+            CoordinatorBenchmarkRun.created_at.desc(),
+            CoordinatorBenchmarkRun.id.desc(),
+        ).limit(args.limit).all()
+        emit([{
+            "id": r.id,
+            "endpoint_name": r.endpoint_name,
+            "model": r.model,
+            "replays": r.replays,
+            "fixtures_count": r.fixtures_count,
+            "passed_all_gates": r.passed_all_gates,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        } for r in rows], args)
+    finally:
+        db.close()
+
+
+def cmd_show(args):
+    db = SessionLocal()
+    try:
+        r = db.get(CoordinatorBenchmarkRun, args.run_id)
+        if not r:
+            fail(f"no benchmark run with id {args.run_id!r}")
+        results = (
+            db.query(CoordinatorBenchmarkResult)
+            .filter(CoordinatorBenchmarkResult.run_id == args.run_id)
+            .order_by(CoordinatorBenchmarkResult.created_at, CoordinatorBenchmarkResult.id)
+            .all()
+        )
+        emit({
+            "id": r.id,
+            "endpoint_name": r.endpoint_name,
+            "model": r.model,
+            "replays": r.replays,
+            "fixtures_count": r.fixtures_count,
+            "passed_all_gates": r.passed_all_gates,
+            "gates": json.loads(r.gates) if r.gates else {},
+            "per_dimension": json.loads(r.per_dimension) if r.per_dimension else {},
+            "policy_versions": json.loads(r.policy_versions) if r.policy_versions else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "per_fixture": [{
+                "fixture_id": x.fixture_id,
+                "dimension": x.dimension,
+                "replays": x.replays,
+                "agreement": x.agreement,
+            } for x in results],
+        }, args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser(
+        "odysseus-coordinator-bench",
+        "Benchmark a candidate resident coordinator against the fixture suite.",
+    )
+    common = p._common_parents[0]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pr = sub.add_parser("run", parents=[common],
+                        help="replay the fixtures against an endpoint and enforce the hard gates")
+    pr.add_argument("--endpoint", required=True, help="registered ModelEndpoint name")
+    pr.add_argument("--replays", type=int, default=5,
+                    help=f"replays per fixture (default 5, capped at {MAX_REPLAYS})")
+    pr.add_argument("--fixtures", default=None,
+                    help="fixtures file/dir (default config/routing_coordinator_fixtures)")
+    pr.add_argument("--model", default=None,
+                    help="override the model slug requested on the endpoint")
+    pr.set_defaults(func=cmd_run)
+
+    pl = sub.add_parser("list", parents=[common], help="list past benchmark runs")
+    pl.add_argument("--endpoint", default=None, help="filter by endpoint name")
+    pl.add_argument("--limit", type=int, default=50)
+    pl.set_defaults(func=cmd_list)
+
+    ps = sub.add_parser("show", parents=[common], help="show one benchmark run in detail")
+    ps.add_argument("run_id")
+    ps.set_defaults(func=cmd_show)
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))

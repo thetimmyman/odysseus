@@ -2655,6 +2655,53 @@ class KnowledgeBaseEntry(Base):
     )
 
 
+class CoordinatorBenchmarkRun(Base):
+    """Spec Phase 8 coordinator benchmark: one replay-suite run against a
+    candidate resident-coordinator ModelEndpoint. Records the per-gate verdict
+    (JSON) + per-dimension rates (JSON) and whether ALL Section-20 hard gates
+    passed — this is the report that decides whether a model has earned the
+    coordinator seat (flipping coordinator.provider stays a human decision). New
+    table (no column migration) — created by Base.metadata.create_all in
+    init_db()."""
+    __tablename__ = "coordinator_benchmark_runs"
+
+    id = Column(String, primary_key=True, index=True)
+    endpoint_name = Column(String, nullable=False, index=True)
+    model = Column(String, nullable=True)
+    replays = Column(Integer, nullable=False, default=5)
+    fixtures_count = Column(Integer, nullable=False, default=0)
+    passed_all_gates = Column(Boolean, nullable=False, default=False)
+    gates = Column(Text, nullable=True)           # JSON: {gate: {value, threshold, passed}}
+    per_dimension = Column(Text, nullable=True)   # JSON: {dimension: {value, passed, total}}
+    policy_versions = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_coordinator_benchmark_runs_endpoint", "endpoint_name", "created_at"),
+    )
+
+
+class CoordinatorBenchmarkResult(Base):
+    """Per-fixture roll-up within a CoordinatorBenchmarkRun: the cross-replay
+    agreement (consistency) and the per-dimension pass/total detail for that
+    fixture. New table (no column migration) — created by
+    Base.metadata.create_all in init_db()."""
+    __tablename__ = "coordinator_benchmark_results"
+
+    id = Column(String, primary_key=True, index=True)
+    run_id = Column(String, ForeignKey("coordinator_benchmark_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    fixture_id = Column(String, nullable=True)
+    dimension = Column(String, nullable=True)
+    replays = Column(Integer, nullable=False, default=0)
+    agreement = Column(Float, nullable=True)      # cross-replay consistency (1.0 == unanimous)
+    detail = Column(Text, nullable=True)          # JSON per-fixture detail
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_coordinator_benchmark_results_run", "run_id", "created_at"),
+    )
+
+
 # Initialize the database by creating all tables. Must stay LAST in this
 # module: create_all only sees models already defined above this line.
 init_db()

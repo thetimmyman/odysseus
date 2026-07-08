@@ -33,6 +33,44 @@ def task_kwargs_from_json(data: dict) -> dict:
     )
 
 
+def task_payload_from_row(task) -> dict:
+    """Inverse of task_kwargs_from_json: serialize a RoutingTask row back to the
+    OdysseusTask JSON shape that CoordinatorClient.decide() expects as the model
+    prompt. Used by the server-side /coordinator/decide path and the
+    odysseus-coordinator CLI so a stored task can be handed to the resident
+    coordinator without reconstructing the JSON by hand."""
+    def _loads(raw, default):
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except Exception:  # noqa: BLE001 — a corrupt column degrades to the default
+            return default
+
+    return {
+        "id": task.id,
+        "workItemId": getattr(task, "work_item_id", None),
+        "title": task.title or "",
+        "objective": task.objective or "",
+        "type": task.task_type,
+        "repoPath": task.repo_path,
+        "branchName": getattr(task, "branch_name", None),
+        "risk": task.risk,
+        "constraints": _loads(getattr(task, "constraints", None), []),
+        "inputs": _loads(getattr(task, "inputs", None), {}),
+        "dataSensitivity": getattr(task, "data_sensitivity", None) or "internal",
+        "verificationMode": getattr(task, "verification_mode", None),
+        "owner": getattr(task, "owner", None),
+        "routing": {
+            "maxCostUsd": getattr(task, "max_cost_usd", None),
+            "allowFreeModels": bool(getattr(task, "allow_free_models", True)),
+            "allowPaidModels": bool(getattr(task, "allow_paid_models", False)),
+            "allowPremiumModels": bool(getattr(task, "allow_premium_models", False)),
+            "maxAttempts": getattr(task, "max_attempts", 3),
+        },
+    }
+
+
 def load_or_replace_task(db, data: dict, save: bool):
     """Build a RoutingTask row from JSON; if `save`, persist it -- updating an
     existing row with the same id IN PLACE rather than delete-then-recreate.

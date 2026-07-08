@@ -2488,6 +2488,7 @@
         <button type="button" class="admin-tab" data-rhtab="route">Route preview</button>
         <button type="button" class="admin-tab" data-rhtab="tests">Tests</button>
         <button type="button" class="admin-tab" data-rhtab="knowledge">Knowledge</button>
+        <button type="button" class="admin-tab" data-rhtab="benchmark">Benchmark</button>
         <button type="button" class="admin-tab" data-rhtab="emergency">Emergency</button>
       </div>
       <div class="harness-body">
@@ -2735,6 +2736,34 @@
               </div>
               <div id="harness-em-msg" style="display:none;margin-top:8px"></div>
             </div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="benchmark" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="harness-note">Spec Phase&nbsp;8 capstone. Replays the coordinator fixture suite N times against a registered ModelEndpoint, scores 12 weighted dimensions, and enforces the Section&nbsp;20 hard gates. This REPORTS whether a candidate model has earned the coordinator seat &mdash; it never flips coordinator.provider (that stays a deliberate decision). Warning: this calls the endpoint model fixtures&times;replays times.</div>
+            <div class="admin-card">
+              <div class="harness-row" style="margin-top:4px">
+                <input type="text" id="harness-bench-endpoint" class="preview-env-keyinput" placeholder="ModelEndpoint name" autocomplete="off" spellcheck="false">
+                <input type="text" id="harness-bench-model" class="preview-env-keyinput" placeholder="model (optional)" autocomplete="off" spellcheck="false">
+                <input type="number" id="harness-bench-replays" class="preview-env-keyinput harness-num" min="1" max="20" value="5" title="replays per fixture (max 20)">
+                <button type="button" class="crew-btn crew-btn-launch" id="harness-bench-run">Run benchmark</button>
+              </div>
+              <div id="harness-bench-runmsg" style="display:none;margin-top:8px"></div>
+            </div>
+            <div class="harness-row" style="margin-top:8px">
+              <span class="harness-detail-h" style="margin:0">Past runs</span>
+              <button type="button" class="crew-btn" id="harness-bench-refresh" style="margin-left:auto">Refresh</button>
+            </div>
+            <div class="harness-table-wrap" id="harness-bench-tablewrap">
+              <table class="harness-table">
+                <thead><tr><th>created</th><th>endpoint</th><th>model</th><th>replays</th><th>fixtures</th><th>gates</th></tr></thead>
+                <tbody id="harness-bench-rows"></tbody>
+              </table>
+            </div>
+            <div class="crew-empty" id="harness-bench-empty" style="display:none">No benchmark runs yet &mdash; run one above or via scripts/odysseus-coordinator-bench.</div>
+            <div class="harness-detail" id="harness-bench-detail" style="display:none"></div>
           </div>
         </div>
 
