@@ -99,6 +99,12 @@ def _write_run_manifest(db, task, run_id: str, run_dir: str, bundle: dict) -> No
         "policy": routing_policy.policy_versions(),
         "verificationMode": task.verification_mode or None,
         "dataSensitivity": task.data_sensitivity or "internal",
+        # Section 9: per-item ContextSource provenance (trust, redaction,
+        # injection risk, token counts) as built by routing_context.
+        "context": {
+            "sources": bundle.get("sources") or [],
+            "redactionApplied": bool((bundle.get("metadata") or {}).get("redaction_applied")),
+        },
         "artifacts": {
             "runDir": run_dir,
             "manifestPath": manifest_path,
