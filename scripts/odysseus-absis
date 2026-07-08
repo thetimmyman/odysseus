@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""odysseus-absis — host-side dispatcher CLI for the ABSIS conformance job
+queue (routing harness v0.5 §7, backend absis_tacticus_job_queue). Runs
+every operation as a one-shot inside the absis-orchestrator pod over
+ssh + kubectl exec; transport config lives in config/routing_policy.json
+under "absis" (disabled by default — no workers are deployed yet).
+
+    odysseus-absis workers [--worker-class C] [--capability X ...]
+    odysseus-absis enqueue --scenario ID --worker-class llm_inference|oracle_runner
+                           [--capability X ...] [--timeout N]
+                           [--payload-json FILE|-] [--force]
+    odysseus-absis status JOB_ID
+    odysseus-absis wait JOB_ID [--timeout N]
+
+Spec §7 guardrail: submit + read-back only — this CLI never bypasses
+oracle_runner validation, and routing a task here is the coordinator's
+decision, not this tool's.
+"""
+from __future__ import annotations
+import argparse
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run
+quiet_logs()
+
+import json
+
+from src.routing_absis import (
+    AbsisJobSpec,
+    AbsisTransport,
+    AbsisValidationError,
+    WORKER_CLASSES,
+    check_availability,
+    enqueue,
+    get_status,
+    list_registered_workers,
+    load_absis_policy,
+    _matching_workers,
+    wait_for_terminal,
+)
+
+
+def _transport(args) -> AbsisTransport:
+    """Build the transport from policy, honoring the enabled gate."""
+    cfg = load_absis_policy()
+    if not cfg.get("enabled") and not getattr(args, "force_enabled", False):
+        fail(
+            "absis backend is DISABLED by policy "
+            "(config/routing_policy.json: absis.enabled=false).\n"
+            f"policy note: {cfg.get('note')}\n"
+            "Pass --force-enabled to override for live testing.",
+            code=3,
+        )
+    return AbsisTransport.from_policy(cfg)
+
+
+def cmd_workers(args):
+    t = _transport(args)
+    if args.worker_class:
+        emit(check_availability(t, args.worker_class, args.capability or []), args)
+        return
+    # No class given: one scan, availability summarized per worker class.
+    workers = list_registered_workers(t)
+    emit({
+        "registered_workers": workers,
+        "available_by_class": {
+            cls: bool(_matching_workers(workers, cls, args.capability or []))
+            for cls in WORKER_CLASSES
+        },
+    }, args)
+
+
+def _load_payload(arg: str | None) -> dict:
+    if not arg:
+        return {}
+    raw = sys.stdin.read() if arg == "-" else open(arg).read()
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        fail("--payload-json must contain a JSON object")
+    return payload
+
+
+def cmd_enqueue(args):
+    t = _transport(args)
+    try:
+        spec = AbsisJobSpec(
+            scenario_id=args.scenario,
+            required_worker_class=args.worker_class,
+            required_capabilities=args.capability or [],
+            timeout_s=args.timeout,
+            payload=_load_payload(args.payload_json),
+        )
+    except AbsisValidationError as e:
+        fail(str(e))
+    emit(enqueue(t, spec, force=args.force), args)
+
+
+def cmd_status(args):
+    t = _transport(args)
+    emit(get_status(t, args.job_id), args)
+
+
+def cmd_wait(args):
+    t = _transport(args)
+    emit(wait_for_terminal(t, args.job_id, timeout_s=args.timeout), args)
+
+
+def _build_parser():
+    p = common_parser("odysseus-absis",
+                      "Submit/inspect ABSIS conformance jobs via the orchestrator pod.")
+    common = p._common_parents[0]
+    extra = argparse.ArgumentParser(add_help=False)
+    extra.add_argument("--force-enabled", action="store_true",
+                       help="bypass the absis.enabled=false policy gate (live testing)")
+    parents = [common, extra]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pw = sub.add_parser("workers", parents=parents,
+                        help="list live workers / check availability")
+    pw.add_argument("--worker-class", choices=WORKER_CLASSES, default=None)
+    pw.add_argument("--capability", action="append", default=[],
+                    help="required capability (repeatable)")
+    pw.set_defaults(func=cmd_workers)
+
+    pe = sub.add_parser("enqueue", parents=parents, help="submit one job")
+    pe.add_argument("--scenario", required=True, help="ABSIS scenario_id")
+    pe.add_argument("--worker-class", required=True, choices=WORKER_CLASSES)
+    pe.add_argument("--capability", action="append", default=[],
+                    help="required capability (repeatable)")
+    pe.add_argument("--timeout", type=int, default=600, help="job timeout_s (default 600)")
+    pe.add_argument("--payload-json", default=None,
+                    help="path to a JSON-object payload file, or - for stdin")
+    pe.add_argument("--force", action="store_true",
+                    help="enqueue even with no matching worker registered (job will "
+                         "fail in seconds after 5 requeues — testing only)")
+    pe.set_defaults(func=cmd_enqueue)
+
+    ps = sub.add_parser("status", parents=parents, help="fetch a job's current state")
+    ps.add_argument("job_id")
+    ps.set_defaults(func=cmd_status)
+
+    pt = sub.add_parser("wait", parents=parents,
+                        help="poll until the job is completed/failed or timeout")
+    pt.add_argument("job_id")
+    pt.add_argument("--timeout", type=int, default=600,
+                    help="max seconds to wait (default 600)")
+    pt.set_defaults(func=cmd_wait)
+
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))
