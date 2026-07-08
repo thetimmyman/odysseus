@@ -84,12 +84,17 @@ INLINE_TASK = {
 
 
 class _StubAuthManager:
-    """Minimal shape require_admin_cookie / require_security_admin consume:
-    admin + sec are admins; only sec holds the security_admin privilege."""
+    """Minimal shape require_admin_cookie / require_security_admin consume.
+    Mirrors the REAL privilege model (core/auth.py): security_admin is popped
+    from the admin privilege set, so "sec" here is a pure security_admin who
+    is NOT an admin — the two roles are disjoint, exactly like production.
+    (An earlier version made sec an admin too, which let the stacked
+    admin-cookie + security_admin gates pass in tests while being
+    impossible live.)"""
     is_configured = True
 
     def is_admin(self, user):
-        return user in ("admin", "sec")
+        return user == "admin"
 
     def get_privileges(self, user):
         return {"security_admin": user == "sec"}
@@ -513,12 +518,22 @@ class TestAuthEnabledGating:
         assert client.get("/api/harness/emergency/active", headers=ADMIN).status_code == 200
 
     def test_emergency_override_needs_security_admin(self):
+        """Regression for the stacked-gate bug: security_admin is popped from
+        the admin privilege set, so requiring admin-cookie AND security_admin
+        made break-glass un-callable by ANYONE. security_admin alone is the
+        gate: an admin (no privilege) is rejected, a pure security_admin
+        (not an admin) succeeds."""
         _app, client = _make_app_and_client()
         body = {"requested_by": "alice", "reason": "outage", "ttl_minutes": 5}
-        # Admin but not security_admin: passes the cookie gate, fails the privilege.
         r = client.post("/api/harness/emergency/override", headers=ADMIN, json=body)
         assert r.status_code == 403
-        # security_admin (also an admin) passes both gates.
         r2 = client.post("/api/harness/emergency/override", headers=SEC_ADMIN, json=body)
         assert r2.status_code == 200, r2.text
         assert r2.json()["approvedBy"] == "sec"
+        # The creating security_admin can see and revoke it despite not being
+        # an admin; a plain user still can't view the list.
+        oid = r2.json()["id"]
+        assert client.get("/api/harness/emergency/active", headers=SEC_ADMIN).status_code == 200
+        assert client.get("/api/harness/emergency/active", headers=NON_ADMIN).status_code == 403
+        rev = client.post(f"/api/harness/emergency/{oid}/revoke", headers=SEC_ADMIN, json={})
+        assert rev.status_code == 200, rev.text

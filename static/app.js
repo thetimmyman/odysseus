@@ -3506,6 +3506,9 @@ function startOdysseusApp() {
   if (window.devPreviewModule) {
     window.devPreviewModule.init(API_BASE);
   }
+  if (window.routingHarnessModule) {
+    window.routingHarnessModule.init(API_BASE);
+  }
   // Initialize search chat module
   if (searchChatModule) {
     searchChatModule.init(API_BASE);

@@ -36,6 +36,7 @@ from core.database import (
     WorkflowReliabilitySignal,
 )
 from core.middleware import require_security_admin
+from src.auth_helpers import get_current_user
 from src import routing_policy
 from src.auth_helpers import require_admin_cookie
 from src.routing_budget import (
@@ -589,12 +590,14 @@ def setup_routing_harness_routes():
     # ---------- emergency override (break-glass) ----------
     @router.post("/emergency/override")
     def emergency_override(req: EmergencyOverrideRequest, request: Request):
-        """Section 14 break-glass. security_admin approval required (on top of
-        the admin-cookie gate). The approver is the authenticated
-        security_admin; the requester is named in the body (may differ —
-        e.g. an on-call engineer asking)."""
-        approver = require_admin_cookie(request)
+        """Section 14 break-glass. security_admin is the SOLE gate — NOT also
+        require_admin_cookie: `security_admin` is popped from the admin
+        privilege set, so stacking both gates can never pass (an admin lacks
+        security_admin; a security_admin holder is a separate role). The
+        approver is the authenticated security_admin; the requester is named in
+        the body (may differ — e.g. an on-call engineer asking)."""
         require_security_admin(request)
+        approver = get_current_user(request)
         if not approver:
             raise HTTPException(403, "security_admin only")
         override = build_emergency_override(
@@ -624,9 +627,10 @@ def setup_routing_harness_routes():
 
     @router.post("/emergency/{override_id}/revoke")
     def emergency_revoke(override_id: str, request: Request):
-        """Deactivate an emergency override (status flip, never overwrite)."""
-        actor = require_admin_cookie(request)
+        """Deactivate an emergency override (status flip, never overwrite).
+        security_admin is the sole gate (see emergency_override)."""
         require_security_admin(request)
+        actor = get_current_user(request)
         db = SessionLocal()
         try:
             row = db.query(EmergencyOverride).filter_by(id=override_id).first()
@@ -644,8 +648,14 @@ def setup_routing_harness_routes():
 
     @router.get("/emergency/active")
     def emergency_active(request: Request):
-        """List non-expired, still-active overrides (TTL enforced here too)."""
-        require_admin_cookie(request)
+        """List non-expired, still-active overrides (TTL enforced here too).
+        Viewable by an admin OR a security_admin — the roles are disjoint
+        (see require_security_admin), and the security_admin who created an
+        override must be able to see and revoke it."""
+        try:
+            require_admin_cookie(request)
+        except HTTPException:
+            require_security_admin(request)
         now = _now()
         db = SessionLocal()
         try:

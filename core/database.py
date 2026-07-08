@@ -2513,10 +2513,11 @@ def archive_session(session_id: str):
             return True
     return False
 
-# Initialize the database by creating all tables
-
-
-init_db()
+# NOTE: init_db() is called at the BOTTOM of this module (after the last
+# model class) — create_all only builds tables for models already registered
+# on Base, so calling it here silently skipped every class defined below
+# (CoordinatorAudit, EmergencyOverride, WorkflowReliabilitySignal) on a
+# fresh database, 500-ing /api/harness/coordinator/wrap and /emergency/*.
 
 class CoordinatorAudit(Base):
     """Audit archive for v0.5 coordinator wrapper decisions."""
@@ -2584,3 +2585,8 @@ class WorkflowReliabilitySignal(Base):
     __table_args__ = (
         Index("ix_wrs_subject", "subject_type", "subject_id", "created_at"),
     )
+
+
+# Initialize the database by creating all tables. Must stay LAST in this
+# module: create_all only sees models already defined above this line.
+init_db()
