@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""odysseus-budget — spend vs. caps (read-only visibility; no versioned
+config UI in Phase 1/2 -- edit config/routing_budget.json directly to
+change caps).
+
+    odysseus-budget status
+"""
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run
+quiet_logs()
+
+try:
+    from core.database import SessionLocal
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src.routing_budget import spend_summary
+
+
+def cmd_status(args):
+    db = SessionLocal()
+    try:
+        emit(spend_summary(db), args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser("odysseus-budget", "Spend vs. caps (read-only; edit config/routing_budget.json to change caps).")
+    common = p._common_parents[0]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    ps = sub.add_parser("status", parents=[common])
+    ps.set_defaults(func=cmd_status)
+
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))
