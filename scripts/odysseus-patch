@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""odysseus-patch — inspect or re-extract the Phase 3 patch validation for a
+RoutingModelRun. `extract` re-reads the already-archived response.md and
+re-runs extraction/shape-validation against it (no new model call) --
+useful after tuning routing_patch.py's forbidden-path rules, or for
+backfilling runs captured before Phase 3 existed. Pure text validation only
+-- never applies anything (Phase 4, not built).
+
+    odysseus-patch show MODEL_RUN_ID
+    odysseus-patch extract MODEL_RUN_ID
+"""
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run
+quiet_logs()
+
+import json
+
+try:
+    from core.database import SessionLocal, RoutingModelRun, RoutingRun, RoutingTask
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src.routing_patch import extract_diff, validate_patch_shape
+
+
+def _load_row(db, model_run_id):
+    row = db.get(RoutingModelRun, model_run_id)
+    if not row:
+        fail(f"no RoutingModelRun with id {model_run_id!r}")
+    return row
+
+
+def cmd_show(args):
+    db = SessionLocal()
+    try:
+        row = _load_row(db, args.id)
+        emit({
+            "model_run_id": row.id,
+            "patch_validation": json.loads(row.patch_validation) if row.patch_validation else None,
+            "artifacts": json.loads(row.artifacts) if row.artifacts else {},
+        }, args)
+    finally:
+        db.close()
+
+
+def cmd_extract(args):
+    db = SessionLocal()
+    try:
+        row = _load_row(db, args.id)
+        artifacts = json.loads(row.artifacts) if row.artifacts else {}
+        response_path = artifacts.get("response_text_path")
+        if not response_path or not os.path.isfile(response_path):
+            fail(f"no archived response.md found for {args.id!r} (artifacts.response_text_path missing or unreadable)")
+
+        run_row = db.get(RoutingRun, row.run_id)
+        task_row = db.get(RoutingTask, run_row.task_id) if run_row else None
+        if not task_row:
+            fail(f"could not resolve the RoutingTask for {args.id!r} (run/task deleted?)")
+
+        with open(response_path, "r", errors="replace") as f:
+            response_text = f.read()
+
+        diff_text = extract_diff(response_text)
+        patch_validation = validate_patch_shape(diff_text, task_row.repo_path)
+
+        if patch_validation["extracted"]:
+            attempt_dir = os.path.dirname(response_path)
+            patch_path = os.path.join(attempt_dir, "patch.diff")
+            with open(patch_path, "w") as f:
+                f.write(diff_text)
+            artifacts["patch_path"] = patch_path
+
+        row.patch_validation = json.dumps(patch_validation)
+        row.artifacts = json.dumps(artifacts)
+        db.commit()
+        emit({"model_run_id": row.id, "patch_validation": patch_validation, "artifacts": artifacts}, args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser("odysseus-patch", "Inspect or re-extract a RoutingModelRun's Phase 3 patch validation.")
+    common = p._common_parents[0]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    psh = sub.add_parser("show", parents=[common])
+    psh.add_argument("id", help="a RoutingModelRun id")
+    psh.set_defaults(func=cmd_show)
+
+    pex = sub.add_parser("extract", parents=[common])
+    pex.add_argument("id", help="a RoutingModelRun id")
+    pex.set_defaults(func=cmd_extract)
+
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))
