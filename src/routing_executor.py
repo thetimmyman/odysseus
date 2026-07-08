@@ -12,13 +12,16 @@ but scout mode's job is fan-out-and-compare across the top-K candidates so
 Phase 2 scoring has multiple outputs to judge, and llm_call_with_fallback
 throws away per-attempt telemetry (including failures) that
 historical_score() needs."""
+import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 import uuid
 from typing import List
 
+from src import routing_policy
 from src.endpoint_resolver import resolve_endpoint_by_id
 from src.llm_core import llm_call_with_usage
 from src.routing_budget import (
@@ -28,7 +31,7 @@ from src.routing_budget import (
 from src.routing_context import build_context_bundle, estimate_tokens
 from src.routing_engine import ROLE_BY_TASK, _PATCH_SHAPED_TASK_TYPES
 from src.routing_patch import extract_diff, validate_patch_shape
-from src.routing_prompts import build_prompt
+from src.routing_prompts import build_prompt, render_context_block, render_universal_wrapper
 
 ARCHIVE_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "routing", "runs"
@@ -47,6 +50,71 @@ def _classify_llm_error(exc: Exception) -> dict:
     msg = str(exc)
     rate_limited = bool(_RATE_LIMIT_RE.search(msg))
     return {"rate_limited": rate_limited, "errored": not rate_limited, "error_message": msg[:2000]}
+
+
+def _git_head_sha(repo_path: str) -> str:
+    """Best-effort HEAD sha for the RunManifest. "" on ANY failure (no git,
+    not a repo, timeout) -- provenance recording must never block a run."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _sha256_hex(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def _write_run_manifest(db, task, run_id: str, run_dir: str, bundle: dict) -> None:
+    """Spec Section 18 RunManifest: provenance snapshot written once per run,
+    both to the run's archive dir (survives DB loss) and as a
+    RunManifestRecord row (queryable next to the run). Prompt/response file
+    paths are per-ATTEMPT (one pair per candidate under run_dir), so the
+    manifest carries the run dir + a pointer note instead of a single pair;
+    the authoritative per-attempt paths live in RoutingModelRun.artifacts."""
+    from core.database import RunManifestRecord
+
+    constraints = json.loads(task.constraints) if task.constraints else []
+    system_prompt = render_universal_wrapper(task.objective, constraints)
+    task_prompt = bundle.get("prompt") or task.objective or ""
+    context_str = render_context_block(bundle)
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    manifest = {
+        "runId": run_id,
+        "taskId": task.id,
+        "repo": {
+            "repoPath": task.repo_path,
+            "baseCommitSha": _git_head_sha(task.repo_path),
+            "branch": task.branch_name or "",
+        },
+        "prompts": {
+            "systemPromptHash": _sha256_hex(system_prompt),
+            "taskPromptHash": _sha256_hex(task_prompt),
+            "contextBundleHash": _sha256_hex(context_str),
+        },
+        "policy": routing_policy.policy_versions(),
+        "verificationMode": task.verification_mode or None,
+        "dataSensitivity": task.data_sensitivity or "internal",
+        "artifacts": {
+            "runDir": run_dir,
+            "manifestPath": manifest_path,
+            "promptPath": None,
+            "responsePath": None,
+        },
+        "auditNotes": [
+            "promptPath/responsePath recorded per model-run in RoutingModelRun.artifacts",
+        ],
+    }
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    db.add(RunManifestRecord(
+        id=str(uuid.uuid4()), run_id=run_id, manifest=json.dumps(manifest),
+    ))
+    db.commit()
 
 
 def _role_for_profile(profile, task) -> str:
@@ -124,6 +192,12 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
         # Phase 2 scoring depends on.
         run_dir = os.path.join(ARCHIVE_ROOT, task.id, run_id)
         os.makedirs(run_dir, exist_ok=True)
+
+        # Section 18: manifest first, before any model is called -- a run that
+        # crashes mid-fan-out still has its provenance on disk and in the DB.
+        # A manifest failure propagates to the outer handler (fail-closed:
+        # no provenance record, no run).
+        _write_run_manifest(db, task, run_id, run_dir, bundle)
 
         for candidate in candidates:
             if attempted >= max_attempts:
