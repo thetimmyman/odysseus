@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""odysseus-exec — Phase 3 "Safe Execution" (spec Section 15): apply an
+archived RoutingModelRun patch into a temporary, jailed git worktree and
+optionally run allowlisted verification commands in a network-less Docker
+sandbox. NEVER commits, merges, or pushes anything -- promoting a verified
+patch is a human action.
+
+    odysseus-exec apply  --model-run MODEL_RUN_ID [--allow-dirty] [--keep-worktree]
+    odysseus-exec run    --model-run MODEL_RUN_ID --cmd "pytest -q" [--allow-dirty] [--keep-worktree]
+    odysseus-exec verify --model-run MODEL_RUN_ID [--allow-dirty]
+
+`apply` re-validates the archived patch's shape (routing_patch), creates a
+temp worktree at the task repo's HEAD (source tree must be clean unless
+--allow-dirty), and applies with `git apply` (--check first). On success the
+worktree is KEPT for inspection; on failure it is reverted+removed unless
+--keep-worktree. `run` does the same then executes one sandboxed command and
+ALWAYS reverts+removes the worktree afterwards unless --keep-worktree.
+`verify` runs ALL of the task's inputs.test_commands, records the outcome in
+the model run's scores json ({"verification": ...}), and always cleans up.
+Every sandboxed command -- allowed or denied -- lands as a ToolCallRecord row.
+"""
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
+from cli import quiet_logs, emit, fail, common_parser, run
+quiet_logs()
+
+import json
+import uuid
+from datetime import datetime, timezone
+
+try:
+    from core.database import SessionLocal, RoutingModelRun, RoutingRun, RoutingTask
+    quiet_logs()
+except ModuleNotFoundError as e:
+    sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
+    sys.exit(2)
+
+from src.routing_patch import validate_patch_shape
+from src.routing_sandbox import run_in_sandbox
+from src.routing_workdir import (
+    apply_patch, create_worktree, remove_worktree, revert_worktree,
+)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _load_chain(db, model_run_id):
+    """model run -> its RoutingRun -> its RoutingTask, failing loudly at the
+    first broken link (all three are needed to locate the patch + repo)."""
+    row = db.get(RoutingModelRun, model_run_id)
+    if not row:
+        fail(f"no RoutingModelRun with id {model_run_id!r}")
+    run_row = db.get(RoutingRun, row.run_id)
+    task_row = db.get(RoutingTask, run_row.task_id) if run_row else None
+    if not task_row:
+        fail(f"could not resolve the RoutingTask for {model_run_id!r} (run/task deleted?)")
+    return row, run_row, task_row
+
+
+def _load_patch_text(row) -> str:
+    """The archived patch.diff located via artifacts.patch_path -- the same
+    convention odysseus-patch writes/reads."""
+    artifacts = json.loads(row.artifacts) if row.artifacts else {}
+    patch_path = artifacts.get("patch_path")
+    if not patch_path or not os.path.isfile(patch_path):
+        fail(f"no archived patch found for {row.id!r} (artifacts.patch_path missing or "
+             "unreadable) -- run `odysseus-patch extract` first")
+    with open(patch_path, "r", errors="replace") as f:
+        return f.read()
+
+
+def _attempt_dir(row):
+    """The model run's archive dir (where prompt.md/response.md live), so
+    sandbox stdout/stderr land next to the run's other artifacts. None when
+    the run predates archiving -- run_in_sandbox falls back to its default."""
+    artifacts = json.loads(row.artifacts) if row.artifacts else {}
+    for key in ("response_text_path", "patch_path", "prompt_path"):
+        p = artifacts.get(key)
+        if p:
+            return os.path.dirname(p)
+    return None
+
+
+def _update_artifacts(db, row, updates: dict) -> None:
+    artifacts = json.loads(row.artifacts) if row.artifacts else {}
+    artifacts.update(updates)
+    row.artifacts = json.dumps(artifacts)
+    db.commit()
+
+
+def _record_tool_call_artifacts(db, row, sandbox_results: list) -> None:
+    """Spec: RoutingModelRun.artifacts gains the tool-call stdout/stderr
+    paths. Appended, not replaced -- repeated exec runs stay visible."""
+    artifacts = json.loads(row.artifacts) if row.artifacts else {}
+    calls = artifacts.get("tool_calls") or []
+    for sb in sandbox_results:
+        calls.append({
+            "cmd": sb["cmd"],
+            "allowed": sb["allowed"],
+            "exit_code": sb["exit_code"],
+            "timed_out": sb["timed_out"],
+            "stdout_path": sb["stdout_path"],
+            "stderr_path": sb["stderr_path"],
+            "tool_call_record_id": sb["tool_call_record_id"],
+        })
+    artifacts["tool_calls"] = calls
+    row.artifacts = json.dumps(artifacts)
+    db.commit()
+
+
+def _apply_into_worktree(db, row, task_row, allow_dirty: bool, keep_on_failure: bool):
+    """Shared apply flow: re-validate shape, create the temp worktree at the
+    task repo's HEAD, apply the patch. Returns (worktree_path, apply_result).
+    On apply failure the worktree is reverted+removed (unless keep_on_failure),
+    the outcome recorded on the row, the failure JSON emitted, and the
+    process exits 1."""
+    patch_text = _load_patch_text(row)
+    validation = validate_patch_shape(patch_text, task_row.repo_path)
+    if not validation["allowed"]:
+        _update_artifacts(db, row, {"safe_execution": {
+            "applied": False, "error": "patch failed shape re-validation",
+            "reasons": validation["reasons"], "checked_at": _now_iso(),
+        }})
+        emit({"model_run_id": row.id, "applied": False,
+              "reason": "patch failed shape re-validation",
+              "patch_validation": validation}, _EMIT_ARGS)
+        sys.exit(1)
+
+    # model_run_id + a fresh suffix: unique per invocation so a kept worktree
+    # from a previous exec never collides with this one.
+    wt_id = f"{row.id}-{uuid.uuid4().hex[:8]}"
+    worktree = create_worktree(task_row.repo_path, wt_id, base_ref="HEAD",
+                               allow_dirty=allow_dirty)
+    result = apply_patch(worktree, patch_text)
+    if not result["applied"]:
+        kept = None
+        if keep_on_failure:
+            kept = worktree
+        else:
+            revert_worktree(worktree)
+            remove_worktree(task_row.repo_path, worktree)
+        _update_artifacts(db, row, {"safe_execution": {
+            "applied": False, "error": result["error"],
+            "worktree_path": kept, "checked_at": _now_iso(),
+        }})
+        emit({"model_run_id": row.id, "applied": False, "error": result["error"],
+              "worktree_path": kept}, _EMIT_ARGS)
+        sys.exit(1)
+    return worktree, result
+
+
+def _cleanup(task_row, worktree: str) -> None:
+    """Revert (the documented failed-patch reset) then remove the worktree.
+    Best-effort on revert: remove --force is the backstop either way."""
+    try:
+        revert_worktree(worktree)
+    except Exception:
+        pass
+    remove_worktree(task_row.repo_path, worktree)
+
+
+_EMIT_ARGS = None  # set per-command so helpers can emit with the right --pretty
+
+
+def cmd_apply(args):
+    global _EMIT_ARGS
+    _EMIT_ARGS = args
+    db = SessionLocal()
+    try:
+        row, _run_row, task_row = _load_chain(db, args.model_run)
+        worktree, result = _apply_into_worktree(
+            db, row, task_row, allow_dirty=args.allow_dirty,
+            keep_on_failure=args.keep_worktree,
+        )
+        # Success: the applied worktree is the deliverable -- keep it for
+        # human inspection (remove later via `git worktree remove --force`,
+        # or let a subsequent `run`/`verify` use its own fresh worktree).
+        _update_artifacts(db, row, {"safe_execution": {
+            "applied": True, "error": None, "worktree_path": worktree,
+            "changed_files": result["changed_files"], "checked_at": _now_iso(),
+        }})
+        emit({"model_run_id": row.id, "applied": True,
+              "worktree_path": worktree,
+              "changed_files": result["changed_files"]}, args)
+    finally:
+        db.close()
+
+
+def cmd_run(args):
+    global _EMIT_ARGS
+    _EMIT_ARGS = args
+    db = SessionLocal()
+    try:
+        row, run_row, task_row = _load_chain(db, args.model_run)
+        worktree, apply_result = _apply_into_worktree(
+            db, row, task_row, allow_dirty=args.allow_dirty,
+            keep_on_failure=args.keep_worktree,
+        )
+        try:
+            sb = run_in_sandbox(worktree, args.cmd, run_id=run_row.id, db=db,
+                                artifacts_dir=_attempt_dir(row))
+            _record_tool_call_artifacts(db, row, [sb])
+        finally:
+            if not args.keep_worktree:
+                _cleanup(task_row, worktree)
+        emit({
+            "model_run_id": row.id,
+            "applied": True,
+            "cmd": args.cmd,
+            "cmd_allowed": sb["allowed"],
+            "exit_code": sb["exit_code"],
+            "timed_out": sb["timed_out"],
+            "error": sb["error"],
+            "stdout_path": sb["stdout_path"],
+            "stderr_path": sb["stderr_path"],
+            "tool_call_record_id": sb["tool_call_record_id"],
+            "worktree_path": worktree if args.keep_worktree else None,
+            "changed_files": apply_result["changed_files"],
+        }, args)
+        if not sb["allowed"] or sb["error"] == "docker_unavailable":
+            sys.exit(1)
+    finally:
+        db.close()
+
+
+def cmd_verify(args):
+    global _EMIT_ARGS
+    _EMIT_ARGS = args
+    db = SessionLocal()
+    try:
+        row, run_row, task_row = _load_chain(db, args.model_run)
+        inputs = json.loads(task_row.inputs) if task_row.inputs else {}
+        test_commands = inputs.get("test_commands") or []
+        if not test_commands:
+            fail(f"task {task_row.id!r} has no inputs.test_commands to verify with")
+
+        worktree, _apply_result = _apply_into_worktree(
+            db, row, task_row, allow_dirty=args.allow_dirty, keep_on_failure=False,
+        )
+        results = []
+        try:
+            attempt_dir = _attempt_dir(row)
+            for cmd in test_commands:
+                # Each command is allowlist-checked inside run_in_sandbox; a
+                # denied or timed-out command has exit_code None -> not 0 ->
+                # verification fails (fail-closed, never fail-open).
+                results.append(run_in_sandbox(worktree, cmd, run_id=run_row.id,
+                                              db=db, artifacts_dir=attempt_dir))
+            _record_tool_call_artifacts(db, row, results)
+        finally:
+            # ALWAYS revert+remove: verify never leaves a worktree behind,
+            # and NEVER commits anything.
+            _cleanup(task_row, worktree)
+
+        commands_summary = [
+            {"cmd": r["cmd"], "exit_code": r["exit_code"],
+             **({"error": r["error"]} if r["error"] else {})}
+            for r in results
+        ]
+        passed = bool(results) and all(r["exit_code"] == 0 for r in results)
+        scores = json.loads(row.scores) if row.scores else {}
+        scores["verification"] = {
+            "passed": passed,
+            "commands": commands_summary,
+            "completed_at": _now_iso(),
+        }
+        # Docker missing is infrastructure failure, not command failure --
+        # still fail-closed (passed=False), but flagged so a re-run on a
+        # docker-equipped host isn't scored as "the patch broke the tests".
+        if any(r["error"] == "docker_unavailable" for r in results):
+            scores["verification"]["infrastructure_error"] = "docker_unavailable"
+        row.scores = json.dumps(scores)
+        db.commit()
+
+        emit({
+            "model_run_id": row.id,
+            "applied": True,
+            "verification": scores["verification"],
+            "tool_call_record_ids": [r["tool_call_record_id"] for r in results],
+        }, args)
+    finally:
+        db.close()
+
+
+def _build_parser():
+    p = common_parser("odysseus-exec",
+                      "Apply an archived model-run patch in a temp worktree and "
+                      "run sandboxed verification commands (Phase 3 Safe Execution).")
+    common = p._common_parents[0]
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pa = sub.add_parser("apply", parents=[common])
+    pa.add_argument("--model-run", required=True, help="a RoutingModelRun id")
+    pa.add_argument("--allow-dirty", action="store_true",
+                    help="waive the clean-source-tree requirement (spec: clean unless explicitly waived)")
+    pa.add_argument("--keep-worktree", action="store_true",
+                    help="keep the worktree for debugging even when the apply fails")
+    pa.set_defaults(func=cmd_apply)
+
+    pr = sub.add_parser("run", parents=[common])
+    pr.add_argument("--model-run", required=True, help="a RoutingModelRun id")
+    pr.add_argument("--cmd", required=True, help='sandboxed command, e.g. "pytest -q" (must match the policy allowlist)')
+    pr.add_argument("--allow-dirty", action="store_true",
+                    help="waive the clean-source-tree requirement")
+    pr.add_argument("--keep-worktree", action="store_true",
+                    help="keep the worktree (with the patch applied) instead of the default revert+remove")
+    pr.set_defaults(func=cmd_run)
+
+    pv = sub.add_parser("verify", parents=[common])
+    pv.add_argument("--model-run", required=True, help="a RoutingModelRun id")
+    pv.add_argument("--allow-dirty", action="store_true",
+                    help="waive the clean-source-tree requirement")
+    pv.set_defaults(func=cmd_verify)
+
+    return p
+
+
+if __name__ == "__main__":
+    sys.exit(run(_build_parser()))

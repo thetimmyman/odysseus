@@ -514,6 +514,38 @@ class RunManifestRecord(Base):
     )
 
 
+class ToolCallRecord(Base):
+    """Spec Section 15 (Safe Execution): one row per sandboxed tool/command
+    invocation attempt -- including DENIED attempts (allowed=False, exit_code
+    NULL), so the audit trail shows what a run *tried* to execute, not just
+    what policy let through. stdout/stderr live on disk under the run's
+    archive dir (paths recorded here), not as blobs. policy_decision_id is
+    the routing-policy version (or an explicit decision id) in force at call
+    time. run_id is nullable with SET NULL: this is audit evidence, so it
+    must survive its RoutingRun being deleted, and ad-hoc `odysseus-exec`
+    invocations against an archived model run are audited even without a
+    live run row. New table (no column migration needed) -- created by
+    Base.metadata.create_all in init_db()."""
+    __tablename__ = "tool_call_records"
+
+    id = Column(String, primary_key=True, index=True)
+    run_id = Column(String, ForeignKey("routing_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    tool_name = Column(String, nullable=False)                 # "sandbox_cmd"
+    args_hash = Column(String, nullable=False)                 # sha256(cmd + "\0" + worktree_path)
+    allowed = Column(Boolean, nullable=False, default=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    exit_code = Column(Integer, nullable=True)                 # NULL: denied / timed out / infra failure
+    stdout_path = Column(String, nullable=True)
+    stderr_path = Column(String, nullable=True)
+    policy_decision_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_tool_call_records_run', 'run_id', 'created_at'),
+    )
+
+
 class ProviderAuthSession(TimestampMixin, Base):
     """Encrypted OAuth/session credentials for refresh-aware model providers."""
     __tablename__ = "provider_auth_sessions"
