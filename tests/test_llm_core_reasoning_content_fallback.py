@@ -94,27 +94,12 @@ def test_llm_call_content_wins_over_reasoning_content(monkeypatch):
 # changed, these tests will fail.
 # ---------------------------------------------------------------------------
 
-import sys
-from unittest.mock import MagicMock
-
-# Mock heavy DB/tool deps before importing agent_loop
-for _mod in [
-    "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.ext",
-    "sqlalchemy.ext.declarative", "sqlalchemy.ext.hybrid",
-    "sqlalchemy.sql", "sqlalchemy.sql.expression",
-    "src.database", "src.agent_tools",
-    "core.models", "core.database",
-]:
-    if _mod not in sys.modules:
-        _m = MagicMock()
-        # A bare MagicMock() synthesizes a MagicMock-valued __all__, which makes
-        # `from <mod> import *` (e.g. src/database.py: `from core.database import *`)
-        # raise `TypeError: Item in <mod>.__all__ must be str, not MagicMock`.
-        # Give the stub a clean __all__ so wildcard imports are a safe no-op,
-        # while MagicMock attribute access still works for explicit imports.
-        _m.__all__ = []
-        sys.modules[_mod] = _m
-
+# NOTE: this file previously installed MagicMock stand-ins for sqlalchemy /
+# core.database in sys.modules before importing agent_loop. When this module
+# happened to be the FIRST importer of sqlalchemy in a pytest run, the mocks
+# stuck for the whole process and broke every later DB-backed test. The real
+# dependencies are importable in this repo's test environment (see
+# tests/test_agent_loop.py), so import agent_loop directly.
 from src.agent_loop import _empty_response_fallback  # noqa: E402
 
 
