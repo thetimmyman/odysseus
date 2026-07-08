@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""odysseus-stats — aggregated historical model performance (Phase 2).
+"""odysseus-stats — aggregated historical model performance (Phase 2 + the
+Phase 5 task-perf / lesson-gen split).
 
     odysseus-stats by-model [--task-type TYPE]
     odysseus-stats by-task-type
+    odysseus-stats task-perf [--task-type TYPE] [--model-profile ID]
+    odysseus-stats lesson-gen [--task-type TYPE] [--model-profile ID]
+
+`task-perf` is the aggregate family routing fitness consumes (completion/
+verification outcomes + task-quality scores only); `lesson-gen` is the
+separate plan/review-quality aggregate for WP7 lesson-generator selection —
+never consumed by routing.
 """
 from __future__ import annotations
 import os, sys
@@ -20,7 +28,7 @@ except ModuleNotFoundError as e:
     sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
     sys.exit(2)
 
-from src.routing_scoring import score_run
+from src.routing_scoring import model_lesson_gen_by_task, model_task_perf_by_task, score_run
 
 
 def _rows_with_task_type(db, task_type=None):
@@ -104,6 +112,28 @@ def cmd_by_task_type(args):
         db.close()
 
 
+def cmd_task_perf(args):
+    """Phase 5 TASK-PERFORMANCE aggregate — the only stats family routing
+    fitness consumes (see routing_scoring.model_task_perf_by_task)."""
+    db = SessionLocal()
+    try:
+        emit(model_task_perf_by_task(db, model_profile_id=args.model_profile,
+                                     task_type=args.task_type), args)
+    finally:
+        db.close()
+
+
+def cmd_lesson_gen(args):
+    """Phase 5 LESSON-GENERATION aggregate — plan/review-quality only, for
+    WP7 lesson-generator selection; never consumed by routing fitness."""
+    db = SessionLocal()
+    try:
+        emit(model_lesson_gen_by_task(db, model_profile_id=args.model_profile,
+                                      task_type=args.task_type), args)
+    finally:
+        db.close()
+
+
 def _build_parser():
     p = common_parser("odysseus-stats", "Aggregated historical model performance (Phase 2).")
     common = p._common_parents[0]
@@ -115,6 +145,17 @@ def _build_parser():
 
     pt = sub.add_parser("by-task-type", parents=[common])
     pt.set_defaults(func=cmd_by_task_type)
+
+    for name, func, help_text in (
+        ("task-perf", cmd_task_perf,
+         "task-performance aggregate per (model, task_type) — the routing-fitness family"),
+        ("lesson-gen", cmd_lesson_gen,
+         "lesson-generation aggregate per (model, task_type) — WP7 only, never routing"),
+    ):
+        sp = sub.add_parser(name, parents=[common], help=help_text)
+        sp.add_argument("--task-type", help="filter to one task_type")
+        sp.add_argument("--model-profile", help="filter to one model profile id")
+        sp.set_defaults(func=func)
 
     return p
 

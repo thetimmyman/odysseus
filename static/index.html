@@ -2486,6 +2486,7 @@
         <button type="button" class="admin-tab" data-rhtab="policy">Policy</button>
         <button type="button" class="admin-tab" data-rhtab="budget">Budget</button>
         <button type="button" class="admin-tab" data-rhtab="route">Route preview</button>
+        <button type="button" class="admin-tab" data-rhtab="tests">Tests</button>
         <button type="button" class="admin-tab" data-rhtab="emergency">Emergency</button>
       </div>
       <div class="harness-body">
@@ -2584,6 +2585,17 @@
               <span id="harness-budget-chips" style="margin-left:auto"></span>
             </div>
             <div class="harness-stats" id="harness-budget-stats"></div>
+            <div class="harness-row" style="margin-top:8px">
+              <span class="harness-detail-h" style="margin:0">Observability</span>
+              <span class="harness-note">Section&nbsp;20 metrics, derived from persisted rows only</span>
+              <select id="harness-obs-days" class="preview-env-keyinput harness-num" title="trailing window (days)" style="margin-left:auto">
+                <option value="7">7d</option>
+                <option value="30" selected>30d</option>
+                <option value="90">90d</option>
+              </select>
+              <button type="button" class="crew-btn" id="harness-obs-refresh">Refresh</button>
+            </div>
+            <div class="harness-stats" id="harness-obs-stats"></div>
             <div class="admin-card">
               <div class="harness-note">Per-task budget preview &mdash; what would happen if this task ran right now (nothing is persisted).</div>
               <textarea id="harness-budget-task" class="crew-prompt harness-mono" rows="8" spellcheck="false" style="margin-top:8px"></textarea>
@@ -2611,6 +2623,33 @@
               </table>
             </div>
             <div class="crew-empty" id="harness-route-empty" style="display:none"></div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-rhpanel="tests" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to use the Routing Harness.</div>
+          <div class="harness-panel-content">
+            <div class="harness-note">Section&nbsp;16 generated-test registry. Unpromoted generated tests are advisory (weight&nbsp;0); promoting one is the persistent, auditable human authority grant that makes it blocking-eligible in verification.</div>
+            <div class="harness-row" style="margin-top:8px">
+              <input type="text" id="harness-tests-task" class="preview-env-keyinput" placeholder="task id" autocomplete="off" spellcheck="false">
+              <button type="button" class="crew-btn" id="harness-tests-load">Load tests</button>
+            </div>
+            <div class="harness-table-wrap" id="harness-tests-tablewrap" style="display:none">
+              <table class="harness-table">
+                <thead><tr><th>authority</th><th>command</th><th>promoted</th><th>blocking eligible</th><th></th></tr></thead>
+                <tbody id="harness-tests-rows"></tbody>
+              </table>
+            </div>
+            <div class="crew-empty" id="harness-tests-empty" style="display:none"></div>
+            <div class="admin-card" style="margin-top:12px">
+              <div class="harness-detail-h" style="margin-top:0">Verification result viewer</div>
+              <div class="harness-note">Renders the verification block persisted by <span class="harness-mono">odysseus-exec verify</span> / POST /verify (read-only &mdash; nothing is re-executed here).</div>
+              <div class="harness-row" style="margin-top:8px">
+                <input type="text" id="harness-verif-runid" class="preview-env-keyinput harness-wide" placeholder="model run id" autocomplete="off" spellcheck="false">
+                <button type="button" class="crew-btn" id="harness-verif-load">Load result</button>
+              </div>
+              <div id="harness-verif-detail" class="harness-detail" style="display:none;margin-top:8px"></div>
+            </div>
           </div>
         </div>
 

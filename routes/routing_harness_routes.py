@@ -383,6 +383,9 @@ def setup_routing_harness_routes():
                 "task_id": task.id,
                 "context_token_estimate": bundle["metadata"]["token_estimate"],
                 "candidates": decision["candidates"],
+                # WP3 known gap closed (WP6): pass route_task's Section 9
+                # data-policy verdict through instead of dropping it.
+                "dataPolicy": decision["dataPolicy"],
             }
         finally:
             db.close()
@@ -569,6 +572,174 @@ def setup_routing_harness_routes():
                 }
             return {
                 "periods": periods,
+                "policyVersions": routing_policy.policy_versions(),
+            }
+        finally:
+            db.close()
+
+    # ---------- observability (spec Section 20 metrics) ----------
+    # The exact error strings run_hard_gates() emits (routing_coordinator.py)
+    # — persisted verbatim into CoordinatorAudit.validation_errors on every
+    # gates-failed path, which is what makes policyViolationRate derivable
+    # from stored data rather than re-adjudicated.
+    _GATE_ERRORS = (
+        "premium_over_budget",
+        "restricted_data_remote_blocked",
+        "approval_gate_unsatisfied",
+        "sandbox_constraint_violated",
+    )
+    _GATE_ERROR_PREFIXES = ("backend_unavailable:",)
+
+    def _is_gate_error(err: str) -> bool:
+        return err in _GATE_ERRORS or any(err.startswith(p) for p in _GATE_ERROR_PREFIXES)
+
+    def _metric(numerator, denominator, note=None, scale=None):
+        """{value, numerator, denominator, note?}. Fail-truthful: value is
+        None (never 0, never faked) when the denominator is empty."""
+        if denominator:
+            value = numerator / denominator
+            if scale is not None:
+                value = round(value, scale)
+        else:
+            value = None
+        out = {"value": value, "numerator": numerator, "denominator": denominator}
+        if note:
+            out["note"] = note
+        return out
+
+    @router.get("/observability")
+    def observability(request: Request, days: int = 30):
+        """Spec Section 20 operational metrics over a trailing window
+        (?days=N, default 30, clamped 1..365). Every metric is derived from
+        persisted rows only — nothing is re-executed — and reports its
+        numerator/denominator so the derivation is auditable. Metrics the
+        stored data cannot support yet return value=null with a note instead
+        of a fabricated number (fail-truthful)."""
+        require_admin_cookie(request)
+        days = max(1, min(int(days), 365))
+        # created_at columns are naive-UTC (datetime.utcnow defaults).
+        since = datetime.utcnow() - timedelta(days=days)
+        db = SessionLocal()
+        try:
+            # --- model-run-derived: cost per successful patch ---
+            model_runs = db.query(RoutingModelRun).filter(
+                RoutingModelRun.created_at >= since).all()
+            total_cost = 0.0
+            accepted_patches = 0
+            for mr in model_runs:
+                total_cost += mr.cost_usd or 0.0
+                try:
+                    scores = json.loads(mr.scores) if mr.scores else {}
+                except Exception:
+                    scores = {}
+                verification = scores.get("verification") if isinstance(scores, dict) else None
+                if isinstance(verification, dict) and verification.get("patch_accepted"):
+                    accepted_patches += 1
+            cost_metric = _metric(
+                round(total_cost, 4), accepted_patches, scale=4,
+                note="total RoutingModelRun.cost_usd in window / count of model runs "
+                     "whose persisted scores.verification.patch_accepted is true",
+            )
+
+            # --- coordinator-audit-derived rates ---
+            audits = db.query(CoordinatorAudit).filter(
+                CoordinatorAudit.created_at >= since).all()
+            total_audits = len(audits)
+            parsed_ok = 0
+            fell_back = 0
+            gate_blocked = 0
+            approval_required_accepted = 0
+            approval_misses = 0
+            raw_unparseable = 0
+            for a in audits:
+                if a.parsed_ok:
+                    parsed_ok += 1
+                if a.fallback_path and a.fallback_path != "none":
+                    fell_back += 1
+                try:
+                    errs = json.loads(a.validation_errors) if a.validation_errors else []
+                except Exception:
+                    errs = []
+                errs = [e for e in errs if isinstance(e, str)]
+                if any(_is_gate_error(e) for e in errs):
+                    gate_blocked += 1
+                # approvalGateMissRate: only ACCEPTED decisions (parsed ok and
+                # not diverted to the deterministic/safe-scout tiers) can have
+                # been executed. approvalRecommendation.required comes from the
+                # archived (redacted) raw decision JSON; redaction preserves
+                # JSON structure, but a row whose raw output no longer parses
+                # is excluded (counted in the note) rather than guessed at.
+                if a.parsed_ok and a.fallback_path in (None, "none", "repair"):
+                    try:
+                        raw = json.loads(a.raw_output) if a.raw_output else None
+                    except Exception:
+                        raw = None
+                    if not isinstance(raw, dict):
+                        raw_unparseable += 1
+                        continue
+                    appr = raw.get("approvalRecommendation") or {}
+                    if isinstance(appr, dict) and appr.get("required") is True:
+                        approval_required_accepted += 1
+                        if "approval_gate_unsatisfied" in errs:
+                            approval_misses += 1
+
+            schema_metric = _metric(
+                parsed_ok, total_audits, scale=3,
+                note="CoordinatorAudit.parsed_ok (strict-schema-valid decisions) / all "
+                     "archived coordinator decisions in window",
+            )
+            fallback_metric = _metric(
+                fell_back, total_audits, scale=3,
+                note='audit rows with fallback_path != "none" (repair | deterministic | '
+                     "safe_scout) / all archived decisions in window",
+            )
+            policy_metric = _metric(
+                gate_blocked, total_audits, scale=3,
+                note="audit rows whose persisted validation_errors contain a "
+                     "run_hard_gates() error (premium_over_budget, "
+                     "restricted_data_remote_blocked, approval_gate_unsatisfied, "
+                     "sandbox_constraint_violated, backend_unavailable:*) / all archived "
+                     "decisions in window — i.e. syntactically-legal decisions that "
+                     "recommended a policy-illegal route and were blocked",
+            )
+            approval_note = (
+                "accepted decisions (parsed_ok, fallback_path none|repair) whose archived "
+                "raw decision requires approval but whose audit trail records "
+                "approval_gate_unsatisfied — structurally 0 because run_hard_gates diverts "
+                "such decisions to fallback before execution; a nonzero value flags a gate "
+                "bypass bug"
+            )
+            if raw_unparseable:
+                approval_note += (f"; {raw_unparseable} accepted row(s) excluded — archived "
+                                  "raw output not parseable as JSON (redaction/free text)")
+            approval_metric = _metric(
+                approval_misses, approval_required_accepted, scale=3, note=approval_note,
+            )
+
+            # flakyTestRate: the persisted verification result keeps only the
+            # LATEST run per model run and records no base commit for the
+            # worktrees, so a pass/fail flip on the same command cannot be
+            # attributed to flakiness vs. a different patch or repo drift.
+            flaky_metric = {
+                "value": None, "numerator": None, "denominator": None,
+                "note": "insufficient data model: scores.verification stores only the "
+                        "latest verification per model run and no base commit, so "
+                        "pass/fail flips across repeated runs of the same task cannot be "
+                        "distinguished from patch differences or repo drift; returning "
+                        "null rather than a fabricated rate",
+            }
+
+            return {
+                "days": days,
+                "windowStart": since.isoformat(),
+                "metrics": {
+                    "costPerSuccessfulPatchUsd": cost_metric,
+                    "coordinatorSchemaValidityRate": schema_metric,
+                    "coordinatorFallbackRate": fallback_metric,
+                    "policyViolationRate": policy_metric,
+                    "approvalGateMissRate": approval_metric,
+                    "flakyTestRate": flaky_metric,
+                },
                 "policyVersions": routing_policy.policy_versions(),
             }
         finally:
@@ -847,6 +1018,39 @@ def setup_routing_harness_routes():
                 # not a verification verdict.
                 raise HTTPException(409, str(e))
             return {"model_run_id": model_run.id, "verification": result}
+        finally:
+            db.close()
+
+    @router.get("/model-runs/{model_run_id}/verification")
+    def model_run_verification(model_run_id: str, request: Request):
+        """Read-only viewer for the verification block verify_model_run
+        persisted into RoutingModelRun.scores["verification"]. POST /verify
+        re-EXECUTES verification (docker on the host, expensive) — this
+        endpoint only returns what is already stored, so the UI can render
+        layers/commands/notes without triggering a run. 404 when the model
+        run doesn't exist OR it has never been verified."""
+        require_admin_cookie(request)
+        db = SessionLocal()
+        try:
+            model_run = db.get(RoutingModelRun, model_run_id)
+            if not model_run:
+                raise HTTPException(404, f"no model run with id {model_run_id!r}")
+            try:
+                scores = json.loads(model_run.scores) if model_run.scores else {}
+            except Exception:
+                scores = {}
+            verification = scores.get("verification") if isinstance(scores, dict) else None
+            if not isinstance(verification, dict):
+                raise HTTPException(
+                    404, "no persisted verification for this model run — run "
+                         "`odysseus-exec verify` (host) or POST /api/harness/verify first")
+            run = db.get(RoutingRun, model_run.run_id)
+            return {
+                "model_run_id": model_run.id,
+                "run_id": model_run.run_id,
+                "task_id": run.task_id if run else None,
+                "verification": verification,
+            }
         finally:
             db.close()
 
