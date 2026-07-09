@@ -491,11 +491,261 @@ async function _loadEffective() {
   }
 }
 
+// --- Providers: AI endpoints + API keys (surfaces /api/model-endpoints) ---------
+// The provider CRUD + encrypted-at-rest key storage + test-connection already
+// exist server-side (routes/model_routes.py, gate `require_admin` — the admin
+// cookie passes). This tab surfaces them; it adds NO new backend. Security: the
+// plaintext key is WRITE-ONLY here — the server never returns it (only has_key +
+// a sha256[:8] fingerprint), so we render a masked fingerprint, offer
+// replace-only rotation, and clear the key field after every send. No API key
+// ever lives in this module's state.
+const _PROVIDERS = [
+  { label: 'Custom URL', url: '' },
+  { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
+  { label: 'OpenAI', url: 'https://api.openai.com/v1' },
+  { label: 'Anthropic', url: 'https://api.anthropic.com' },
+  { label: 'DeepSeek', url: 'https://api.deepseek.com/v1' },
+  { label: 'Groq', url: 'https://api.groq.com/openai/v1' },
+  { label: 'Mistral', url: 'https://api.mistral.ai/v1' },
+  { label: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+  { label: 'xAI Grok', url: 'https://api.x.ai/v1' },
+  { label: 'Together AI', url: 'https://api.together.xyz/v1' },
+  { label: 'Fireworks AI', url: 'https://api.fireworks.ai/inference/v1' },
+  { label: 'Ollama Cloud', url: 'https://ollama.com/api' },
+  { label: 'Z.AI (Zhipu)', url: 'https://api.z.ai/api/paas/v4' },
+];
+
+// The model-endpoint routes take FORM bodies for create/test and a JSON body
+// for PATCH — separate helpers so the content-type is always right.
+function _postForm(path, fields) {
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(fields)) body.set(k, v == null ? '' : String(v));
+  return _api(path, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+}
+function _patchJson(path, body) {
+  return _api(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+}
+function _del(path) { return _api(path, { method: 'DELETE' }); }
+
+function _provMsg(text, bad) {
+  const m = _el('cfg-prov-msg');
+  if (!m) return;
+  if (!text) { m.style.display = 'none'; m.textContent = ''; m.classList.remove('is-bad'); return; }
+  m.textContent = text; m.style.display = ''; m.classList.toggle('is-bad', !!bad);
+}
+
+function _kv(k, v) {
+  const s = document.createElement('span');
+  s.className = 'cfg-prov-kv';
+  if (k) {
+    const kk = document.createElement('span');
+    kk.className = 'cfg-prov-kv-k';
+    kk.textContent = k;
+    s.appendChild(kk);
+  }
+  s.appendChild(document.createTextNode(v == null ? '—' : String(v)));
+  return s;
+}
+
+function _populateProviderSelect() {
+  const sel = _el('cfg-prov-select');
+  if (!sel || sel.options.length) return;   // populate once
+  for (const p of _PROVIDERS) {
+    const o = document.createElement('option');
+    o.value = p.url;
+    o.textContent = p.label;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', () => {
+    const url = _el('cfg-prov-url');
+    if (url) url.value = sel.value;   // prefill the base URL from the picked provider
+  });
+}
+
+function _statusKind(s) {
+  return s === 'online' ? 'crew-st-ok' : (s === 'empty' ? 'crew-st-block' : 'crew-st-stop');
+}
+
+function _renderProviderList(rows) {
+  const box = _el('cfg-prov-list');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!rows.length) {
+    const e = document.createElement('div');
+    e.className = 'crew-empty';
+    e.textContent = 'No providers yet — add one above.';
+    box.appendChild(e);
+    return;
+  }
+  for (const ep of rows) {
+    const card = document.createElement('div');
+    card.className = 'cfg-prov-row';
+
+    const head = document.createElement('div');
+    head.className = 'cfg-prov-head';
+    const name = document.createElement('span');
+    name.className = 'cfg-prov-name';
+    name.textContent = ep.name || ep.base_url || ep.id;
+    head.append(name, _badge(ep.status || (ep.online ? 'online' : 'offline'), _statusKind(ep.status)));
+    if (!ep.is_enabled) head.appendChild(_tag('disabled'));
+    if (ep.endpoint_kind && ep.endpoint_kind !== 'auto') head.appendChild(_tag(ep.endpoint_kind));
+    if (ep.model_type && ep.model_type !== 'llm') head.appendChild(_tag(ep.model_type));
+
+    const meta = document.createElement('div');
+    meta.className = 'cfg-prov-meta';
+    meta.appendChild(_kv('url', ep.base_url));
+    meta.appendChild(_kv('models', String((ep.models || []).length + (ep.hidden_count || 0))));
+    // Key shown ONLY as a masked fingerprint — the server never returns the key.
+    meta.appendChild(_kv('', ep.has_key ? ('key ••••' + (ep.api_key_fingerprint || '')) : 'no key'));
+    if (ep.ping_error) meta.appendChild(_kv('error', ep.ping_error));
+
+    const actions = document.createElement('div');
+    actions.className = 'cfg-prov-actions';
+    const tog = document.createElement('button');
+    tog.type = 'button';
+    tog.className = 'preview-env-btn';
+    tog.textContent = ep.is_enabled ? 'Disable' : 'Enable';
+    tog.addEventListener('click', () => _toggleProvider(ep));
+    const rotWrap = document.createElement('span');
+    rotWrap.className = 'cfg-prov-rotate';
+    const rotInp = document.createElement('input');
+    rotInp.type = 'password';
+    rotInp.autocomplete = 'off';
+    rotInp.className = 'preview-env-keyinput';
+    rotInp.placeholder = 'replace key';
+    const rotBtn = document.createElement('button');
+    rotBtn.type = 'button';
+    rotBtn.className = 'preview-env-btn';
+    rotBtn.textContent = 'Rotate';
+    rotBtn.addEventListener('click', () => _rotateKey(ep, rotInp));
+    rotWrap.append(rotInp, rotBtn);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'preview-env-btn';
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => _deleteProvider(ep));
+    actions.append(tog, rotWrap, del);
+
+    card.append(head, meta, actions);
+    box.appendChild(card);
+  }
+}
+
+async function _loadProviders() {
+  _populateProviderSelect();
+  let rows;
+  try {
+    rows = await _api('/api/model-endpoints');
+  } catch (e) {
+    if (_gate('providers', e)) return;
+    _err('Could not load providers: ' + (e.message || e));
+    return;
+  }
+  _ungate('providers');
+  _renderProviderList(rows || []);
+}
+
+async function _testProvider() {
+  const url = (_el('cfg-prov-url')?.value || '').trim();
+  const key = _el('cfg-prov-key')?.value || '';
+  const kind = _el('cfg-prov-kind')?.value || 'auto';
+  if (!url) { _provMsg('Enter a base URL to test.', true); return; }
+  _provMsg('Testing…', false);
+  const btn = _el('cfg-prov-test');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await _postForm('/api/model-endpoints/test', { base_url: url, api_key: key, endpoint_kind: kind });
+    if (r.online) {
+      const eg = r.count ? ` (e.g. ${(r.models || []).slice(0, 3).join(', ')})` : '';
+      _provMsg(`Online — ${r.count} model${r.count === 1 ? '' : 's'} found${eg}.`, false);
+    } else {
+      _provMsg('Offline — ' + (r.ping_error || 'no response from the endpoint.'), true);
+    }
+  } catch (e) {
+    if (_gate('providers', e)) return;
+    _provMsg('Test failed: ' + (e.message || e), true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function _addProvider() {
+  const sel = _el('cfg-prov-select');
+  const url = (_el('cfg-prov-url')?.value || '').trim();
+  const key = _el('cfg-prov-key')?.value || '';
+  const type = _el('cfg-prov-type')?.value || 'llm';
+  const kind = _el('cfg-prov-kind')?.value || 'auto';
+  if (!url) { _provMsg('A base URL is required.', true); return; }
+  const label = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].textContent : '';
+  const name = (label && label !== 'Custom URL') ? label : '';
+  const btn = _el('cfg-prov-add');
+  if (btn) btn.disabled = true;
+  _provMsg('Adding…', false);
+  try {
+    await _postForm('/api/model-endpoints', { base_url: url, api_key: key, name, model_type: type, endpoint_kind: kind });
+    _provMsg('', false);
+    _toast('Provider added');
+    if (_el('cfg-prov-key')) _el('cfg-prov-key').value = '';   // never leave a key in the field
+    await _loadProviders();
+  } catch (e) {
+    if (_gate('providers', e)) return;
+    _provMsg('Add failed: ' + (e.message || e), true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function _rotateKey(ep, inp) {
+  const key = (inp?.value || '').trim();
+  if (!key) { _provMsg('Enter a replacement key first.', true); return; }
+  if (!window.confirm(`Replace the API key for ${ep.name || ep.base_url}? The old key is overwritten.`)) return;
+  try {
+    await _patchJson('/api/model-endpoints/' + encodeURIComponent(ep.id), { api_key: key });
+    if (inp) inp.value = '';
+    _toast('Key replaced');
+    await _loadProviders();
+  } catch (e) {
+    if (_gate('providers', e)) return;
+    _provMsg('Rotate failed: ' + (e.message || e), true);
+  }
+}
+
+async function _toggleProvider(ep) {
+  try {
+    await _patchJson('/api/model-endpoints/' + encodeURIComponent(ep.id), { is_enabled: !ep.is_enabled });
+    await _loadProviders();
+  } catch (e) {
+    if (_gate('providers', e)) return;
+    _provMsg('Toggle failed: ' + (e.message || e), true);
+  }
+}
+
+async function _deleteProvider(ep) {
+  let deps = [];
+  try {
+    const d = await _api('/api/model-endpoints/' + encodeURIComponent(ep.id) + '/dependents');
+    deps = (d && d.dependents) || [];
+  } catch { /* non-fatal — still allow delete with a generic confirm */ }
+  const warn = deps.length
+    ? `\n\nThis also clears ${deps.length} setting(s) that use it:\n- ${deps.slice(0, 8).join('\n- ')}`
+    : '';
+  if (!window.confirm(`Delete provider ${ep.name || ep.base_url}?${warn}`)) return;
+  try {
+    await _del('/api/model-endpoints/' + encodeURIComponent(ep.id));
+    _toast('Provider deleted');
+    await _loadProviders();
+  } catch (e) {
+    if (_gate('providers', e)) return;
+    _provMsg('Delete failed: ' + (e.message || e), true);
+  }
+}
+
 // --- tabs + overlay --------------------------------------------------------------
-// _LOADERS-style map: adding Providers/Policy/App-settings later is just a new
-// tab button + panel + one entry here.
+// _LOADERS-style map: adding Policy/App-settings later is just a new tab button
+// + panel + one entry here.
 const _LOADERS = {
   budget: _loadBudget,
+  providers: _loadProviders,
   effective: _loadEffective,
 };
 
@@ -573,6 +823,11 @@ function init(apiBase) {
     const btn = e.target.closest('button[data-archive]');
     if (btn) _rollbackBudget(btn.dataset.archive);
   });
+
+  // Providers
+  _el('cfg-prov-reload')?.addEventListener('click', _loadProviders);
+  _el('cfg-prov-test')?.addEventListener('click', _testProvider);
+  _el('cfg-prov-add')?.addEventListener('click', _addProvider);
 
   // Effective
   _el('cfg-effective-reload')?.addEventListener('click', _loadEffective);
