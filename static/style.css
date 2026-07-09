@@ -2217,7 +2217,7 @@ body.bg-pattern-sparkles {
       border: none;
       outline: none;
       resize: none;
-      font-size: 14px;
+      font-size: 16px; /* >=16px stops iOS Safari zoom-on-focus */
       line-height: 1.5;
       color: var(--fg);
       min-height: 24px;
