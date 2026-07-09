@@ -22,6 +22,7 @@ import os
 import os.path
 from pathlib import Path
 from datetime import datetime, timedelta
+from contextvars import ContextVar
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -54,6 +55,8 @@ def _uid_fetch_rows(data) -> list:
 # flat keys when no DB row matches (legacy single-account behaviour).
 
 _ACCOUNT_CACHE: dict = {}  # key = normalized account selector -> config dict
+_MCP_OWNER_ARG = "_odysseus_owner"
+_CURRENT_OWNER: ContextVar[str | None] = ContextVar("email_mcp_owner", default=None)
 
 
 def _clean_header_value(value) -> str:
@@ -67,9 +70,46 @@ def _db_path() -> Path:
     return Path(APP_DB)
 
 
-def _list_accounts_raw() -> list:
-    """Return list of dicts from the email_accounts table. Empty list if table
-    missing or empty. Never raises."""
+def _current_owner() -> str:
+    owner = _CURRENT_OWNER.get()
+    return str(owner or "").strip()
+
+
+def _account_visible_to_owner(row: dict, owner: str) -> bool:
+    row_owner = str(row.get("owner") or "").strip()
+    if row_owner == owner:
+        return True
+    if row_owner:
+        return False
+    # Legacy ownerless accounts are visible to a scoped caller only when the
+    # mailbox itself matches the owner, mirroring the HTTP email route fallback.
+    owner_l = owner.lower()
+    return owner_l in {
+        str(row.get("imap_user") or "").strip().lower(),
+        str(row.get("from_address") or "").strip().lower(),
+    }
+
+
+def _filter_accounts_for_owner(rows: list) -> list:
+    owner = _current_owner()
+    if owner:
+        return [r for r in rows if _account_visible_to_owner(r, owner)]
+    owners = {str(r.get("owner") or "").strip() for r in rows if str(r.get("owner") or "").strip()}
+    if len(owners) > 1:
+        return []
+    return rows
+
+
+def _mcp_owner_required(rows: list | None = None) -> bool:
+    if _current_owner():
+        return False
+    rows = rows if rows is not None else _read_accounts_from_db()
+    owners = {str(r.get("owner") or "").strip() for r in rows if str(r.get("owner") or "").strip()}
+    return len(owners) > 1
+
+
+def _read_accounts_from_db() -> list:
+    """Return all enabled email account rows. Empty list if missing. Never raises."""
     path = _db_path()
     if not path.exists():
         return []
@@ -77,9 +117,10 @@ def _list_accounts_raw() -> list:
         conn = sqlite3.connect(str(path))
         conn.row_factory = sqlite3.Row
         columns = {r[1] for r in conn.execute("PRAGMA table_info(email_accounts)").fetchall()}
+        owner_select = "owner" if "owner" in columns else "NULL AS owner"
         smtp_security_select = "smtp_security" if "smtp_security" in columns else "'' AS smtp_security"
         rows = conn.execute(f"""
-            SELECT id, name, is_default, enabled,
+            SELECT id, {owner_select}, name, is_default, enabled,
                    imap_host, imap_port, imap_user, imap_password, imap_starttls,
                    smtp_host, smtp_port, {smtp_security_select}, smtp_user, smtp_password, from_address
             FROM email_accounts WHERE enabled = 1
@@ -91,6 +132,12 @@ def _list_accounts_raw() -> list:
         return []
     except Exception:
         return []
+
+
+def _list_accounts_raw() -> list:
+    """Owner-visible account rows for the active MCP call (#4335). Every caller
+    goes through here, so account listing/resolution is owner-scoped."""
+    return _filter_accounts_for_owner(_read_accounts_from_db())
 
 
 def _resolve_account(selector: str | None) -> dict | None:
@@ -140,7 +187,7 @@ def _load_config(account: str | None = None) -> dict:
       2. env vars + settings.json flat keys (legacy)
       3. hardcoded fallbacks (localhost:31143 etc.)
     """
-    cache_key = (account or "").strip().lower() or "__default__"
+    cache_key = (_current_owner(), (account or "").strip().lower() or "__default__")
     if cache_key in _ACCOUNT_CACHE:
         return _ACCOUNT_CACHE[cache_key]
 
@@ -171,6 +218,8 @@ def _load_config(account: str | None = None) -> dict:
 
     rows = _list_accounts_raw()
     row = _resolve_account(account)
+    if _current_owner() and _read_accounts_from_db() and not rows:
+        raise ValueError("No email account is configured for the authenticated owner")
     if account and rows and not row:
         available = ", ".join(
             f"{r.get('name') or r.get('imap_user')} <{r.get('imap_user') or r.get('from_address') or '?'}>"
@@ -1331,10 +1380,22 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    arguments = dict(arguments) if isinstance(arguments, dict) else {}
+    owner = str(arguments.pop(_MCP_OWNER_ARG, "") or "").strip()
+    owner_token = _CURRENT_OWNER.set(owner or None)
     try:
+        all_db_accounts = _read_accounts_from_db()
+        if _mcp_owner_required(all_db_accounts):
+            return [TextContent(
+                type="text",
+                text="Error: email MCP requires an authenticated owner when multiple email account owners are configured.",
+            )]
+
         if name == "list_email_accounts":
-            rows = _list_accounts_raw()
+            rows = _filter_accounts_for_owner(all_db_accounts)
             if not rows:
+                if all_db_accounts and owner:
+                    return [TextContent(type="text", text="No email accounts configured for this owner.")]
                 return [TextContent(type="text", text="No email accounts configured. Legacy single-account mode active.")]
             lines = [f"Found {len(rows)} email account(s):\n"]
             for r in rows:
@@ -1616,6 +1677,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        _CURRENT_OWNER.reset(owner_token)
 
 
 # ── Main ──

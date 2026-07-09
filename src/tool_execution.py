@@ -1501,6 +1501,13 @@ async def execute_tool_block(
             except (json.JSONDecodeError, TypeError):
                 args = {}
             desc = f"mcp: {tool}"
+            # Owner boundary for email MCP (#4335): thread the caller's owner so the
+            # email server scopes account visibility to them; without it a caller
+            # falls through to the default mailbox. tool_schemas fails email calls
+            # closed on non-object args upstream of here.
+            if tool.startswith("mcp__email__") and owner:
+                args = dict(args) if isinstance(args, dict) else {}
+                args["_odysseus_owner"] = owner
             result = await mcp.call_tool(tool, args)
         else:
             desc = f"mcp: {tool}"
