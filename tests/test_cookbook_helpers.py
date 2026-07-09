@@ -21,10 +21,12 @@ from routes.cookbook_helpers import (
     _user_shell_path_bootstrap,
     _venv_safe_local_pip_install_cmd,
     _validate_gpus,
+    _validate_local_dir,
     _validate_repo_id,
     _validate_serve_cmd,
     _validate_serve_model_id,
     _validate_ssh_port,
+    _shell_path,
     run_ssh_command_async,
 )
 
@@ -107,6 +109,89 @@ def test_validate_ssh_port_rejects_shell_payload():
     with pytest.raises(HTTPException):
         _validate_ssh_port("22; touch /tmp/pwned")
     assert _validate_ssh_port("2222") == "2222"
+
+
+def test_validate_local_dir_accepts_external_drive_paths_with_spaces():
+    path = "/Volumes/T7 2TB/AI Models/llamacpp"
+
+    assert _validate_local_dir(path) == path
+    assert _validate_local_dir(f'"{path}"') == path
+    assert _shell_path(f"{path}/Qwen3-8B") == '"/Volumes/T7 2TB/AI Models/llamacpp/Qwen3-8B"'
+
+
+def test_validate_local_dir_accepts_windows_drive_paths_with_spaces():
+    backslash_path = r"D:\AI Models\llamacpp"
+    slash_path = "D:/AI Models/llamacpp"
+
+    assert _validate_local_dir(backslash_path) == backslash_path
+    assert _validate_local_dir(f"'{backslash_path}'") == backslash_path
+    assert _validate_local_dir(slash_path) == slash_path
+    assert _shell_path(backslash_path + r"\Qwen3-8B") == '"D:\\AI Models\\llamacpp\\Qwen3-8B"'
+
+
+def test_validate_local_dir_still_rejects_shell_metacharacters():
+    for path in [
+        "/Volumes/T7 2TB/AI Models; touch /tmp/pwned",
+        "/Volumes/T7 2TB/AI Models/$(touch pwned)",
+        "/Volumes/T7 2TB/AI Models/`touch pwned`",
+        "/Volumes/T7 2TB/AI Models/model\nnext",
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_local_dir(path)
+
+
+def test_validate_local_dir_rejects_windows_shell_metacharacters():
+    for path in [
+        r"D:\AI Models\llamacpp; touch C:\pwned",
+        r"D:\AI Models\llamacpp\$(touch pwned)",
+        r"D:\AI Models\llamacpp\`touch pwned`",
+        "D:\\AI Models\\llamacpp\nnext",
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_local_dir(path)
+
+
+def test_validate_local_dir_accepts_non_ascii_unicode_paths():
+    # Folder names are routinely non-ASCII on localized systems; the validator
+    # must accept them the same way it accepts spaces (see issue: spaces AND
+    # non-ASCII chars were both rejected by the old ASCII-only allowlist).
+    for path in [
+        "/Volumes/Модели/llamacpp",   # Cyrillic (POSIX / external drive)
+        "/home/josé/models",          # accented Latin
+        "/Volumes/モデル/llm",         # CJK
+        r"D:\AI Models\Модели",       # Cyrillic (Windows drive path)
+    ]:
+        assert _validate_local_dir(path) == path
+
+
+def test_validate_local_dir_rejects_metacharacters_in_unicode_paths():
+    # Widening the allowlist to Unicode must not reopen the injection surface:
+    # shell metacharacters stay rejected even alongside non-ASCII segments.
+    for path in [
+        "/Volumes/Модели; touch /tmp/pwned",
+        "/Volumes/Модели/$(touch pwned)",
+        "/Volumes/Модели/`touch pwned`",
+        "/Volumes/Модели/a|b",
+        "/Volumes/Модели\nnext",
+        r"D:\Модели\llamacpp & calc.exe",
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_local_dir(path)
+
+
+def test_validate_local_dir_rejects_leading_dash_segments():
+    # A path segment starting with '-' could be parsed as a CLI option by hf/etc.
+    # (option injection) even when quoted, since quoting doesn't stop a value from
+    # being read as a flag. The validator must reject it on every platform.
+    for path in [
+        "/models/-rf",
+        "/models/-rf/llamacpp",
+        "/-oStrictHostKeyChecking=no",
+        r"D:\models\-rf",
+        "D:/models/-rf",
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_local_dir(path)
 
 
 def test_validate_gpus_accepts_indexes_only():
@@ -474,6 +559,8 @@ def test_llama_cpp_linux_bootstrap_prefers_rocm_before_cuda():
     _append_llama_cpp_linux_accel_build_lines(runner_lines)
     script = "\n".join(runner_lines)
 
+    assert "mkdir -p ~/bin" in script
+    assert script.index("mkdir -p ~/bin") < script.index("cd ~/llama.cpp && rm -rf build")
     assert 'command -v hipconfig &>/dev/null || [ -d /opt/rocm ] || [ -n "$ROCM_PATH" ] || [ -n "$HIP_PATH" ]' in script
     assert 'cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON' in script
     assert 'cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON' in script
@@ -703,3 +790,42 @@ def test_cached_model_scan_runs_additional_hf_cache(tmp_path):
     assert rec["size_bytes"] == len(b"abc123")
     assert rec["has_incomplete"] is False
     assert rec["is_diffusion"] is False
+
+
+def test_validate_serve_cmd_accepts_find_subshell_for_mmproj():
+    """$(find …) for mmproj path should be accepted, same as $(printf %s …)."""
+    cmd = (
+        "HIP_VISIBLE_DEVICES=0 llama-server "
+        "--model \"$(printf %s '/app/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF"
+        "/snapshots/90f9618340396838ee7ff5b0ba2da27da62953d3/gemma-4-E2B-it-Q4_K_M.gguf')\" "
+        "--host 0.0.0.0 --port 8000 -ngl 99 -c 131072 "
+        "--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 "
+        "--mmproj \"$(find '/app/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF"
+        "/snapshots' -iname 'mmproj*.gguf' 2>/dev/null | sort | head -1)\" "
+        "--image-max-tokens 1024"
+    )
+    assert _validate_serve_cmd(cmd) == cmd
+
+
+def test_validate_serve_cmd_rejects_unrelated_subshells():
+    for cmd in [
+        "llama-server --model \"$(curl https://example.invalid/model.gguf)\" --host 0.0.0.0 --port 8000",
+        "llama-server --model \"$(rm -rf /tmp/not-a-model)\" --host 0.0.0.0 --port 8000",
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_serve_cmd(cmd)
+
+
+def test_validate_serve_cmd_rejects_unrelated_subshell_pipelines():
+    for cmd in [
+        (
+            "llama-server --model model.gguf "
+            "--mmproj \"$(find '/app/models' -iname 'mmproj*.gguf' | xargs head -1)\""
+        ),
+        (
+            "llama-server --model model.gguf "
+            "--mmproj \"$(find '/app/models' -iname '*.gguf' 2>/dev/null | sort | head -1)\""
+        ),
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_serve_cmd(cmd)

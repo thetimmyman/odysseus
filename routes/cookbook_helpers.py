@@ -41,9 +41,16 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _SSH_PORT_RE = re.compile(r"^\d{1,5}$")
 _GPU_LIST_RE = re.compile(r"^\d+(?:,\d+)*$")
 # A download target directory. Absolute or ~-relative path; safe path glyphs
-# only (no quotes, shell metacharacters, or spaces) since it lands in a shell
-# command. A leading ~ is expanded to $HOME at command-build time.
-_LOCAL_DIR_RE = re.compile(r"^~?/[A-Za-z0-9._/-]*$|^~$")
+# only (no quotes or shell metacharacters). Spaces are allowed because command
+# builders pass the value through quoted shell/Python contexts. The character
+# class uses ``\w`` — Unicode word characters under Python 3's default str
+# matching — so non-ASCII folder names pass validation too: Cyrillic, accented
+# Latin, CJK, e.g. ``/Volumes/Модели`` or ``D:\AI Models\Модели``. This stays
+# shell-safe: none of ``; & | ` $ '' "" () {}`` newlines etc. are in ``[\w. -]``,
+# so injection vectors remain rejected. A leading ~ is expanded to $HOME at
+# command-build time. (Drive letters stay ASCII: ``[A-Za-z]:``.)
+_LOCAL_DIR_RE = re.compile(r"^~?(?:/[\w. -]*)+$|^~$")
+_WINDOWS_LOCAL_DIR_RE = re.compile(r"^[A-Za-z]:[\\/](?:[\w. -]+(?:[\\/][\w. -]+)*[\\/]?)?$")
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -96,9 +103,19 @@ def _validate_token(v: str | None) -> str | None:
 def _validate_local_dir(v: str | None) -> str | None:
     if v is None or v == "":
         return None
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in {"'", '"'}:
+        v = v[1:-1]
     v = v.rstrip("/") or "/"
-    if not _LOCAL_DIR_RE.match(v):
-        raise HTTPException(400, "Invalid local_dir — must be an absolute or ~ path with no spaces or shell metacharacters")
+    if not (_LOCAL_DIR_RE.match(v) or _WINDOWS_LOCAL_DIR_RE.match(v)):
+        raise HTTPException(400, "Invalid local_dir — must be an absolute or ~ path with no shell metacharacters")
+    # Reject path segments that start with '-' (option injection). '-' is in the
+    # allowlist, so a dir like ``/models/-rf`` or ``D:\models\-rf`` could be read
+    # as a CLI flag by hf/etc. — and quoting does NOT stop a value from being
+    # parsed as an option. This is the one residual that command-build-time
+    # quoting can't cover, so the guard lives here, keeping the safety wholly
+    # inside the validator rather than relying on consumers.
+    if any(seg.startswith("-") for seg in re.split(r"[\\/]", v) if seg):
+        raise HTTPException(400, "Invalid local_dir — path segments cannot start with '-'")
     return v
 
 
@@ -124,7 +141,7 @@ def _validate_gpus(v: str | None) -> str | None:
 def _shell_path(p: str) -> str:
     """Render a validated path for a double-quoted shell context, expanding a
     leading ~ to $HOME (single quotes wouldn't expand it). Safe because
-    _validate_local_dir already restricts the charset."""
+    _validate_local_dir already rejects quotes and shell metacharacters."""
     if p == "~":
         return '"$HOME"'
     if p.startswith("~/"):
@@ -318,6 +335,7 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "    for root, dirs, fns in safe_walk(base):",
         "        for fn in sorted(fns):",
         "            if not fn.lower().endswith('.gguf'): continue",
+        "            if fn.startswith('._'): continue  # macOS AppleDouble sidecar, not a real GGUF",
         "            fp = os.path.join(root, fn)",
         "            try: size = os.path.getsize(fp)",
         "            except Exception: size = 0",
@@ -486,6 +504,16 @@ _SERVE_CMD_ALLOWLIST = {
 _GGUF_PRELUDE_RE = re.compile(
     r'^MODEL_FILE=\$\([^\n]*?\)\s*&&\s*\{[^{}]*\}\s*\|\|\s*\{[^{}]*\}\s*&&\s*'
 )
+_SAFE_SUBSHELL_TEXT = r"[^'\n;&|`$()<>]+"
+_SAFE_SUBSHELL_DQ_HOME_PATH = r'"\$HOME/[^"\n;&|`()<>]*"'
+_SAFE_PRINTF_SUBSHELL_RE = re.compile(
+    rf"^\$\(printf[ \t]+%s[ \t]+(?:'{_SAFE_SUBSHELL_TEXT}'|\$\{{HOME\}}'/{_SAFE_SUBSHELL_TEXT}')\)$"
+)
+_SAFE_FIND_MMPROJ_SUBSHELL_RE = re.compile(
+    rf"^\$\(find[ \t]+(?:'{_SAFE_SUBSHELL_TEXT}'|{_SAFE_SUBSHELL_DQ_HOME_PATH}|{_SAFE_SUBSHELL_TEXT})"
+    r"[ \t]+-iname[ \t]+'mmproj\*\.gguf'"
+    r"(?:[ \t]+2>/dev/null)?[ \t]*\|[ \t]*sort[ \t]*\|[ \t]*head[ \t]+-1\)$"
+)
 _OLLAMA_HOST_ASSIGNMENT_RE = re.compile(r"(?:^|\s)OLLAMA_HOST=([^\s]+)")
 _OLLAMA_BIND_RE = re.compile(r"^\[([^\]]+)\]:(\d+)$|^([^:]+):(\d+)$")
 _OLLAMA_BIND_HOST_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
@@ -540,6 +568,13 @@ def _check_serve_binary(seg: str) -> None:
         )
 
 
+def _is_safe_serve_subshell(subshell: str) -> bool:
+    return bool(
+        _SAFE_PRINTF_SUBSHELL_RE.fullmatch(subshell)
+        or _SAFE_FIND_MMPROJ_SUBSHELL_RE.fullmatch(subshell)
+    )
+
+
 def _validate_serve_cmd(v: str | None) -> str | None:
     """Reject serve commands that aren't in the allowlist or contain shell metachars.
 
@@ -571,15 +606,15 @@ def _validate_serve_cmd(v: str | None) -> str | None:
             _check_serve_binary(part.strip())
         return v
 
-    # Otherwise: a single invocation — no shell metacharacters allowed.
-    # Temporarily replace safe $(printf %s ...) expressions with a placeholder
-    # to avoid triggering the metacharacter/command-injection checks.
-    cleaned_v = v
-    printf_matches = list(re.finditer(r"\$\(\s*printf\s+%s\s+([^\n()]*?)\)", v))
-    for match in printf_matches:
-        inner = match.group(1)
-        if not any(c in inner for c in (";", "&&", "||", "$(", "`")):
-            cleaned_v = cleaned_v.replace(match.group(0), "/placeholder/safe/path.gguf")
+    # Otherwise: a single invocation — no shell metacharacters allowed. Replace
+    # only the exact command substitutions emitted by the Cookbook UI:
+    # $(printf %s 'safe-path') and the mmproj lookup
+    # $(find <path> -iname 'mmproj*.gguf' 2>/dev/null | sort | head -1).
+    def _replace_safe_subshell(match: re.Match[str]) -> str:
+        subshell = match.group(0)
+        return "/placeholder/safe/path" if _is_safe_serve_subshell(subshell) else subshell
+
+    cleaned_v = re.sub(r"\$\([^()]*\)", _replace_safe_subshell, v)
 
     # (`$(` was the original intent; bare `$` is fine for shell-safe paths.)
     if any(c in cleaned_v for c in (";", "&&", "||", "$(")):
@@ -658,6 +693,7 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('    done')
     # rm -rf build so a prior poisoned CMakeCache.txt (e.g. from a failed CUDA
     # or HIP attempt) doesn't cause the next configure to reuse stale settings.
+    runner_lines.append('    mkdir -p ~/bin')
     runner_lines.append('    cd ~/llama.cpp && rm -rf build')
     runner_lines.append('    if command -v hipconfig &>/dev/null || [ -d /opt/rocm ] || [ -n "$ROCM_PATH" ] || [ -n "$HIP_PATH" ]; then')
     runner_lines.append('      if command -v hipconfig &>/dev/null; then')
