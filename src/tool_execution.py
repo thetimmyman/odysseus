@@ -872,6 +872,12 @@ async def _direct_fallback(
                         cmd.append("--ignore-case")
                     if glob_pat:
                         cmd += ["--glob", glob_pat]
+                    # Sensitive-file deny-list (ports upstream #5011/#5189): keep
+                    # grep from returning secrets that read_file/edit_file refuse.
+                    # --iglob so "ID_RSA"/"Known_Hosts" match case-insensitively,
+                    # mirroring _is_sensitive_path's case-folding.
+                    for _pat in _SENSITIVE_FILE_PATTERNS:
+                        cmd += ["--iglob", f"!*{_pat}*"]
                     # Exclude junk dirs even when the tree has no .gitignore, so
                     # results match the Python fallback's skip set.
                     for _d in _CODENAV_SKIP_DIRS:
@@ -906,6 +912,8 @@ async def _direct_fallback(
                 for fp in file_iter:
                     if len(hits) >= max_hits:
                         break
+                    if _is_sensitive_path(os.path.realpath(fp)):
+                        continue  # ports #5011: skip deny-listed key files
                     try:
                         with open(fp, "r", encoding="utf-8", errors="strict") as f:
                             for i, line in enumerate(f, 1):
