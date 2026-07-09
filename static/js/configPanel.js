@@ -469,6 +469,7 @@ async function _loadEffective() {
   for (const it of items) {
     if (it.surface === 'needs_redeploy') anyRedeploy = true;
     const tr = document.createElement('tr');
+    if (it.danger) tr.classList.add('cfg-eff-danger');
     tr.appendChild(_td(it.name, 'harness-mono'));
     let valText;
     if (it.value == null) valText = '—';
@@ -478,7 +479,17 @@ async function _loadEffective() {
     tr.appendChild(_td(it.source));
     const s = _SURFACE[it.surface] || { word: it.surface || '—', kind: 'crew-st-stop' };
     tr.appendChild(_td(_badge(s.word, s.kind)));
-    tr.appendChild(_td(it.editable_where));
+    // Danger-zone / server-owned rows are not editable from the structured tabs.
+    const where = document.createElement('td');
+    where.textContent = it.editable_where || '';
+    if (it.danger || it.editable === false) {
+      const lock = document.createElement('span');
+      lock.className = 'harness-tag';
+      lock.textContent = it.danger ? 'read-only · danger' : 'read-only';
+      lock.style.marginRight = '6px';
+      where.insertBefore(lock, where.firstChild);
+    }
+    tr.appendChild(where);
     if (tbody) tbody.appendChild(tr);
   }
   if (banner) {
@@ -740,12 +751,306 @@ async function _deleteProvider(ep) {
   }
 }
 
+// --- Policy: structured safe-knob editor (over /api/harness/policy) --------------
+// The SAFE policy fields get friendly typed inputs with client-side validation
+// mirroring the server (src/routing_policy._validate_policy). Danger-zone knobs
+// (sandbox image/allowlist, sensitivity ceiling, coordinator provider/endpoint,
+// ABSIS) are shown READ-ONLY — they need security_admin via the raw Routing
+// Harness > Policy tab. On publish we send the FULL current policy with only the
+// safe fields overridden, so the danger-zone values are unchanged → the publish
+// route sees no danger-zone change and the admin cookie suffices.
+let _polServer = null;   // last GET /api/harness/policy (server truth, typed)
+let _polBuf = null;      // working deep-clone; safe edits coerce into it
+let _policyDirty = null;
+
+const _VMODES = ['regression_guard', 'bug_fix', 'feature_addition', 'refactor_equivalence', 'security_fix', 'analysis_only'];
+const _BENCH_GATES = ['schema_validity', 'policy_gate_compliance', 'domain_classification', 'approval_gate', 'arbitration', 'uncertainty_handling', 'failure_retry', 'consistency'];
+const _POLICY_FIELDS = [
+  { g: 'Verification', p: 'verification.defaultMode', l: 'Default mode', t: 'enum', opts: _VMODES },
+  { g: 'Verification', p: 'verification.overconfidenceThreshold', l: 'Overconfidence threshold', t: 'num', min: 0, max: 1 },
+  { g: 'Verification', p: 'verification.equivalenceStdoutComparison', l: 'Byte-wise stdout equivalence', t: 'bool' },
+  { g: 'Coordinator', p: 'coordinator.temperature', l: 'Temperature', t: 'num', min: 0, max: 2 },
+  { g: 'Coordinator', p: 'coordinator.maxTokens', l: 'Max tokens', t: 'int', min: 1 },
+  { g: 'Coordinator', p: 'coordinator.benchmark.defaultReplays', l: 'Benchmark replays', t: 'int', min: 1, max: 100 },
+  ..._BENCH_GATES.map((k) => ({ g: 'Benchmark gate thresholds', p: 'coordinator.benchmark.thresholds.' + k, l: k, t: 'num', min: 0, max: 1 })),
+  { g: 'Limits', p: 'maxUntrustedTokens', l: 'Max untrusted tokens', t: 'int', min: 0, max: 8192 },
+  { g: 'Limits', p: 'rawOutputMaxBytes', l: 'Raw output max bytes', t: 'int', min: 1 },
+  { g: 'Sandbox resources', p: 'sandbox.cpus', l: 'CPUs', t: 'num', min: 0, max: 32, gt0: true },
+  { g: 'Sandbox resources', p: 'sandbox.memoryGb', l: 'Memory (GB)', t: 'num', min: 0, max: 128, gt0: true },
+  { g: 'Sandbox resources', p: 'sandbox.pidsLimit', l: 'PID limit', t: 'int', min: 1, max: 65536 },
+  { g: 'Sandbox resources', p: 'sandbox.wallClockSeconds', l: 'Wall-clock (s)', t: 'int', min: 1, max: 3600 },
+  { g: 'Sandbox resources', p: 'sandbox.maxOutputBytes', l: 'Max output bytes', t: 'int', min: 1, max: 104857600 },
+  { g: 'Sandbox resources', p: 'sandbox.mountLabel', l: 'Mount label', t: 'enum', opts: ['z', 'Z', ''] },
+  { g: 'Sandbox resources', p: 'sandbox.runAsHostUser', l: 'Run as host user', t: 'bool' },
+];
+const _POLICY_DANGER = [
+  { p: 'remoteSensitivityCeiling', l: 'Remote sensitivity ceiling' },
+  { p: 'coordinator.provider', l: 'Coordinator provider' },
+  { p: 'coordinator.endpointName', l: 'Coordinator endpoint' },
+  { p: 'sandbox.image', l: 'Sandbox image' },
+  { p: 'sandbox.allowedCommands', l: 'Allowed commands', list: true },
+  { p: 'absis.enabled', l: 'ABSIS enabled' },
+  { p: 'absis.sshTarget', l: 'ABSIS ssh target' },
+  { p: 'absis.kubectlExecPrefix', l: 'ABSIS kubectl prefix' },
+];
+
+function _get(o, p) { return p.split('.').reduce((a, k) => (a == null ? a : a[k]), o); }
+function _set(o, p, v) {
+  const ks = p.split('.'); const last = ks.pop(); let cur = o;
+  for (const k of ks) { if (cur[k] == null || typeof cur[k] !== 'object') cur[k] = {}; cur = cur[k]; }
+  cur[last] = v;
+}
+
+function _validatePolicy() {
+  const reasons = [], bad = new Set();
+  if (!_polBuf) return { reasons, bad };
+  for (const f of _POLICY_FIELDS) {
+    const v = _get(_polBuf, f.p);
+    if (f.t === 'bool') continue;
+    if (f.t === 'enum') {
+      if (!f.opts.includes(v == null ? '' : String(v))) { reasons.push(`${f.l} is invalid`); bad.add(f.p); }
+      continue;
+    }
+    if (typeof v !== 'number' || !isFinite(v)) { reasons.push(`${f.l} must be a number`); bad.add(f.p); continue; }
+    if (f.t === 'int' && !Number.isInteger(v)) { reasons.push(`${f.l} must be a whole number`); bad.add(f.p); continue; }
+    if (f.gt0 && v <= 0) { reasons.push(`${f.l} must be greater than 0`); bad.add(f.p); continue; }
+    if (f.min != null && v < f.min) { reasons.push(`${f.l} must be ≥ ${f.min}`); bad.add(f.p); continue; }
+    if (f.max != null && v > f.max) { reasons.push(`${f.l} must be ≤ ${f.max}`); bad.add(f.p); }
+  }
+  return { reasons, bad };
+}
+
+function _policyDirtyNow() { return _polServer && _polBuf && JSON.stringify(_polBuf) !== JSON.stringify(_polServer); }
+
+function _refreshPolicyState() {
+  const { reasons, bad } = _validatePolicy();
+  for (const f of _POLICY_FIELDS) {
+    const card = document.querySelector(`#cfg-policy-fields .cfg-pol-field[data-pp="${f.p}"]`);
+    if (card) card.classList.toggle('is-bad', bad.has(f.p));
+  }
+  const warn = _el('cfg-policy-warn');
+  if (warn) {
+    if (reasons.length) { warn.textContent = reasons.join(' '); warn.style.display = ''; }
+    else { warn.textContent = ''; warn.style.display = 'none'; }
+  }
+  const changed = _policyDirtyNow();
+  if (_policyDirty) _policyDirty.set(!!changed);
+  const pub = _el('cfg-policy-publish');
+  if (pub) pub.disabled = !!reasons.length || !changed;
+  const rev = _el('cfg-policy-revert');
+  if (rev) rev.disabled = !changed;
+}
+
+function _polFieldInput(f) {
+  const cur = _get(_polBuf, f.p);
+  if (f.t === 'bool') {
+    const inp = document.createElement('input');
+    inp.type = 'checkbox'; inp.checked = !!cur; inp.className = 'cfg-pol-check';
+    inp.addEventListener('change', () => { _set(_polBuf, f.p, inp.checked); _refreshPolicyState(); });
+    return inp;
+  }
+  if (f.t === 'enum') {
+    const sel = document.createElement('select');
+    sel.className = 'cfg-prov-input cfg-pol-input';
+    for (const o of f.opts) {
+      const op = document.createElement('option');
+      op.value = o; op.textContent = o === '' ? '(none)' : o;
+      if (String(cur == null ? '' : cur) === o) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.addEventListener('change', () => { _set(_polBuf, f.p, sel.value); _refreshPolicyState(); });
+    return sel;
+  }
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.className = 'preview-env-keyinput cfg-pol-input';
+  inp.autocomplete = 'off'; inp.spellcheck = false;
+  if (f.t === 'int') inp.step = '1'; else inp.step = 'any';
+  if (f.min != null) inp.min = String(f.min);
+  if (f.max != null) inp.max = String(f.max);
+  inp.value = cur == null ? '' : String(cur);
+  inp.addEventListener('input', () => {
+    const raw = inp.value.trim();
+    _set(_polBuf, f.p, raw === '' ? NaN : Number(raw));
+    _refreshPolicyState();
+  });
+  return inp;
+}
+
+function _renderPolicy() {
+  const box = _el('cfg-policy-fields');
+  if (!box) return;
+  box.innerHTML = '';
+  let curGroup = null, grid = null;
+  for (const f of _POLICY_FIELDS) {
+    if (f.g !== curGroup) {
+      curGroup = f.g;
+      const h = document.createElement('div');
+      h.className = 'harness-detail-h';
+      h.textContent = f.g;
+      box.appendChild(h);
+      grid = document.createElement('div');
+      grid.className = 'cfg-pol-grid';
+      box.appendChild(grid);
+    }
+    const card = document.createElement('div');
+    card.className = 'cfg-pol-field';
+    card.dataset.pp = f.p;
+    const lab = document.createElement('label');
+    lab.className = 'cfg-pol-label';
+    lab.textContent = f.l;
+    const wrap = document.createElement('div');
+    wrap.className = 'cfg-pol-inputwrap';
+    wrap.appendChild(_polFieldInput(f));
+    card.append(lab, wrap);
+    grid.appendChild(card);
+  }
+}
+
+function _renderPolicyDanger() {
+  const box = _el('cfg-policy-danger');
+  if (!box) return;
+  box.innerHTML = '';
+  const grid = document.createElement('div');
+  grid.className = 'cfg-pol-grid';
+  for (const d of _POLICY_DANGER) {
+    const v = _get(_polServer || {}, d.p);
+    const card = document.createElement('div');
+    card.className = 'cfg-pol-field is-danger';
+    const lab = document.createElement('div');
+    lab.className = 'cfg-pol-label';
+    lab.textContent = d.l;
+    const val = document.createElement('div');
+    val.className = 'cfg-pol-danger-val';
+    val.textContent = d.list ? `${Array.isArray(v) ? v.length : 0} commands` : (v == null || v === '' ? '—' : String(v));
+    card.append(lab, val);
+    grid.appendChild(card);
+  }
+  box.appendChild(grid);
+}
+
+function _renderPolicyChips() {
+  const chips = _el('cfg-policy-chips');
+  if (!chips) return;
+  chips.innerHTML = '';
+  const v = _get(_polServer || {}, 'routingPolicyVersion');
+  chips.appendChild(_tag(`policy ${v == null ? '—' : v}`, true));
+}
+
+function _renderPolicyVersions(versions) {
+  const box = _el('cfg-policy-versions');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!versions || !versions.length) {
+    const e = document.createElement('div');
+    e.className = 'crew-empty';
+    e.textContent = 'No archived versions yet — the first publish archives the outgoing file.';
+    box.appendChild(e);
+    return;
+  }
+  for (const v of versions) {
+    const row = document.createElement('div');
+    row.className = 'harness-ver-row';
+    const name = document.createElement('span');
+    name.className = 'harness-ver-name';
+    name.textContent = v.archive;
+    const meta = document.createElement('span');
+    meta.className = 'harness-ver-meta';
+    meta.textContent = `v${v.routingPolicyVersion} · ${_fmtTs(v.modified_at)}`;
+    const rb = document.createElement('button');
+    rb.type = 'button';
+    rb.className = 'preview-env-btn';
+    rb.textContent = 'Rollback';
+    rb.dataset.archive = v.archive;
+    row.append(name, meta, rb);
+    box.appendChild(row);
+  }
+}
+
+async function _loadPolicy(force) {
+  if (!force && _policyDirty && _policyDirty.isDirty()) {
+    if (!_policyDirty.confirmDiscard('Reload will discard your unsaved policy changes. Continue?')) return;
+  }
+  let cur, vers;
+  try {
+    [cur, vers] = await Promise.all([
+      _api('/api/harness/policy'),
+      _api('/api/harness/policy/versions'),
+    ]);
+  } catch (e) {
+    if (_gate('policy', e)) return;
+    _err('Could not load policy: ' + (e.message || e));
+    return;
+  }
+  _ungate('policy');
+  _polServer = (cur && cur.policy) || {};
+  _polBuf = JSON.parse(JSON.stringify(_polServer));
+  _renderPolicy();
+  _renderPolicyDanger();
+  _renderPolicyChips();
+  _renderPolicyVersions((vers && vers.versions) || []);
+  if (_policyDirty) _policyDirty.set(false);
+  _refreshPolicyState();
+}
+
+function _revertPolicy() {
+  if (!_polServer) return;
+  _polBuf = JSON.parse(JSON.stringify(_polServer));
+  _renderPolicy();
+  _refreshPolicyState();
+}
+
+async function _publishPolicy() {
+  const { reasons } = _validatePolicy();
+  if (reasons.length) { _refreshPolicyState(); return; }
+  if (!window.confirm(
+    'Publish these policy changes?\n\nOnly the safe knobs shown here change; danger-zone '
+    + 'values are preserved. The outgoing version is archived and the change is logged.')) return;
+  const btn = _el('cfg-policy-publish');
+  if (btn) btn.disabled = true;
+  try {
+    await _post('/api/harness/policy/publish', { policy: _polBuf });
+    _toast('Policy published');
+    if (_policyDirty) _policyDirty.set(false);
+    await _loadPolicy(true);
+  } catch (e) {
+    if (_gate('policy', e)) return;
+    const warn = _el('cfg-policy-warn');
+    if (warn) {
+      warn.textContent = Array.isArray(e.detail) ? 'Publish rejected: ' + e.detail.join(' ')
+        : 'Publish rejected: ' + (e.message || e);
+      warn.style.display = '';
+    } else { _err('Publish rejected: ' + (e.message || e)); }
+  } finally {
+    _refreshPolicyState();
+  }
+}
+
+async function _rollbackPolicy(archive) {
+  const msg = (_policyDirty && _policyDirty.isDirty())
+    ? `Roll back to ${archive}? This discards your unsaved edits. Rollback is itself a logged publish.`
+    : `Roll back to ${archive}? Rollback is itself a logged publish (the current policy is archived first).`;
+  if (!window.confirm(msg)) return;
+  try {
+    await _post('/api/harness/policy/rollback', { archive });
+    _toast('Rolled back to ' + archive);
+    if (_policyDirty) _policyDirty.set(false);
+    await _loadPolicy(true);
+  } catch (e) {
+    if (_gate('policy', e)) return;
+    // A rollback that re-instates a danger-zone value needs security_admin → 403.
+    _err('Rollback failed: ' + (e.status === 403
+      ? 'that archived policy changes a danger-zone value — it needs a security_admin (Routing Harness › Policy).'
+      : (Array.isArray(e.detail) ? e.detail.join(' ') : (e.message || e))));
+  }
+}
+
 // --- tabs + overlay --------------------------------------------------------------
-// _LOADERS-style map: adding Policy/App-settings later is just a new tab button
-// + panel + one entry here.
+// _LOADERS-style map: adding another tab later is just a new tab button + panel
+// + one entry here.
 const _LOADERS = {
   budget: _loadBudget,
   providers: _loadProviders,
+  policy: _loadPolicy,
   effective: _loadEffective,
 };
 
@@ -756,18 +1061,23 @@ const _LOADERS = {
 // explicitly chose to drop. (Previously the prompt only gated the action and
 // left _buffer/_budgetDirty untouched, so a confirmed "Discard" was a no-op and
 // the reopen path — guarded by _loaded['budget'] — resurrected the edits.)
-function _confirmLeaveBudget(actionMsg) {
+function _confirmLeave(actionMsg) {
   if (_tab === 'budget' && _budgetDirty && _budgetDirty.isDirty()) {
     if (!_budgetDirty.confirmDiscard(actionMsg)) return false;
     _revertBudget();            // buffer <- server caps, re-render, recompute state
     _budgetDirty.set(false);
+  }
+  if (_tab === 'policy' && _policyDirty && _policyDirty.isDirty()) {
+    if (!_policyDirty.confirmDiscard(actionMsg)) return false;
+    _revertPolicy();
+    _policyDirty.set(false);
   }
   return true;
 }
 
 function _showTab(tab) {
   if (tab === _tab) { /* re-selecting current tab: nothing to guard */ }
-  else if (!_confirmLeaveBudget('You have unsaved budget changes. Discard them and switch tabs?')) return;
+  else if (!_confirmLeave('You have unsaved changes. Discard them and switch tabs?')) return;
   _tab = tab;
   document.querySelectorAll('#config-tabs .admin-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset.cfgtab === tab);
@@ -789,7 +1099,7 @@ function _openOverlay() {
   _showTab(_tab);
 }
 function _closeOverlay() {
-  if (!_confirmLeaveBudget('You have unsaved budget changes. Discard them and close?')) return;
+  if (!_confirmLeave('You have unsaved changes. Discard them and close?')) return;
   const ov = _el('config-overlay');
   if (ov) ov.style.display = 'none';
   _open = false;
@@ -803,6 +1113,9 @@ function init(apiBase) {
   _wired = true;
 
   _budgetDirty = createDirtyState({ flagEl: _el('cfg-dirty-flag') });
+  // Shares the header flag with budget — safe because switching tabs reverts the
+  // leaving tab, so only the active tab is ever dirty at once.
+  _policyDirty = createDirtyState({ flagEl: _el('cfg-dirty-flag') });
 
   _el('tool-config-btn')?.addEventListener('click', _openOverlay);
   _el('config-close')?.addEventListener('click', _closeOverlay);
@@ -829,12 +1142,22 @@ function init(apiBase) {
   _el('cfg-prov-test')?.addEventListener('click', _testProvider);
   _el('cfg-prov-add')?.addEventListener('click', _addProvider);
 
+  // Policy
+  _el('cfg-policy-publish')?.addEventListener('click', _publishPolicy);
+  _el('cfg-policy-revert')?.addEventListener('click', _revertPolicy);
+  _el('cfg-policy-reload')?.addEventListener('click', () => _loadPolicy(false));
+  _el('cfg-policy-versions')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-archive]');
+    if (btn) _rollbackPolicy(btn.dataset.archive);
+  });
+
   // Effective
   _el('cfg-effective-reload')?.addEventListener('click', _loadEffective);
 
   // Native page-unload guard (covers browser reload / tab close while dirty).
   window.addEventListener('beforeunload', (e) => {
-    if (_budgetDirty && _budgetDirty.isDirty()) { e.preventDefault(); e.returnValue = ''; return ''; }
+    const dirty = (_budgetDirty && _budgetDirty.isDirty()) || (_policyDirty && _policyDirty.isDirty());
+    if (dirty) { e.preventDefault(); e.returnValue = ''; return ''; }
   });
 }
 

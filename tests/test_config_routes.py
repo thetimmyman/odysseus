@@ -203,6 +203,25 @@ def test_effective_returns_honest_item_set():
         assert set(i.keys()) >= {"name", "value", "source", "surface", "editable_where"}
 
 
+def test_effective_surfaces_full_policy_with_danger_flags():
+    # PR-C: the effective view now surfaces the policy, flagging danger-zone
+    # knobs read-only (editable False) and safe knobs editable.
+    _app, client = _make_app_and_client()
+    items = {i["name"]: i for i in client.get("/api/config/effective", headers=ADMIN).json()["items"]}
+    # a safe policy knob is editable, not danger
+    safe = items.get("policy.coordinator.temperature")
+    assert safe and safe["danger"] is False and safe["editable"] is True
+    # danger-zone knobs are read-only
+    for name in ("policy.sandbox.image", "policy.remoteSensitivityCeiling",
+                 "policy.coordinator.provider", "policy.absis.enabled",
+                 "policy.sandbox.allowedCommands"):
+        it = items.get(name)
+        assert it and it["danger"] is True and it["editable"] is False, name
+    # server-owned version keys are non-editable but not danger
+    ver = items.get("policy.routingPolicyVersion")
+    assert ver and ver["danger"] is False and ver["editable"] is False
+
+
 # ---------- auth gating (AUTH_ENABLED=true, real gate code paths) ----------
 class TestAuthGating:
     def setup_method(self):

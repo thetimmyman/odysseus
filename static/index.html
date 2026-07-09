@@ -2784,6 +2784,7 @@
       <div class="admin-tabs harness-tabs" id="config-tabs" role="tablist">
         <button type="button" class="admin-tab active" data-cfgtab="budget" role="tab">Budget</button>
         <button type="button" class="admin-tab" data-cfgtab="providers" role="tab">Providers</button>
+        <button type="button" class="admin-tab" data-cfgtab="policy" role="tab">Policy</button>
         <button type="button" class="admin-tab" data-cfgtab="effective" role="tab">Effective</button>
       </div>
       <div class="harness-body">
@@ -2843,6 +2844,27 @@
 
             <div class="harness-detail-h">Configured providers</div>
             <div id="cfg-prov-list"></div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-cfgpanel="policy" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to edit policy.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <span class="harness-note">Routing policy &mdash; the safe knobs. Danger-zone knobs (sandbox image/allowlist, sensitivity ceiling, coordinator provider, ABSIS) are read-only here; change those in Routing Harness &rsaquo; Policy (needs security_admin). Persisted on the data/ volume; every publish archives the outgoing version.</span>
+              <span id="cfg-policy-chips" style="margin-left:auto"></span>
+            </div>
+            <div id="cfg-policy-fields"></div>
+            <div class="preview-env-warn is-bad" id="cfg-policy-warn" style="display:none"></div>
+            <div class="harness-row" style="margin-top:4px">
+              <button type="button" class="crew-btn crew-btn-launch" id="cfg-policy-publish" disabled>Publish</button>
+              <button type="button" class="crew-btn" id="cfg-policy-revert" disabled>Revert edits</button>
+              <button type="button" class="crew-btn" id="cfg-policy-reload" style="margin-left:auto">Reload</button>
+            </div>
+            <div class="harness-detail-h">Danger zone &mdash; read-only</div>
+            <div id="cfg-policy-danger"></div>
+            <div class="harness-detail-h">Archived versions</div>
+            <div id="cfg-policy-versions"></div>
           </div>
         </div>
 
