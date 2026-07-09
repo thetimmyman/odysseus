@@ -2783,6 +2783,7 @@
       </div>
       <div class="admin-tabs harness-tabs" id="config-tabs" role="tablist">
         <button type="button" class="admin-tab active" data-cfgtab="budget" role="tab">Budget</button>
+        <button type="button" class="admin-tab" data-cfgtab="providers" role="tab">Providers</button>
         <button type="button" class="admin-tab" data-cfgtab="effective" role="tab">Effective</button>
       </div>
       <div class="harness-body">
@@ -2810,6 +2811,38 @@
 
             <div class="harness-detail-h">Archived versions</div>
             <div id="cfg-budget-versions"></div>
+          </div>
+        </div>
+
+        <div class="harness-panel" data-cfgpanel="providers" style="display:none">
+          <div class="crew-empty harness-gate" style="display:none">Admin session required &mdash; sign in as an admin to manage providers.</div>
+          <div class="harness-panel-content">
+            <div class="harness-row">
+              <span class="harness-note">AI providers &amp; API keys. Add an endpoint the app can route to &mdash; OpenRouter-style. The key is encrypted at rest and never shown again (only a fingerprint).</span>
+              <button type="button" class="crew-btn" id="cfg-prov-reload" style="margin-left:auto">Reload</button>
+            </div>
+
+            <div class="harness-detail-h">Add a provider</div>
+            <div class="cfg-prov-add">
+              <div class="cfg-prov-add-row">
+                <select id="cfg-prov-select" class="cfg-prov-input" aria-label="Provider"></select>
+                <input id="cfg-prov-url" class="cfg-prov-input preview-env-keyinput" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1" aria-label="Base URL">
+              </div>
+              <div class="cfg-prov-add-row">
+                <input id="cfg-prov-key" class="cfg-prov-input preview-env-keyinput" type="password" autocomplete="off" placeholder="API key &mdash; stored encrypted, never shown again" aria-label="API key">
+                <select id="cfg-prov-type" class="cfg-prov-input cfg-prov-narrow" aria-label="Model type"><option value="llm">LLM</option><option value="image">Image</option></select>
+                <select id="cfg-prov-kind" class="cfg-prov-input cfg-prov-narrow" aria-label="Endpoint kind"><option value="auto">Auto</option><option value="api">API</option><option value="proxy">Proxy</option></select>
+              </div>
+              <div class="harness-row" style="margin-top:2px">
+                <button type="button" class="crew-btn" id="cfg-prov-test">Test connection</button>
+                <button type="button" class="crew-btn crew-btn-launch" id="cfg-prov-add">Add provider</button>
+              </div>
+              <div class="preview-env-warn" id="cfg-prov-msg" style="display:none"></div>
+              <div class="cfg-prov-oauth-note">GitHub Copilot and ChatGPT Subscription sign in with a device flow &mdash; add those from Settings &rsaquo; Services.</div>
+            </div>
+
+            <div class="harness-detail-h">Configured providers</div>
+            <div id="cfg-prov-list"></div>
           </div>
         </div>
 
