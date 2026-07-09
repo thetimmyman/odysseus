@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from core.database import SessionLocal
 from src import config_store
 from src import routing_budget
+from src import routing_policy
 from src.auth_helpers import require_admin_cookie
 from src.routing_budget import load_budget_config, spend_summary
 
@@ -131,12 +132,49 @@ def budget_rollback(body: BudgetRollbackRequest, request: Request):
     return {"ok": True, "version": stored.get("version"), "caps": _caps(stored)}
 
 
+# Notable policy fields surfaced in the effective view, in display order:
+# (dotted path, editable_where, danger). `danger` marks a break-glass knob that
+# is READ-ONLY in the structured Policy editor (it needs security_admin via the
+# raw Routing Harness > Policy tab). Kept in sync with routing_policy's
+# DANGER_ZONE_KEYS by value; the frontend renders danger rows read-only.
+_POLICY_EFFECTIVE_FIELDS = [
+    ("routingPolicyVersion", "Settings > Policy (server-owned)", False),
+    ("verificationPolicyVersion", "Settings > Policy (server-owned)", False),
+    ("verification.defaultMode", "Settings > Policy", False),
+    ("verification.overconfidenceThreshold", "Settings > Policy", False),
+    ("coordinator.provider", "Routing Harness > Policy (security_admin)", True),
+    ("coordinator.endpointName", "Routing Harness > Policy (security_admin)", True),
+    ("coordinator.temperature", "Settings > Policy", False),
+    ("coordinator.maxTokens", "Settings > Policy", False),
+    ("coordinator.benchmark.defaultReplays", "Settings > Policy", False),
+    ("maxUntrustedTokens", "Settings > Policy", False),
+    ("rawOutputMaxBytes", "Settings > Policy", False),
+    ("remoteSensitivityCeiling", "Routing Harness > Policy (security_admin)", True),
+    ("sandbox.image", "Routing Harness > Policy (security_admin)", True),
+    ("sandbox.cpus", "Settings > Policy", False),
+    ("sandbox.memoryGb", "Settings > Policy", False),
+    ("sandbox.pidsLimit", "Settings > Policy", False),
+    ("sandbox.wallClockSeconds", "Settings > Policy", False),
+    ("sandbox.maxOutputBytes", "Settings > Policy", False),
+    ("absis.enabled", "Routing Harness > Policy (security_admin)", True),
+]
+
+
+def _dotted(d: dict, path: str):
+    cur = d
+    for part in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
 @router.get("/effective")
 def effective(request: Request):
-    """Read-only 'what is actually in force' view. PR-A returns a small, honest
-    set: the budget caps/version/persistence facts plus the policy live-file
-    persistence fact and the deploy-only data-volume location. Extended into a
-    full effective-config in PR-C.
+    """Read-only 'what is actually in force' view across budget + policy. Each
+    item: name, value, source (the file/env it comes from), surface, danger
+    (a break-glass knob, read-only in the structured editor), editable (False
+    for danger/server-owned), editable_where.
 
     surface: 'runtime' (a save takes effect immediately) |
              'needs_redeploy' (persisted, but some consumers pick it up only on
@@ -145,43 +183,35 @@ def effective(request: Request):
     cfg = load_budget_config()
     dr = config_store.data_root()
     budget_live = config_store.live_path("routing_budget")
+    policy = routing_policy.load_policy()
+    policy_live = routing_policy.POLICY_PATH
+
+    def item(name, value, source, surface="runtime", danger=False, editable=True, where=""):
+        return {"name": name, "value": value, "source": source, "surface": surface,
+                "danger": danger, "editable": editable, "editable_where": where}
+
     items = [
-        {
-            "name": "budget.caps",
-            "value": _caps(cfg),
-            "source": budget_live,
-            "surface": "runtime",
-            "editable_where": "Settings > Budget",
-        },
-        {
-            "name": "budget.version",
-            "value": cfg.get("version", "unversioned"),
-            "source": budget_live,
-            "surface": "runtime",
-            "editable_where": "Settings > Budget (server-owned, auto-bumped)",
-        },
-        {
-            "name": "budget.persisted",
-            "value": True,
-            "source": budget_live,
-            "surface": "runtime",
-            "editable_where": "Settings > Budget — live file on the data/ volume, survives redeploy",
-        },
-        {
-            "name": "policy.persisted",
-            "value": True,
-            "source": os.path.join(dr, "routing"),
-            "surface": "runtime",
-            "editable_where": "Routing Harness > Policy — live file relocated to the data/ volume, survives redeploy",
-        },
-        {
-            "name": "data_root",
-            "value": dr,
-            "source": "ODYSSEUS_DATA_DIR",
-            "surface": "deploy_only",
-            "editable_where": "deploy env (ODYSSEUS_DATA_DIR)",
-        },
+        item("budget.caps", _caps(cfg), budget_live, where="Settings > Budget"),
+        item("budget.version", cfg.get("version", "unversioned"), budget_live,
+             editable=False, where="Settings > Budget (server-owned, auto-bumped)"),
+        item("budget.persisted", True, budget_live, editable=False,
+             where="Settings > Budget — data/ volume, survives redeploy"),
     ]
+    # Full policy surface.
+    for path, where, danger in _POLICY_EFFECTIVE_FIELDS:
+        v = _dotted(policy, path)
+        version_owned = path.endswith("Version")
+        items.append(item("policy." + path, v, policy_live,
+                          danger=danger, editable=(not danger and not version_owned), where=where))
+    # The allowlist is long — surface its size + the danger pointer, not the raw list.
+    allow = _dotted(policy, "sandbox.allowedCommands")
+    items.append(item("policy.sandbox.allowedCommands", f"{len(allow) if isinstance(allow, list) else 0} commands",
+                      policy_live, danger=True, editable=False,
+                      where="Routing Harness > Policy (security_admin)"))
+    items.append(item("policy.persisted", True, os.path.join(dr, "routing"), editable=False,
+                      where="Policy live file on the data/ volume, survives redeploy"))
+    items.append(item("data_root", dr, "ODYSSEUS_DATA_DIR", surface="deploy_only", editable=False,
+                      where="deploy env (ODYSSEUS_DATA_DIR)"))
     return {"items": items}
 
 

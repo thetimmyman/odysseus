@@ -36905,4 +36905,20 @@ select.cfg-prov-input{padding:6px 8px;background:var(--card,#12151a);color:var(-
 .cfg-prov-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
 .cfg-prov-rotate{display:inline-flex;align-items:center;gap:5px}
 .cfg-prov-rotate input{width:150px;max-width:40vw}
+/* Policy tab (PR-C) — structured safe editors + read-only danger zone */
+.cfg-pol-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:4px}
+.cfg-pol-field{display:flex;flex-direction:column;gap:4px;padding:8px 10px;
+  border:1px solid var(--border,#2c2f37);border-radius:8px;background:var(--panel,#171a1f)}
+.cfg-pol-field.is-bad{border-color:color-mix(in srgb,var(--red,#e05b5b) 55%,transparent);
+  background:color-mix(in srgb,var(--red,#e05b5b) 6%,var(--panel,#171a1f))}
+.cfg-pol-field.is-danger{opacity:.85;background:var(--card,#12151a)}
+.cfg-pol-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--color-muted,#8a8f99);font-weight:650}
+.cfg-pol-inputwrap{display:flex;align-items:center}
+.cfg-pol-input{width:100%;box-sizing:border-box;font-variant-numeric:tabular-nums}
+.cfg-pol-check{width:16px;height:16px;accent-color:var(--accent,#5b8def)}
+.cfg-pol-danger-val{font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--fg,#e6e6e6);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cfg-eff-danger td:first-child{position:relative}
+.cfg-eff-danger td{background:color-mix(in srgb,var(--red,#e05b5b) 4%,transparent)}
 /* ===== end Settings / Config panel ===================================== */
