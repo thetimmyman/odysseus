@@ -356,6 +356,21 @@ async def execute_api_call(
         return {"error": "Path must not contain a protocol scheme", "exit_code": 1}
 
     url = base_url + path
+
+    # SSRF guard (ports upstream #5145) — same check the gallery endpoint,
+    # embeddings, and CardDAV use. execute_api_call is reachable by the LLM via
+    # the api_call tool and joins a user-configured base_url with an
+    # LLM-controlled path, so an unvalidated URL into the metadata range
+    # (169.254.169.254) would be fetched with the integration's auth headers.
+    # Link-local/metadata is always rejected; INTEGRATION_API_BLOCK_PRIVATE_IPS=
+    # true also blocks RFC-1918/loopback. Private stays allowed by default so
+    # LAN integrations (Home Assistant, Miniflux, ntfy) keep working.
+    from src.url_safety import check_outbound_url
+    _block_private = os.getenv("INTEGRATION_API_BLOCK_PRIVATE_IPS", "false").lower() == "true"
+    _ok, _reason = check_outbound_url(url, block_private=_block_private)
+    if not _ok:
+        return {"error": f"URL rejected: {_reason}", "exit_code": 1}
+
     method = method.upper()
 
     # Build headers
