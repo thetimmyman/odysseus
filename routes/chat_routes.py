@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from core.models import ChatMessage
-from src.request_models import ChatRequest
+from src.request_models import ChatRequest, VALID_REASONING_EFFORTS
 from src.llm_core import llm_call_async, stream_llm, stream_llm_with_fallback
 from src.agent_loop import stream_agent_loop
 from src import agent_runs
@@ -374,6 +374,12 @@ def setup_chat_routes(
             allow_tool_preprocessing=allow_tool_preprocessing,
         )
 
+        # An explicit per-request reasoning level beats the preset's. Already
+        # validated by ChatRequest, so an unknown value arrives as None and
+        # leaves the preset (and the model default) untouched.
+        if chat_request.reasoning_effort:
+            ctx.preset.reasoning_effort = chat_request.reasoning_effort
+
         # Research injection
         research_blocked_by_policy = (
             tool_policy.blocks("trigger_research")
@@ -447,6 +453,12 @@ def setup_chat_routes(
         use_research = form_data.get("use_research")
         time_filter = form_data.get("time_filter")
         preset_id = form_data.get("preset_id")
+        # Per-request reasoning level from the composer's Reasoning selector.
+        # Unknown values are dropped rather than rejected so a stale client
+        # can't fail the whole turn — it just falls back to the model default.
+        reasoning_effort = (form_data.get("reasoning_effort") or "").strip().lower()
+        if reasoning_effort not in VALID_REASONING_EFFORTS:
+            reasoning_effort = ""
         allow_bash = form_data.get("allow_bash")
         allow_web_search = form_data.get("allow_web_search")
         use_rag = form_data.get("use_rag")
@@ -587,6 +599,10 @@ def setup_chat_routes(
             agent_mode=(chat_mode == "agent"),
             allow_tool_preprocessing=allow_tool_preprocessing,
         )
+
+        # Explicit per-request reasoning level beats the preset's.
+        if reasoning_effort:
+            ctx.preset.reasoning_effort = reasoning_effort
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
 
@@ -992,6 +1008,7 @@ def setup_chat_routes(
                         # Compare on heavy generation prompts).
                         max_tokens=ctx.preset.max_tokens,
                         prompt_type=preset_id,
+                        reasoning_effort=ctx.preset.reasoning_effort,
                         tools=None,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):

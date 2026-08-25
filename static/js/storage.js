@@ -25,7 +25,8 @@ export const KEYS = {
   ADMIN_LAST_TAB: 'admin-last-tab',
   DENSITY: 'odysseus-density',
   WORKSPACE: 'odysseus-workspace',
-  PLAN: 'odysseus-plan'
+  PLAN: 'odysseus-plan',
+  REASONING: 'odysseus-reasoning'
 };
 
 /**

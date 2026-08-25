@@ -1099,6 +1099,24 @@
                 <span>TTS Mode</span>
                 <span class="overflow-active-dot"></span>
               </button>
+              <!-- Reasoning effort. Thinking models (qwen3.8, gpt-oss, o-series)
+                   size their deliberation from this; qwen3.8's own template
+                   defaults to 'xhigh', which on a bandwidth-bound host costs
+                   minutes per turn. Left as "Model default" it is not sent at
+                   all, so untouched providers behave exactly as before. This is
+                   a plain row, not an .overflow-menu-item, so opening the select
+                   doesn't trip the close-menu-on-item-click handler. -->
+              <div class="overflow-menu-item overflow-menu-row" id="overflow-reasoning-row">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/></svg>
+                <span>Reasoning</span>
+                <select id="reasoning-effort-select" class="overflow-menu-select" aria-label="Reasoning effort">
+                  <option value="">Default</option>
+                  <option value="low">Fast</option>
+                  <option value="medium">Balanced</option>
+                  <option value="high">Thorough</option>
+                  <option value="xhigh">Max</option>
+                </select>
+              </div>
               <button type="button" class="overflow-menu-item" id="overflow-preset-btn">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="m18 2 4 4"/><path d="m17 7 3-3"/><path d="M19 9 8.7 19.3c-1 1-2.5 1-3.4 0l-.6-.6c-1-1-1-2.5 0-3.4L15 5"/><path d="m9 11 4 4"/><path d="m5 19-3 3"/><path d="m14 4 6 6"/>

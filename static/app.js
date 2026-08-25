@@ -2982,6 +2982,22 @@ function initializeEventListeners() {
     }).observe(document.body, { childList: true, subtree: true });
   })();
 
+  // Reasoning effort selector (in overflow menu). Persisted so it survives a
+  // reload — a user who set "Fast" to escape multi-minute turns should not be
+  // silently put back on the model's xhigh default by refreshing the page.
+  const reasoningSelect = el('reasoning-effort-select');
+  if (reasoningSelect) {
+    reasoningSelect.value = Storage.get(Storage.KEYS.REASONING, '') || '';
+    // The menu closes on click of any .overflow-menu-item; this control lives
+    // inside one, so keep its interactions from bubbling up to that handler.
+    ['click', 'pointerdown'].forEach(evt => {
+      reasoningSelect.addEventListener(evt, (e) => e.stopPropagation());
+    });
+    reasoningSelect.addEventListener('change', () => {
+      Storage.set(Storage.KEYS.REASONING, reasoningSelect.value || '');
+    });
+  }
+
   // Preset button (in overflow menu)
   const overflowPresetBtn = el('overflow-preset-btn');
   if (overflowPresetBtn) {
