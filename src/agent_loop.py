@@ -407,21 +407,59 @@ def _section_text(name: str, default: str) -> str:
     return val if isinstance(val, str) and val.strip() else default
 
 
+def _workspace_directive() -> str:
+    """Tell the model, concretely, where to put its own files.
+
+    A live run picked `/app/data/fizzbuzz_work` as its scratch directory —
+    inside the app's own state directory, next to app.db, memory.json,
+    settings.json, sessions/ and skills/ — *after explicitly considering and
+    rejecting /tmp*. It wasn't being careless: cwd and HOME were /app/data, and
+    nothing in the prompt said otherwise. Naming the directory removes the
+    inference; naming what is next door removes the temptation to wander up one
+    level "because that's where I am".
+    """
+    try:
+        from src.tool_execution import agent_workspace_path
+        ws = agent_workspace_path()
+    except Exception:
+        return ""
+    return (
+        "## Your workspace\n"
+        f"`{ws}` is YOUR directory. It is already your working directory and your "
+        "$HOME, it persists across restarts, and it is where every file you create "
+        "for yourself belongs — scratch scripts, checkouts, build output, test "
+        "fixtures. Use it (or a subdirectory of it) by default; you do not need to "
+        "go hunting for a writable location, and you should not create working "
+        "directories anywhere else.\n"
+        "Its PARENT is the application's live state directory — the database, "
+        "settings, saved memories, sessions and skills live there. Never create "
+        "scratch files or working directories in it, and never write to those "
+        "state files directly (each one has a proper tool: `manage_memory`, "
+        "`manage_settings`, `manage_skills`, the sessions API). Reading files the "
+        "user uploaded is fine."
+    )
+
+
 def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool = False) -> str:
     """Build the system prompt with only the specified tools included."""
     disabled = disabled_tools or set()
     included = tool_names - disabled
+    workspace_note = _workspace_directive()
 
     if compact:
         tool_list = ", ".join(sorted(included)) if included else "none"
         parts = [
             "You are an AI assistant with tool access.",
             f"Available tools: {tool_list}.",
-            _API_AGENT_RULES,
         ]
+        if workspace_note:
+            parts.append(workspace_note)
+        parts.append(_API_AGENT_RULES)
         return "\n\n".join(parts)
 
     parts = [_AGENT_PREAMBLE]
+    if workspace_note:
+        parts.append(workspace_note)
 
     # Collect full-block tool sections (with examples)
     full_blocks = []

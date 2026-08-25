@@ -23,11 +23,59 @@ from src.tool_policy import ToolPolicy
 from src.constants import MAX_OUTPUT_CHARS, MAX_READ_CHARS, MAX_DIFF_LINES, DATA_DIR
 
 # Persistent working directory for agent subprocesses.
-# Resolves to <repo_root>/data, which is the bind-mounted volume in Docker
-# (/app/data) and the local data directory for manual installs.
-# Using this as cwd and HOME prevents the agent from silently creating files
-# in ephemeral container layers that are lost on the next rebuild.
-_AGENT_WORKDIR = DATA_DIR
+#
+# This used to be DATA_DIR itself — i.e. the agent's cwd and HOME were the
+# application's LIVE STATE directory, sitting alongside app.db, settings.json,
+# memory.json, auth.json, .app_key, sessions/ and skills/. A real run duly
+# created `/app/data/fizzbuzz_work` as its scratch space after considering and
+# rejecting /tmp, because /app/data was simply where it already was. An agent
+# making scratch directories in live application state is a hazard whether or
+# not it ever touches a state file.
+#
+# So: a dedicated subdirectory. It keeps the original property that made
+# DATA_DIR attractive (it is the bind-mounted volume in Docker, so work
+# survives an image rebuild instead of vanishing with the container layer),
+# without putting the agent's feet on top of the app's own files. Override with
+# the `agent_workspace_dir` setting to point it anywhere writable.
+_AGENT_WORKSPACE_DIRNAME = "workspace"
+
+
+def agent_workspace_path() -> str:
+    """Configured workspace path WITHOUT creating it.
+
+    Used for prompt text, so building the system prompt never has a filesystem
+    side effect.
+    """
+    configured = ""
+    try:
+        from src.settings import get_setting
+        configured = (get_setting("agent_workspace_dir", "") or "").strip()
+    except Exception:
+        configured = ""
+    return configured or os.path.join(DATA_DIR, _AGENT_WORKSPACE_DIRNAME)
+
+
+def agent_workspace_dir() -> str:
+    """Absolute path of the agent's default scratch workspace.
+
+    Created on demand. Falls back to DATA_DIR only if the directory cannot be
+    created at all — an agent with no cwd is worse than one in the wrong place.
+    """
+    path = agent_workspace_path()
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError as e:
+        logger.warning(
+            "Agent workspace %s is not creatable (%s); falling back to %s",
+            path, e, DATA_DIR,
+        )
+        return DATA_DIR
+
+
+# Resolved once at import for the module-level default; callers that want the
+# live setting call agent_workspace_dir().
+_AGENT_WORKDIR = os.path.join(DATA_DIR, _AGENT_WORKSPACE_DIRNAME)
 
 
 def _unified_diff(old: str, new: str, path: str) -> Optional[Dict[str, Any]]:
@@ -164,11 +212,57 @@ _SENSITIVE_FILE_PATTERNS: tuple[str, ...] = (
     "known_hosts",
 )
 
+# Odysseus's own live state, which lives directly under DATA_DIR — a root the
+# agent legitimately needs (uploads, generated files, its workspace). The
+# directory is on the allowlist; these specific files and folders inside it are
+# not. Corrupting any of them takes the app down or rewrites its security
+# posture, and no agent task has a reason to write them through the file tools:
+# every one has a purpose-built API/tool of its own (manage_memory,
+# manage_settings, manage_skills, the sessions API).
+_PROTECTED_STATE_BASENAMES: frozenset[str] = frozenset({
+    "app.db", "app.db-wal", "app.db-shm",
+    "settings.json", "auth.json", "user_prefs.json",
+    "memory.json", ".app_key", "integrations.json",
+    "sessions.json", "scheduled_emails.db",
+})
+_PROTECTED_STATE_DIRNAMES: frozenset[str] = frozenset({
+    "sessions", "skills", "memory_vectors", "chroma",
+})
+
+
+def _is_protected_state_path(resolved: str) -> bool:
+    """True when *resolved* is Odysseus's own live state under DATA_DIR."""
+    from src.constants import DATA_DIR
+    try:
+        data_root = os.path.realpath(DATA_DIR)
+    except OSError:
+        return False
+    if not (resolved == data_root or resolved.startswith(data_root + os.sep)):
+        return False
+    rel = os.path.relpath(resolved, data_root)
+    if rel in (".", ""):
+        return False
+    parts = rel.split(os.sep)
+    if parts[0] in _PROTECTED_STATE_DIRNAMES:
+        return True
+    if len(parts) == 1:
+        base = parts[0]
+        if base in _PROTECTED_STATE_BASENAMES:
+            return True
+        # Backups/journals of the same state files (app.db.bak-…, settings.json.tmp)
+        for protected in _PROTECTED_STATE_BASENAMES:
+            if base.startswith(protected + "."):
+                return True
+    return False
+
 
 def _is_sensitive_path(resolved: str) -> bool:
     """Return True if *resolved* falls under a sensitive directory or
     matches a sensitive filename — regardless of what root it sits under.
     """
+    if _is_protected_state_path(resolved):
+        return True
+
     parts = resolved.split(os.sep)
     filenames: set[str] = {parts[-1]} if parts else set()
 
@@ -192,9 +286,17 @@ def _tool_path_roots() -> list[str]:
     """
     roots: list[str] = []
 
-    # Project data directory — the agent's primary workspace.
+    # Project data directory. Reachable so the agent can read uploads and
+    # documents; its scratch WORKSPACE is the dedicated subdirectory returned by
+    # agent_workspace_dir(), and the app's own live state inside it is blocked
+    # by _is_protected_state_path().
     from src.constants import DATA_DIR
     roots.append(DATA_DIR)
+    # A workspace configured outside DATA_DIR still has to be writable.
+    try:
+        roots.append(agent_workspace_dir())
+    except Exception:
+        pass
 
     # /tmp (and its macOS realpath /private/tmp).
     roots.append("/tmp")
@@ -687,12 +789,16 @@ async def _direct_fallback(
     # but at least non-interactive code with incidental TERM lookups
     # stops failing. COLUMNS/LINES give terminal-width-aware tools (less,
     # rich, etc.) reasonable defaults instead of 0×0.
+    # Resolve (and create) the scratch workspace once per call. Both cwd and
+    # HOME point here, so `mkdir foo` / `~/foo` from a tool land in the agent's
+    # own workspace rather than in the app's live state directory.
+    _workdir = workspace or agent_workspace_dir()
     _subproc_env = {
         **os.environ,
         "TERM": "xterm-256color",
         "COLUMNS": "120",
         "LINES": "40",
-        "HOME": _AGENT_WORKDIR,
+        "HOME": _workdir,
     }
 
     try:
@@ -702,7 +808,7 @@ async def _direct_fallback(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=_subproc_env,
-                cwd=workspace or _AGENT_WORKDIR,
+                cwd=_workdir,
             )
             stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
                 proc,
@@ -729,7 +835,7 @@ async def _direct_fallback(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=_subproc_env,
-                cwd=workspace or _AGENT_WORKDIR,
+                cwd=_workdir,
             )
             stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
                 proc,
@@ -1336,7 +1442,7 @@ async def execute_tool_block(
         _is_bg, _bg_cmd = _split_bg_marker(content)
         if _is_bg and _bg_cmd:
             from src import bg_jobs
-            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=workspace or _AGENT_WORKDIR)
+            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=_workdir)
             short = _bg_cmd.strip().split(chr(10))[0][:80]
             desc = f"bash (background): {short}"
             result = {
