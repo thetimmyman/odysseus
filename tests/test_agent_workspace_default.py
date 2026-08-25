@@ -71,3 +71,31 @@ def test_prompt_names_the_workspace_and_warns_off_app_state():
     lowered = directive.lower()
     assert "live state" in lowered
     assert "never create scratch files" in lowered
+
+
+def test_background_bash_launches_in_the_workspace(monkeypatch):
+    """`#!bg` bash goes through a different function than the foreground path,
+    so it needs its own workspace resolution — an earlier draft of this change
+    referenced the foreground helper's local variable from here, which would
+    have been a NameError the first time anyone backgrounded a command."""
+    import asyncio
+    import src.tool_execution as te
+
+    launched = {}
+
+    class _FakeBgJobs:
+        @staticmethod
+        def launch(cmd, session_id=None, cwd=None):
+            launched.update(cmd=cmd, session_id=session_id, cwd=cwd)
+            return {"id": "job-1"}
+
+    class _Block:
+        tool_type = "bash"
+        content = "#!bg\nsleep 1"
+
+    monkeypatch.setitem(sys.modules, "src.bg_jobs", _FakeBgJobs)
+    monkeypatch.setattr(te, "is_public_blocked_tool", lambda *a, **kw: False)
+    desc, result = asyncio.run(te.execute_tool_block(_Block(), session_id="sess-1"))
+    assert launched["cwd"] == tool_execution.agent_workspace_dir()
+    assert os.path.realpath(launched["cwd"]) != os.path.realpath(DATA_DIR)
+    assert result["exit_code"] == 0

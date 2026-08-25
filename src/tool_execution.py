@@ -1442,7 +1442,10 @@ async def execute_tool_block(
         _is_bg, _bg_cmd = _split_bg_marker(content)
         if _is_bg and _bg_cmd:
             from src import bg_jobs
-            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=_workdir)
+            rec = bg_jobs.launch(
+                _bg_cmd, session_id=session_id,
+                cwd=workspace or agent_workspace_dir(),
+            )
             short = _bg_cmd.strip().split(chr(10))[0][:80]
             desc = f"bash (background): {short}"
             result = {
