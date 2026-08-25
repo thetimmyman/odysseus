@@ -134,6 +134,19 @@ _XML_DIRECT_OPEN_RE = re.compile(r"<\s*([A-Za-z_][\w-]*)\s*>", re.IGNORECASE)
 # parameter openers can't drive finditer's O(n^2) rescan. See _iter_named_blocks.
 _XML_PARAM_OPEN_RE = re.compile(r'<parameter\s+name=["\'](\w+)["\']>', re.IGNORECASE)
 _XML_PARAM_CLOSE_RE = re.compile(r'</parameter>', re.IGNORECASE)
+# Pattern 3c: Qwen3-Coder / llama-server --jinja dialect — the tool name after
+# an `=` sign rather than in an attribute:
+#   <function=bash><parameter=command>ls /tmp</parameter></function>
+# Observed live 2026-08-25 (session 8670f5ae, 2026-08-24 19:07): when no tools
+# array reaches ollama, qwen3.8:27b falls back to this trained format as plain
+# text. None of the patterns above match it (`<function=bash>` is not a plain
+# tag, `<parameter=k>` has no name= attribute), so real calls became inert text
+# and the turn silently ended mid-task. Forward-only scans via
+# _iter_named_blocks, same ReDoS posture as the other XML delimiters.
+_FUNC_EQ_OPEN_RE = re.compile(r"<function=([A-Za-z_][\w.-]*)>\s*", re.IGNORECASE)
+_FUNC_EQ_CLOSE_RE = re.compile(r"</function>", re.IGNORECASE)
+_PARAM_EQ_OPEN_RE = re.compile(r"<parameter=([A-Za-z_][\w.-]*)>\s*", re.IGNORECASE)
+_PARAM_EQ_CLOSE_RE = re.compile(r"</parameter>", re.IGNORECASE)
 # Closer tokens (any tag name) for the backref scanners, pre-indexed by name so a
 # flood of distinct unclosed tag names stays near-linear. See _iter_backref_blocks.
 _XML_DIRECT_CLOSE_ANY_RE = re.compile(r"</\s*([A-Za-z_][\w-]*)\s*>", re.IGNORECASE)
@@ -880,6 +893,24 @@ def _parse_xml_invoke(name, body) -> Optional[ToolBlock]:
     return function_call_to_tool_block(tool_name, json.dumps(params))
 
 
+def _parse_function_eq_call(name, body) -> Optional[ToolBlock]:
+    """Parse a `<function=name>` body (Qwen3-Coder dialect).
+
+    Named `<parameter=k>v</parameter>` blocks become JSON args through
+    function_call_to_tool_block — the same converter native calls use — so
+    aliases and per-tool argument shaping stay in one place. A body with no
+    parameter tags at all (qwen3.8 emits `<function=bash>` with the raw
+    command as the body) falls through to the direct-tool adapter, which
+    already knows the per-tool raw-body convention (bash→command, etc.)."""
+    params = {}
+    for pname, pval in _iter_named_blocks(body, _PARAM_EQ_OPEN_RE, _PARAM_EQ_CLOSE_RE):
+        params[pname] = pval.strip()
+    if params:
+        from src.tool_schemas import function_call_to_tool_block
+        return function_call_to_tool_block(name.lower(), json.dumps(params))
+    return _parse_xml_direct_tool(name, body)
+
+
 def _parse_xml_direct_tool(name, body) -> Optional[ToolBlock]:
     """Parse direct XML tool tags inside <tool_call>.
 
@@ -1355,6 +1386,17 @@ def parse_tool_blocks(text: str, skip_fenced: bool = False) -> List[ToolBlock]:
                 block = _parse_xml_invoke(inv_name, inv_body)
                 if block:
                     blocks.append(block)
+        # Pattern 3c: `<function=name>` dialect (Qwen3-Coder / qwen3.8 via
+        # ollama). Scanned over the whole text so it works with or without a
+        # surrounding <tool_call> wrapper — including a wrapper left unclosed
+        # by the model.
+        if not blocks:
+            for f_name, f_body in _iter_named_blocks(
+                text, _FUNC_EQ_OPEN_RE, _FUNC_EQ_CLOSE_RE
+            ):
+                block = _parse_function_eq_call(f_name, f_body)
+                if block:
+                    blocks.append(block)
 
     # Pattern 4: <tool_code> blocks (MiniMax-M2.5 style)
     if not blocks:
@@ -1434,6 +1476,7 @@ def strip_tool_blocks(text: str, skip_fenced: bool = False) -> str:
     cleaned = _strip_stepfun_tool_markup(cleaned)
     cleaned = _strip_delimited(cleaned, _XML_TOOL_CALL_OPEN_RE, _XML_TOOL_CALL_CLOSE_RE)
     cleaned = _XML_OPEN_TOOL_CALL_RE.sub('', cleaned)
+    cleaned = _strip_delimited(cleaned, _FUNC_EQ_OPEN_RE, _FUNC_EQ_CLOSE_RE)
     cleaned = _strip_delimited(cleaned, _TOOL_CODE_OPEN_RE, _TOOL_CODE_CLOSE_RE)
     cleaned = _GEMMA_TOOL_CALL_RE.sub('', cleaned)
     cleaned = _strip_delimited(cleaned, _FUNCTION_MODEL_OPEN_RE, _FUNCTION_MODEL_CLOSE_RE)
@@ -1450,3 +1493,32 @@ def strip_tool_blocks(text: str, skip_fenced: bool = False) -> str:
     cleaned = _strip_bare_invoke_markup(cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned.strip()
+
+
+# ---------------------------------------------------------------------------
+# Tool-call-shape detector (POS-AI-11)
+# ---------------------------------------------------------------------------
+# Markers that only appear when a model is TRYING to call a tool — used by the
+# agent loop to tell "model finished" from "model emitted a tool call in a
+# dialect no parser recognized (or truncated mid-call)". The latter must never
+# silently end the turn: that failure mode looked like a random mid-task stop
+# to the user (2026-08-24 sessions 3d6919b6 / 8670f5ae).
+_TOOL_CALL_SHAPE_RE = re.compile(
+    r"<(?:[\w]+:)?(?:tool_call|function_call)>"     # <tool_call> wrappers
+    r"|<function="                                   # Qwen3-Coder dialect
+    r"|<invoke\s+name="                              # Anthropic-style invoke
+    r"|<parameter(?:=|\s+name=)"                     # either parameter dialect
+    r"|\[TOOL_CALL\]"                                # bracket dialect
+    r"|<tool_code>",                                 # MiniMax dialect
+    re.IGNORECASE,
+)
+
+
+def looks_like_tool_call(text: str) -> bool:
+    """True when *text* contains tool-call-shaped markup.
+
+    Callers pair this with an empty parse_tool_blocks() result to detect an
+    unparseable/truncated tool call and react (log + nudge) instead of
+    treating the round as a clean finish.
+    """
+    return bool(_TOOL_CALL_SHAPE_RE.search(text or ""))
