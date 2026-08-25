@@ -525,7 +525,8 @@ def maybe_escalate(
     status, reason = evaluate_turn_regex(tool_results, agent_reply)
     if status == "failure":
         # Fire async — don't block the user's chat.
-        return asyncio.create_task(
+        from src.background_tasks import spawn as _spawn_background
+        return _spawn_background(
             escalate_and_learn(user_request, tool_results, agent_reply, reason or "", owner),
             name="teacher_escalation",
         )
@@ -546,7 +547,8 @@ def maybe_escalate(
         if llm_status == "failure":
             await escalate_and_learn(user_request, tool_results, agent_reply, llm_reason or "", owner)
 
-    return asyncio.create_task(
+    from src.background_tasks import spawn as _spawn_background
+    return _spawn_background(
         evaluate_and_maybe_escalate(),
         name="teacher_escalation_tier2",
     )

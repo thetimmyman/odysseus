@@ -16,6 +16,7 @@ from typing import AsyncGenerator, List, Dict, Optional, Set
 from urllib.parse import urlparse
 
 from src.llm_core import stream_llm, stream_llm_with_fallback, _is_ollama_native_url
+from src.llm_lane import BACKGROUND as LLM_LANE_BACKGROUND
 from src.model_context import estimate_tokens
 from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
@@ -1398,6 +1399,12 @@ async def _run_verifier_subagent(
             # 2026-08-25 11:25) surfacing as 'verifier subagent failed: 502'.
             headers=headers, temperature=0.0, max_tokens=600,
             timeout=int(get_setting("agent_verifier_timeout_seconds", 240) or 240),
+            # Explicit: the verifier is a background utility call made from
+            # INSIDE the user's request context, so it does not inherit the
+            # background lane the way a spawned task does. Without this it
+            # shares the interactive connection pool and cache namespace with
+            # the very turn it is judging (POS-AI-23).
+            lane=LLM_LANE_BACKGROUND,
         )
     except Exception as e:
         logger.warning(f"[agent] verifier subagent failed: {e}")

@@ -26,8 +26,18 @@ class LLMConfig:
 
 # Cache for LLM responses
 def _get_cache_key(url: str, model: str, messages: List[Dict],
-                   temperature: float, max_tokens: int) -> str:
-    """Generate cache key for LLM requests."""
+                   temperature: float, max_tokens: int,
+                   lane: Optional[str] = None) -> str:
+    """Generate cache key for LLM requests.
+
+    ``lane`` (see src/llm_lane.py) is part of the key so a *background* utility
+    completion can never be served out of this process-wide cache to the
+    interactive chat turn a user is watching, and vice versa. Before that,
+    every subsystem shared one namespace and nothing in the key recorded who
+    had asked (POS-AI-23).
+    """
+    from src.llm_lane import normalize_lane
+
     hashable_messages = []
     for msg in messages:
         sorted_items = tuple(sorted(msg.items()))
@@ -38,7 +48,8 @@ def _get_cache_key(url: str, model: str, messages: List[Dict],
         'model': model,
         'messages': hashable_messages,
         'temp': temperature,
-        'max_tokens': max_tokens
+        'max_tokens': max_tokens,
+        'lane': normalize_lane(lane),
     }, sort_keys=True)
     return hashlib.sha256(content.encode()).hexdigest()
 
@@ -220,21 +231,38 @@ def _clear_host_dead(url: str) -> None:
         _host_fails.pop(key, None)
 
 
-# Shared async HTTP client. Reusing one client keeps connections warm:
-# repeat calls to api.anthropic.com / api.openai.com / openrouter skip the
-# 100-500ms TCP+TLS handshake. Lazy init so we bind to the running event loop.
-_http_client: Optional[httpx.AsyncClient] = None
+# Shared async HTTP clients, one per LLM lane (src/llm_lane.py). Reusing a
+# client keeps connections warm: repeat calls to api.anthropic.com /
+# api.openai.com / openrouter skip the 100-500ms TCP+TLS handshake. Lazy init so
+# we bind to the running event loop.
+#
+# The pools are split per lane on purpose. Background utility calls (memory /
+# skill extraction, the completion verifier, auto-naming) are the ones that get
+# abandoned mid-flight — short client timeouts, task cancellation — and they used
+# to share one connection pool with the SSE stream the user is watching. Keeping
+# them in a separate pool means a background socket can never be handed to an
+# interactive turn, whatever state it was left in (POS-AI-23).
+_http_clients: Dict[str, httpx.AsyncClient] = {}
 _http_limits = httpx.Limits(max_connections=100, max_keepalive_connections=30, keepalive_expiry=30.0)
 
-def _get_http_client() -> httpx.AsyncClient:
-    """Return process-wide AsyncClient. Per-request timeout is passed at call time."""
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
+def _get_http_client(lane: Optional[str] = None) -> httpx.AsyncClient:
+    """Return the process-wide AsyncClient for ``lane``.
+
+    ``lane=None`` means "the lane this code is already running in" — background
+    tasks started via ``src.background_tasks.spawn`` are in the background lane
+    automatically. Per-request timeout is passed at call time.
+    """
+    from src.llm_lane import normalize_lane
+
+    resolved = normalize_lane(lane)
+    client = _http_clients.get(resolved)
+    if client is None or client.is_closed:
         from src.tls_overrides import llm_verify
-        _http_client = httpx.AsyncClient(
+        client = httpx.AsyncClient(
             limits=_http_limits, http2=False, verify=llm_verify(),
         )
-    return _http_client
+        _http_clients[resolved] = client
+    return client
 
 def _get_cached_response(cache_key: str) -> Optional[str]:
     """Get cached response if it exists."""
@@ -1114,12 +1142,13 @@ def _extract_usage(provider: str, data: dict) -> Optional[Dict[str, int]]:
 def _llm_call_core(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
                     max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
                     timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None,
-                    bypass_cache: bool = False) -> tuple:
+                    bypass_cache: bool = False, lane: Optional[str] = None) -> tuple:
     """Shared implementation behind `llm_call`/`llm_call_with_usage`. Returns
     (response_text, usage_dict_or_None). `bypass_cache=True` skips the
     in-memory response cache entirely (both read and write) — needed for
     callers that measure latency or require an independent re-run rather than
-    a cached echo of an earlier identical request."""
+    a cached echo of an earlier identical request. `lane` (src/llm_lane.py)
+    namespaces the response cache; `None` inherits the caller's lane."""
     h = _provider_headers(_detect_provider(url))
     # Tolerate headers that arrive as a JSON string (some sessions stored them
     # double-encoded) — otherwise h.update() throws "dictionary update sequence
@@ -1148,7 +1177,7 @@ def _llm_call_core(url: str, model: str, messages: List[Dict], temperature: floa
         messages_copy = non_sys
 
     provider = _detect_provider(url)
-    cache_key = _get_cache_key(url, model, messages_copy, temperature, max_tokens)
+    cache_key = _get_cache_key(url, model, messages_copy, temperature, max_tokens, lane)
     if not bypass_cache:
         cached_response = _get_cached_response(cache_key)
         if cached_response:
@@ -1305,9 +1334,45 @@ async def llm_call_async(
     timeout: int = LLMConfig.STREAM_TIMEOUT,
     max_retries: int = LLMConfig.MAX_RETRIES,
     prompt_type: Optional[str] = None,
-    reasoning_effort: Optional[str] = None
+    reasoning_effort: Optional[str] = None,
+    lane: Optional[str] = None,
 ) -> str:
-    """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
+    """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging.
+
+    ``lane`` (src/llm_lane.py) picks the connection pool and response-cache
+    namespace. ``None`` inherits the caller's lane — which is what makes
+    everything launched through ``src.background_tasks.spawn`` land in the
+    background lane without threading a parameter through every call site.
+    Pass ``lane="background"`` explicitly for a utility call made *inside* an
+    interactive request (the completion verifier is the one that matters).
+    """
+    from src.llm_lane import lane_scope, normalize_lane
+
+    if lane is None:
+        return await _llm_call_async_inner(
+            url, model, messages, temperature, max_tokens, headers,
+            timeout, max_retries, prompt_type, reasoning_effort,
+        )
+    with lane_scope(normalize_lane(lane)):
+        return await _llm_call_async_inner(
+            url, model, messages, temperature, max_tokens, headers,
+            timeout, max_retries, prompt_type, reasoning_effort,
+        )
+
+
+async def _llm_call_async_inner(
+    url: str,
+    model: str,
+    messages: List[Dict],
+    temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
+    max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS,
+    headers: Optional[Dict] = None,
+    timeout: int = LLMConfig.STREAM_TIMEOUT,
+    max_retries: int = LLMConfig.MAX_RETRIES,
+    prompt_type: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+) -> str:
+    """Body of :func:`llm_call_async`, run inside the resolved lane."""
     provider = _detect_provider(url)
     messages_copy = _sanitize_llm_messages(messages)
 

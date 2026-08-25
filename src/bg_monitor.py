@@ -110,6 +110,34 @@ async def _run_followup(rec: dict) -> bool:
 
     full, tool_events = await _drain_agent(sess, context)
 
+    # The busy-check above ran BEFORE a run that takes minutes. Re-check right
+    # before writing: a user turn that started while we were generating owns the
+    # session now, and appending underneath it produces exactly the interleaved/
+    # out-of-order history this guard exists to prevent. Retry on the next tick.
+    try:
+        from src import agent_runs
+        if agent_runs.is_active(sess.id):
+            logger.info(
+                "bg-followup: session %s became busy during the run — deferring job %s",
+                sess.id, rec.get("id"),
+            )
+            return False
+    except Exception:
+        pass
+
+    # Never write a background completion into a user session unchecked. `full`
+    # is model output produced by a prompt the user never sent; an empty or
+    # sentinel-shaped result is not an answer, and persisting one as the
+    # assistant's reply is the POS-AI-23 failure mode.
+    from src.bg_crossover import detect as _detect_crossover
+    _crossover = _detect_crossover(full)
+    if not full.strip() or _crossover:
+        logger.warning(
+            "bg-followup: discarding %s follow-up output for job %s (session %s)",
+            _crossover or "empty", rec.get("id"), sess.id,
+        )
+        return True  # handled — don't retry a run that produced nothing usable
+
     # Persist ONLY the assistant continuation so it renders as a normal agent
     # turn — a standard chat bubble plus `tool_events` that the frontend
     # rebuilds into the usual agent-thread tool cards (chatRenderer:1494). The

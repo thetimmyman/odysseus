@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from services.memory.skills import SkillsManager
 from src.auth_helpers import get_current_user
+from src.background_tasks import spawn as _spawn_background
 from core.middleware import require_admin
 
 logger = logging.getLogger(__name__)
@@ -1421,7 +1422,8 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
             "log": [{"type": "skill_test_start", "task": task, "skill": name, "model": model}],
             "verdict": None,
         }
-        _asyncio.create_task(_run_skill_test_job(key, name, md, task, url, model, headers, user, skills_manager))
+        _spawn_background(_run_skill_test_job(key, name, md, task, url, model, headers, user, skills_manager),
+                          name="skill-test-job")
         return {"ok": True, "status": "running", "skill": name, "model": model}
 
     @router.get("/{skill_id}/test-status")
@@ -1513,7 +1515,8 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
             "results": [], "log": [f"Auditing {len(names)} skill(s) with {model}" + (f"; teacher {teacher[1]}" if teacher else "")],
             "started": _time.time(), "cancel": False,
         }
-        task = _asyncio.create_task(_run_audit_all_job(key, skills_manager, names, url, model, headers, teacher, user))
+        task = _spawn_background(_run_audit_all_job(key, skills_manager, names, url, model, headers, teacher, user),
+                                 name="skill-audit-job")
         _skill_audit_jobs[key]["task"] = task
         return {"ok": True, "status": "running", "total": len(names), "model": model}
 
