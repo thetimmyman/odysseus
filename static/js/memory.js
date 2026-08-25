@@ -115,7 +115,10 @@ async function syncToggles() {
   // injection (see chat_helpers.py: uprefs.skills_enabled).
   await syncPrefToggle('skills-enabled-header-toggle', 'skills_enabled', 'Skills enabled', 'Skills disabled', false);
   await syncPrefToggle('auto-memory-toggle', 'auto_memory', 'Auto-extract memories enabled', 'Auto-extract memories disabled', false);
-  await syncPrefToggle('auto-skills-toggle', 'auto_skills', 'Auto-extract skills enabled', 'Auto-extract skills disabled', false);
+  // auto_skills is the one pref whose server-side fallback is OFF
+  // (DEFAULT_SETTINGS["auto_skills"], read by chat_helpers.auto_skills_enabled_for),
+  // so an unset pref must render unchecked. The others still default on.
+  await syncPrefToggle('auto-skills-toggle', 'auto_skills', 'Auto-extract skills enabled', 'Auto-extract skills disabled', false, /* defaultOn */ false);
   await syncPrefToggle('auto-approve-skills-toggle', 'auto_approve_skills', 'Auto-approve skills enabled', 'Auto-approve skills disabled', false);
   await syncPrefSlider('skill-confidence-slider', 'skill_min_confidence', 'skill-confidence-label', 0.85);
   await syncPrefNumber('skill-max-input', 'skill_max_injected', 3);
@@ -252,14 +255,21 @@ async function syncPrefNumber(elementId, prefKey, defaultVal) {
   }
 }
 
-async function syncPrefToggle(elementId, prefKey, onMsg, offMsg, dimBelow = true) {
+/** `defaultOn` is what an *unset* pref renders as. It must match the server's
+ *  fallback for that key, or the toggle lies about what actually runs.
+ *  `/api/prefs/<key>` returns `{value: null}` for a pref the user has never
+ *  set, which is indistinguishable from an explicit null — so the default
+ *  cannot be inferred from the response and has to be stated here. */
+async function syncPrefToggle(elementId, prefKey, onMsg, offMsg, dimBelow = true, defaultOn = true) {
   const toggle = document.getElementById(elementId);
   if (!toggle) return;
   try {
     const res = await fetch(`${window.location.origin}/api/prefs/${prefKey}`);
     if (res.ok) {
       const data = await res.json();
-      toggle.checked = data.value !== false;
+      toggle.checked = (data.value === null || data.value === undefined)
+        ? defaultOn
+        : data.value !== false;
     }
   } catch (e) {
     console.error(`Failed to load ${prefKey} pref:`, e);

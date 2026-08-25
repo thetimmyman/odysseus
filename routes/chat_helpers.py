@@ -16,6 +16,7 @@ from src.endpoint_resolver import normalize_base
 from src.context_compactor import maybe_compact, trim_for_context
 from src.auth_helpers import get_current_user
 from src.prompt_security import untrusted_context_message
+from src.settings import get_setting
 from routes.prefs_routes import _load_for_user as load_prefs_for_user
 
 from fastapi import HTTPException
@@ -116,6 +117,33 @@ def _enforce_chat_privileges(request, sess) -> None:
         db.close()
     if count >= cap:
         raise HTTPException(429, f"Daily message limit reached ({cap}). Try again in 24 hours.")
+
+
+def auto_skills_enabled_for(uprefs: dict) -> bool:
+    """Whether background skill extraction may run for this user.
+
+    Resolution order:
+
+    1. the user's explicit ``auto_skills`` preference (the Settings toggle);
+    2. the operator's system-level ``auto_skills`` setting;
+    3. off.
+
+    **Absence of the preference must not mean "on".** It used to: the gate was
+    ``uprefs.get("auto_skills", True)``, so every account that had never opened
+    the toggle — and every account created from then on — silently ran the
+    extractor. When ``auto_skills`` was set to ``False`` as the interim
+    containment for POS-AI-23 (a background call's completion being persisted
+    as a user's assistant reply), it therefore only covered the one account
+    that had the key; three others on the same box stayed enabled, and a new
+    principal would have inherited the unsafe default too.
+
+    Step 2 keeps this a policy the operator sets once, rather than a chore
+    repeated per account — ``get_setting`` reads ``data/settings.json``, whose
+    shipped default (``DEFAULT_SETTINGS["auto_skills"]``) is ``False``.
+    """
+    if "auto_skills" in uprefs:
+        return bool(uprefs["auto_skills"])
+    return bool(get_setting("auto_skills", False))
 
 
 def needs_auto_name(name: str) -> bool:
@@ -946,7 +974,7 @@ def run_post_response_tasks(
     # Skill extraction from complex agent runs. Only when the user actually
     # chose agent mode — not a chat we auto-escalated for a notes/calendar
     # intent, and never in incognito/compare.
-    auto_skills_enabled = bool(uprefs.get("auto_skills", True))
+    auto_skills_enabled = auto_skills_enabled_for(uprefs)
     # Quiet by default — full gate/dispatch/start trace runs at DEBUG so
     # users can re-enable diagnostics with LOG_LEVEL=DEBUG when something
     # silently breaks. INFO-level only shows the outcome inside

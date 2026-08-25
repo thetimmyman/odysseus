@@ -146,6 +146,15 @@ DEFAULT_SETTINGS = {
     "teacher_model": "",
     "teacher_enabled": False,
     "teacher_tier2_enabled": False,
+    # Skills: operator policy for background skill extraction. Resolved by
+    # routes/chat_helpers.py::auto_skills_enabled_for as the fallback when a
+    # user has no explicit `auto_skills` preference of their own — so a newly
+    # created account inherits the operator's choice instead of silently
+    # running the extractor. Ships OFF: the extractor makes a background model
+    # call per qualifying agent turn, and a background call landing in a user's
+    # session was POS-AI-23. Set to True once that lane isolation is deployed
+    # and observed clean, and every account without its own toggle follows.
+    "auto_skills": False,
     # Skills: minimum self-reported confidence for an auto-written (LLM-authored)
     # DRAFT skill to be injected into the agent prompt. Published skills always
     # qualify. Keeps low-confidence auto-skills out of context until they're
