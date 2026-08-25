@@ -1,6 +1,5 @@
 """Shared helpers for chat routes — context building, post-response tasks, auth resolution."""
 
-import asyncio
 import json
 import logging
 import os
