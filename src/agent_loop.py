@@ -1727,6 +1727,21 @@ async def stream_agent_loop(
         from src.context_budget import compute_input_token_budget, DEFAULT_HARD_MAX
         from src.settings import is_setting_overridden
 
+        # Callers off the interactive chat path (task_scheduler, skills
+        # audits, bg_monitor, teacher escalation, chat resume) never pass
+        # context_length, and compute_input_token_budget treats unknown (0)
+        # as "fall back to the 6000-token default budget" — so every
+        # background agent run on a 131k-context model was silently trimmed
+        # to ~6k input tokens (log signature: "Trimming messages: ... 4976
+        # budget (ctx=6000)", 2026-08-23/24). Resolve the real window here
+        # so the adaptive budget works for every caller (POS-AI-18).
+        if not context_length:
+            try:
+                from src.model_context import get_context_length as _gcl
+                context_length = _gcl(endpoint_url, model) or 0
+            except Exception:
+                context_length = 0
+
         soft_budget = int(get_setting("agent_input_token_budget", 6000) or 0)
         if soft_budget > 0:
             before_trim_tokens = estimate_tokens(messages)
