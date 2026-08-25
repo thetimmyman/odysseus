@@ -482,15 +482,32 @@ def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool 
     if one_liners:
         parts.append("## Additional tools\n" + "\n".join(one_liners))
 
-    # Mention tools that exist but weren't included
+    # Mention tools that exist but weren't selected for this turn.
+    #
+    # This notice used to read "(Other tools available when needed: a, b, c, …
+    # (N more))" — which is wrong in both halves, and expensively so. The listed
+    # tools are NOT available this turn: only the selected set is sent as
+    # function schemas, so calling one of them fails. And the truncation implies
+    # a hidden reserve the model could reach for, when there is no such
+    # mechanism — nothing in Odysseus lets a model activate a tool mid-turn.
+    #
+    # A model reading it concluded its toolset was truncated and that it
+    # therefore lacked `edit_file` — which was in that very round's schema list,
+    # documented right above — and burned reasoning tokens working around its
+    # own tools with `sed`. So: say plainly that everything documented above is
+    # callable right now, and that the rest arrives automatically or not at all.
     all_known = set(TOOL_SECTIONS.keys())
     not_shown = all_known - included - disabled
     if not_shown:
-        sample = sorted(not_shown)[:5]
-        hint = ", ".join(sample)
-        if len(not_shown) > 5:
-            hint += f", ... ({len(not_shown) - 5} more)"
-        parts.append(f"(Other tools available when needed: {hint})")
+        hint = ", ".join(sorted(not_shown))
+        parts.append(
+            "(Every tool documented above is available to you RIGHT NOW — call it "
+            "directly. Nothing is hidden behind an activation step, and there is no "
+            "way to request more tools mid-turn. These other tools exist but are NOT "
+            f"loaded this turn: {hint}. They are selected automatically from what the "
+            "user asks for, so if you need one, say so and the user can ask again — "
+            "do not try to work around a tool you DO have.)"
+        )
 
     parts.append(_AGENT_RULES)
     return "\n\n".join(parts)
@@ -1987,10 +2004,22 @@ async def stream_agent_loop(
         elif _is_api_model:
             # Filter schemas by RAG-selected tools (if available)
             if _relevant_tools:
+                # Send schemas for exactly what the system prompt documents.
+                # _build_base_prompt describes ALWAYS_AVAILABLE | relevant, but
+                # this filter used relevant alone, so a caller-supplied
+                # relevant_tools set (task_scheduler, crews) produced a prompt
+                # promising tools whose schemas were never sent — the model is
+                # told it has `edit_file`, then finds it can't call it. RAG's own
+                # get_tools_for_query already unions ALWAYS_AVAILABLE; doing it
+                # here makes the two sets identical on every path.
+                from src.tool_index import ALWAYS_AVAILABLE as _ALWAYS
+                _schema_tools = set(_relevant_tools) | set(_ALWAYS)
                 base_schemas = [
                     s for s in FUNCTION_TOOL_SCHEMAS
-                    if s.get("function", {}).get("name") in _relevant_tools
+                    if s.get("function", {}).get("name") in _schema_tools
                 ]
+                # MCP tools are never "always available" — they are only ever
+                # what retrieval selected.
                 _mcp_filtered = [
                     s for s in mcp_schemas
                     if s.get("function", {}).get("name") in _relevant_tools
