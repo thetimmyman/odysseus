@@ -35,10 +35,34 @@ from src.constants import DATA_DIR, AUTH_FILE, MEMORY_FILE, USER_PREFS_FILE, SET
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR}/app.db")
 
 # Create engine
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+#
+# In-memory SQLite needs StaticPool. A `:memory:` database does not live in a
+# file — it lives *inside a single DBAPI connection* and is destroyed when that
+# connection closes. SQLAlchemy's default pool for `sqlite:///:memory:` is
+# SingletonThreadPool, which hands out **one connection per thread**, so every
+# thread silently gets its own empty database: tables created on the main
+# thread are invisible everywhere else and queries die on
+# `no such table: sessions`.
+#
+# That is not hypothetical here. The app is multi-threaded — FastAPI runs sync
+# endpoints in a threadpool and `asyncio.to_thread` is used for the blocking
+# CalDAV/IMAP paths — and the test suite points DATABASE_URL at
+# `sqlite:///:memory:` (tests/conftest.py). StaticPool keeps exactly one shared
+# connection, which is what makes an in-memory database behave like a real one.
+#
+# File-backed SQLite (the production path) is unaffected: the database is on
+# disk, so the default pooling is correct and is left alone.
+_is_memory_sqlite = DATABASE_URL.startswith("sqlite") and (
+    ":memory:" in DATABASE_URL or DATABASE_URL.endswith("sqlite://")
 )
+_engine_kwargs = {
+    "connect_args": {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+}
+if _is_memory_sqlite:
+    from sqlalchemy.pool import StaticPool
+    _engine_kwargs["poolclass"] = StaticPool
+
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

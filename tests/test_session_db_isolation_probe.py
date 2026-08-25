@@ -1,6 +1,30 @@
 """Probe #2: end-to-end SessionManager isolation on a temp DB — persistence
-+ reload across two owners. Covers the path the RAM-only probe didn't."""
++ reload across two owners. Covers the path the RAM-only probe didn't.
+
+History (POS-AI-29, 2026-08-25 cross-stack audit): both tests here were
+marked `xfail(strict=False)` after failing a full-suite run with
+`no such table: sessions`. The recorded theory was "an earlier test module
+disposes or re-points the engine". The disposal half was wrong — there is no
+`.dispose()` call anywhere in this repository — and the re-pointing half was
+already handled by binding `create_all` to the live Session.
+
+The actual cause was the pool. `sqlite:///:memory:` (what conftest configures)
+does not live in a file; it lives inside a single DBAPI connection.
+SQLAlchemy's default pool for an in-memory SQLite URL is `SingletonThreadPool`,
+which hands out **one connection per thread** — so a table created on one
+thread is invisible from any other, and the query dies on
+`no such table: sessions`. `core.database` now selects `StaticPool` for
+in-memory SQLite (one shared connection), which is the supported way to make
+`:memory:` behave like a real database. See the comment at the engine
+construction in core/database.py.
+
+`test_schema_is_visible_across_threads` below is the regression guard for that
+root cause: it fails if the pooling choice ever regresses.
+"""
+import threading
+
 import pytest
+from sqlalchemy import inspect
 
 import core.database as db
 db.Base.metadata.create_all(bind=db.engine)
@@ -13,35 +37,22 @@ from core.models import ChatMessage
 def _ensure_schema():
     """Create the schema on the engine `SessionLocal` is actually bound to.
 
-    conftest points DATABASE_URL at `sqlite:///:memory:`. `SessionLocal` is
-    bound to an engine once, at `core.database` import; an earlier test module
-    in a full-suite run can rebind or dispose `core.database.engine`, after
-    which `create_all(bind=db.engine)` targets a *different* engine than the
-    one SessionManager writes through — so the tables land in the wrong
-    database and the test dies on "no such table: sessions".
-
-    Resolving the bind from a live Session removes the guesswork: whatever
-    SessionManager is about to use is what we create the tables on. Keeping the
-    Session open until after `create_all` matters too — returning the only
-    connection to the pool is what discards an in-memory database.
-
-    `create_all` is idempotent and never drops, so the second test still reads
-    the rows the first one wrote.
-
-    Latent until now because the suite could not run end-to-end: pytest was
-    aborting during collection on an unpinned mcp 2.x. Running this file alone
-    always passed, which is why it was never caught.
+    Resolving the bind from a live Session rather than from
+    `core.database.engine` keeps this correct even if an earlier module
+    re-points the global engine: whatever SessionManager is about to write
+    through is what the tables get created on. `create_all` is idempotent and
+    never drops, so the second test still reads the rows the first one wrote.
     """
     import core.session_manager as sm_mod
 
-    # Bind to SessionManager's OWN SessionLocal, not core.database's. It does
-    # `from .database import ... SessionLocal` at import, so it holds a fixed
-    # reference; rebinding core.database.SessionLocal later does not follow.
-    # Creating tables via core.database can therefore target a different engine
-    # than the code under test writes through.
     session = sm_mod.SessionLocal()
     try:
-        db.Base.metadata.create_all(bind=session.get_bind())
+        bind = session.get_bind()
+        db.Base.metadata.create_all(bind=bind)
+        assert "sessions" in inspect(bind).get_table_names(), (
+            "schema missing from the bind SessionManager writes through — "
+            "check the connection pool for in-memory SQLite (see module docstring)"
+        )
         yield
     finally:
         session.close()
@@ -51,29 +62,37 @@ def _fresh_mgr():
     return SessionManager()
 
 
-_HARNESS_BUG = pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "Harness bug, not a product bug: under a FULL-suite run these two die on "
-        "'no such table: sessions'. conftest points DATABASE_URL at "
-        "sqlite:///:memory:, and by the time this module executes the schema is "
-        "gone from the connection SessionManager writes through. Three fixes were "
-        "tried and rejected on evidence: create_all on core.database.engine, on a "
-        "live Session's get_bind(), and on core.session_manager's own SessionLocal "
-        "-- all still fail, so the cause is upstream of this module (an earlier "
-        "module disposing or re-pointing the engine). Running this file alone "
-        "passes, hence strict=False: it will XPASS, not fail, once fixed. "
-        "IMPORTANT -- the isolation property itself is NOT unguarded: "
-        "test_session_isolation_probe.py covers cross-chat leakage at the RAM "
-        "level (4 tests), and the owner-scope suites cover per-owner isolation. "
-        "What is uncovered while this xfails is specifically the DB-persistence "
-        "path across a reload. Tracked in "
-        "PersonalOS/docs/audits/2026-08-25-cross-stack/ as POS-AI-29."
-    ),
-)
+def test_schema_is_visible_across_threads():
+    """Regression guard for the POS-AI-29 root cause.
+
+    With SingletonThreadPool (the default for `sqlite:///:memory:`) each thread
+    gets its own empty database and this fails. The app is multi-threaded —
+    FastAPI runs sync endpoints in a threadpool — so this is a real property,
+    not a test-only concern.
+    """
+    import core.session_manager as sm_mod
+
+    session = sm_mod.SessionLocal()
+    try:
+        bind = session.get_bind()
+    finally:
+        session.close()
+
+    seen = {}
+
+    def _probe():
+        seen["tables"] = "sessions" in inspect(bind).get_table_names()
+
+    t = threading.Thread(target=_probe)
+    t.start()
+    t.join()
+
+    assert seen["tables"], (
+        "the sessions table is invisible from another thread — in-memory SQLite "
+        "must use StaticPool, not SingletonThreadPool"
+    )
 
 
-@_HARNESS_BUG
 def test_persist_and_ram_isolation():
     sm = _fresh_mgr()
     sm.create_session("chatA", "A", "http://x/v1", "m", owner="alice")
@@ -84,7 +103,6 @@ def test_persist_and_ram_isolation():
     assert [m.content for m in sm.get_session("chatB").history] == ["bob-private"]
 
 
-@_HARNESS_BUG
 def test_reload_from_db_keeps_sessions_isolated():
     # brand-new manager -> forces a DB hydrate, not the RAM cache
     sm2 = _fresh_mgr()
