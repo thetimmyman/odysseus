@@ -14,6 +14,23 @@ services:
       context: .
       args:
         INSTALL_OPTIONAL: "true"
+    # POS-SEC-05 (2026-08-25). APP_BIND in .env is 0.0.0.0, which published
+    # BOTH the UI (7000) and the Dev Preview admin proxy (7100) to the whole
+    # LAN. One variable governs both ports, so they are pinned explicitly here.
+    #
+    # 7100 -> loopback. It is admin-gated dev tooling, not a user surface, and
+    # tailscale serve already fronts it at framework.tail1bd33c.ts.net:8443
+    # proxying from 127.0.0.1, so the intended access path is unaffected.
+    #
+    # 7000 deliberately LEFT on the LAN. Family members use this UI and their
+    # access path is not established -- if their devices are not on the tailnet,
+    # loopback-binding it cuts them off with no warning. That is an announced-
+    # window change for Tim, not an agent's call. Odysseus does at least
+    # authenticate (AUTH_ENABLED=true, LOCALHOST_BYPASS=false), so the residual
+    # LAN exposure is an authenticated surface, unlike localworker was.
+    ports: !override
+      - "0.0.0.0:${APP_PORT:-7000}:7000"
+      - "127.0.0.1:${DEV_PREVIEW_PROXY_PORT:-7100}:${DEV_PREVIEW_PROXY_PORT:-7100}"
     environment:
       - PATH=/app/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
       - CLAUDE_CONFIG_DIR=/app/.local/share/claude
