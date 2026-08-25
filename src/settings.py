@@ -110,6 +110,19 @@ DEFAULT_SETTINGS = {
     # want to actually use (e.g. 900_000 to fill a 1M-context model). See
     # `compute_input_token_budget` in src/context_budget.py.
     "agent_input_token_hard_max": 200_000,
+    # Fresh-context completion verifier: second model pass that re-checks a
+    # claimed-done effectful turn. Costly on slow local models (adds a full
+    # generation per turn) — opt-in. NOTE: keys must exist here to be
+    # settable via POST /api/auth/settings, which silently ignores unknown
+    # keys; agent_verifier_subagent was live-toggled but unmanageable
+    # before this entry existed.
+    "agent_verifier_subagent": False,
+    # Verifier LLM-call timeout. 600 max_tokens at local ~10 tok/s decode
+    # needs well over the old hard 60s (POS-AI-13).
+    "agent_verifier_timeout_seconds": 240,
+    # Bounded "you were mid-task, keep going" nudge when a turn ends with
+    # no tool call after >=2 calls and no effectful write (re-land 3ff908c).
+    "agent_auto_continue_on_stall": True,
     "agent_stream_timeout_seconds": 300,
     # Extra directory roots that read_file / write_file may access, in
     # addition to the built-in project data/ and system temp dirs. Each
