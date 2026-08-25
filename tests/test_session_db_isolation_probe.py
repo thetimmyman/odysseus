@@ -1,10 +1,30 @@
 """Probe #2: end-to-end SessionManager isolation on a temp DB — persistence
 + reload across two owners. Covers the path the RAM-only probe didn't."""
+import pytest
+
 import core.database as db
 db.Base.metadata.create_all(bind=db.engine)
 
 from core.session_manager import SessionManager
 from core.models import ChatMessage
+
+
+@pytest.fixture(autouse=True)
+def _ensure_schema():
+    """Re-assert the schema immediately before each test in this module.
+
+    conftest points DATABASE_URL at `sqlite:///:memory:`, whose schema does not
+    reliably survive to test time once the *whole* suite runs — an earlier
+    module can dispose the engine, and the replacement connection comes back
+    empty. Creating tables at import time alone then fails with
+    "no such table: sessions". `create_all` is idempotent and never drops, so
+    this is safe for the second test, which deliberately reads rows written by
+    the first.
+
+    Latent since the suite could not run end-to-end: pytest was aborting during
+    collection on an unpinned mcp 2.x. Surfaced once that was fixed.
+    """
+    db.Base.metadata.create_all(bind=db.engine)
 
 
 def _fresh_mgr():
