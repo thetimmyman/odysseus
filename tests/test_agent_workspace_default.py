@@ -74,28 +74,32 @@ def test_prompt_names_the_workspace_and_warns_off_app_state():
 
 
 def test_background_bash_launches_in_the_workspace(monkeypatch):
-    """`#!bg` bash goes through a different function than the foreground path,
-    so it needs its own workspace resolution — an earlier draft of this change
-    referenced the foreground helper's local variable from here, which would
-    have been a NameError the first time anyone backgrounded a command."""
+    """`#!bg` bash launches from execute_tool_block, a different function than
+    the foreground path, so it needs its own workspace resolution — an earlier
+    draft of this change referenced the foreground helper's local variable from
+    here, which would have been a NameError the first time anyone backgrounded
+    a command. No other test covers this path."""
     import asyncio
+    import src.bg_jobs as bg_jobs
     import src.tool_execution as te
 
     launched = {}
 
-    class _FakeBgJobs:
-        @staticmethod
-        def launch(cmd, session_id=None, cwd=None):
-            launched.update(cmd=cmd, session_id=session_id, cwd=cwd)
-            return {"id": "job-1"}
+    def _fake_launch(cmd, session_id=None, cwd=None):
+        launched.update(cmd=cmd, session_id=session_id, cwd=cwd)
+        return {"id": "job-1"}
 
     class _Block:
         tool_type = "bash"
         content = "#!bg\nsleep 1"
 
-    monkeypatch.setitem(sys.modules, "src.bg_jobs", _FakeBgJobs)
+    # Patch the real module's attribute rather than sys.modules: the call site
+    # does `from src import bg_jobs`, which resolves the already-imported
+    # module object off the package once anything else has imported it.
+    monkeypatch.setattr(bg_jobs, "launch", _fake_launch)
     monkeypatch.setattr(te, "is_public_blocked_tool", lambda *a, **kw: False)
-    desc, result = asyncio.run(te.execute_tool_block(_Block(), session_id="sess-1"))
+    _desc, result = asyncio.run(te.execute_tool_block(_Block(), session_id="sess-1"))
+    assert launched, "the #!bg branch never ran — the marker parse changed"
     assert launched["cwd"] == tool_execution.agent_workspace_dir()
     assert os.path.realpath(launched["cwd"]) != os.path.realpath(DATA_DIR)
     assert result["exit_code"] == 0
