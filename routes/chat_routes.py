@@ -400,6 +400,7 @@ def setup_chat_routes(
             temperature=ctx.preset.temperature,
             max_tokens=ctx.preset.max_tokens,
             prompt_type=preset_id,
+            reasoning_effort=ctx.preset.reasoning_effort,
         )
         _clean_reply, _clean_md = clean_thinking_for_save(reply, {"model": sess.model})
         sess.add_message(ChatMessage("assistant", _clean_reply, metadata=_clean_md))
@@ -1129,6 +1130,7 @@ def setup_chat_routes(
                         temperature=ctx.preset.temperature,
                         max_tokens=ctx.preset.max_tokens,
                         prompt_type=preset_id,
+                        reasoning_effort=ctx.preset.reasoning_effort,
                         max_tool_calls=_tool_budget,
                         max_rounds=_max_rounds,
                         context_length=ctx.context_length,
