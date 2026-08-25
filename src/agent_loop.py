@@ -1806,6 +1806,22 @@ async def stream_agent_loop(
     # that *can't* call the tool from looping forever.
     _intent_nudge_count = 0
     _MAX_INTENT_NUDGES = 2
+    # Unparsed-tool-call detector (POS-AI-11). "No blocks parsed" alone cannot
+    # distinguish "model finished" from "model emitted a tool call in a dialect
+    # we don't parse / truncated mid-call" — and the latter silently ended
+    # turns mid-task (2026-08-24, sessions 3d6919b6/8670f5ae). When the round's
+    # text is tool-call-shaped but nothing parsed, we log the discrimination
+    # and nudge the model to re-emit, bounded so a hopeless model can't loop.
+    _unparsed_call_retries = 0
+    _MAX_UNPARSED_CALL_RETRIES = 2
+    # Abandoned-task auto-continue (re-land of 3ff908c, stranded on the Jul-7
+    # archive branch): catches the turn ending with NO tool call at all after
+    # being clearly mid-task (>=2 calls made, no effectful write yet). The
+    # intent supervisor above only fires on short (<400 char) promise-shaped
+    # text, so long narration that trails off still needs this net.
+    _auto_continues_used = 0
+    _MAX_AUTO_CONTINUES = 2
+    _MIN_CALLS_FOR_ABANDON_CHECK = 2
 
     # "I said I would, then didn't" detector. The pattern that breaks debug
     # loops on weak models (deepseek-v4-flash mid-2026): the model writes
@@ -2228,6 +2244,69 @@ async def stream_agent_loop(
                 # Visible signal in the stream so the user knows we caught it.
                 yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
                 continue
+            # ── Unparsed-tool-call detector (POS-AI-11) ──────────────
+            # The round produced no native calls and no parseable blocks —
+            # but if the text still LOOKS like a tool call, the model tried
+            # to act in a dialect we failed to parse (or the output was cut
+            # off mid-call). Ending the turn here is the silent-stall bug;
+            # discriminate, log it loudly, and nudge a bounded re-emit.
+            from src.tool_parsing import looks_like_tool_call
+            _shaped = looks_like_tool_call(_intent_text)
+            if _shaped and not _force_answer and _unparsed_call_retries < _MAX_UNPARSED_CALL_RETRIES:
+                _unparsed_call_retries += 1
+                logger.warning(
+                    "[agent] round %d: tool-call-shaped output that NO parser "
+                    "recognized (retry %d/%d) — nudging re-emit instead of "
+                    "silently ending the turn. Preview: %r",
+                    round_num, _unparsed_call_retries, _MAX_UNPARSED_CALL_RETRIES,
+                    _intent_text[-200:],
+                )
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Your last message contained what looks like a tool call, "
+                        "but it was not in a format this system can execute (it may "
+                        "also have been cut off before the call was complete). "
+                        "Re-issue the call now using the native function-calling "
+                        "mechanism, or a fenced ```bash code block. Emit the call "
+                        "itself — do not describe it."
+                    ),
+                })
+                yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
+                continue
+            if _shaped:
+                logger.warning(
+                    "[agent] round %d: tool-call-shaped output still unparseable "
+                    "after %d retries — giving up and ending the turn",
+                    round_num, _unparsed_call_retries,
+                )
+            # ── Abandoned-task auto-continue (re-land of 3ff908c) ────
+            if (not _force_answer
+                    and not _effectful_used
+                    and total_tool_calls >= _MIN_CALLS_FOR_ABANDON_CHECK
+                    and _auto_continues_used < _MAX_AUTO_CONTINUES
+                    and get_setting("agent_auto_continue_on_stall", True)):
+                _auto_continues_used += 1
+                _note = "\n\n_Continuing — this looked unfinished._\n\n"
+                yield f'data: {json.dumps({"delta": _note})}\n\n'
+                full_response += _note
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "You ended your last turn without calling any tool, but you were "
+                        "in the middle of an active task (you'd already made "
+                        f"{total_tool_calls} tool call(s) this turn) and hadn't yet made any "
+                        "actual change (no edit_file/write_file/create_document call). If "
+                        "there's more to do, use the appropriate tool now instead of just "
+                        "describing it. If you are genuinely finished, say so explicitly "
+                        "and do not call any more tools."
+                    ),
+                })
+                continue
+            logger.info(
+                "[agent] round %d: no tool call and no tool-call-shaped text — "
+                "treating as model-finished", round_num,
+            )
             break  # no tools — done
 
         # ── Loop-breaker (Terminus-style stall detector) ──────────────
