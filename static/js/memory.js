@@ -114,10 +114,13 @@ async function syncToggles() {
   // toggling it did nothing, so skills stayed on). Now it actually gates skill
   // injection (see chat_helpers.py: uprefs.skills_enabled).
   await syncPrefToggle('skills-enabled-header-toggle', 'skills_enabled', 'Skills enabled', 'Skills disabled', false);
-  await syncPrefToggle('auto-memory-toggle', 'auto_memory', 'Auto-extract memories enabled', 'Auto-extract memories disabled', false);
-  // auto_skills is the one pref whose server-side fallback is OFF
-  // (DEFAULT_SETTINGS["auto_skills"], read by chat_helpers.auto_skills_enabled_for),
-  // so an unset pref must render unchecked. The others still default on.
+  // The two background-extraction prefs are the ones whose server-side
+  // fallback is OFF (DEFAULT_SETTINGS, read by
+  // chat_helpers._background_extraction_enabled), so an unset pref must render
+  // unchecked or the toggle claims a background model call is running when it
+  // is not — and, once an operator re-enables one globally, the reverse. The
+  // other toggles on this panel still default on.
+  await syncPrefToggle('auto-memory-toggle', 'auto_memory', 'Auto-extract memories enabled', 'Auto-extract memories disabled', false, /* defaultOn */ false);
   await syncPrefToggle('auto-skills-toggle', 'auto_skills', 'Auto-extract skills enabled', 'Auto-extract skills disabled', false, /* defaultOn */ false);
   await syncPrefToggle('auto-approve-skills-toggle', 'auto_approve_skills', 'Auto-approve skills enabled', 'Auto-approve skills disabled', false);
   await syncPrefSlider('skill-confidence-slider', 'skill_min_confidence', 'skill-confidence-label', 0.85);
