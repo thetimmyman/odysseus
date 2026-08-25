@@ -574,6 +574,31 @@ def _extract_last_user_message(messages: List[Dict]) -> str:
     return ""
 
 
+#: A round's answer text at or above this length reads as a real answer rather
+#: than a stub or an abandoned promise. Matches the threshold the
+#: intent-without-action supervisor already uses, so the two stall detectors
+#: agree on what "the model actually answered" looks like.
+SUBSTANTIVE_ANSWER_CHARS = 400
+
+
+def is_substantive_answer(text: str) -> bool:
+    """True when a tool-free round delivered a real answer, not an abandoned task.
+
+    Used to suppress the abandoned-task auto-continue. That check keys off
+    `_effectful_used`, which only flips for write/edit/create tools — so on a
+    read-only task (summarize, inspect, compare) it never sets, and finishing
+    correctly is indistinguishable from giving up. A substantive answer is the
+    evidence that separates them.
+
+    `text` must already have <think> blocks stripped; reasoning tokens are not
+    an answer and would otherwise pad a stub past the threshold.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    return len(stripped) >= SUBSTANTIVE_ANSWER_CHARS or "```" in stripped
+
+
 def _recent_context_for_retrieval(messages: List[Dict], max_user: int = 3, max_chars: int = 600) -> str:
     """Build the tool-retrieval query from the last few USER turns, not just
     the latest one.
@@ -2311,8 +2336,21 @@ async def stream_agent_loop(
                     round_num, _unparsed_call_retries,
                 )
             # ── Abandoned-task auto-continue (re-land of 3ff908c) ────
+            # `_effectful_used` only flips for write/edit/create tools, so on a
+            # READ-ONLY task (summarize, inspect, compare, explain) it is never
+            # set — and "made tool calls but wrote nothing" is the normal, correct
+            # shape of finishing such a task, not evidence of abandonment. Without
+            # a further guard this nudged every completed read-only turn, making
+            # the model restate its finished answer once per allowed continue at
+            # roughly a minute each.
+            #
+            # So require the same "this isn't a real answer" evidence the
+            # intent-without-action supervisor above already demands: a short
+            # response with no fenced block. A substantive answer is completion.
+            _substantive_answer = is_substantive_answer(_intent_text)
             if (not _force_answer
                     and not _effectful_used
+                    and not _substantive_answer
                     and total_tool_calls >= _MIN_CALLS_FOR_ABANDON_CHECK
                     and _auto_continues_used < _MAX_AUTO_CONTINUES
                     and get_setting("agent_auto_continue_on_stall", True)):

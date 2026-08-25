@@ -379,6 +379,11 @@ def setup_chat_routes(
         # leaves the preset (and the model default) untouched.
         if chat_request.reasoning_effort:
             ctx.preset.reasoning_effort = chat_request.reasoning_effort
+        logger.info(
+            "Effective reasoning_effort=%s (source=%s)",
+            ctx.preset.reasoning_effort or "model default",
+            "request" if chat_request.reasoning_effort else "preset",
+        )
 
         # Research injection
         research_blocked_by_policy = (
@@ -603,6 +608,15 @@ def setup_chat_routes(
         # Explicit per-request reasoning level beats the preset's.
         if reasoning_effort:
             ctx.preset.reasoning_effort = reasoning_effort
+        # Log the EFFECTIVE value. chat_handler logs its own line during preset
+        # extraction, but that runs before this override, so it reports the
+        # preset's value and reads as "the request didn't set one" even when it
+        # did — which is indistinguishable from the field never arriving.
+        logger.info(
+            "Effective reasoning_effort=%s (source=%s)",
+            ctx.preset.reasoning_effort or "model default",
+            "request" if reasoning_effort else "preset",
+        )
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
 
