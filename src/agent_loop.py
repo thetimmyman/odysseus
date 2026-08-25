@@ -1303,6 +1303,12 @@ def _compute_final_metrics(
 _VERIFIER_EFFECTFUL_TOOLS = {
     "create_document", "update_document", "edit_document",
     "bash", "python", "write_file",
+    # edit_file (surgical find/replace) was missing here — it's the PRIMARY
+    # coding tool, so real code edits were never double-checked by the
+    # completion verifier at all, and the auto-continue check treated pure
+    # edit_file turns as "no actual change yet". (Re-land of 11d52d7,
+    # stranded on the Jul-7 archive branch.)
+    "edit_file",
 }
 _VERIFIER_MAX_ROUNDS = 2  # cap re-verify cycles per turn — never loop forever
 
