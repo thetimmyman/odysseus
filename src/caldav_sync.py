@@ -458,9 +458,72 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
     return result
 
 
+def _encrypt_account_passwords(accounts: list) -> tuple[list, bool]:
+    """Return ``(accounts, changed)`` with every plaintext password encrypted.
+
+    Every *interactive* write path (``POST/PUT /api/calendar/config*``) already
+    calls ``secret_storage.encrypt``. Two paths did not, and both land plaintext
+    in ``data/user_prefs.json``:
+
+      1. the legacy ``caldav`` -> ``caldav_accounts`` migration below, which
+         copied ``legacy["password"]`` verbatim; and
+      2. any account already stored plaintext by (1) on an earlier release —
+         it is only ever *read* afterwards, and ``decrypt()`` passes plaintext
+         through unchanged, so nothing ever re-encrypted it.
+
+    ``encrypt()`` is a no-op on an already-``enc:``-prefixed value, so this is
+    idempotent and safe to run on every load.
+
+    Fail-safe: a value is only swapped in once it has been proved to round-trip.
+    If the Fernet key is unreadable or mismatched, ``encrypt`` would still
+    produce a token but ``decrypt`` would later return "" — silently destroying
+    a working credential. Verifying the round-trip first means a broken key
+    leaves the plaintext in place (still readable, still working) rather than
+    bricking calendar sync.
+    """
+    try:
+        from src import secret_storage as _ss
+        encrypt = _ss.encrypt
+        decrypt = _ss.decrypt
+        is_encrypted = _ss.is_encrypted
+    except (ImportError, AttributeError):
+        # secret_storage unavailable or partially stubbed (several CalDAV tests
+        # inject a module exposing only `decrypt`). Encryption is an at-rest
+        # hardening pass, never a precondition for sync — degrade to a no-op
+        # rather than break the caller's read path.
+        return list(accounts or []), False
+
+    changed = False
+    out = []
+    for acc in accounts or []:
+        acc = dict(acc or {})
+        pw = acc.get("password") or ""
+        if pw and not is_encrypted(pw):
+            try:
+                token = encrypt(pw)
+                if is_encrypted(token) and decrypt(token) == pw:
+                    acc["password"] = token
+                    changed = True
+                else:
+                    logger.error(
+                        "CalDAV password encryption round-trip failed for account %s — "
+                        "leaving the existing value untouched",
+                        acc.get("id") or acc.get("label") or "?",
+                    )
+            except Exception:
+                logger.exception(
+                    "CalDAV password encryption failed for account %s — "
+                    "leaving the existing value untouched",
+                    acc.get("id") or acc.get("label") or "?",
+                )
+        out.append(acc)
+    return out, changed
+
+
 def _load_caldav_accounts(owner: str) -> list:
     """Return the list of CalDAV accounts for *owner*, auto-migrating the legacy
-    single-account ``caldav`` key to the new ``caldav_accounts`` list on first call.
+    single-account ``caldav`` key to the new ``caldav_accounts`` list on first call,
+    and encrypting any password still stored in plaintext.
 
     The save step is best-effort: if ``_save_for_user`` is unavailable (e.g. in a
     test with a minimal prefs mock) the migrated accounts are still returned; the
@@ -471,7 +534,20 @@ def _load_caldav_accounts(owner: str) -> list:
 
     prefs = _load_for_user(owner) or {}
     if "caldav_accounts" in prefs:
-        return list(prefs["caldav_accounts"] or [])
+        accounts = list(prefs["caldav_accounts"] or [])
+        accounts, changed = _encrypt_account_passwords(accounts)
+        if changed:
+            prefs["caldav_accounts"] = accounts
+            try:
+                from routes.prefs_routes import _save_for_user
+                _save_for_user(owner, prefs)
+                logger.info(
+                    "Encrypted %d plaintext CalDAV password(s) at rest for owner %s",
+                    sum(1 for a in accounts if a.get("password")), owner,
+                )
+            except (ImportError, AttributeError):
+                pass  # best-effort; the next call re-runs the cheap upgrade
+        return accounts
     # Migrate legacy single-account config to the list format.
     legacy = prefs.get("caldav", {}) or {}
     if legacy.get("url"):
@@ -482,6 +558,7 @@ def _load_caldav_accounts(owner: str) -> list:
             "username": legacy.get("username", ""),
             "password": legacy.get("password", ""),
         }]
+        accounts, _ = _encrypt_account_passwords(accounts)
         prefs["caldav_accounts"] = accounts
         prefs.pop("caldav", None)
         try:
