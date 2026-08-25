@@ -31,6 +31,19 @@ services:
     ports: !override
       - "0.0.0.0:${APP_PORT:-7000}:7000"
       - "127.0.0.1:${DEV_PREVIEW_PROXY_PORT:-7100}:${DEV_PREVIEW_PROXY_PORT:-7100}"
+    # POS-SEC-05 (2026-08-25): remount the SSH identity dir read-only. The
+    # security track's key review keeps both keys (id_minipc_vault is pinned
+    # to a forced-command broker on the mini PC; id_eyeofterror is the deploy
+    # key agent mode uses daily), but with rw a compromised container could
+    # plant or rewrite keys. Runtime writes are not needed: both Host blocks
+    # in .ssh/config set StrictHostKeyChecking yes with a pinned
+    # UserKnownHostsFile (strict mode never adds host keys — it matches or
+    # fails), and known_hosts already covers the hostnames actually dialed
+    # (github.com, 192.168.1.130). Known cost: the dormant Cookbook
+    # "generate a remote-server key here" path would fail with a clear
+    # read-only error — remount rw for that one operation if ever wanted.
+    volumes:
+      - ${ODYSSEUS_DATA_DIR:-./data}/ssh:/app/.ssh:ro,z
     environment:
       - PATH=/app/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
       - CLAUDE_CONFIG_DIR=/app/.local/share/claude
