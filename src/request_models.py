@@ -3,6 +3,12 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
+# Reasoning-effort levels accepted from clients. Thinking models read this to
+# size their deliberation; anything outside the set is dropped so the model's
+# own template default applies.
+VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+
+
 # Request Models
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=50000, description="Chat message")
@@ -12,7 +18,21 @@ class ChatRequest(BaseModel):
     use_research: Optional[bool] = Field(default=False, description="Enable deep research")
     time_filter: Optional[str] = Field(default=None, description="Time filter for search")
     preset_id: Optional[str] = Field(default=None, description="Preset identifier")
-    
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description="Override the preset's reasoning effort (low|medium|high|xhigh)"
+    )
+
+    @field_validator('reasoning_effort')
+    @classmethod
+    def validate_reasoning_effort(cls, v):
+        # Unknown values are dropped rather than rejected: the field is a hint
+        # passed straight to the provider, and a bad one should degrade to the
+        # model default instead of failing the whole chat request.
+        if v is not None and v not in VALID_REASONING_EFFORTS:
+            return None
+        return v
+
     @field_validator('message')
     @classmethod
     def clean_message(cls, v):

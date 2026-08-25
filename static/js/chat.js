@@ -870,6 +870,13 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
       }
+      // Reasoning effort overrides whatever the preset asks for. Only sent when
+      // the user picked a level; "Model default" omits the field entirely so the
+      // model's own template default applies.
+      const _re = (Storage.KEYS && Storage.get(Storage.KEYS.REASONING, '')) || '';
+      if (_re) {
+        fd.append('reasoning_effort', _re);
+      }
 
 
       const abortCtrl = new AbortController();

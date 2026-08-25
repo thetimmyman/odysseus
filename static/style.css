@@ -3100,6 +3100,26 @@ body.bg-pattern-sparkles {
     .overflow-menu:not(.hidden):not(.closing) .overflow-menu-item:nth-last-child(8)  { animation-delay: 0.34s; }
     .overflow-menu:not(.hidden):not(.closing) .overflow-menu-item:nth-last-child(9)  { animation-delay: 0.38s; }
     .overflow-menu:not(.hidden):not(.closing) .overflow-menu-item:nth-last-child(10) { animation-delay: 0.42s; }
+    /* Reasoning row: an .overflow-menu-item that holds a control instead of
+       being a button, so it must not take the item hover/pointer affordance. */
+    .overflow-menu-row {
+      cursor: default;
+      opacity: 0.85;
+    }
+    .overflow-menu-row > span {
+      flex: 1;
+    }
+    .overflow-menu-select {
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 12px;
+      padding: 2px 4px;
+      cursor: pointer;
+      max-width: 96px;
+    }
     @keyframes overflow-item-in {
       0%   { opacity: 0; transform: translateY(10px) translateX(-6px) scale(0.9); }
       60%  { opacity: 1; }
