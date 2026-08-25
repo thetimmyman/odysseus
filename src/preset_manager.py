@@ -53,6 +53,26 @@ Structure all responses using clear logical progression:
 Use precise language. Show causal relationships explicitly. Quantify uncertainty where applicable.
 """
         },
+        # Reasoning-effort presets. Thinking models (qwen3.8, gpt-oss, o-series)
+        # size their deliberation from `reasoning_effort`. qwen3.8's own template
+        # defaults to 'xhigh', which on a memory-bandwidth-bound host turns a
+        # simple question into minutes of hidden thinking. These two presets make
+        # that a one-click choice from the chat interface. Omitting the key
+        # entirely (every other preset) leaves the model's own default alone.
+        "fast": {
+            "name": "Fast (low reasoning)",
+            "temperature": 0.3,
+            "max_tokens": 0,
+            "reasoning_effort": "low",
+            "system_prompt": "",
+        },
+        "deep": {
+            "name": "Deep (max reasoning)",
+            "temperature": 0.3,
+            "max_tokens": 0,
+            "reasoning_effort": "xhigh",
+            "system_prompt": "",
+        },
         "custom": {
             "name": "Custom",
             "temperature": 1.0,

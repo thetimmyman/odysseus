@@ -32,6 +32,8 @@ class PresetInfo:
     max_tokens: Optional[int]
     system_prompt: Optional[str]
     character_name: Optional[str]
+    # None = don't send the field at all, so the model's own default applies.
+    reasoning_effort: Optional[str] = None
 
 
 @dataclass
@@ -282,7 +284,7 @@ def try_fallback_endpoint(sess, session_id: str) -> dict | None:
 
 def extract_preset(chat_handler, preset_id) -> PresetInfo:
     """Extract preset parameters via chat_handler."""
-    temperature, max_tokens, system_prompt, char_name = (
+    temperature, max_tokens, system_prompt, char_name, reasoning_effort = (
         chat_handler.validate_and_extract_preset(preset_id)
     )
     return PresetInfo(
@@ -290,6 +292,7 @@ def extract_preset(chat_handler, preset_id) -> PresetInfo:
         max_tokens=max_tokens,
         system_prompt=system_prompt,
         character_name=char_name,
+        reasoning_effort=reasoning_effort,
     )
 
 

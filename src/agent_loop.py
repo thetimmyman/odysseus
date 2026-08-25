@@ -1487,6 +1487,7 @@ async def stream_agent_loop(
     disabled_tools: Optional[Set[str]] = None,
     owner: Optional[str] = None,
     relevant_tools: Optional[Set[str]] = None,
+    reasoning_effort: Optional[str] = None,
     fallbacks: Optional[List[tuple]] = None,
     workspace: Optional[str] = None,
     plan_mode: bool = False,
@@ -1952,6 +1953,7 @@ async def stream_agent_loop(
             prompt_type=prompt_type if round_num == 1 else None,
             tools=all_tool_schemas if all_tool_schemas else None,
             timeout=agent_stream_timeout,
+            reasoning_effort=reasoning_effort,
         ):
             if time.time() > _round_deadline:
                 logger.warning(f"[agent] round {round_num} stream exceeded wall-clock deadline; cutting off")

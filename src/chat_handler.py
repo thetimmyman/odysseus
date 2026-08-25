@@ -53,7 +53,8 @@ class ChatHandler:
     # ------------------------------------------------------------------
 
     def validate_and_extract_preset(self, preset_id: Optional[str]) -> tuple:
-        """Returns (temperature, max_tokens, preset_system_prompt, character_name)."""
+        """Returns (temperature, max_tokens, preset_system_prompt, character_name,
+        reasoning_effort)."""
         if preset_id and preset_id not in self.preset_manager.presets:
             raise HTTPException(400, f"Invalid preset_id: {preset_id}")
 
@@ -61,12 +62,14 @@ class ChatHandler:
         max_tokens = DEFAULT_MAX_TOKENS
         preset_system_prompt = None
         character_name = ""
+        reasoning_effort = None
 
         if preset_id and preset_id in self.preset_manager.presets:
             preset = self.preset_manager.presets[preset_id]
             if preset.get("enabled") is False:
                 logger.info(f"Preset {preset_id} is disabled, using defaults")
-                return temperature, max_tokens, preset_system_prompt, character_name
+                return (temperature, max_tokens, preset_system_prompt,
+                        character_name, reasoning_effort)
             if preset.get("system_prompt"):
                 preset_system_prompt = preset["system_prompt"]
             character_name = preset.get("character_name", "")
@@ -80,9 +83,15 @@ class ChatHandler:
                 temperature = preset["temperature"]
             if "max_tokens" in preset:
                 max_tokens = preset["max_tokens"]
+            if preset.get("reasoning_effort"):
+                reasoning_effort = preset["reasoning_effort"]
 
-        logger.info(f"Preset {preset_id}: temp={temperature}, max_tokens={max_tokens}")
-        return temperature, max_tokens, preset_system_prompt, character_name
+        logger.info(
+            f"Preset {preset_id}: temp={temperature}, max_tokens={max_tokens}, "
+            f"reasoning_effort={reasoning_effort or 'model default'}"
+        )
+        return (temperature, max_tokens, preset_system_prompt, character_name,
+                reasoning_effort)
 
     def enhance_message_if_needed(self, message: str) -> str:
         """CoT enhancement disabled — modern models reason natively."""
