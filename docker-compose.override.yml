@@ -1,5 +1,19 @@
 services:
   odysseus:
+    # WI: framework OOM 2026-08-23. The container can run repo test suites
+    # (npm ci / vitest) against /app/work, which is uncapped by default and
+    # can take the whole 125GiB box down alongside CI. Hard ceiling here.
+    mem_limit: 24g
+    memswap_limit: 24g
+    # markitdown (.docx/.pptx/.xlsx extraction) lives in
+    # requirements-optional.txt behind this build arg. Without it every
+    # Office attachment silently degrades to a "[Attached document: ...]"
+    # banner — the model never sees the content (2026-08-23 resume
+    # sessions, POS-AI-17).
+    build:
+      context: .
+      args:
+        INSTALL_OPTIONAL: "true"
     environment:
       - PATH=/app/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
       - CLAUDE_CONFIG_DIR=/app/.local/share/claude
