@@ -1359,7 +1359,14 @@ async def _run_verifier_subagent(
         raw = await llm_call_async(
             url=endpoint_url, model=model,
             messages=[{"role": "user", "content": prompt}],
-            headers=headers, temperature=0.0, max_tokens=600, timeout=60,
+            # timeout: on a single-slot local server (OLLAMA_NUM_PARALLEL=1)
+            # this request queues behind the main turn's generation, and at
+            # local decode speeds (~10 tok/s) 600 tokens alone can take a
+            # minute. 60s produced three back-to-back client aborts (ollama
+            # logs 500 after exactly 1m0s, 2026-08-24 18:24-18:26 and again
+            # 2026-08-25 11:25) surfacing as 'verifier subagent failed: 502'.
+            headers=headers, temperature=0.0, max_tokens=600,
+            timeout=int(get_setting("agent_verifier_timeout_seconds", 240) or 240),
         )
     except Exception as e:
         logger.warning(f"[agent] verifier subagent failed: {e}")
