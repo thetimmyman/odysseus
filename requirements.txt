@@ -37,7 +37,12 @@ python-dateutil
 caldav
 cryptography
 bcrypt
-mcp
+# Pinned below 2.x: mcp 2.1.0 dropped `Server.list_tools`, which every server in
+# mcp_servers/ registers against. Unpinned, CI resolved to 2.1.0 and pytest died
+# at collection (4 errors, zero tests run) while production ran 1.28.1 happily —
+# so the suite was gating merges without testing anything. Keep CI on the major
+# version the app is actually written for.
+mcp<2
 pyotp
 qrcode[pil]
 croniter
