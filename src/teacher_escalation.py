@@ -659,6 +659,7 @@ async def run_teacher_inline(
     # The _is_teacher_run flag prevents infinite recursion (the teacher
     # run will skip its own escalation hook).
     from src.agent_loop import stream_agent_loop
+    from src.stream_events import answer_delta as _answer_delta
     captured_tool_events: List[Dict[str, Any]] = []
     captured_text_parts: List[str] = []
 
@@ -689,8 +690,14 @@ async def run_teacher_inline(
                         "output": payload.get("output"),
                         "exit_code": payload.get("exit_code"),
                     })
-                if "delta" in payload and isinstance(payload["delta"], str):
-                    captured_text_parts.append(payload["delta"])
+                # Forward every delta to the UI (the thinking panel wants the
+                # reasoning), but only ACCUMULATE answer text — the captured
+                # text is what the regex evaluator grades and what gets
+                # distilled into a skill, and reasoning deltas made both of
+                # those read the model's deliberation as its answer.
+                _answer = _answer_delta(payload)
+                if _answer is not None:
+                    captured_text_parts.append(_answer)
                 yield 'data: ' + json.dumps(payload) + '\n\n'
                 continue
         yield evt_str

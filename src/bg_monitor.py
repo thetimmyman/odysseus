@@ -28,8 +28,14 @@ _FOLLOWUP_MAX_ROUNDS = 12
 async def _drain_agent(sess, messages):
     """Run the agent loop headless against a session. Returns
     (final_prose, tool_events) — tool_events in the same shape the live chat
-    saves, so the frontend rebuilds them as standard agent-thread tool cards."""
+    saves, so the frontend rebuilds them as standard agent-thread tool cards.
+
+    Only ANSWER deltas are accumulated. This used to take every ``delta`` event,
+    reasoning included, so a thinking model's entire chain of thought was
+    persisted into the user's session as the assistant's message (POS-AI-24).
+    """
     from src.agent_loop import stream_agent_loop
+    from src.stream_events import answer_delta
     full = ""
     tool_events = []
     round_num = 1
@@ -53,8 +59,8 @@ async def _drain_agent(sess, messages):
         if not isinstance(d, dict):
             continue
         if "delta" in d:
-            delta = d.get("delta")
-            if isinstance(delta, str):
+            delta = answer_delta(d)
+            if delta is not None:
                 full += delta
         elif d.get("type") == "agent_step":
             round_num = d.get("round", round_num)

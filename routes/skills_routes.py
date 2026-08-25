@@ -407,6 +407,7 @@ async def _run_skill_test_job(key, name, md, task, url, model, headers, owner, s
     log + transcript, then have the judge grade it. Writes into _skill_test_jobs."""
     import json as _json
     from src.agent_loop import stream_agent_loop
+    from src.stream_events import answer_delta as _answer_delta
 
     job = _skill_test_jobs.get(key)
     if job is None:
@@ -439,8 +440,9 @@ async def _run_skill_test_job(key, name, md, task, url, model, headers, owner, s
                 d = _json.loads(chunk[6:])
             except Exception:
                 continue
-            if d.get("delta"):
-                say_buf.append(d["delta"]); transcript.append(d["delta"])
+            _ans = _answer_delta(d)
+            if _ans:
+                say_buf.append(_ans); transcript.append(_ans)
             elif d.get("type") == "tool_start":
                 _flush_say()
                 cmd = str(d.get("command") or d.get("args") or "")[:300]
@@ -683,6 +685,7 @@ async def _run_skill_test_once(md: str, task: str, url, model, headers, owner) -
     """Run the skill once in the agent loop; return (transcript, verdict)."""
     import json as _json
     from src.agent_loop import stream_agent_loop
+    from src.stream_events import answer_delta as _answer_delta
     transcript = []
     messages = [
         {"role": "system", "content":
@@ -699,8 +702,9 @@ async def _run_skill_test_once(md: str, task: str, url, model, headers, owner) -
                 d = _json.loads(chunk[6:])
             except Exception:
                 continue
-            if d.get("delta"):
-                transcript.append(d["delta"])
+            _ans = _answer_delta(d)
+            if _ans:
+                transcript.append(_ans)
             elif d.get("type") == "tool_start":
                 transcript.append(f"\n[tool {d.get('tool')}] {str(d.get('command') or d.get('args') or '')[:300]}\n")
             elif d.get("type") == "tool_output":

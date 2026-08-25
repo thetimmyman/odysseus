@@ -1430,7 +1430,14 @@ def _empty_response_fallback(
     When a thinking model routes all tokens to reasoning_content (leaving
     content=""), full_response is empty but round_reasoning has content.
     The reasoning was already streamed as {thinking:true} chunks — do not
-    re-emit it as a normal delta.  Just persist it and yield nothing.
+    re-emit it as a normal delta.
+
+    The reasoning IS still persisted so the turn isn't lost, but wrapped in
+    ``<think>`` and followed by a real reply. Persisting bare reasoning made the
+    saved message *be* the deliberation: on reload the user read pages of the
+    model's private thinking as though it were the answer (POS-AI-24). Wrapped,
+    the finaliser routes it to `metadata.thinking` and the collapsed thinking
+    section, which is the convention the rest of the UI already uses.
 
     Returns:
         (final_response: str, chunk: str | None)
@@ -1439,7 +1446,12 @@ def _empty_response_fallback(
     if full_response.strip() or tool_events:
         return full_response, None
     if round_reasoning.strip():
-        return round_reasoning, None
+        _note = (
+            "The model spent the whole turn reasoning and never wrote a final "
+            "answer. Its reasoning is in the thinking section above — ask it to "
+            "continue, or retry."
+        )
+        return f"<think>{round_reasoning}</think>\n\n{_note}", None
     _error_msg = "The model returned an empty response. Please try again or switch to a different model."
     return _error_msg, f'data: {json.dumps({"delta": _error_msg})}\n\n'
 

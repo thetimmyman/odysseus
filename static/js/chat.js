@@ -2479,6 +2479,21 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
               } else if (json.type === 'agent_step') {
                 if (_isBg) continue;
+                // Close an unterminated <think> before the round boundary.
+                // A round that ends on a tool call emits reasoning and then NO
+                // answer delta, so nothing ever appended the closing tag and
+                // _thinkOpen stayed true into the next round. The next round's
+                // reasoning then got no OPENING tag either (the flag said one
+                // was already open), so hasUnclosedThinkTag() saw plain text
+                // and rendered pages of raw deliberation as the answer — with
+                // an orphan </think> once real content finally arrived.
+                // That is POS-AI-24, and it is also how the guarded memory
+                // block in the system prompt became visible to the user.
+                if (_thinkOpen) {
+                  accumulated += '</think>';
+                  roundText += '</think>';
+                  _thinkOpen = false;
+                }
                 _cancelThinkingTimer();
                 _removeThinkingSpinner();
                 _renderStream();
@@ -2547,6 +2562,11 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                 banner.innerHTML = `<strong>Teacher takeover:</strong> escalating to <code>${esc(teacherName)}</code>${why}`;
                 chatBox.appendChild(banner);
                 // Reset round bubble state so the teacher's first text starts a new bubble
+                if (_thinkOpen) {          // same round-boundary close as agent_step
+                  accumulated += '</think>';
+                  roundText += '</think>';
+                  _thinkOpen = false;
+                }
                 roundHolder = null;
                 roundText = '';
                 roundFinalized = false;
