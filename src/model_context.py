@@ -393,6 +393,40 @@ def _proxy_catalog_context(endpoint_url: str, model: str) -> Optional[int]:
     return None
 
 
+def _ollama_serving_context(endpoint_url: str, model: str) -> Optional[int]:
+    """Actual serving context window of ``model`` on an ollama host, or None.
+
+    ``/api/ps`` lists the models currently held in VRAM and, for each, the
+    ``context_length`` its slot was actually created with — the num_ctx ollama
+    derived from available VRAM, not the architectural maximum that
+    ``/api/show`` reports and not the by-name guess in the known table.
+
+    Returns None when the model is not resident, so the caller falls back to
+    the known table exactly as before. That is deliberate: a cold model has no
+    serving window to report, and inventing one is worse than the generic
+    answer. Local endpoints are re-probed on every lookup (they are never
+    cached, see ``_get_context_length_cached``), so a model that is reloaded at
+    a different num_ctx is picked up on the next call rather than going stale.
+    """
+    try:
+        from src.llm_core import _ollama_api_root
+
+        base = endpoint_url.split("/v1")[0] if "/v1" in endpoint_url else endpoint_url
+        r = httpx.get(f"{_ollama_api_root(base)}/ps", timeout=REQUEST_TIMEOUT)
+        if not r.is_success:
+            return None
+        for entry in (r.json() or {}).get("models") or []:
+            if not isinstance(entry, dict):
+                continue
+            if model in (entry.get("model"), entry.get("name")):
+                ctx = entry.get("context_length")
+                if isinstance(ctx, int) and ctx > 0:
+                    return ctx
+    except Exception:
+        return None
+    return None
+
+
 def _query_context_length(endpoint_url: str, model: str) -> Tuple[int, bool]:
     """Query the model API for context length. Returns (context_length, known) where
     ``known`` is False only for the bare DEFAULT_CONTEXT fallback."""
@@ -431,6 +465,19 @@ def _query_context_length(endpoint_url: str, model: str) -> Tuple[int, bool]:
                         return n_ctx, True
         except Exception:
             pass
+
+        # Ollama's equivalent of /slots. Without it an ollama endpoint falls
+        # through to the known-models table, which keys on the model NAME and
+        # so reports one window for every host serving that name. That is wrong
+        # in both directions on a two-host fleet: measured 2026-08-25, the same
+        # qwen3.8:27b serves 262144 on one box and 32768 on another, while the
+        # table reports 131072 for both. Under-reporting wastes capacity;
+        # over-reporting silently truncates the prompt, which is a correctness
+        # bug the moment the same model is reachable at two endpoints.
+        ollama_ctx = _ollama_serving_context(endpoint_url, model)
+        if ollama_ctx:
+            logger.info(f"Ollama /api/ps reports context_length={ollama_ctx} for {model}")
+            return ollama_ctx, True
 
     # GitHub Copilot's /models requires auth + X-GitHub-Api-Version headers that
     # aren't available here; an unauthenticated probe just 400s. All Copilot
