@@ -32,7 +32,14 @@ def _ensure_schema():
     aborting during collection on an unpinned mcp 2.x. Running this file alone
     always passed, which is why it was never caught.
     """
-    session = db.SessionLocal()
+    import core.session_manager as sm_mod
+
+    # Bind to SessionManager's OWN SessionLocal, not core.database's. It does
+    # `from .database import ... SessionLocal` at import, so it holds a fixed
+    # reference; rebinding core.database.SessionLocal later does not follow.
+    # Creating tables via core.database can therefore target a different engine
+    # than the code under test writes through.
+    session = sm_mod.SessionLocal()
     try:
         db.Base.metadata.create_all(bind=session.get_bind())
         yield
