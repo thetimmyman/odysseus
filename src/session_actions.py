@@ -55,6 +55,16 @@ async def run_auto_sort(owner: str, skip_llm: bool = False, delete_throwaway: bo
         for row in rows:
             if getattr(row, 'is_important', False):
                 continue
+            # A session with an in-flight generation looks identical to a
+            # just-abandoned one (1 user message, 0 assistant messages yet) —
+            # without this check, a long-running agent turn can have its own
+            # session deleted out from under it purely by unlucky timing
+            # against this sweep. (Re-land of 11d52d7, stranded on the Jul-7
+            # archive branch; originally found via a benchmark session being
+            # deleted mid-turn.)
+            from src import agent_runs
+            if agent_runs.is_active(row.id):
+                continue
             created_at = row.created_at or row.updated_at or datetime.utcnow()
             is_fresh = (datetime.utcnow() - created_at) < _FRESH_EMPTY_SESSION_GRACE
             if (row.name or "").strip() == "Incognito":
