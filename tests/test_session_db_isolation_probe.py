@@ -11,20 +11,33 @@ from core.models import ChatMessage
 
 @pytest.fixture(autouse=True)
 def _ensure_schema():
-    """Re-assert the schema immediately before each test in this module.
+    """Create the schema on the engine `SessionLocal` is actually bound to.
 
-    conftest points DATABASE_URL at `sqlite:///:memory:`, whose schema does not
-    reliably survive to test time once the *whole* suite runs — an earlier
-    module can dispose the engine, and the replacement connection comes back
-    empty. Creating tables at import time alone then fails with
-    "no such table: sessions". `create_all` is idempotent and never drops, so
-    this is safe for the second test, which deliberately reads rows written by
-    the first.
+    conftest points DATABASE_URL at `sqlite:///:memory:`. `SessionLocal` is
+    bound to an engine once, at `core.database` import; an earlier test module
+    in a full-suite run can rebind or dispose `core.database.engine`, after
+    which `create_all(bind=db.engine)` targets a *different* engine than the
+    one SessionManager writes through — so the tables land in the wrong
+    database and the test dies on "no such table: sessions".
 
-    Latent since the suite could not run end-to-end: pytest was aborting during
-    collection on an unpinned mcp 2.x. Surfaced once that was fixed.
+    Resolving the bind from a live Session removes the guesswork: whatever
+    SessionManager is about to use is what we create the tables on. Keeping the
+    Session open until after `create_all` matters too — returning the only
+    connection to the pool is what discards an in-memory database.
+
+    `create_all` is idempotent and never drops, so the second test still reads
+    the rows the first one wrote.
+
+    Latent until now because the suite could not run end-to-end: pytest was
+    aborting during collection on an unpinned mcp 2.x. Running this file alone
+    always passed, which is why it was never caught.
     """
-    db.Base.metadata.create_all(bind=db.engine)
+    session = db.SessionLocal()
+    try:
+        db.Base.metadata.create_all(bind=session.get_bind())
+        yield
+    finally:
+        session.close()
 
 
 def _fresh_mgr():
