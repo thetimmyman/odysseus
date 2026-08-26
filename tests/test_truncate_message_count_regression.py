@@ -9,30 +9,61 @@ inconsistent with the actual rows. get_session relies on message_count>0 to
 decide whether to lazily hydrate from the DB, so an inflated count is a latent
 correctness hazard.
 """
+import importlib
 import os
 import tempfile
 
+import pytest
 
-def _make_manager():
+
+@pytest.fixture
+def temp_db_manager():
+    """A SessionManager bound to a throwaway file DB — with the global state restored.
+
+    This rebinds process-wide state: it sets ``os.environ["DATABASE_URL"]`` and
+    ``importlib.reload``s both ``core.database`` (new ``engine`` + ``SessionLocal``)
+    and ``core.session_manager`` (which holds its own ``SessionLocal`` reference
+    from import time). Leaving that in place leaks into every module that runs
+    afterwards, because the rest of the suite shares this interpreter — later
+    tests would silently read and write this temp file instead of the in-memory
+    DB conftest configured.
+
+    Restoring on teardown is what keeps the suite order-independent.
+    """
+    import core.database as database
+    import core.session_manager as sm_mod
+
+    original_url = os.environ.get("DATABASE_URL")
+
     db_fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(db_fd)
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 
-    # Import after DATABASE_URL is set so the engine binds to the temp DB.
-    import importlib
-    import core.database as database
+    # Reload after DATABASE_URL is set so the engine binds to the temp DB.
     importlib.reload(database)
     database.Base.metadata.create_all(bind=database.engine)
-
-    import core.session_manager as sm_mod
     importlib.reload(sm_mod)
-    return sm_mod.SessionManager(), database, sm_mod
+
+    try:
+        yield sm_mod.SessionManager(), database, sm_mod
+    finally:
+        if original_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = original_url
+        # Re-point the shared modules back at the original database.
+        importlib.reload(database)
+        importlib.reload(sm_mod)
+        try:
+            os.unlink(db_path)
+        except OSError:
+            pass
 
 
-def test_truncate_keep_count_exceeds_total_does_not_inflate_count():
+def test_truncate_keep_count_exceeds_total_does_not_inflate_count(temp_db_manager):
     from core.models import ChatMessage
 
-    sm, database, sm_mod = _make_manager()
+    sm, database, sm_mod = temp_db_manager
     sid = "short-session"
     sm.create_session(session_id=sid, name="t", endpoint_url="x",
                       model="m", rag=False, owner="u")
