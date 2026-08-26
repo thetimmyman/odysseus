@@ -3,6 +3,7 @@ import json
 import os
 from typing import Optional
 from fastapi import APIRouter, Request
+from core.platform_compat import safe_chmod
 from src.auth_helpers import get_current_user
 from src.constants import USER_PREFS_FILE
 
@@ -26,6 +27,16 @@ def _save(prefs):
         json.dump(prefs, f, indent=2)
         f.flush()
         os.fsync(f.fileno())
+    # Lock to 0o600 *before* the rename, not after.
+    #
+    # This file holds per-user credentials (CalDAV account passwords), so it
+    # must not be world-readable. Chmod-ing after `os.replace` would leave a
+    # window where the new inode is still 0644, and — more importantly — a
+    # chmod applied by hand on the host does not survive: `os.replace` swaps in
+    # a brand-new inode created under the process umask (0644), silently
+    # undoing any external hardening on the very next preference save.
+    # Applying the mode to the tmp file makes every write self-healing.
+    safe_chmod(tmp, 0o600)
     os.replace(tmp, PREFS_FILE)
 
 

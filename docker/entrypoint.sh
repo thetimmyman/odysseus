@@ -46,6 +46,35 @@ for dir in /app /app/data /app/logs; do
     fi
 done
 
+# Repair the *mode* on credential-bearing state files, not just the owner.
+#
+# The chown loop above fixes ownership but leaves permissions alone, so a
+# world-readable secret stays world-readable forever. That gap is reachable in
+# normal operation: the image declares no USER (privileges are dropped for the
+# app process only, by the `gosu` exec at the bottom of this file), so any
+# `docker exec odysseus-odysseus-1 ...` an operator runs lands as **root**. The
+# app's own config writers are atomic (write tmp, then `os.replace`), and an
+# atomic write by root creates a *new* inode owned by root under root's umask —
+# 0644. One maintenance one-liner is therefore enough to publish a credential
+# file to every uid in the container and, through the bind mount, on the host.
+#
+# The app re-applies 0600 itself whenever it writes these (see
+# routes/prefs_routes.py::_save), so this loop only has to cover the window
+# between an out-of-band root write and the app's next write of that file.
+#
+# Operator note: prefer `docker exec -u odysseus …` for anything that writes
+# into /app/data, so the repair never has to run.
+for secret_file in \
+    /app/data/user_prefs.json \
+    /app/data/auth.json \
+    /app/data/sessions.json \
+    /app/data/integrations.json \
+    /app/data/.app_key; do
+    if [ -f "$secret_file" ]; then
+        chmod 600 "$secret_file" 2>/dev/null || true
+    fi
+done
+
 # Cookbook installs vllm/etc. via `pip install --user`, which pulls
 # nvidia-cuda-* wheels into /app/.local but does not set CUDA_HOME or
 # symlink /usr/local/cuda. vllm 0.22+ then crashes during engine init
