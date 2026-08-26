@@ -146,6 +146,23 @@ DEFAULT_SETTINGS = {
     "teacher_model": "",
     "teacher_enabled": False,
     "teacher_tier2_enabled": False,
+    # Operator policy for the two background-extraction gates. Resolved by
+    # routes/chat_helpers.py::_background_extraction_enabled as the fallback
+    # when a user has no explicit preference of their own — so a newly created
+    # account inherits the operator's choice instead of silently running the
+    # extractors.
+    #
+    # Both ship OFF. Each spawns a background model call off the back of a
+    # user's turn, and a background call's completion landing in an interactive
+    # session was POS-AI-23 — observed twice in production, once per subsystem.
+    # Set either to True once that lane isolation is deployed and observed
+    # clean, and every account without its own toggle follows.
+    #
+    # `auto_memory` is the more consequential of the two: it extracts personal
+    # facts, and it is the subsystem whose output contract was persisted as an
+    # assistant reply in session 8670f5ae. Re-enable it last.
+    "auto_memory": False,
+    "auto_skills": False,
     # Skills: minimum self-reported confidence for an auto-written (LLM-authored)
     # DRAFT skill to be injected into the agent prompt. Published skills always
     # qualify. Keeps low-confidence auto-skills out of context until they're

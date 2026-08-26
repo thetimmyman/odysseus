@@ -16,6 +16,7 @@ from src.endpoint_resolver import normalize_base
 from src.context_compactor import maybe_compact, trim_for_context
 from src.auth_helpers import get_current_user
 from src.prompt_security import untrusted_context_message
+from src.settings import get_setting
 from routes.prefs_routes import _load_for_user as load_prefs_for_user
 
 from fastapi import HTTPException
@@ -116,6 +117,62 @@ def _enforce_chat_privileges(request, sess) -> None:
         db.close()
     if count >= cap:
         raise HTTPException(429, f"Daily message limit reached ({cap}). Try again in 24 hours.")
+
+
+#: The per-user preferences that gate a *background model call* made off the
+#: back of a user's turn. They are grouped because they are one class of risk,
+#: not two features: each spawns a call whose prompt has its own output
+#: contract, and both were observed in POS-AI-23 arriving in an interactive
+#: session and being persisted as the assistant's reply — the memory extractor
+#: in session 8670f5ae, the skill extractor in 2c490607.
+BACKGROUND_EXTRACTION_PREFS = ("auto_memory", "auto_skills")
+
+
+def _background_extraction_enabled(uprefs: dict, key: str) -> bool:
+    """Resolve one background-extraction gate.
+
+    Resolution order:
+
+    1. the user's explicit preference (the Settings toggle);
+    2. the operator's system-level setting of the same name;
+    3. off.
+
+    **Absence of the preference must not mean "on".** It used to: the gates
+    were ``uprefs.get(key, True)``, so every account that had never opened the
+    toggle — and every account created from then on — silently ran the
+    extractor.
+
+    That is what made the POS-AI-23 interim containment partial. Setting the
+    pref to ``False`` reaches exactly the accounts someone remembered to set it
+    on: for ``auto_skills`` that was one of four on the live box, and for
+    ``auto_memory`` it was **none of four** — the subsystem behind one of the
+    two observed crossovers was never covered at all. A containment measure
+    whose reach depends on which principals happen to carry a key is not
+    containment.
+
+    Step 2 keeps this a policy the operator sets once rather than a chore
+    repeated per account: ``get_setting`` reads ``data/settings.json``, and
+    both keys ship ``False`` in ``DEFAULT_SETTINGS``.
+    """
+    if key in uprefs:
+        return bool(uprefs[key])
+    return bool(get_setting(key, False))
+
+
+def auto_memory_enabled_for(uprefs: dict) -> bool:
+    """Whether background memory extraction may run for this user.
+
+    The higher-consequence of the two: what it extracts is personal facts
+    (``{"text": …, "category": "identity"|"preference"|"fact"}``), and the
+    reply persisted into session 8670f5ae on 2026-08-24 was this subsystem's
+    output contract verbatim.
+    """
+    return _background_extraction_enabled(uprefs, "auto_memory")
+
+
+def auto_skills_enabled_for(uprefs: dict) -> bool:
+    """Whether background skill extraction may run for this user."""
+    return _background_extraction_enabled(uprefs, "auto_skills")
 
 
 def needs_auto_name(name: str) -> bool:
@@ -932,7 +989,7 @@ def run_post_response_tasks(
     # Memory extraction — only every 4th message pair to avoid excess LLM calls
     _msg_count = len(sess.history) if hasattr(sess, 'history') else 0
     _should_extract = (_msg_count >= 4) and (_msg_count % 4 == 0)
-    if allow_background_extraction and not incognito and not compare_mode and _should_extract and uprefs.get("auto_memory", True):
+    if allow_background_extraction and not incognito and not compare_mode and _should_extract and auto_memory_enabled_for(uprefs):
         from services.memory.memory_extractor import extract_and_store
         from src.task_endpoint import resolve_task_endpoint
         t_url, t_model, t_headers = resolve_task_endpoint(
@@ -946,7 +1003,7 @@ def run_post_response_tasks(
     # Skill extraction from complex agent runs. Only when the user actually
     # chose agent mode — not a chat we auto-escalated for a notes/calendar
     # intent, and never in incognito/compare.
-    auto_skills_enabled = bool(uprefs.get("auto_skills", True))
+    auto_skills_enabled = auto_skills_enabled_for(uprefs)
     # Quiet by default — full gate/dispatch/start trace runs at DEBUG so
     # users can re-enable diagnostics with LOG_LEVEL=DEBUG when something
     # silently breaks. INFO-level only shows the outcome inside
