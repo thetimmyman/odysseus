@@ -1630,6 +1630,7 @@ class TaskScheduler:
             _task_fallbacks = resolve_utility_fallback_candidates(owner=task.owner or None)
         except Exception:
             _task_fallbacks = []
+        from src.stream_events import answer_delta as _answer_delta
         async for event_str in stream_agent_loop(
             endpoint_url=endpoint_url,
             model=model,
@@ -1645,9 +1646,15 @@ class TaskScheduler:
             if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
                 try:
                     data = json.loads(event_str[6:])
-                    # Capture text from all event types, not just delta
+                    # Capture text from all event types, not just delta.
+                    # ANSWER deltas only — reasoning deltas carry `thinking:
+                    # true` and used to be folded into the task's output text,
+                    # so a thinking model's chain of thought went out in
+                    # reminders and notifications (POS-AI-24).
                     if "delta" in data:
-                        full_text += data["delta"]
+                        _d = _answer_delta(data)
+                        if _d is not None:
+                            full_text += _d
                     elif data.get("type") == "tool_output":
                         # Tool results — capture summary so we have SOMETHING even
                         # if the model never produces a final text response

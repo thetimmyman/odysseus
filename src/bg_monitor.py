@@ -28,8 +28,14 @@ _FOLLOWUP_MAX_ROUNDS = 12
 async def _drain_agent(sess, messages):
     """Run the agent loop headless against a session. Returns
     (final_prose, tool_events) — tool_events in the same shape the live chat
-    saves, so the frontend rebuilds them as standard agent-thread tool cards."""
+    saves, so the frontend rebuilds them as standard agent-thread tool cards.
+
+    Only ANSWER deltas are accumulated. This used to take every ``delta`` event,
+    reasoning included, so a thinking model's entire chain of thought was
+    persisted into the user's session as the assistant's message (POS-AI-24).
+    """
     from src.agent_loop import stream_agent_loop
+    from src.stream_events import answer_delta
     full = ""
     tool_events = []
     round_num = 1
@@ -53,8 +59,8 @@ async def _drain_agent(sess, messages):
         if not isinstance(d, dict):
             continue
         if "delta" in d:
-            delta = d.get("delta")
-            if isinstance(delta, str):
+            delta = answer_delta(d)
+            if delta is not None:
                 full += delta
         elif d.get("type") == "agent_step":
             round_num = d.get("round", round_num)
@@ -109,6 +115,34 @@ async def _run_followup(rec: dict) -> bool:
     context.append({"role": "user", "content": inject})
 
     full, tool_events = await _drain_agent(sess, context)
+
+    # The busy-check above ran BEFORE a run that takes minutes. Re-check right
+    # before writing: a user turn that started while we were generating owns the
+    # session now, and appending underneath it produces exactly the interleaved/
+    # out-of-order history this guard exists to prevent. Retry on the next tick.
+    try:
+        from src import agent_runs
+        if agent_runs.is_active(sess.id):
+            logger.info(
+                "bg-followup: session %s became busy during the run — deferring job %s",
+                sess.id, rec.get("id"),
+            )
+            return False
+    except Exception:
+        pass
+
+    # Never write a background completion into a user session unchecked. `full`
+    # is model output produced by a prompt the user never sent; an empty or
+    # sentinel-shaped result is not an answer, and persisting one as the
+    # assistant's reply is the POS-AI-23 failure mode.
+    from src.bg_crossover import detect as _detect_crossover
+    _crossover = _detect_crossover(full)
+    if not full.strip() or _crossover:
+        logger.warning(
+            "bg-followup: discarding %s follow-up output for job %s (session %s)",
+            _crossover or "empty", rec.get("id"), sess.id,
+        )
+        return True  # handled — don't retry a run that produced nothing usable
 
     # Persist ONLY the assistant continuation so it renders as a normal agent
     # turn — a standard chat bubble plus `tool_events` that the frontend

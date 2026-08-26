@@ -115,7 +115,14 @@ def test_stream_agent_reasoning_only_does_not_emit_error():
     )
     assert chunk is None, "Must not emit any SSE chunk when reasoning is present"
     assert "The model returned an empty response" not in (chunk or "")
-    assert final_response == "I reasoned carefully"
+    # The reasoning is preserved, but it is NOT the answer: it must be wrapped in
+    # <think> so the finaliser routes it to metadata.thinking / the collapsed
+    # thinking section, with a real reply after it (POS-AI-24). Persisting bare
+    # reasoning made the saved message literally BE the model's deliberation.
+    assert final_response.startswith("<think>I reasoned carefully</think>")
+    assert "I reasoned carefully" in final_response
+    reply = final_response.split("</think>", 1)[1].strip()
+    assert reply, "a reasoning-only turn must still leave the user a real reply"
 
 
 # ---------------------------------------------------------------------------

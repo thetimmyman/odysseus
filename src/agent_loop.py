@@ -16,6 +16,7 @@ from typing import AsyncGenerator, List, Dict, Optional, Set
 from urllib.parse import urlparse
 
 from src.llm_core import stream_llm, stream_llm_with_fallback, _is_ollama_native_url
+from src.llm_lane import BACKGROUND as LLM_LANE_BACKGROUND
 from src.model_context import estimate_tokens
 from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
@@ -406,21 +407,59 @@ def _section_text(name: str, default: str) -> str:
     return val if isinstance(val, str) and val.strip() else default
 
 
+def _workspace_directive() -> str:
+    """Tell the model, concretely, where to put its own files.
+
+    A live run picked `/app/data/fizzbuzz_work` as its scratch directory —
+    inside the app's own state directory, next to app.db, memory.json,
+    settings.json, sessions/ and skills/ — *after explicitly considering and
+    rejecting /tmp*. It wasn't being careless: cwd and HOME were /app/data, and
+    nothing in the prompt said otherwise. Naming the directory removes the
+    inference; naming what is next door removes the temptation to wander up one
+    level "because that's where I am".
+    """
+    try:
+        from src.tool_execution import agent_workspace_path
+        ws = agent_workspace_path()
+    except Exception:
+        return ""
+    return (
+        "## Your workspace\n"
+        f"`{ws}` is YOUR directory. It is already your working directory and your "
+        "$HOME, it persists across restarts, and it is where every file you create "
+        "for yourself belongs — scratch scripts, checkouts, build output, test "
+        "fixtures. Use it (or a subdirectory of it) by default; you do not need to "
+        "go hunting for a writable location, and you should not create working "
+        "directories anywhere else.\n"
+        "Its PARENT is the application's live state directory — the database, "
+        "settings, saved memories, sessions and skills live there. Never create "
+        "scratch files or working directories in it, and never write to those "
+        "state files directly (each one has a proper tool: `manage_memory`, "
+        "`manage_settings`, `manage_skills`, the sessions API). Reading files the "
+        "user uploaded is fine."
+    )
+
+
 def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool = False) -> str:
     """Build the system prompt with only the specified tools included."""
     disabled = disabled_tools or set()
     included = tool_names - disabled
+    workspace_note = _workspace_directive()
 
     if compact:
         tool_list = ", ".join(sorted(included)) if included else "none"
         parts = [
             "You are an AI assistant with tool access.",
             f"Available tools: {tool_list}.",
-            _API_AGENT_RULES,
         ]
+        if workspace_note:
+            parts.append(workspace_note)
+        parts.append(_API_AGENT_RULES)
         return "\n\n".join(parts)
 
     parts = [_AGENT_PREAMBLE]
+    if workspace_note:
+        parts.append(workspace_note)
 
     # Collect full-block tool sections (with examples)
     full_blocks = []
@@ -443,15 +482,32 @@ def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool 
     if one_liners:
         parts.append("## Additional tools\n" + "\n".join(one_liners))
 
-    # Mention tools that exist but weren't included
+    # Mention tools that exist but weren't selected for this turn.
+    #
+    # This notice used to read "(Other tools available when needed: a, b, c, …
+    # (N more))" — which is wrong in both halves, and expensively so. The listed
+    # tools are NOT available this turn: only the selected set is sent as
+    # function schemas, so calling one of them fails. And the truncation implies
+    # a hidden reserve the model could reach for, when there is no such
+    # mechanism — nothing in Odysseus lets a model activate a tool mid-turn.
+    #
+    # A model reading it concluded its toolset was truncated and that it
+    # therefore lacked `edit_file` — which was in that very round's schema list,
+    # documented right above — and burned reasoning tokens working around its
+    # own tools with `sed`. So: say plainly that everything documented above is
+    # callable right now, and that the rest arrives automatically or not at all.
     all_known = set(TOOL_SECTIONS.keys())
     not_shown = all_known - included - disabled
     if not_shown:
-        sample = sorted(not_shown)[:5]
-        hint = ", ".join(sample)
-        if len(not_shown) > 5:
-            hint += f", ... ({len(not_shown) - 5} more)"
-        parts.append(f"(Other tools available when needed: {hint})")
+        hint = ", ".join(sorted(not_shown))
+        parts.append(
+            "(Every tool documented above is available to you RIGHT NOW — call it "
+            "directly. Nothing is hidden behind an activation step, and there is no "
+            "way to request more tools mid-turn. These other tools exist but are NOT "
+            f"loaded this turn: {hint}. They are selected automatically from what the "
+            "user asks for, so if you need one, say so and the user can ask again — "
+            "do not try to work around a tool you DO have.)"
+        )
 
     parts.append(_AGENT_RULES)
     return "\n\n".join(parts)
@@ -1398,6 +1454,12 @@ async def _run_verifier_subagent(
             # 2026-08-25 11:25) surfacing as 'verifier subagent failed: 502'.
             headers=headers, temperature=0.0, max_tokens=600,
             timeout=int(get_setting("agent_verifier_timeout_seconds", 240) or 240),
+            # Explicit: the verifier is a background utility call made from
+            # INSIDE the user's request context, so it does not inherit the
+            # background lane the way a spawned task does. Without this it
+            # shares the interactive connection pool and cache namespace with
+            # the very turn it is judging (POS-AI-23).
+            lane=LLM_LANE_BACKGROUND,
         )
     except Exception as e:
         logger.warning(f"[agent] verifier subagent failed: {e}")
@@ -1423,7 +1485,14 @@ def _empty_response_fallback(
     When a thinking model routes all tokens to reasoning_content (leaving
     content=""), full_response is empty but round_reasoning has content.
     The reasoning was already streamed as {thinking:true} chunks — do not
-    re-emit it as a normal delta.  Just persist it and yield nothing.
+    re-emit it as a normal delta.
+
+    The reasoning IS still persisted so the turn isn't lost, but wrapped in
+    ``<think>`` and followed by a real reply. Persisting bare reasoning made the
+    saved message *be* the deliberation: on reload the user read pages of the
+    model's private thinking as though it were the answer (POS-AI-24). Wrapped,
+    the finaliser routes it to `metadata.thinking` and the collapsed thinking
+    section, which is the convention the rest of the UI already uses.
 
     Returns:
         (final_response: str, chunk: str | None)
@@ -1432,7 +1501,12 @@ def _empty_response_fallback(
     if full_response.strip() or tool_events:
         return full_response, None
     if round_reasoning.strip():
-        return round_reasoning, None
+        _note = (
+            "The model spent the whole turn reasoning and never wrote a final "
+            "answer. Its reasoning is in the thinking section above — ask it to "
+            "continue, or retry."
+        )
+        return f"<think>{round_reasoning}</think>\n\n{_note}", None
     _error_msg = "The model returned an empty response. Please try again or switch to a different model."
     return _error_msg, f'data: {json.dumps({"delta": _error_msg})}\n\n'
 
@@ -1930,10 +2004,22 @@ async def stream_agent_loop(
         elif _is_api_model:
             # Filter schemas by RAG-selected tools (if available)
             if _relevant_tools:
+                # Send schemas for exactly what the system prompt documents.
+                # _build_base_prompt describes ALWAYS_AVAILABLE | relevant, but
+                # this filter used relevant alone, so a caller-supplied
+                # relevant_tools set (task_scheduler, crews) produced a prompt
+                # promising tools whose schemas were never sent — the model is
+                # told it has `edit_file`, then finds it can't call it. RAG's own
+                # get_tools_for_query already unions ALWAYS_AVAILABLE; doing it
+                # here makes the two sets identical on every path.
+                from src.tool_index import ALWAYS_AVAILABLE as _ALWAYS
+                _schema_tools = set(_relevant_tools) | set(_ALWAYS)
                 base_schemas = [
                     s for s in FUNCTION_TOOL_SCHEMAS
-                    if s.get("function", {}).get("name") in _relevant_tools
+                    if s.get("function", {}).get("name") in _schema_tools
                 ]
+                # MCP tools are never "always available" — they are only ever
+                # what retrieval selected.
                 _mcp_filtered = [
                     s for s in mcp_schemas
                     if s.get("function", {}).get("name") in _relevant_tools

@@ -1,6 +1,5 @@
 """Shared helpers for chat routes — context building, post-response tasks, auth resolution."""
 
-import asyncio
 import json
 import logging
 import os
@@ -12,6 +11,7 @@ from core.models import ChatMessage
 from core.database import SessionLocal
 from core.database import Session as DBSession, ModelEndpoint
 from src.llm_core import normalize_model_id
+from src.background_tasks import spawn as spawn_background
 from src.endpoint_resolver import normalize_base
 from src.context_compactor import maybe_compact, trim_for_context
 from src.auth_helpers import get_current_user
@@ -390,9 +390,9 @@ def add_user_message(sess, chat_handler, preprocessed: PreprocessedMessage, inco
 def fire_message_event(request, webhook_manager, session_id: str, sess, message: str, compare_mode: bool = False):
     """Fire webhook and event_bus events for a new user message."""
     if webhook_manager and not compare_mode:
-        asyncio.create_task(webhook_manager.fire("chat.message", {
+        spawn_background(webhook_manager.fire("chat.message", {
             "session_id": session_id, "model": sess.model, "message": message[:2000],
-        }))
+        }), name="webhook-chat-message")
     from src.event_bus import fire_event
     user = get_current_user(request)
     fire_event("message_sent", user)
@@ -940,6 +940,19 @@ def save_assistant_response(
         _content = _think_info["reply"]
     else:
         _content = full_response
+
+    # Last line of defence for POS-AI-23. The isolation work (src/llm_lane.py,
+    # src/background_tasks.py) is what should stop a background utility
+    # completion reaching a user turn; this makes it impossible for one to be
+    # persisted as the assistant's reply *silently* if some path still leaks.
+    # Two such messages were written into live sessions before this existed.
+    from src.bg_crossover import guard_user_reply as _guard_reply
+    _content, _crossover_reason = _guard_reply(
+        _content, session_id=session_id, where="chat-finalize",
+    )
+    if _crossover_reason:
+        md["background_crossover"] = _crossover_reason
+
     sess.add_message(ChatMessage("assistant", _content, metadata=md))
 
     if not incognito:
@@ -995,10 +1008,10 @@ def run_post_response_tasks(
         t_url, t_model, t_headers = resolve_task_endpoint(
             sess.endpoint_url, sess.model, sess.headers, owner=owner,
         )
-        asyncio.create_task(extract_and_store(
+        spawn_background(extract_and_store(
             sess, memory_manager, memory_vector,
             t_url, t_model, t_headers,
-        ))
+        ), name="memory-extract")
 
     # Skill extraction from complex agent runs. Only when the user actually
     # chose agent mode — not a chat we auto-escalated for a notes/calendar
@@ -1034,12 +1047,12 @@ def run_post_response_tasks(
                 sess.endpoint_url, sess.model, sess.headers, owner=owner,
             )
             logger.debug("[skill-extract] dispatching extractor (model=%s)", s_model)
-            asyncio.create_task(maybe_extract_skill(
+            spawn_background(maybe_extract_skill(
                 sess, skills_manager,
                 s_url, s_model, s_headers,
                 agent_rounds, agent_tool_calls,
                 owner=owner,
-            ))
+            ), name="skill-extract")
 
     # Token accumulation
     if last_metrics:
@@ -1047,11 +1060,11 @@ def run_post_response_tasks(
 
     # Webhook
     if webhook_manager and not compare_mode:
-        asyncio.create_task(webhook_manager.fire("chat.completed", {
+        spawn_background(webhook_manager.fire("chat.completed", {
             "session_id": session_id, "model": sess.model,
             "user_message": message, "response": full_response[:2000],
-        }))
+        }), name="webhook-chat-completed")
 
     # Auto-name
     if needs_auto_name(sess.name):
-        asyncio.create_task(auto_name_session(session_manager, sess))
+        spawn_background(auto_name_session(session_manager, sess), name="auto-name-session")

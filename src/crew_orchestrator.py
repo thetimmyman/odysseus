@@ -633,6 +633,7 @@ async def _dispatch_worker(
     Every emitted payload is `_redact(...)`-scrubbed in full (fix #1).
     """
     from src.agent_loop import stream_agent_loop
+    from src.stream_events import answer_delta as _answer_delta
     from src import tool_execution
     from src.crew_approvals import _redact
 
@@ -750,9 +751,15 @@ async def _dispatch_worker(
                 yield _redact(event_str, owner)
                 continue
 
-            # Accumulate text/tool results exactly as the scheduler does.
+            # Accumulate text/tool results exactly as the scheduler does —
+            # ANSWER deltas only. Reasoning deltas (`thinking: true`) are still
+            # forwarded to the UI below, but folding them into `full_text` fed
+            # the model's raw deliberation to the next worker as if it were the
+            # previous worker's result (POS-AI-24).
             if "delta" in data:
-                full_text += data.get("delta") or ""
+                _ans = _answer_delta(data)
+                if _ans is not None:
+                    full_text += _ans
             elif data.get("type") == "tool_output":
                 summary = data.get("stdout") or data.get("output") or data.get("result") or ""
                 if isinstance(summary, str) and summary.strip():
