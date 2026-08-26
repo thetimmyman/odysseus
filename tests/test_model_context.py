@@ -318,3 +318,118 @@ class TestGetContextLength:
 
         endpoint = "http://100.117.136.97:34521/v1/chat/completions"
         assert model_context.get_context_length(endpoint, "unknown-proxy-model") == model_context.DEFAULT_CONTEXT
+
+
+# ---------------------------------------------------------------------------
+# Ollama /api/ps serving-context probe (POS-AI-30)
+# ---------------------------------------------------------------------------
+
+class _PsResponse:
+    """Minimal httpx.Response stand-in for /api/ps."""
+
+    def __init__(self, payload, success=True):
+        self._payload = payload
+        self.is_success = success
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+def _patch_ps(monkeypatch, payload, success=True, record=None):
+    def fake_get(url, **kwargs):
+        if record is not None:
+            record.append(url)
+        return _PsResponse(payload, success)
+
+    monkeypatch.setattr(model_context.httpx, "get", fake_get)
+
+
+def test_ollama_serving_context_reports_resident_window(monkeypatch):
+    """The resident model's real slot size wins over the by-name known table."""
+    calls = []
+    _patch_ps(monkeypatch, {"models": [{"model": "qwen3.8:27b", "context_length": 32768}]},
+              record=calls)
+    ctx = model_context._ollama_serving_context(
+        "http://192.168.1.130:11434/v1/chat/completions", "qwen3.8:27b")
+    assert ctx == 32768
+    assert calls == ["http://192.168.1.130:11434/api/ps"]
+
+
+def test_ollama_serving_context_matches_on_name_field(monkeypatch):
+    """/api/ps entries carry both `model` and `name`; either may match."""
+    _patch_ps(monkeypatch, {"models": [{"name": "qwen3.8:27b", "context_length": 262144}]})
+    assert model_context._ollama_serving_context(
+        "http://host.docker.internal:11434/v1", "qwen3.8:27b") == 262144
+
+
+def test_ollama_serving_context_none_when_model_not_resident(monkeypatch):
+    """A cold model has no serving window — fall back, don't invent one."""
+    _patch_ps(monkeypatch, {"models": [{"model": "some-other:8b", "context_length": 8192}]})
+    assert model_context._ollama_serving_context(
+        "http://192.168.1.130:11434/v1", "qwen3.8:27b") is None
+
+
+@pytest.mark.parametrize("payload,success", [
+    ({"models": []}, True),
+    ({}, True),
+    ({"models": [{"model": "qwen3.8:27b"}]}, True),                 # no context_length
+    ({"models": [{"model": "qwen3.8:27b", "context_length": 0}]}, True),
+    ({"models": [{"model": "qwen3.8:27b", "context_length": "big"}]}, True),
+    ({"models": ["not-a-dict"]}, True),
+    ({"models": [{"model": "qwen3.8:27b", "context_length": 32768}]}, False),  # HTTP error
+    (ValueError("bad json"), True),
+])
+def test_ollama_serving_context_degrades_to_none(monkeypatch, payload, success):
+    """Every malformed/unavailable shape returns None rather than raising."""
+    _patch_ps(monkeypatch, payload, success)
+    assert model_context._ollama_serving_context(
+        "http://192.168.1.130:11434/v1", "qwen3.8:27b") is None
+
+
+def test_ollama_serving_context_survives_transport_error(monkeypatch):
+    def boom(url, **kwargs):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(model_context.httpx, "get", boom)
+    assert model_context._ollama_serving_context(
+        "http://192.168.1.130:11434/v1", "qwen3.8:27b") is None
+
+
+def test_query_context_length_prefers_serving_window_over_known_table(monkeypatch):
+    """The whole point: two hosts, one model name, two different real windows.
+
+    `_lookup_known` returns 131072 for any qwen3*; the probe must override it
+    in both directions.
+    """
+    monkeypatch.setattr(model_context, "is_local_endpoint", lambda url: True)
+    monkeypatch.setattr(model_context, "_configured_endpoint_kind", lambda url: None)
+
+    def fake_get(url, **kwargs):
+        raise RuntimeError("no llama.cpp /slots here")
+
+    monkeypatch.setattr(model_context.httpx, "get", fake_get)
+
+    monkeypatch.setattr(model_context, "_ollama_serving_context", lambda u, m: 32768)
+    assert model_context._query_context_length(
+        "http://192.168.1.130:11434/v1", "qwen3.8:27b") == (32768, True)
+
+    monkeypatch.setattr(model_context, "_ollama_serving_context", lambda u, m: 262144)
+    assert model_context._query_context_length(
+        "http://host.docker.internal:11434/v1", "qwen3.8:27b") == (262144, True)
+
+
+def test_query_context_length_falls_back_to_known_when_cold(monkeypatch):
+    """Model not resident -> unchanged pre-existing behaviour (known table)."""
+    monkeypatch.setattr(model_context, "is_local_endpoint", lambda url: True)
+    monkeypatch.setattr(model_context, "_configured_endpoint_kind", lambda url: None)
+    monkeypatch.setattr(model_context, "_ollama_serving_context", lambda u, m: None)
+
+    def fake_get(url, **kwargs):
+        raise RuntimeError("nothing listening")
+
+    monkeypatch.setattr(model_context.httpx, "get", fake_get)
+    ctx, known = model_context._query_context_length(
+        "http://192.168.1.130:11434/v1", "qwen3.8:27b")
+    assert (ctx, known) == (131072, True)
