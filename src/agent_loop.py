@@ -16,6 +16,14 @@ from typing import AsyncGenerator, List, Dict, Optional, Set
 from urllib.parse import urlparse
 
 from src.llm_core import stream_llm, stream_llm_with_fallback, _is_ollama_native_url
+from src.agent_execution import (
+    EXECUTION_MODE_AGENT,
+    FAILURE_TRANSIENT,
+    build_execution_target,
+    classify_provider_failure,
+    select_transition_target,
+    summarize_provider_error,
+)
 from src.llm_lane import BACKGROUND as LLM_LANE_BACKGROUND
 from src.model_context import estimate_tokens
 from src.context_safety import (
@@ -599,6 +607,141 @@ def _endpoint_lookup_keys(endpoint_url: str) -> List[str]:
     except Exception:
         pass
     return keys
+
+
+def _resolve_api_model_flag(endpoint_url: str, model: str) -> bool:
+    """True when this endpoint/model speaks OpenAI-style native function calling.
+
+    Extracted from the former inline heuristic so a resolved execution target
+    can pin the TOOL-CALL FORMAT once (before round 1, and again only on an
+    explicit transition) instead of the loop re-deriving it every round.
+    Behaviour is unchanged:
+
+      * the per-endpoint ``supports_tools`` override wins (set at registration
+        time from the serve command — ``--enable-auto-tool-choice`` flips it on);
+      * Ollama-native (/api/chat), Ollama-OpenAI-compat (/v1 on :11434) and
+        known no-tool models (deepseek-r1) force fenced mode;
+      * otherwise a hosted-API host match or a tool-capable model family
+        (DeepSeek-v*, GPT*, Claude, Gemini, Qwen3+, Mixtral, Llama 3.1+) enables
+        native tools. This catches the DeepSeek-via-local-vLLM case where
+        ``endpoint_url`` doesn't include a vendor host.
+    """
+    _model_lc = (model or "").lower()
+    _endpoint_supports: Optional[bool] = None
+    try:
+        from core.database import SessionLocal as _SL, ModelEndpoint as _ME
+        _db = _SL()
+        try:
+            _ep = None
+            for _key in _endpoint_lookup_keys(endpoint_url):
+                _ep = _db.query(_ME).filter(_ME.base_url == _key).first()
+                if _ep is not None:
+                    break
+            if _ep is not None:
+                _endpoint_supports = _ep.supports_tools
+        finally:
+            _db.close()
+    except Exception as _e:
+        logger.debug(f"endpoint supports_tools lookup failed: {_e}")
+    _model_supports_tools = any(kw in _model_lc for kw in (
+        "gpt-4", "gpt-5", "gpt-o", "claude", "gemini", "gemma",
+        "qwen3", "qwen2.5", "mixtral", "mistral", "llama-3.1", "llama-3.2",
+        "llama-3.3", "llama-4",
+        # Local-served models that follow OpenAI-style function calling
+        # via vLLM's `--enable-auto-tool-choice`. Belt-and-suspenders
+        # with the per-endpoint flag above.
+        "minimax", "kimi", "yi-", "phi-3", "phi-4", "command-r",
+        "glm-4", "internlm", "hermes",
+        # deepseek-v2/v3/chat support tools via the cloud API; deepseek-r1
+        # (reasoning model) does not — handled by the blocklist below.
+        "deepseek-v", "deepseek-chat",
+    ))
+    # Models known to reject tool schemas at the Ollama/local level even when
+    # the endpoint URL would otherwise enable native function calling.
+    # The per-endpoint supports_tools flag (True/False) always takes priority.
+    _model_no_tools = any(kw in _model_lc for kw in ("deepseek-r1",))
+    # Native Ollama endpoints (/api/chat) handle tool schemas differently from
+    # the OpenAI-compat path. Models like gemma4, qwen3.5, ministral respond to
+    # tool schemas by emitting a single native tool_call token then stopping,
+    # rather than writing a fenced block (issue #1567). Unless the endpoint is
+    # explicitly marked supports_tools=True, treat Ollama-native as text-only so
+    # the fenced-block path is used instead of native function calling.
+    if _endpoint_supports is True:
+        return True
+    if (
+        _endpoint_supports is False
+        or _model_no_tools
+        or _is_ollama_native_url(endpoint_url or "")
+        or _is_ollama_openai_compat_url(endpoint_url or "")
+    ):
+        return False
+    return any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
+
+
+def _build_round_tool_schemas(
+    *,
+    is_api_model: bool,
+    force_answer: bool,
+    relevant_tools,
+    needs_admin: bool,
+    last_user: str,
+    mcp_schemas,
+    disabled_tools,
+) -> list:
+    """Per-round tool schemas for the pinned target's tool profile.
+
+    Extracted so it can be re-derived when (and only when) the execution target
+    is explicitly replaced mid-round — the loop then invokes the new backend
+    under ITS tool assumption, never the previous target's.
+
+    Only send function schemas for API models (OpenAI, Anthropic, etc.); local
+    models use fenced code blocks or <tool_code> — schemas add overhead.
+    """
+    if force_answer:
+        # Loop-breaker decided the model has enough info but keeps calling
+        # tools. Send NO tools this round so it's forced to write the answer.
+        return []
+    if is_api_model:
+        # Filter schemas by RAG-selected tools (if available)
+        if relevant_tools:
+            # Send schemas for exactly what the system prompt documents.
+            # _build_base_prompt describes ALWAYS_AVAILABLE | relevant, but this
+            # filter used relevant alone, so a caller-supplied relevant_tools
+            # set (task_scheduler, crews) produced a prompt promising tools
+            # whose schemas were never sent. RAG's own get_tools_for_query
+            # already unions ALWAYS_AVAILABLE; doing it here makes the two sets
+            # identical on every path.
+            from src.tool_index import ALWAYS_AVAILABLE as _ALWAYS
+            _schema_tools = set(relevant_tools) | set(_ALWAYS)
+            base_schemas = [
+                s for s in FUNCTION_TOOL_SCHEMAS
+                if s.get("function", {}).get("name") in _schema_tools
+            ]
+            # MCP tools are never "always available" — they are only ever
+            # what retrieval selected.
+            _mcp_filtered = [
+                s for s in mcp_schemas
+                if s.get("function", {}).get("name") in relevant_tools
+            ]
+            all_tool_schemas = base_schemas + _mcp_filtered
+        else:
+            base_schemas = FUNCTION_TOOL_SCHEMAS if needs_admin else [
+                s for s in FUNCTION_TOOL_SCHEMAS
+                if s.get("function", {}).get("name") not in _ADMIN_SCHEMA_NAMES
+            ]
+            all_tool_schemas = base_schemas + mcp_schemas
+        if disabled_tools:
+            all_tool_schemas = [
+                t for t in all_tool_schemas
+                if t.get("function", {}).get("name") not in disabled_tools
+                and t.get("name") not in disabled_tools
+            ]
+        return all_tool_schemas
+    # Local: only MCP schemas when message suggests MCP tool usage
+    _last_content = (last_user or "").lower()
+    _wants_mcp = any(kw in _last_content for kw in _MCP_KEYWORDS)
+    return list(mcp_schemas) if (_wants_mcp and mcp_schemas) else []
+
 
 # Admin tool keywords — if the last user message contains any of these, include admin tools
 _ADMIN_KEYWORDS = [
@@ -1605,12 +1748,26 @@ async def stream_agent_loop(
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
+    Execution identity: (endpoint_url, model, headers) are resolved by the
+    caller before round 1 and PINNED for the whole run. Every working-model
+    invocation reuses that exact target; the loop never re-runs route
+    selection between rounds. ``fallbacks`` is therefore a TRANSITION POOL,
+    not a per-round candidate chain: it is consulted only when an explicit
+    provider failure occurs, and using it mints a new execution identity
+    (new execution_id + recorded transition). A pre-content transient failure
+    is retried on the SAME pinned target first; with no approved fallback the
+    run fails explicitly rather than silently switching models.
+
     Yields SSE events:
       - data: {"delta": "text"}                             (text chunks)
+      - data: {"type": "execution_target", ...}             (pinned identity, once)
       - data: {"type": "tool_start", "tool": "...", ...}    (before execution)
       - data: {"type": "tool_output", "tool": "...", ...}   (after execution)
-      - data: {"type": "agent_step", "round": N}            (next round)
-      - data: {"type": "metrics", "data": {...}}            (final metrics)
+      - data: {"type": "provider_retry", ...}               (same-target retry)
+      - data: {"type": "execution_transition", ...}         (explicit new target)
+      - data: {"type": "provider_failure", ...}             (explicit hard failure)
+      - data: {"type": "agent_step", "round": N, "execution_id": "..."}  (next round)
+      - data: {"type": "metrics", "data": {...}}            (final metrics + executions)
       - data: [DONE]                                        (end)
     """
 
@@ -1713,72 +1870,11 @@ async def stream_agent_loop(
     prep_timings["tool_selection"] = time.time() - _t1
 
     _t2 = time.time()
-    # Hosted-API match by URL, OR the model name looks like a recent model
-    # known to follow OpenAI-style function calling (DeepSeek, GPT*, Claude,
-    # Gemini, Qwen3+, Mixtral, Llama 3.1+). Caught the DeepSeek-via-local-
-    # vLLM case where endpoint_url doesn't include a vendor host.
-    _model_lc = (model or "").lower()
-    # Step 1: per-endpoint override (set at registration time from the
-    # serve command — `--enable-auto-tool-choice` flips it on. UI can
-    # also toggle per endpoint). NULL = unknown; for local Ollama /v1 we
-    # default to fenced tools, otherwise fall through to keyword + host checks.
-    _endpoint_supports: Optional[bool] = None
-    try:
-        from core.database import SessionLocal as _SL, ModelEndpoint as _ME
-        _db = _SL()
-        try:
-            _ep = None
-            for _key in _endpoint_lookup_keys(endpoint_url):
-                _ep = _db.query(_ME).filter(_ME.base_url == _key).first()
-                if _ep is not None:
-                    break
-            if _ep is not None:
-                _endpoint_supports = _ep.supports_tools
-        finally:
-            _db.close()
-    except Exception as _e:
-        logger.debug(f"endpoint supports_tools lookup failed: {_e}")
-    _model_supports_tools = any(kw in _model_lc for kw in (
-        "gpt-4", "gpt-5", "gpt-o", "claude", "gemini", "gemma",
-        "qwen3", "qwen2.5", "mixtral", "mistral", "llama-3.1", "llama-3.2",
-        "llama-3.3", "llama-4",
-        # Local-served models that follow OpenAI-style function calling
-        # via vLLM's `--enable-auto-tool-choice`. Belt-and-suspenders
-        # with the per-endpoint flag above.
-        "minimax", "kimi", "yi-", "phi-3", "phi-4", "command-r",
-        "glm-4", "internlm", "hermes",
-        # deepseek-v2/v3/chat support tools via the cloud API; deepseek-r1
-        # (reasoning model) does not — handled by the blocklist below.
-        "deepseek-v", "deepseek-chat",
-    ))
-    # Models known to reject tool schemas at the Ollama/local level even when
-    # the endpoint URL would otherwise enable native function calling.
-    # The per-endpoint supports_tools flag (True/False) always takes priority
-    # and can override this list for users who know their setup.
-    _model_no_tools = any(kw in _model_lc for kw in (
-        "deepseek-r1",
-    ))
-    # Native Ollama endpoints (/api/chat) handle tool schemas differently from
-    # the OpenAI-compat path. Models like gemma4, qwen3.5, ministral respond to
-    # tool schemas by emitting a single native tool_call token then stopping,
-    # rather than writing a fenced block — the agent loop sees 1 token and no
-    # recognised tool, so the round terminates immediately (issue #1567).
-    # Unless the endpoint is explicitly marked supports_tools=True by the user
-    # (via the endpoint settings toggle), treat Ollama-native as text-only so
-    # the fenced-block path is used instead of native function calling.
-    _is_ollama_native = _is_ollama_native_url(endpoint_url or "")
-    _ollama_openai_compat = _is_ollama_openai_compat_url(endpoint_url or "")
-    if _endpoint_supports is True:
-        _is_api_model = True
-    elif (
-        _endpoint_supports is False
-        or _model_no_tools
-        or _is_ollama_native
-        or _ollama_openai_compat
-    ):
-        _is_api_model = False
-    else:
-        _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
+    # Tool-call format for the execution target pinned below. Resolved ONCE
+    # here (and only re-resolved on an explicit transition) so every round
+    # invokes the pinned backend under its own tool assumption — never a stale
+    # round-1 assumption for a different backend.
+    _is_api_model = _resolve_api_model_flag(endpoint_url, model)
     messages, mcp_schemas = _build_system_prompt(
         messages, model, active_document, mcp_mgr, disabled_tools,
         needs_admin=_needs_admin, relevant_tools=_relevant_tools,
@@ -1934,6 +2030,39 @@ async def stream_agent_loop(
     )
     yield f"data: {json.dumps({'type': 'agent_prep', 'data': {k: round(v, 3) for k, v in prep_timings.items()}})}\n\n"
 
+    # ── Pinned execution identity (one per run) ───────────────────────────
+    # Resolve ONCE, before round 1. Every working-model invocation in this loop
+    # reuses this exact provider/model/endpoint/tool-profile; the loop NEVER
+    # re-runs route selection between rounds. The identity is replaced only by
+    # an explicit, recorded transition (the retry/fallback logic inside the
+    # round loop below), which mints a new execution_id.
+    _execution = build_execution_target(
+        endpoint_url=endpoint_url,
+        model=model,
+        headers=headers,
+        context_window=context_length,
+        is_api_model=_is_api_model,
+        execution_mode=EXECUTION_MODE_AGENT,
+        selection_reason="initial_resolution",
+        session_id=session_id or "",
+    )
+    # Fallback pool for EXPLICIT transitions only — never per-round candidates.
+    _transition_pool = list(fallbacks or [])
+    _execution_used_routes = [(endpoint_url, model)]
+    # execution_id -> {"target": {...}, "rounds": [...]} for the audit trail.
+    _execution_coverage: Dict[str, dict] = {
+        _execution.execution_id: {"target": _execution.to_dict(), "rounds": []}
+    }
+    _provider_failures: List[dict] = []
+    # Transient retries on the SAME pinned target before any fallback is even
+    # considered. A retry is NOT an escalation.
+    try:
+        _provider_retry_budget = int(get_setting("agent_provider_retry_attempts", 2) or 0)
+    except (TypeError, ValueError):
+        _provider_retry_budget = 2
+    _provider_retry_budget = max(0, _provider_retry_budget)
+    yield f"data: {json.dumps({'type': 'execution_target', 'data': _execution.to_dict(), 'round': 1})}\n\n"
+
     full_response = ""
     total_start = time.time()
     time_to_first_token = None
@@ -2024,10 +2153,200 @@ async def stream_agent_loop(
     # reason the model was never called.
     _context_blocked = False
 
+    # Per-read INACTIVITY timeout enforced inside stream_llm (httpx read=timeout)
+    # — kills a wedged/silent endpoint. Resolved once for the run.
+    agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
+
+    # Set True by _pinned_execution_stream when the pinned target failed and no
+    # approved fallback exists — the round loop then fails explicitly.
+    _provider_failed_round = False
+
+    async def _pinned_execution_stream(*, round_num: int, timeout: int):
+        """Stream ONE round from the PINNED execution target.
+
+        This is the ONLY place the working model is invoked. The identity is
+        fixed: the single candidate is the pinned (url, model, headers) — the
+        route is never re-resolved between rounds.
+
+          * a pre-content TRANSIENT provider failure is retried on the SAME
+            target (``agent_provider_retry_attempts``) — a retry is NOT an
+            escalation;
+          * a permanent failure (or exhausted retries) triggers an EXPLICIT,
+            recorded transition — a new execution_id is minted and every later
+            round continues under it — when an approved fallback target exists;
+          * with no fallback available the round fails explicitly instead of
+            silently switching models.
+        """
+        nonlocal endpoint_url, model, headers, _execution, context_length, _is_api_model
+        nonlocal _provider_failed_round
+        attempt = 0
+        while True:
+            attempt += 1
+            _tools = _build_round_tool_schemas(
+                is_api_model=_is_api_model,
+                force_answer=_force_answer,
+                relevant_tools=_relevant_tools,
+                needs_admin=_needs_admin,
+                last_user=_last_user,
+                mcp_schemas=mcp_schemas,
+                disabled_tools=disabled_tools,
+            )
+            _tool_names_sent = [
+                t.get("function", {}).get("name") for t in (_tools or []) if t.get("function")
+            ]
+            logger.info(
+                f"[agent-debug] round={round_num} execution={_execution.execution_id} "
+                f"model={model} _is_api_model={_is_api_model} "
+                f"tools_sent={len(_tool_names_sent)} tool_names={_tool_names_sent[:15]} "
+                f"relevant_tools={sorted(_relevant_tools)[:15] if _relevant_tools else 'ALL'}"
+            )
+            emitted = False
+            failure_chunk = None
+            _stream = stream_llm_with_fallback(
+                [(endpoint_url, model, headers)],
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                prompt_type=prompt_type if round_num == 1 else None,
+                tools=_tools if _tools else None,
+                timeout=timeout,
+                reasoning_effort=reasoning_effort,
+            )
+            try:
+                async for chunk in _stream:
+                    if chunk.startswith("event: error"):
+                        if not emitted:
+                            # Pre-content provider failure — do NOT forward yet;
+                            # decide retry / transition / fail below.
+                            failure_chunk = chunk
+                            break
+                        yield chunk
+                        continue
+                    if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                        try:
+                            _evt = json.loads(chunk[6:])
+                        except Exception:
+                            _evt = None
+                        # Mirror stream_llm_with_fallback's notion of "real
+                        # output": metadata-only events don't count.
+                        if not (_evt and _evt.get("type") == "model_actual"):
+                            emitted = True
+                    yield chunk
+            finally:
+                await _stream.aclose()
+            if failure_chunk is None:
+                return  # attempt completed (success, or a post-content error)
+            failure_class = classify_provider_failure(failure_chunk)
+            _reason = summarize_provider_error(failure_chunk)
+            logger.warning(
+                "[agent] round %d execution %s provider failure (%s): %s",
+                round_num, _execution.execution_id, failure_class, _reason,
+            )
+            if failure_class == FAILURE_TRANSIENT and attempt <= _provider_retry_budget:
+                # Ordinary retry — SAME pinned target. A retry is NOT an escalation.
+                yield 'data: ' + json.dumps({
+                    "type": "provider_retry", "round": round_num, "attempt": attempt,
+                    "execution_id": _execution.execution_id,
+                    "failure_class": failure_class, "reason": _reason,
+                }) + '\n\n'
+                continue
+
+            # ── Explicit transition or explicit failure ───────────────────
+            _next = select_transition_target(
+                pinned_model=model,
+                current_route=(endpoint_url, model),
+                pool=_transition_pool,
+                used_routes=_execution_used_routes,
+            )
+            if _next is None:
+                _provider_failures.append({
+                    "round": round_num, "execution_id": _execution.execution_id,
+                    "provider": _execution.provider, "model": model,
+                    "endpoint": endpoint_url, "failure_class": failure_class,
+                    "reason": _reason, "transitioned": False,
+                })
+                _provider_failed_round = True
+                yield 'data: ' + json.dumps({
+                    "type": "provider_failure", "round": round_num,
+                    "execution_id": _execution.execution_id,
+                    "provider": _execution.provider, "model": model,
+                    "endpoint": endpoint_url, "failure_class": failure_class,
+                    "reason": _reason, "fallback_available": False,
+                }) + '\n\n'
+                yield 'data: ' + json.dumps({
+                    "delta": (
+                        f"\n\n⚠️ **Provider failure** — `{model}` at `{endpoint_url}` is "
+                        f"unavailable ({_reason}), and no approved fallback target is "
+                        "configured. Stopping on the pinned execution target rather "
+                        "than silently switching models."
+                    )
+                }) + '\n\n'
+                return
+            _prev = _execution
+            _provider_failures.append({
+                "round": round_num, "execution_id": _prev.execution_id,
+                "provider": _prev.provider, "model": _prev.model,
+                "endpoint": _prev.endpoint_url, "failure_class": failure_class,
+                "reason": _reason, "transitioned": True,
+            })
+            _new_url, _new_model, _new_headers = _next
+            try:
+                from src.model_context import get_context_length as _gcl
+                _new_ctx = int(_gcl(_new_url, _new_model) or 0) or context_length
+            except Exception:
+                _new_ctx = context_length
+            _new_is_api = _resolve_api_model_flag(_new_url, _new_model)
+            _transition_reason = f"{failure_class}: {_reason}"
+            _execution = build_execution_target(
+                endpoint_url=_new_url,
+                model=_new_model,
+                headers=_new_headers,
+                context_window=_new_ctx,
+                is_api_model=_new_is_api,
+                execution_mode=EXECUTION_MODE_AGENT,
+                selection_reason="explicit_fallback",
+                session_id=session_id or "",
+                previous=_prev,
+                transition_reason=_transition_reason,
+            )
+            endpoint_url, model, headers = _new_url, _new_model, _new_headers
+            _is_api_model = _new_is_api
+            context_length = _execution.context_window or context_length
+            _execution_used_routes.append((_new_url, _new_model))
+            # The superseded target ATTEMPTED this round (its failure is what
+            # forced the transition) — record it before moving on.
+            _execution_coverage.setdefault(
+                _prev.execution_id, {"target": _prev.to_dict(), "rounds": []}
+            )
+            _execution_coverage[_prev.execution_id]["rounds"].append(round_num)
+            _execution_coverage[_execution.execution_id] = {
+                "target": _execution.to_dict(), "rounds": [],
+            }
+            logger.warning(
+                "[agent] round %d execution transition %s -> %s (%s -> %s): %s",
+                round_num, _prev.execution_id, _execution.execution_id,
+                _prev.model, model, _transition_reason,
+            )
+            yield 'data: ' + json.dumps({
+                "type": "execution_transition", "round": round_num,
+                "failure_class": failure_class, "reason": _transition_reason,
+                "from": _prev.to_dict(), "to": _execution.to_dict(),
+            }) + '\n\n'
+            # Legacy notice the chat client already understands — keeps the
+            # "answered by" model visible so metrics aren't masked.
+            yield 'data: ' + json.dumps({
+                "type": "fallback", "selected_model": _prev.model,
+                "answered_by": model, "reason": _reason,
+            }) + '\n\n'
+            attempt = 0  # fresh retry budget for the new pinned target
+            continue
+
+
     for round_num in range(1, max_rounds + 1):
         round_response = ""
         round_reasoning = ""  # reasoning_content deltas (DeepSeek-thinking, vLLM --reasoning-parser)
         native_tool_calls = []  # populated if model uses function calling
+        _provider_failed_round = False  # set by _pinned_execution_stream on hard failure
         # Reset doc streaming state per round
         _doc_acc = ""
         _doc_opened = False
@@ -2038,58 +2357,10 @@ async def stream_agent_loop(
         # detect a SUBSEQUENT block in the same round.
         _doc_scan_from = 0
 
-        # Merge native tool schemas with MCP tool schemas, filtering out
-        # Only send function schemas for API models (OpenAI, Anthropic, etc.).
-        # Local models use fenced code blocks or <tool_code> — schemas add overhead.
-        if _force_answer:
-            # Loop-breaker decided the model has enough info but keeps
-            # calling tools. Send NO tools this round so it's forced to
-            # write the answer instead of flailing further.
-            all_tool_schemas = []
-        elif _is_api_model:
-            # Filter schemas by RAG-selected tools (if available)
-            if _relevant_tools:
-                # Send schemas for exactly what the system prompt documents.
-                # _build_base_prompt describes ALWAYS_AVAILABLE | relevant, but
-                # this filter used relevant alone, so a caller-supplied
-                # relevant_tools set (task_scheduler, crews) produced a prompt
-                # promising tools whose schemas were never sent — the model is
-                # told it has `edit_file`, then finds it can't call it. RAG's own
-                # get_tools_for_query already unions ALWAYS_AVAILABLE; doing it
-                # here makes the two sets identical on every path.
-                from src.tool_index import ALWAYS_AVAILABLE as _ALWAYS
-                _schema_tools = set(_relevant_tools) | set(_ALWAYS)
-                base_schemas = [
-                    s for s in FUNCTION_TOOL_SCHEMAS
-                    if s.get("function", {}).get("name") in _schema_tools
-                ]
-                # MCP tools are never "always available" — they are only ever
-                # what retrieval selected.
-                _mcp_filtered = [
-                    s for s in mcp_schemas
-                    if s.get("function", {}).get("name") in _relevant_tools
-                ]
-                all_tool_schemas = base_schemas + _mcp_filtered
-            else:
-                base_schemas = FUNCTION_TOOL_SCHEMAS if _needs_admin else [
-                    s for s in FUNCTION_TOOL_SCHEMAS
-                    if s.get("function", {}).get("name") not in _ADMIN_SCHEMA_NAMES
-                ]
-                all_tool_schemas = base_schemas + mcp_schemas
-            if disabled_tools:
-                all_tool_schemas = [
-                    t for t in all_tool_schemas
-                    if t.get("function", {}).get("name") not in disabled_tools
-                    and t.get("name") not in disabled_tools
-                ]
-        else:
-            # Local: only MCP schemas when message suggests MCP tool usage
-            _last_content = _last_user.lower()
-            _wants_mcp = any(kw in _last_content for kw in _MCP_KEYWORDS)
-            all_tool_schemas = mcp_schemas if (_wants_mcp and mcp_schemas) else []
-        agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
-
-        _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]
+        # Tool schemas are built INSIDE _pinned_execution_stream, per attempt,
+        # from the pinned target's tool profile — so a mid-round explicit
+        # transition re-derives them for the new backend instead of reusing the
+        # superseded target's assumptions.
 
         # ── Per-round context-safety check (#1234) ─────────────────────────
         # Runs before EVERY model invocation (not just round 1): tool results
@@ -2156,26 +2427,18 @@ async def stream_agent_loop(
             # Hard safety invariant: do not call the model. Stop the loop.
             _context_blocked = True
             break
-        logger.info(f"[agent-debug] round={round_num} model={model} _is_api_model={_is_api_model} tools_sent={len(_tool_names_sent)} tool_names={_tool_names_sent[:15]} relevant_tools={sorted(_relevant_tools)[:15] if _relevant_tools else 'ALL'}")
-
-        # Primary target + any configured fallback models. stream_llm_with_fallback
-        # only switches on a pre-content failure, so streamed output is never
-        # duplicated; the dead-host cooldown keeps repeat primary attempts cheap.
-        _candidates = [(endpoint_url, model, headers)] + list(fallbacks or [])
+        # Pinned execution target: this round invokes EXACTLY the pinned
+        # (url, model, headers). `_pinned_execution_stream` owns retry-on-same-
+        # target and the explicit-transition path, so the loop never re-resolves
+        # the route between rounds.
         # stream_llm enforces a per-read INACTIVITY timeout (httpx read=timeout),
         # which kills a wedged/silent endpoint. This wall-clock deadline is the
         # complementary cap for the rare stream that trickles bytes forever and
         # so never trips the inactivity timeout. Generous — only catches runaway.
         _round_deadline = time.time() + max(agent_stream_timeout * 4, 1200)
-        async for chunk in stream_llm_with_fallback(
-            _candidates,
-            messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            prompt_type=prompt_type if round_num == 1 else None,
-            tools=all_tool_schemas if all_tool_schemas else None,
+        async for chunk in _pinned_execution_stream(
+            round_num=round_num,
             timeout=agent_stream_timeout,
-            reasoning_effort=reasoning_effort,
         ):
             if time.time() > _round_deadline:
                 logger.warning(f"[agent] round {round_num} stream exceeded wall-clock deadline; cutting off")
@@ -2253,6 +2516,14 @@ async def stream_agent_loop(
                         logger.warning(f"[agent] round {round_num} fell back: "
                                        f"{data.get('selected_model')} -> {data.get('answered_by')}")
                         yield chunk
+                    elif data.get("type") in (
+                        "provider_retry", "execution_transition", "provider_failure",
+                    ):
+                        # Execution-identity telemetry emitted by
+                        # _pinned_execution_stream. Forwarded verbatim so the
+                        # audit trail (which target ran which round, and why a
+                        # transition happened) reaches the client/telemetry.
+                        yield chunk
                     elif data.get("type") == "model_actual":
                         actual_model = data.get("model") or actual_model
                         data["requested_model"] = requested_model
@@ -2329,6 +2600,20 @@ async def stream_agent_loop(
                 # Forward error events to frontend as visible text
                 yield chunk
             # Intercept [DONE] — don't forward until all rounds finish
+
+        # Round coverage for the audit trail: record which execution produced
+        # this round's output, then stop hard if the pinned target failed and no
+        # approved fallback existed (explicit failure — never a silent switch).
+        _execution_coverage.setdefault(
+            _execution.execution_id, {"target": _execution.to_dict(), "rounds": []}
+        )
+        _execution_coverage[_execution.execution_id]["rounds"].append(round_num)
+        if _provider_failed_round:
+            logger.error(
+                "[agent] round %d aborted: pinned execution %s failed with no "
+                "approved fallback target", round_num, _execution.execution_id,
+            )
+            break
 
         tool_blocks, used_native = _resolve_tool_blocks(round_response, native_tool_calls, round_num)
 
@@ -2950,9 +3235,10 @@ async def stream_agent_loop(
                              tool_results, tool_result_texts, used_native, round_num,
                              round_reasoning=round_reasoning)
 
-        # Emit agent_step event
+        # Emit agent_step event — carries the execution_id that produced THIS
+        # round, so telemetry identifies exactly which target ran which round.
         yield (
-            f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
+            f'data: {json.dumps({"type": "agent_step", "round": round_num + 1, "execution_id": _execution.execution_id})}\n\n'
         )
 
         # Separator in accumulated response
@@ -2998,6 +3284,21 @@ async def stream_agent_loop(
         backend_prefill_tps=backend_prefill_tps,
     )
     metrics["requested_model"] = requested_model
+    # ── Execution-identity audit trail ────────────────────────────────────
+    # `executions` maps every execution_id this run used to its pinned target
+    # and the rounds it covered; a normal run has exactly one entry covering
+    # every round. `provider_failures` are recorded SEPARATELY from model
+    # quality — a provider outage is not evidence the model failed the task.
+    metrics["executions"] = [
+        {
+            "execution_id": eid,
+            "target": cov.get("target", {}),
+            "rounds": sorted(set(cov.get("rounds", []))),
+        }
+        for eid, cov in _execution_coverage.items()
+    ]
+    metrics["execution_id"] = _execution.execution_id
+    metrics["provider_failures"] = _provider_failures
     yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
 
     # Teacher-escalation: inline takeover visible in the chat stream.
