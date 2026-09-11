@@ -124,6 +124,15 @@ DEFAULT_SETTINGS = {
     # no tool call after >=2 calls and no effectful write (re-land 3ff908c).
     "agent_auto_continue_on_stall": True,
     "agent_stream_timeout_seconds": 300,
+    # Emergency context-safety lifecycle for the multi-round agent loop
+    # (defect: context was only checked before round 1; tool-heavy runs grew
+    # to 98-99% and died). Conservative defaults for reasoning-capable local
+    # Qwen; raise after telemetry proves the real safe limits.
+    "agent_context_compaction_threshold": 0.62,   # compact when input fraction >= this
+    "agent_context_hard_input_fraction": 0.70,    # refuse to call model above this
+    "agent_generation_reserve_pct": 0.25,         # reserve this fraction of context for gen/reasoning
+    "agent_generation_reserve_absolute": 4096,    # ...or this many tokens, whichever is larger
+    "agent_token_estimation_safety_factor": 1.10, # inflate approximate token estimates
     # Extra directory roots that read_file / write_file may access, in
     # addition to the built-in project data/ and system temp dirs. Each
     # entry is an absolute path. Sensitive subpaths (.ssh, .gnupg, shell

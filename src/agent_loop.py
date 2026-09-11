@@ -18,6 +18,15 @@ from urllib.parse import urlparse
 from src.llm_core import stream_llm, stream_llm_with_fallback, _is_ollama_native_url
 from src.llm_lane import BACKGROUND as LLM_LANE_BACKGROUND
 from src.model_context import estimate_tokens
+from src.context_safety import (
+    DEFAULT_COMPACTION_THRESHOLD,
+    DEFAULT_ESTIMATION_SAFETY_FACTOR,
+    DEFAULT_GEN_RESERVE_ABSOLUTE,
+    DEFAULT_GEN_RESERVE_PCT,
+    DEFAULT_HARD_INPUT_FRACTION,
+    STATE_BLOCKED,
+    enforce_context_safety,
+)
 from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
@@ -1851,7 +1860,11 @@ async def stream_agent_loop(
         soft_budget = int(get_setting("agent_input_token_budget", 6000) or 0)
         if soft_budget > 0:
             before_trim_tokens = estimate_tokens(messages)
-            reserve_tokens = min(max(max_tokens or 1024, 512), 2048)
+            # generation headroom. Reserve the larger of the requested
+            # output (max_tokens) and a small floor — never cap it: the old
+            # `min(..., 2048)` left max_tokens=4096 with only 2048 reserved,
+            # which is self-defeating. (#1234 — defect 2)
+            reserve_tokens = max(max_tokens or 1024, 512)
             # Honour the configurable ceiling for the auto-derived budget path.
             # No-op when the user has an explicit `agent_input_token_budget`
             # (that branch ignores hard_max). Falls back to DEFAULT_HARD_MAX
@@ -1893,6 +1906,32 @@ async def stream_agent_loop(
     # Strip internal metadata keys before sending to the LLM API
     messages = [{k: v for k, v in msg.items() if k != "_protected"} for msg in messages]
 
+    # ── Emergency context-safety lifecycle (#1234) ────────────────────────
+    # Context is checked/trimmed once above (before round 1). Tool results
+    # appended every round grow the prompt unchecked, so without a per-round
+    # check a tool-heavy run climbs to 98-99% context and the model dies.
+    # These settings control the per-turn headroom enforcement below.
+    _ctx_compaction_threshold = float(
+        get_setting("agent_context_compaction_threshold",
+                    DEFAULT_COMPACTION_THRESHOLD) or DEFAULT_COMPACTION_THRESHOLD
+    )
+    _ctx_hard_input_fraction = float(
+        get_setting("agent_context_hard_input_fraction",
+                    DEFAULT_HARD_INPUT_FRACTION) or DEFAULT_HARD_INPUT_FRACTION
+    )
+    _ctx_gen_reserve_pct = float(
+        get_setting("agent_generation_reserve_pct",
+                    DEFAULT_GEN_RESERVE_PCT) or DEFAULT_GEN_RESERVE_PCT
+    )
+    _ctx_gen_reserve_absolute = int(
+        get_setting("agent_generation_reserve_absolute",
+                    DEFAULT_GEN_RESERVE_ABSOLUTE) or DEFAULT_GEN_RESERVE_ABSOLUTE
+    )
+    _ctx_estimation_safety_factor = float(
+        get_setting("agent_token_estimation_safety_factor",
+                    DEFAULT_ESTIMATION_SAFETY_FACTOR
+        ) or DEFAULT_ESTIMATION_SAFETY_FACTOR
+    )
     yield f"data: {json.dumps({'type': 'agent_prep', 'data': {k: round(v, 3) for k, v in prep_timings.items()}})}\n\n"
 
     full_response = ""
@@ -1979,6 +2018,12 @@ async def stream_agent_loop(
     # so the user can resume instead of the turn silently stalling.
     _exhausted_rounds = False
 
+    # Set when a round was refused because the context could not be made safe
+    # (CONTEXT_BLOCKED). The turn ended deliberately, so the end-of-loop
+    # "model returned an empty response" guard must NOT overwrite the real
+    # reason the model was never called.
+    _context_blocked = False
+
     for round_num in range(1, max_rounds + 1):
         round_response = ""
         round_reasoning = ""  # reasoning_content deltas (DeepSeek-thinking, vLLM --reasoning-parser)
@@ -2045,6 +2090,72 @@ async def stream_agent_loop(
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]
+
+        # ── Per-round context-safety check (#1234) ─────────────────────────
+        # Runs before EVERY model invocation (not just round 1): tool results
+        # appended at the end of the prior round have grown `messages`, so we
+        # re-measure headroom, compact if over the threshold, and refuse to
+        # call the model if there isn't room to generate AND reason.
+        _safety = await enforce_context_safety(
+            messages,
+            context_length,
+            model=model,
+            endpoint_url=endpoint_url,
+            headers=headers,
+            owner=owner,
+            max_tokens=max_tokens,
+            compaction_threshold=_ctx_compaction_threshold,
+            hard_input_fraction=_ctx_hard_input_fraction,
+            absolute_reserve=_ctx_gen_reserve_absolute,
+            pct_reserve=_ctx_gen_reserve_pct,
+            safety_factor=_ctx_estimation_safety_factor,
+        )
+        # Compaction may have discovered a truer window; keep context_length in
+        # sync so later rounds budget against reality, not a stale guess.
+        if _safety.effective_context_window > 0:
+            context_length = _safety.effective_context_window
+        if _safety.state == STATE_BLOCKED:
+            logger.error(
+                "[agent] round %d CONTEXT_BLOCKED: %s "
+                "(safe_input=%d reserve=%d window=%d)",
+                round_num, _safety.reason,
+                _safety.safe_input_tokens, _safety.generation_reserve,
+                _safety.effective_context_window,
+            )
+            yield (
+                'data: ' + json.dumps({
+                    "type": "error",
+                    "error": (
+                        "CONTEXT_BLOCKED: the conversation has grown too large "
+                        "for the model's context window even after compaction. "
+                        "Start a new session or switch to a model with a "
+                        "larger context window."
+                    ),
+                    "context_state": {
+                        "safe_input_tokens": _safety.safe_input_tokens,
+                        "generation_reserve": _safety.generation_reserve,
+                        "effective_context_window": _safety.effective_context_window,
+                        "compacted": _safety.compacted,
+                        "round": round_num,
+                    },
+                }) + '\n\n'
+            )
+            # Also surface it as visible assistant text so the user isn't left
+            # with a blank turn (the structured event above is for the client/
+            # telemetry; plain `data.type=="error"` isn't rendered as chat text).
+            _blocked_msg = (
+                "⚠️ **CONTEXT_BLOCKED** — this turn could not safely start: the "
+                "conversation is too large to leave room for the model to "
+                "generate and reason. Context was compacted/trimmed first but "
+                "still couldn't free enough headroom. Start a new session or "
+                "switch to a larger-context model."
+            )
+            if not full_response.strip():
+                full_response = _blocked_msg
+            yield 'data: ' + json.dumps({"delta": _blocked_msg}) + '\n\n'
+            # Hard safety invariant: do not call the model. Stop the loop.
+            _context_blocked = True
+            break
         logger.info(f"[agent-debug] round={round_num} model={model} _is_api_model={_is_api_model} tools_sent={len(_tool_names_sent)} tool_names={_tool_names_sent[:15]} relevant_tools={sorted(_relevant_tools)[:15] if _relevant_tools else 'ALL'}")
 
         # Primary target + any configured fallback models. stream_llm_with_fallback
@@ -2857,17 +2968,23 @@ async def stream_agent_loop(
 
     # If the loop hit the round cap while still working, tell the client so it
     # can show a "Continue" affordance instead of the turn just stopping.
-    if _exhausted_rounds:
+    # CONTEXT_BLOCKED is excluded: that turn ended deliberately with its own
+    # error, and offering "Continue" would just re-trigger the same block.
+    if _exhausted_rounds and not _context_blocked:
         logger.info("[agent] round cap (%d) reached mid-task — emitting rounds_exhausted", max_rounds)
         yield f'data: {json.dumps({"type": "rounds_exhausted", "rounds": max_rounds})}\n\n'
 
     # If the response is completely empty and no tools were executed,
-    # yield a fallback message so the user is not left hanging.
-    full_response, _fallback_chunk = _empty_response_fallback(
-        full_response, round_reasoning, tool_events
-    )
-    if _fallback_chunk:
-        yield _fallback_chunk
+    # yield a fallback message so the user is not left hanging. Skipped when the
+    # turn ended deliberately on CONTEXT_BLOCKED — otherwise this guard would
+    # replace the real "blocked on context" reason with a bogus "the model
+    # returned an empty response".
+    if not _context_blocked:
+        full_response, _fallback_chunk = _empty_response_fallback(
+            full_response, round_reasoning, tool_events
+        )
+        if _fallback_chunk:
+            yield _fallback_chunk
 
     # --- Final metrics ---
     total_duration = time.time() - total_start
