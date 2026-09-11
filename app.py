@@ -599,6 +599,10 @@ app.include_router(setup_crew_routes())
 from routes.dev_preview_routes import setup_dev_preview_routes
 app.include_router(setup_dev_preview_routes())
 
+# Pi execution runtime (delegated coding runs; native agent loop remains the default)
+from routes.pi_runtime_routes import setup_pi_runtime_routes
+app.include_router(setup_pi_runtime_routes())
+
 # Embedding model management
 from routes.embedding_routes import setup_embedding_routes
 app.include_router(setup_embedding_routes())
