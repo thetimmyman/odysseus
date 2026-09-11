@@ -28,6 +28,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Chromium runtime libs for the built-in Browser MCP (@playwright/mcp).
 RUN npx -y playwright@latest install-deps chromium && rm -rf /var/lib/apt/lists/*
 
+# Pi Coding — the delegated coding-agent execution runtime (Odysseus stays the
+# control plane; see docs/pi-execution-runtime.md). Pinned on purpose: the RPC
+# protocol src/pi_runtime.py speaks is verified against this exact version.
+# Installed system-wide rather than under /app so a repo re-clone can't remove
+# it, and `pi --version` gates the build so a broken install fails here.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.74.2 \
+    && pi --version
+
 WORKDIR /app
 
 # Install Python deps first (layer cache). Optional extras (PyMuPDF AGPL, etc.)
