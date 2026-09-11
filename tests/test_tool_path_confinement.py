@@ -86,11 +86,19 @@ def test_blocks_ssh_authorized_keys():
         _resolve_tool_path("~/.ssh/authorized_keys")
 
 
-def test_blocks_ssh_dir_absolute():
+def test_blocks_ssh_dir_absolute(tmp_path, monkeypatch):
     from src.tool_execution import _resolve_tool_path
-    home = os.path.expanduser("~")
+    # Use a throwaway $HOME rather than the runner's real ~. The real home
+    # can carry symlinks (e.g. ~/.ssh/config -> ~/dotfiles/...), which make
+    # os.path.realpath strip the .ssh component and change which branch
+    # rejects the path — turning this into a machine/filesystem-dependent
+    # assertion. A plain file under a clean fake .ssh is deterministic.
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "config").write_text("host x\n")
+    monkeypatch.setenv("HOME", str(home))
     with pytest.raises(ValueError, match="sensitive directory"):
-        _resolve_tool_path(os.path.join(home, ".ssh", "config"))
+        _resolve_tool_path(os.path.join(str(home), ".ssh", "config"))
 
 
 def test_blocks_symlink_into_ssh(tmp_path):
