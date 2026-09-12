@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from typing import Dict, Optional, Tuple
 
 from src.constants import DATA_DIR
@@ -75,6 +76,24 @@ def pi_home() -> str:
 def pi_bin() -> str:
     """The Pi executable to launch (override for tests / alternate installs)."""
     return os.environ.get("ODYSSEUS_PI_BIN") or "pi"
+
+
+def pi_launch_dir() -> Optional[str]:
+    """Directory of the resolved ``pi`` executable.
+
+    Pi is a Node CLI (``#!/usr/bin/env node``), so its runtime is whichever
+    ``node`` is first on PATH. The sibling ``node`` in this directory is the one
+    Pi will actually use, so prepending it to a Pi execution's PATH makes the
+    Node version deterministic instead of inherited from the caller (which on
+    this host can be an incompatible mise-managed Node 20).
+    """
+    binary = pi_bin()
+    resolved = binary if os.path.isabs(binary) else shutil.which(binary)
+    if not resolved:
+        return None
+    # Do NOT realpath the binary: it is usually a symlink into the package's
+    # dist bundle, whose directory holds neither ``pi`` nor ``node``.
+    return os.path.dirname(os.path.abspath(resolved))
 
 
 def session_dir() -> str:
@@ -158,6 +177,13 @@ def pi_environment() -> Dict[str, str]:
     """
     env = {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+    # Deterministic runtime: launch Pi with its own Node first on PATH so a
+    # different Node earlier in the inherited PATH cannot shadow it.
+    launch_dir = pi_launch_dir()
+    if launch_dir:
+        # Put it FIRST, whether or not it was already present later in PATH.
+        parts = [p for p in env["PATH"].split(os.pathsep) if p and p != launch_dir]
+        env["PATH"] = os.pathsep.join([launch_dir, *parts])
     agent = agent_dir()
     if agent:
         # Pi must resolve its config dir where Odysseus manages it (local
