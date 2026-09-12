@@ -61,6 +61,13 @@ RESPONSE_TIMEOUT_S = float(os.environ.get("ODYSSEUS_PI_RESPONSE_TIMEOUT_S", "30"
 #: Grace period after ``abort`` before the process is killed outright.
 CANCEL_GRACE_S = float(os.environ.get("ODYSSEUS_PI_CANCEL_GRACE_S", "10"))
 
+#: Grace window after an ``agent_end`` before it is treated as the end of the
+#: WHOLE run. Pi 0.85.1 ends EVERY attempt with ``agent_end`` and then emits
+#: either ``auto_retry_start`` (another attempt) or ``agent_settled`` (run done).
+#: When neither follows, this is an older Pi where ``agent_end`` alone ends the
+#: run. This is a protocol-evidence fallback, not a version check.
+SETTLE_GRACE_S = float(os.environ.get("ODYSSEUS_PI_SETTLE_GRACE_S", "1.0"))
+
 
 def _now() -> float:
     return time.time()
@@ -83,6 +90,50 @@ def find_pi_session_file(session_id: Optional[str], session_dir: Optional[str] =
         for name in filenames:
             if name.endswith(".jsonl") and session_id in name:
                 return os.path.join(dirpath, name)
+    return None
+
+
+#: Substrings in Pi's own diagnostics that indicate a provider/model error. Pi
+#: merges stderr into the RPC stream, so the adapter captures these lines in
+#: ``PiExecution.stderr_tail`` as non-JSON output.
+_PROVIDER_ERROR_HINTS = (
+    "not found", "404", "unauthorized", "authentication", "api key",
+    "invalid model", "no such model", "model not available", "provider error",
+)
+
+
+def _stderr_provider_error(lines: List[str]) -> bool:
+    """True when Pi's captured diagnostics show a provider/model error."""
+    blob = "\n".join(lines).lower()
+    return any(hint in blob for hint in _PROVIDER_ERROR_HINTS)
+
+
+def _message_error(message: Any) -> Optional[str]:
+    """Provider/model error text on an assistant message, if any."""
+    if not isinstance(message, dict):
+        return None
+    err = message.get("errorMessage")
+    if err or message.get("stopReason") == "error":
+        return str(err) if err else "error"
+    return None
+
+
+def _raw_error(raw: Dict[str, Any]) -> Optional[str]:
+    """Provider/model error text Pi attached to an event, if any.
+
+    Pi 0.85.1 carries ``stopReason: "error"`` + ``errorMessage`` on the failed
+    attempt's assistant message (and on ``agent_end``). This is protocol-native
+    evidence that does not depend on parsing stderr text.
+    """
+    err = _message_error(raw.get("message"))
+    if err:
+        return err
+    messages = raw.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            err = _message_error(msg)
+            if err:
+                return err
     return None
 
 
@@ -270,7 +321,9 @@ class PiExecution:
                  "session_id", "session_file", "started", "last_activity",
                  "watchdog", "abort_requested", "seen_files", "seen_tests",
                  "final_text", "cancelled", "last_failure", "saw_retry",
-                 "run_finished", "keep_alive", "assigned_worktree", "expected_sha")
+                 "run_finished", "keep_alive", "assigned_worktree", "expected_sha",
+                 "settled", "settle_timer", "retry_exhausted", "last_agent_end_at",
+                 "last_attempt_error")
 
     def __init__(self, execution_id: str, proc: "asyncio.subprocess.Process") -> None:
         self.execution_id = execution_id
@@ -291,10 +344,21 @@ class PiExecution:
         #: Failure classification signals for the terminal state (section 14).
         self.last_failure: Optional[str] = None
         self.saw_retry = False
-        #: Set when Pi reports the run finished (``agent_end``). A real Pi RPC
-        #: process stays alive after a run, so this — not process exit — is what
-        #: marks a delegated one-shot execution complete.
+        #: An ``auto_retry_end`` reported ``success == False`` (retries used up).
+        self.retry_exhausted = False
+        #: Set only when Pi reports the run is DEFINITIVELY finished. On Pi
+        #: 0.85.1 that is ``agent_settled``; on older Pi it is ``agent_end`` or
+        #: process exit. ``agent_end`` alone is only an ATTEMPT end on 0.85.1.
         self.run_finished = False
+        #: True once ``agent_settled`` (Pi 0.85.1) has been observed.
+        self.settled = False
+        #: Grace timer armed by ``agent_end`` for older Pi without agent_settled.
+        self.settle_timer: Optional[asyncio.Task] = None
+        #: Monotonic timestamp of the most recent ``agent_end``.
+        self.last_agent_end_at: Optional[float] = None
+        #: Provider/model error text from the MOST RECENT attempt (cleared when
+        #: a new attempt starts, so a retry-then-success ends clean).
+        self.last_attempt_error: Optional[str] = None
         #: Interactive executions stay alive for ``send``/steer; delegated task
         #: runs are stopped once the run finishes.
         self.keep_alive = False
@@ -670,6 +734,11 @@ class PiRuntime:
                     pi_executions.update_execution(execution_id, **patch)
             return
 
+        # Any protocol event after an ``agent_end`` proves that attempt-end was
+        # not the run end (Pi 0.85.1 ends every attempt with agent_end), so
+        # disarm the settle grace timer before handling the new event.
+        self._cancel_settle_grace(handle)
+
         # Pi events -> Odysseus execution events.
         for mapped in pi_event_map.map_pi_event(raw):
             pi_executions.append_event(execution_id, mapped)
@@ -678,16 +747,40 @@ class PiRuntime:
             if mapped["type"] == pi_event_map.FAILURE:
                 handle.last_failure = mapped.get("failure") or "failure"
 
-        if kind == "auto_retry_start":
-            handle.saw_retry = True
-
-        if kind == "agent_end":
-            # Real Pi keeps its RPC process alive after a run; record completion
-            # here and, for a delegated one-shot run, stop the child so the
-            # execution reaches an explicit terminal state.
+        if kind == "agent_settled":
+            # Pi 0.85.1: the definitive end of the run (after any retries).
+            handle.settled = True
             handle.run_finished = True
             if not handle.keep_alive and handle.proc.returncode is None:
                 asyncio.create_task(self._graceful_stop(handle))
+        elif kind == "agent_start":
+            # A new attempt (fresh run, or a retry) is in flight.
+            handle.run_finished = False
+            handle.last_attempt_error = None
+        elif kind == "auto_retry_start":
+            # A retry keeps the run alive: a preceding ``agent_end`` was only an
+            # attempt end, not the run end.
+            handle.saw_retry = True
+            handle.run_finished = False
+        elif kind == "auto_retry_end":
+            if raw.get("success") is False:
+                handle.retry_exhausted = True
+        elif kind == "agent_end":
+            # End of ONE attempt. Pi 0.85.1 follows this with either
+            # ``auto_retry_start`` (another attempt) or ``agent_settled`` (run
+            # done); older Pi has no ``agent_settled``, so arm a short grace
+            # window and treat this attempt end as the run end if nothing else
+            # arrives. Never finalize on ``agent_end`` alone.
+            handle.run_finished = False
+            handle.last_agent_end_at = _now()
+            self._schedule_settle_grace(execution_id, handle)
+
+        # Protocol-native failure evidence: Pi attaches ``stopReason: "error"``
+        # / ``errorMessage`` to a failed attempt's assistant message and to
+        # ``agent_end``. Keep the most recent attempt's error only.
+        err = _raw_error(raw)
+        if err:
+            handle.last_attempt_error = err[:500]
 
         if kind == "tool_execution_start":
             for path in pi_event_map.files_from_event(raw):
@@ -715,6 +808,8 @@ class PiRuntime:
 
     def _finalize(self, execution_id: str, handle: PiExecution, returncode: int) -> None:
         """Map the process exit into an explicit Odysseus terminal state."""
+        # The process is gone, so no attempt-end grace is pending any more.
+        self._cancel_settle_grace(handle)
         record = pi_executions.get_execution(execution_id)
         if record is None:
             return
@@ -754,37 +849,128 @@ class PiRuntime:
             pi_executions.finish_execution(execution_id, STATUS_CANCELLED,
                                            failure_reason="cancelled by operator")
             return
-        if handle.run_finished or returncode == 0:
-            # Pi reported the run complete (``agent_end``) or exited cleanly.
+
+        tail = "\n".join(handle.stderr_tail[-10:])[:2000]
+        # Failure evidence takes precedence over generic completion evidence.
+        # Pi 0.85.1 emits ``agent_end`` at the end of EVERY attempt, inserts
+        # ``auto_retry_start`` between attempts, emits ``agent_settled`` once
+        # retries are exhausted, and may STILL exit rc=0 after a provider/model
+        # failure. Neither ``run_finished`` nor rc==0 may therefore be read as
+        # success on its own.
+        has_output = bool((handle.final_text or "").strip())
+
+        # 1. A prompt Pi rejected before acceptance: nothing ran. ``last_failure``
+        #    is only ever set to ``provider_failure`` for a rejected prompt (tool
+        #    errors set it to ``tool_failure``), so this is a hard failure.
+        if handle.last_failure == "provider_failure":
+            pi_executions.finish_execution(
+                execution_id, STATUS_PROVIDER_FAILURE,
+                failure_class="provider_failure",
+                failure_reason=(f"prompt rejected by pi. {tail}").strip(),
+            )
+            return
+
+        meaningful = has_output or int(record.get("tool_call_count") or 0) > 0
+        settled_ok = handle.run_finished or returncode == 0
+        provider_evidence = (
+            handle.saw_retry
+            or handle.retry_exhausted
+            or bool(handle.last_attempt_error)
+            or _stderr_provider_error(handle.stderr_tail)
+        )
+
+        # 3. Provider/model failure evidence with no usable assistant output:
+        #    retries seen or exhausted, an error stop reason Pi carried on the
+        #    failed attempt, or merged-stderr diagnostics. Pi 0.85.1 may still
+        #    exit rc=0, so this must precede any completion decision.
+        if not has_output and provider_evidence:
+            pi_executions.finish_execution(
+                execution_id, STATUS_PROVIDER_FAILURE,
+                failure_class="provider_failure",
+                failure_reason=(
+                    "provider/model failure with no assistant output "
+                    f"(exit code {returncode}). "
+                    f"{handle.last_attempt_error or ''} {tail}"
+                ).strip(),
+            )
+            return
+        # 4. A tool failure that ended a run with no usable output. A tool error
+        #    during an otherwise successful run is NOT terminal (see step 6).
+        if not has_output and handle.last_failure == "tool_failure" and not settled_ok:
+            pi_executions.finish_execution(
+                execution_id, STATUS_TOOL_FAILURE,
+                failure_class="tool_failure",
+                failure_reason=f"tool failure ended the run. {tail}".strip(),
+            )
+            return
+        # 5. Died without ever settling the run.
+        if not settled_ok:
+            if provider_evidence:
+                failure_class, status = "provider_failure", STATUS_PROVIDER_FAILURE
+            elif handle.last_failure == "tool_failure":
+                failure_class, status = "tool_failure", STATUS_TOOL_FAILURE
+            else:
+                failure_class, status = "runtime_failure", STATUS_RUNTIME_FAILURE
+            pi_executions.finish_execution(
+                execution_id, status,
+                failure_class=failure_class,
+                failure_reason=f"pi exited with code {returncode}. {tail}".strip(),
+            )
+            return
+        # 6. A settled run (``agent_settled`` on 0.85.1, ``agent_end``/process exit
+        #    on older Pi). A meaningful result is a completion; a settled run that
+        #    produced no assistant text and no tool call is a silent no-op, never
+        #    a success merely because Pi exited rc=0.
+        if meaningful:
             pi_executions.finish_execution(
                 execution_id, STATUS_COMPLETED,
                 result=(handle.final_text or "")[:20000] or None,
             )
             return
-        tail = "\n".join(handle.stderr_tail[-10:])[:2000]
-        # Distinguish the failure classes the operator needs (section 14). A
-        # provider outage / rejected prompt or an exhausted auto-retry is a
-        # provider failure; a failed tool that ended the run is a tool failure;
-        # anything else is an opaque runtime failure. Never a silent reroute.
-        if handle.last_failure == "provider_failure" or handle.saw_retry:
-            pi_executions.finish_execution(
-                execution_id, STATUS_PROVIDER_FAILURE,
-                failure_class="provider_failure",
-                failure_reason=f"pi exited with code {returncode}. {tail}".strip(),
-            )
-            return
-        if handle.last_failure == "tool_failure":
-            pi_executions.finish_execution(
-                execution_id, STATUS_TOOL_FAILURE,
-                failure_class="tool_failure",
-                failure_reason=f"pi exited with code {returncode}. {tail}".strip(),
-            )
-            return
         pi_executions.finish_execution(
             execution_id, STATUS_RUNTIME_FAILURE,
             failure_class="runtime_failure",
-            failure_reason=f"pi exited with code {returncode}. {tail}".strip(),
+            failure_reason=(
+                "pi settled with no assistant output, no tool call and no "
+                f"error evidence (exit code {returncode}). {tail}"
+            ).strip(),
         )
+
+    def _cancel_settle_grace(self, handle: PiExecution) -> None:
+        """Disarm the attempt-end grace timer (if any)."""
+        task = handle.settle_timer
+        handle.settle_timer = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _schedule_settle_grace(self, execution_id: str, handle: PiExecution,
+                               delay: Optional[float] = None) -> None:
+        """Arm the older-Pi fallback: ``agent_end`` with nothing after it."""
+        self._cancel_settle_grace(handle)
+        handle.settle_timer = asyncio.create_task(
+            self._settle_after_grace(execution_id, handle,
+                                     SETTLE_GRACE_S if delay is None else delay))
+
+    async def _settle_after_grace(self, execution_id: str, handle: PiExecution,
+                                  delay: float) -> None:
+        """Treat ``agent_end`` as the run end when no retry/settle follows.
+
+        Pi 0.85.1 always follows the final ``agent_end`` with ``agent_settled``
+        (which disarms this timer); an older Pi has no such event, so once the
+        grace window elapses the attempt end IS the run end.
+        """
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        handle.settle_timer = None
+        if handle.settled or handle.abort_requested or handle.cancelled:
+            return
+        if handle.proc.returncode is not None:
+            return  # process already gone; _finalize owns the outcome
+        handle.run_finished = True
+        if not handle.keep_alive:
+            await self._graceful_stop(handle)
 
     async def _graceful_stop(self, handle: PiExecution, delay: float = 1.5) -> None:
         """Stop a Pi process whose run has finished.
