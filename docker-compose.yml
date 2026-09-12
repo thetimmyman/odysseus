@@ -1,6 +1,11 @@
 services:
   odysseus:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: ${ODYSSEUS_BUILD_GIT_SHA:-}
+        GIT_BRANCH: ${ODYSSEUS_BUILD_BRANCH:-}
+        BUILD_TIME: ${ODYSSEUS_BUILD_TIME:-}
     init: true   # tini as PID1 reaps reparented dev-server children (no zombie leak)
     pids_limit: 1024   # fork-bomb backstop for the terminal PTY (defense-in-depth)
     ports:

@@ -31,6 +31,12 @@ echo "=== 3. Fast-forward pulling ==="
 git pull --ff-only origin "$BRANCH"
 
 echo "=== 4. Building $SERVICE ==="
+# Commit-aware build identity: record exactly what this deploy builds so the
+# running image reports its own commit/branch/time, independent of later state
+# of the checkout. docker compose forwards these as the image build args.
+export ODYSSEUS_BUILD_GIT_SHA="$(git rev-parse --short HEAD)"
+export ODYSSEUS_BUILD_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+export ODYSSEUS_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker compose build "$SERVICE"
 
 echo "=== 5. Recreating $SERVICE ==="

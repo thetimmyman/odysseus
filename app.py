@@ -836,8 +836,8 @@ async def serve_login(request: Request):
 
 @app.get("/api/version")
 async def get_version():
-    from core.constants import APP_VERSION
-    return {"version": APP_VERSION}
+    from src.build_identity import version_payload
+    return version_payload()
 
 @app.get("/api/health")
 async def health_check() -> Dict[str, str]:

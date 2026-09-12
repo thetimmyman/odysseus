@@ -22,6 +22,7 @@ def check_readiness() -> Dict[str, object]:
     from core.constants import APP_VERSION, DATA_DIR
     from core.database import DATABASE_URL, engine
     from sqlalchemy import text as sql_text
+    from src.build_identity import build_identity
 
     checks: Dict[str, Dict[str, object]] = {}
 
@@ -56,6 +57,7 @@ def check_readiness() -> Dict[str, object]:
     return {
         "ready": ready,
         "version": APP_VERSION,
+        "identity": build_identity(),
         "checks": checks,
         "timestamp": datetime.utcnow().isoformat(),
     }

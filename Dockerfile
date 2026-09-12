@@ -46,6 +46,15 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && if [ "$INSTALL_OPTIONAL" = "true" ]; then pip install --no-cache-dir -r requirements-optional.txt; fi
 
 # Copy app code
+# Commit-aware build identity — injected at image build time (deploy-odysseus.sh
+# exports the matching ODYSSEUS_BUILD_* vars; docker compose passes them as the
+# build args below). Empty in local/dev builds, where the app reports status="dev".
+ARG GIT_SHA
+ARG GIT_BRANCH
+ARG BUILD_TIME
+ENV ODYSSEUS_BUILD_GIT_SHA=${GIT_SHA:-} \
+    ODYSSEUS_BUILD_BRANCH=${GIT_BRANCH:-} \
+    ODYSSEUS_BUILD_TIME=${BUILD_TIME:-}
 COPY . .
 
 # Create data directory (mount a volume here for persistence)
