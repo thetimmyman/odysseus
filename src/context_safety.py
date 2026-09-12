@@ -206,37 +206,33 @@ async def enforce_context_safety(
         pct_reserve=pct_reserve,
         safety_factor=safety_factor,
     )
-    if result.state == STATE_OK:
-        return result
-
-    # Over the limit. Only skip the recovery attempt when it provably cannot
-    # help: if the generation reserve alone consumes the whole window, then
-    # `input + reserve <= window` is unsatisfiable for ANY input, so compacting
-    # and trimming would burn work to reach the same block. Otherwise always
-    # try compaction + trim first — blocking without trying would strand turns
-    # that are perfectly recoverable (e.g. a window smaller than 4x the reserve).
-    if result.generation_reserve >= effective_context_window:
-        return result
-
-    # Attempt compaction, then ALWAYS trim stale/evictable history.
-    #
-    # `compaction_threshold` gates the EXPENSIVE path (maybe_compact spends a
-    # real LLM call summarising the older half). Below it the cheap path —
-    # trim_for_context dropping stale turns / truncating oversized messages —
-    # still runs, because a tool-heavy round must never ride past the
-    # generation reserve on the strength of a summarizer that never ran.
-    #
-    # NOTE ON THE TWO GATES: maybe_compact() has its own internal
-    # COMPACT_THRESHOLD (0.85) measured on the *raw* estimate, while our
-    # configured threshold (0.62) is measured on the safety-factor-inflated
-    # estimate and is therefore stricter. Between 0.62 and 0.85 the recovery
-    # that actually shrinks the prompt is the trim, not LLM summarisation —
-    # that is acceptable for this emergency patch (trim is deterministic and
-    # cannot hallucinate), and the invariant is still enforced afterwards.
+    # Proactive recovery: enter the lifecycle as soon as pressure CROSSES the
+    # configured compaction threshold, even while the turn is still safe. The
+    # old code returned immediately on STATE_OK, so compaction/trim only ever
+    # ran AFTER the hard boundary was already crossed — by which point the
+    # deterministic trim target (below) could no longer bring the prompt back
+    # under that boundary, and a tool-heavy run climbed monotonically to
+    # CONTEXT_BLOCKED instead of compacting (#1234 follow-up).
     _over_compaction_threshold = (
         result.safe_input_tokens
         >= compaction_threshold * effective_context_window
     )
+    if result.state == STATE_OK and not _over_compaction_threshold:
+        return result
+
+    # Over the hard limit AND provably unsatisfiable: if the generation reserve
+    # alone consumes the whole window, `input + reserve <= window` is false for
+    # ANY input, so compacting/trimming would burn work to reach the same block.
+    # (When STATE_OK this cannot hold: headroom_ok implies reserve < window.)
+    if result.generation_reserve >= effective_context_window:
+        return result
+
+    # Attempt compaction (the EXPENSIVE path, gated on compaction_threshold),
+    # then ALWAYS trim stale/evictable history (the cheap, deterministic path).
+    # Below the threshold the trim alone is the recovery; above it
+    # maybe_compact summarises the older half AND the trim still runs, and the
+    # invariant is re-checked afterwards. maybe_compact is given the SAME
+    # effective window budgeted here, so its own gate cannot silently diverge.
     did_compact = False
     try:
         # Imported here (not at module scope) to avoid a circular import and so
@@ -249,8 +245,13 @@ async def enforce_context_safety(
                     None, endpoint_url, model, list(messages), headers, owner=owner,
                 )
             else:
+                # Evaluate compaction against the SAME effective window the
+                # safety guard budgets against — not the model's raw serving
+                # window (which can be far larger, so the internal 0.85 gate
+                # would never fire and compaction would be dead).
                 compacted_msgs, new_ctx, was_compacted = await maybe_compact(
-                    None, endpoint_url, model, list(messages), headers, owner=owner,
+                    None, endpoint_url, model, list(messages), headers,
+                    owner=owner, context_length=effective_context_window,
                 )
             if was_compacted:
                 did_compact = True
@@ -258,18 +259,33 @@ async def enforce_context_safety(
                     effective_context_window = new_ctx
                 messages[:] = compacted_msgs
 
-        # Trim stale/evictable history so the *inflated* estimate fits inside
-        # (window - generation_reserve). BUDGET SEMANTICS: we hand
-        # trim_for_context the TOTAL window and let it subtract its own
-        # reserve — never a pre-reduced input budget (that would reserve the
-        # generation headroom twice). Because the estimator is approximate and
-        # we inflate by safety_factor, the trim target is tightened further by
-        # that factor so `safety_factor * estimate <= window - reserve`.
-        _trim_budget = int(
-            (effective_context_window - result.generation_reserve)
-            / max(safety_factor, 1.0)
+        # Trim stale/evictable history so the *inflated* estimate satisfies
+        # BOTH viability conditions the recheck enforces, targeting the smaller
+        # bound in RAW (pre-inflation) tokens:
+        #   (a) input bound:   safety_factor * estimate <= target_fraction * W
+        #   (b) headroom bound: safety_factor * estimate <= W - generation_reserve
+        # BUDGET SEMANTICS: the old budget was
+        # `(window - generation_reserve)/safety_factor` but the trim was only
+        # reachable AFTER the hard limit was crossed, and with the default 25%
+        # reserve that budget (0.68*window) is ABOVE the hard limit
+        # (0.70/1.10 = 0.64*window) — so the trim could never fire before
+        # CONTEXT_BLOCKED. Deriving the target from these explicit bounds makes
+        # the trim the recovery that actually reduces context (#1234).
+        _target_fraction = min(compaction_threshold, hard_input_fraction)
+        _gen_reserve_now = compute_generation_reserve(
+            effective_context_window,
+            max_tokens=max_tokens,
+            absolute_reserve=absolute_reserve,
+            pct_reserve=pct_reserve,
         )
-        _trim_reserve = max(0, effective_context_window - _trim_budget)
+        _feasible_input = min(
+            _target_fraction * effective_context_window,
+            effective_context_window - _gen_reserve_now,
+        )
+        _trim_target_raw = int(
+            max(0.0, _feasible_input) / max(safety_factor, 1.0)
+        )
+        _trim_reserve = max(0, effective_context_window - _trim_target_raw)
         messages[:] = trim_for_context(
             list(messages),
             effective_context_window,
