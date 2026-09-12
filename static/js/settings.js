@@ -3519,6 +3519,7 @@ async function initUnifiedIntegrations() {
       ntfy:            _apiLetter('n', '#317f43'),
       vaultwarden:     _apiLetter('V', '#175ddc'),
       freshrss:        _apiLetter('R', '#ef6c00'),
+      jira:            _apiLetter('J', '#0052cc'),
     };
     const _apiIconFor = (k) => {
       if (!k) return _apiCustomIco;

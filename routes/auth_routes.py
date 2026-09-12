@@ -612,6 +612,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
             "linkding": "/api/tags/",
             "homeassistant": "/api/",
             "home assistant": "/api/",
+            "jira": "/rest/api/3/myself",
         }
         path = health_paths.get(preset, "/")
         result = await execute_api_call(integration_id, "GET", path)

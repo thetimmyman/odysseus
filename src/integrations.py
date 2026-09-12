@@ -150,6 +150,28 @@ INTEGRATION_PRESETS: Dict[str, Dict[str, Any]] = {
             "  GET /api/greader.php/reader/api/0/unread-count?output=json — unread counts"
         ),
     },
+    "jira": {
+        "name": "Jira",
+        "auth_type": "basic",
+        "description": (
+            "Atlassian Jira (Cloud 3.0) issue tracker. Auth = Basic, key = 'your_email:api_token' "
+            "(create the token in Jira → Profile → Security → API tokens). "
+            "Base URL is your site, e.g. 'https://yourcompany.atlassian.net'. Full backlog access via the api_call tool. Key endpoints: \n"
+            "  POST /rest/api/3/search — JQL query (the workhorse for the backlog). Body: \n"
+            "    {\"jql\": \"project = PROJ AND status Category in (New, In Progress)\", \"fields\": [\"summary\",\"status\",\"assignee\",\"priority\",\"labels\"], \"maxResults\": 50}\n"
+            "    Useful JQL: assignee = currentUser(), reporter = currentUser(), project = PROJ, "
+            "status in (Backlog, To Do, In Progress, In Review). Escape single quotes as \\' inside JQL.\n"
+            "  GET /rest/api/3/myself — confirm authenticated user (login check)\n"
+            "  GET /rest/api/3/issue/{key} — fetch a single ticket (e.g. /rest/api/3/issue/PROJ-123)\n"
+            "  PUT /rest/api/3/issue/{key} — update a ticket, e.g. {\"fields\": {\"summary\": \"...\", \"description\": \"...\"}}\n"
+            "  GET /rest/api/3/issue?fields=summary,status — list recent issues (paginated)\n"
+            "  GET /rest/api/3/project — list projects and keys\n"
+            "  POST /rest/api/3/issue — create a ticket {\"fields\": {\"project\": {\"key\": \"PROJ\"}, \"summary\": \"...\", \"issuetype\": {\"name\": \"Task\"}}}\n"
+            "  POST /rest/api/3/issue/{key}/comment — add a comment {\"body\": \"...\"}\n"
+            "  GET /rest/api/3/project/{key}/statuses — valid status transitions\n"
+            "  Note: 'description'/'body' use ADF (Atlassian Document Format) JSON — a simple text payload is fine for most tickets.\n"
+        ),
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -343,6 +365,7 @@ async def execute_api_call(
         "gitea": ["/api/v1", "/api"],
         "linkding": ["/api"],
         "homeassistant": ["/api"],
+        "jira": ["/rest/api/3"],
     }
     for suf in strip_suffixes.get(preset, []):
         if base_url.endswith(suf):
