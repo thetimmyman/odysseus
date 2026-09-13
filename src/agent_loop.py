@@ -948,6 +948,13 @@ def _build_system_prompt(
     # the trusted system role. Bound up front so the insert block below can
     # always check it.
     _skills_message = None
+    # User/external-controlled surfaces that must NOT sit in the trusted system
+    # role (ports upstream #4965): the email-writing style, integration
+    # descriptions, and MCP tool descriptions. Bound up front so the insert
+    # block below can always check them.
+    _email_style_message = None
+    _integ_message = None
+    _mcp_desc_message = None
     if active_document:
         set_active_document(active_document.id)
         _doc_raw = active_document.current_content or ""
@@ -1097,8 +1104,7 @@ def _build_system_prompt(
             _style = (_load_settings().get("email_writing_style", "") or "").strip()
             if _style:
                 agent_prompt += (
-                    "\n\n📧 EMAIL WRITING STYLE AND IDENTITY — FOLLOW FOR ANY EMAIL DRAFT OR SEND:\n"
-                    f"{_style}\n\n"
+                    "\n\n"
                     "Hard identity rule: write as the user/mailbox owner only. Do not sign as, speak as, "
                     "or imply you are the recipient, original sender, quoted sender, spouse, assistant, "
                     "company, or any other third party. If a signature is needed, use only the name/signature "
@@ -1106,6 +1112,12 @@ def _build_system_prompt(
                     "Mechanical style rules: never use em dash/en dash; use --. Never use curly apostrophes. "
                     "For English emails, default to Hi [Name] or Hiya from the saved style rather than Hey. "
                     "If the saved style specifies Best/newline/name, use that sign-off when a sign-off is natural."
+                )
+                # User-editable style text is untrusted — wrap it so a malicious
+                # style value cannot inject system-role instructions.
+                _email_style_message = untrusted_context_message(
+                    "email writing style",
+                    "EMAIL WRITING STYLE AND IDENTITY — FOLLOW FOR ANY EMAIL DRAFT OR SEND:\n" + _style,
                 )
         except Exception:
             pass
@@ -1234,6 +1246,25 @@ def _build_system_prompt(
         except Exception as _sk_err:
             logger.debug(f"skill injection failed (non-fatal): {_sk_err}")
 
+    # Integration descriptions — user-editable fields, must not be in system role.
+    if not suppress_local_context:
+        try:
+            from src.integrations import get_integrations_prompt
+            _integ_prompt = get_integrations_prompt()
+            if _integ_prompt:
+                _integ_message = untrusted_context_message("integrations", _integ_prompt)
+        except Exception as _integ_err:
+            logger.debug(f"Integration prompt injection skipped: {_integ_err}")
+
+    # MCP tool descriptions — sourced from external servers, must not be in system role.
+    if mcp_mgr:
+        try:
+            _mcp_desc = mcp_mgr.get_tool_descriptions_for_prompt(mcp_disabled_map or {})
+            if _mcp_desc:
+                _mcp_desc_message = untrusted_context_message("MCP tools", _mcp_desc)
+        except Exception as _mcp_err:
+            logger.debug(f"MCP description injection skipped: {_mcp_err}")
+
     agent_msg = {"role": "system", "content": agent_prompt}
     insert_idx = 0
     for i, msg in enumerate(messages):
@@ -1270,6 +1301,15 @@ def _build_system_prompt(
     if _doc_message:
         merged.insert(last_user_idx, _doc_message)
         last_user_idx += 1  # the document message is now at last_user_idx
+    if _email_style_message:
+        merged.insert(last_user_idx, _email_style_message)
+        last_user_idx += 1
+    if _integ_message:
+        merged.insert(last_user_idx, _integ_message)
+        last_user_idx += 1
+    if _mcp_desc_message:
+        merged.insert(last_user_idx, _mcp_desc_message)
+        last_user_idx += 1
     if _skills_message:
         merged.insert(last_user_idx, _skills_message)
 
@@ -1365,18 +1405,11 @@ def _build_base_prompt(
             # Skill index is a soft enhancement — never fail prompt assembly on it.
             logger.debug(f"Skill-index injection skipped: {_e}")
 
-    # Inject integration descriptions
-    if not suppress_local_context:
-        from src.integrations import get_integrations_prompt
-        integ_prompt = get_integrations_prompt()
-        if integ_prompt:
-            agent_prompt += "\n\n" + integ_prompt
-
-    # Inject MCP tool descriptions
-    if mcp_mgr:
-        mcp_desc = mcp_mgr.get_tool_descriptions_for_prompt(mcp_disabled_map or {})
-        if mcp_desc:
-            agent_prompt += mcp_desc
+    # Integration descriptions and MCP tool descriptions are NOT appended here:
+    # both are user-/externally-controlled, so _build_system_prompt ships them
+    # as untrusted user-role messages instead (ports upstream #4965). Keeping
+    # them out of the cached base prompt also stops integration/MCP edits from
+    # going stale until the cache key changes.
 
     return agent_prompt, skill_index_block
 
