@@ -36,7 +36,16 @@ _GEMMA_RESPONSE_CHANNEL_RE = re.compile(
 )
 _GEMMA_RESPONSE_OPEN_RE = re.compile(r"<\|channel>response\s*\n?", re.IGNORECASE)
 _GEMMA_CHANNEL_CLOSE_RE = re.compile(r"<channel\|>", re.IGNORECASE)
-_THOUGHT_TAG_OPEN_RE = re.compile(r"<thought(\s+[^>]*)?>", re.IGNORECASE)
+# The original `(\s+[^>]*)?` had TWO OVERLAPPING quantifiers: `\s+` and `[^>]*`
+# both consume whitespace, so an unclosed `<thought` + whitespace flood in
+# untrusted model output backtracked O(n^2). Dropping the `+` (`\s` -> single
+# char) removes the ambiguity while preserving the EXACT language and capture:
+# `[^>]*` already absorbs the remaining whitespace, so `(\s[^>]*)?` matches the
+# same maximal non-`>` run. NOTE: upstream #4704 used `([^>]*)`, which is NOT
+# equivalent here -- it also matches non-tags like `<thoughtx>`/`<thought/>`,
+# silently rewriting them; the equivalence oracle in the test rejects that.
+# (PS-602, adapted from upstream #4704.)
+_THOUGHT_TAG_OPEN_RE = re.compile(r"<thought(\s[^>]*)?>", re.IGNORECASE)
 _THOUGHT_TAG_CLOSE_RE = re.compile(r"</thought>", re.IGNORECASE)
 _GEMMA_THOUGHT_CHANNEL_CAPTURE_RE = re.compile(
     r"<\|channel>thought\s*\n?([\s\S]*?)<channel\|>\s*",
