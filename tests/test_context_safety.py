@@ -99,7 +99,7 @@ def _patch_loop(monkeypatch, *, window, tool_result_chars, max_rounds,
     compact_state = {"calls": 0}
 
     async def _fake_maybe_compact(session, endpoint_url, model, msgs,
-                                  headers=None, owner=None):
+                                  headers=None, owner=None, context_length=None):
         compact_state["calls"] += 1
         if not compact_works:
             return list(msgs), window, False
@@ -318,6 +318,28 @@ def test_compaction_threshold_gates_the_expensive_summarizer_but_trim_recovers()
     # ...but the cheap trim still ran and recovered the turn.
     assert result.state == cs.STATE_OK
     assert len(messages) < before
+
+
+def test_proactive_trim_recovers_a_turn_over_the_hard_limit():
+    """Regression (#1234 follow-up): a tool-heavy turn that has already crossed
+    the hard input boundary must be brought back under that boundary by the
+    deterministic trim, not blocked. Before the fix the trim target
+    ``(window - reserve)/safety_factor`` was ABOVE the hard limit, so the trim
+    was a no-op and a long run climbed monotonically to CONTEXT_BLOCKED."""
+    window = 32768
+    messages = [{"role": "system", "content": "sys"}]
+    # 7 * ~3300 raw tokens -> safety-inflated input ~0.78 of the window (over
+    # the 0.70 hard limit), so the turn starts blocked but must recover.
+    messages += [{"role": "user", "content": "z" * 11000} for _ in range(7)]
+    before = len(messages)
+
+    async def _decline(session, endpoint_url, model, msgs, headers=None,
+                       owner=None):
+        return list(msgs), window, False
+
+    result = _enforce(messages, window, max_tokens=1024, compact_fn=_decline)
+    assert result.state == cs.STATE_OK, result.reason
+    assert len(messages) < before  # the trim actually removed turns
 
 
 def test_context_blocked_reports_round_and_reason_for_telemetry():

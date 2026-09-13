@@ -35,6 +35,10 @@ CONTEXT_EVENT = "context_event"
 FAILURE = "failure"
 COMPLETION = "completion"
 MESSAGE_DELTA = "message_delta"
+#: Pi 0.85.1 emits ``agent_settled`` once, after any auto-retries are exhausted,
+#: to mark the definitive end of a run. Older Pi (0.74.2) has no such event --
+#: there ``agent_end`` alone is the run end.
+RUN_SETTLED = "run_settled"
 
 #: Destructive/notification-free classification of Pi's built-in tools.
 _WRITE_TOOLS = frozenset({"write", "edit"})
@@ -185,6 +189,16 @@ def map_pi_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
         return [{
             "type": COMPLETION,
             "phase": "run",
+            "messages": len(messages) if isinstance(messages, list) else None,
+            "ts": ts,
+        }]
+
+    if kind == "agent_settled":
+        # Pi 0.85.1: the definitive end of the run, after retries are exhausted.
+        messages = event.get("messages")
+        return [{
+            "type": RUN_SETTLED,
+            "phase": "settled",
             "messages": len(messages) if isinstance(messages, list) else None,
             "ts": ts,
         }]

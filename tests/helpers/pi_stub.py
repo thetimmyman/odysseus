@@ -11,6 +11,10 @@ environment allowlist (that allowlist is itself under test). Recognised keys:
 
     scenario      "ok" (default) | "tool_fail" | "provider_fail"
                   | "slow" | "instant_fail"
+                  | "retry_then_ok" | "retry_exhausted"
+    settle        emit Pi 0.85.1's ``agent_settled`` after the terminal agent_end
+    linger        keep the process alive after the scenario (as real RPC Pi does)
+    attempts      failed-attempt count for the "retry_exhausted" scenario
     session_id    fixed session id to report (default: derived from --session
                   file, else a fresh stub id)
     write_files   list of paths to create in cwd during the run
@@ -118,10 +122,67 @@ class Stub:
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write("stub output\n")
 
+    def _attempt(self, ok, command=None, write_files=None):
+        """Emit one agent attempt (Pi 0.85.1 ends EVERY attempt with agent_end)."""
+        _emit({"type": "agent_start"})
+        _emit({"type": "turn_start"})
+        _emit({"type": "message_start", "message": {"role": "assistant"}})
+        if command:
+            _emit({"type": "tool_execution_start", "toolName": "bash",
+                   "args": {"command": command}})
+            _emit({"type": "tool_execution_end", "toolName": "bash", "isError": False})
+        for rel in write_files or []:
+            _emit({"type": "tool_execution_start", "toolName": "write", "args": {"path": rel}})
+            _emit({"type": "tool_execution_end", "toolName": "write", "isError": False})
+        if ok and self.cfg.get("tool_error"):
+            # A TRANSIENT tool error during an otherwise successful run.
+            _emit({"type": "tool_execution_start", "toolName": "bash", "args": {"command": "false"}})
+            _emit({"type": "tool_execution_end", "toolName": "bash", "isError": True})
+        end_message = {"role": "assistant"}
+        if ok:
+            _emit({"type": "message_update",
+                   "assistantMessageEvent": {"type": "text_delta", "delta": "Working..."}})
+            end_message = {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Implemented the change and ran tests."}],
+            }
+            _emit({"type": "turn_end", "message": end_message})
+        else:
+            # A failed attempt produces NO assistant text. With ``error_stop``,
+            # Pi 0.85.1 also attaches stopReason/errorMessage (protocol-native
+            # provider/model failure evidence).
+            end_message = {"role": "assistant", "content": []}
+            if self.cfg.get("error_stop"):
+                end_message = {"role": "assistant", "content": [],
+                               "stopReason": "error",
+                               "errorMessage": str(self.cfg["error_stop"])}
+            _emit({"type": "message_end", "message": dict(end_message)})
+            _emit({"type": "turn_end", "message": dict(end_message)})
+        _emit({"type": "agent_end", "messages": [dict(end_message)]})
+
+    def _settle(self, payload=None):
+        """Emit Pi 0.85.1's run-settled event when the scenario asks for it."""
+        if self.cfg.get("settle"):
+            _emit({"type": "agent_settled", "messages": payload or []})
+
+    def _finish_after_scenario(self):
+        """``linger`` mimics a real RPC Pi that stays alive after a run, so the
+        adapter must decide completion from events, not from process exit."""
+        if self.cfg.get("linger"):
+            self.busy = False
+            return
+        # One-shot usage: exit so the adapter observes process completion.
+        os._exit(int(self.cfg.get("exit_code") or 0))
+
     def run_scenario(self):
         scenario = (self.cfg.get("scenario") or "ok").strip()
         self.busy = True
         try:
+            note = self.cfg.get("stderr_note")
+            if note:
+                # Mimic Pi's merged stderr diagnostics (a non-JSON stdout line).
+                sys.stdout.write(str(note) + "\n")
+                sys.stdout.flush()
             if scenario == "provider_fail":
                 return
             if scenario == "instant_fail":
@@ -139,28 +200,41 @@ class Stub:
                 self.busy = False
                 os._exit(int(self.cfg.get("exit_code") or 1))
 
-            # default "ok"
-            _emit({"type": "agent_start"})
-            _emit({"type": "turn_start"})
-            _emit({"type": "message_start", "message": {"role": "assistant"}})
+            if scenario == "retry_then_ok":
+                # Attempt 1 fails, a retry fires, attempt 2 succeeds, then settle.
+                self._attempt(ok=False)
+                _emit({"type": "auto_retry_start", "attempt": 1})
+                self._attempt(ok=True)
+                self._settle([{"role": "assistant"}])
+                self._finish_after_scenario()
+                return
+
+            if scenario == "retry_exhausted":
+                attempts = int(self.cfg.get("attempts") or 3)
+                for i in range(attempts):
+                    self._attempt(ok=False)
+                    if i < attempts - 1:
+                        _emit({"type": "auto_retry_start", "attempt": i + 1})
+                _emit({"type": "auto_retry_end", "success": False})
+                self._settle([])
+                self._finish_after_scenario()
+                return
+
+            if scenario == "settle_noop":
+                # Invalid-model shape: no assistant output, no tool call, no
+                # retry, but Pi settles and exits 0.
+                self._attempt(ok=False)
+                self._settle([])
+                self._finish_after_scenario()
+                return
+
+            # default "ok": one successful attempt
             command = self.cfg.get("run_command") or "pytest -q"
-            _emit({"type": "tool_execution_start", "toolName": "bash", "args": {"command": command}})
-            _emit({"type": "tool_execution_end", "toolName": "bash", "isError": False})
-            for rel in self.cfg.get("write_files") or []:
-                _emit({"type": "tool_execution_start", "toolName": "write", "args": {"path": rel}})
-                _emit({"type": "tool_execution_end", "toolName": "write", "isError": False})
+            self._attempt(ok=True, command=command,
+                          write_files=self.cfg.get("write_files") or [])
             self._write_files()
-            _emit({"type": "message_update",
-                   "assistantMessageEvent": {"type": "text_delta", "delta": "Working..."}})
-            _emit({"type": "turn_end", "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Implemented the change and ran tests."}],
-            }})
-            _emit({"type": "agent_end", "messages": [{"role": "assistant"}]})
-            self.busy = False
-            # A real Pi session exits when its run finishes in one-shot usage;
-            # exiting here lets the adapter observe process completion.
-            os._exit(0)
+            self._settle([{"role": "assistant"}])
+            self._finish_after_scenario()
         finally:
             self.busy = False
 

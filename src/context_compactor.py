@@ -308,12 +308,21 @@ async def maybe_compact(
     messages: List[Dict],
     headers: Optional[Dict] = None,
     owner: Optional[str] = None,
+    context_length: Optional[int] = None,
 ) -> tuple:
     """Check context usage and compact if above threshold.
 
     Returns (messages, context_length, was_compacted).
+
+    ``context_length`` lets the caller pass the SAME effective window its own
+    safety budget uses. Without it, the raw model serving window is used, which
+    for a large-context model (e.g. a 256k local Qwen) can be many times the
+    caller's real working window — the internal 0.85 gate then never fires and
+    compaction is effectively dead. When omitted (e.g. the chat path) the
+    resolved model window is used.
     """
-    context_length = get_context_length(endpoint_url, model)
+    if not (context_length and context_length > 0):
+        context_length = get_context_length(endpoint_url, model)
     used = estimate_tokens(messages)
     pct = (used / context_length) * 100 if context_length else 0
 
