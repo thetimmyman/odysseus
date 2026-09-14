@@ -104,3 +104,94 @@ worker-driven run remains `ACCEPTED_CANDIDATE`. The fresh challenger (PS-635's
 last deliverable) is deliberately NOT added here: the basic replanner path must be
 proven first. Deterministic routing remains PS-605's, and this run claims no policy
 reference (`explicit_pin`, as recorded on the dispatch receipt).
+
+---
+
+## OUTCOME of the first live control (appended after the run)
+
+Run `g2-replan-control-20260914T221758Z`, target `local-rtx4500`,
+base `1e362f10` + `c01f1a90` + `6d7ffc33`.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. the worker leg one-shots it (`19 passed`, 1 attempt) | **CONFIRMED** — `19 passed`, 1 attempt, 0 repairs, 1 worker model call, 21.2 s dispatch |
+| 2. the manager is consulted exactly once, live, at the PASS boundary, shown `allowed_kinds = [stop]` | **CONFIRMED** — 1 call, boundary `pass`, 890 prompt / 231 completion tokens, 8.7 s |
+| 3. the run's terminal result and attempt count are identical to the G1 arm | **CONFIRMED** — `ACCEPTED_CANDIDATE`, 1 attempt, 0 repairs |
+| 4. the proposal is schema-validated and deterministically gated | **CONFIRMED, with a different code than expected** — the model proposed `stop` (agreement, not a request for anything) and the gate refused it as `shape_invalid` |
+| 5. an unusable reply is recorded as `schema_invalid` | did not occur — the reply was well-formed |
+
+Evidence (`data/live/g2-replan-control-20260914T221758Z`):
+
+```
+package           c6f0a33fe992803f…        validation_ok True   reasons []
+evidence_package  a65a7f87e00f1ed6…        seal_count 1 (manager_seam-1)
+dispatch          dcf7bdc47b50660b…        attempt b83ca58c149de3d9…
+verification      26b53dda3b066e15…        19 passed, exit 0, control passed
+interface_digest  3c9d24e49d07e135          context projection 7d6001b3cbfba8b5…
+ledger chain      (True, None)
+```
+
+The manager's actual reply, in full, is an artifact
+(`artifacts/manager1-model-output.txt`). It is a well-formed JSON object with
+`kind: "stop"`, empty `requested_actions`, empty `requested_authority`, an empty
+`packet_delta`, and — this is the part worth keeping — it cites a REAL canonical
+ledger entry hash from the EVIDENCE INDEX it was shown. The grounding requirement
+is satisfiable by this model.
+
+It was refused for encoding, not for authority: **a `stop` must not carry approach
+text**, and it carried a paragraph of approach text ("No further action needed …
+Proceed to close the run"). The refusal is recorded as a `proposal_refused` ledger
+entry with `verdict_code: shape_invalid`. The gate was NOT relaxed to make the
+live result look tidier.
+
+**Replan branch: UNOBSERVED live**, exactly as pre-registered, and no failure was
+manufactured to reach it.
+
+### The two defects this run found — in MY projection, not in the model
+
+The manager was shown `attempt 1: FAIL (exit None)` for an attempt the
+deterministic verifier had PASSED, and `served_context: None` for a run pinned at
+32768. Both are projection defects:
+
+1. the renderer joined verdicts to attempts by attempt number, the ledger's
+   `record_verification` never stored one, and an unmatched attempt defaulted to
+   FAIL. The local model NOTICED: its rationale calls the status "a metadata or
+   exit-code reporting artifact rather than a test failure". It read the
+   projection more carefully than the projection deserved — which is the strongest
+   argument in this document for running the control at all.
+2. the run entry does not carry the served window; the ATTEMPT does.
+
+Fixed in `975c91fe`, with three controls (the rendered history never invents a
+failure; the loop tags every verdict with its attempt and the join yields
+`attempt 1: PASS`; the projection reports the pinned window). **Run 1 is therefore
+not the control's final evidence** — the seam it exercised was measurably wrong in
+the manager's input, so a second control was run against the corrected projection
+rather than letting a defect sit inside the only live observation.
+
+---
+
+## Experiment G2-L2 — pre-registration (written BEFORE its run)
+
+**Same case, same packet, same target, same verifier, same manager.** The only
+change is the corrected projection (`975c91fe`). This is deliberately a different
+experiment, not a re-run of the same one — exactly as G1d2 was to G1d.
+
+Pre-registered predictions:
+
+1. **The worker leg one-shots it again** — `19 passed`, 1 attempt, 0 repairs.
+2. **The projection now states the truth it previously misstated:** the manager's
+   context contains `attempt 1: PASS`, contains no `FAIL (exit`, and reports
+   `served_context: 32768`. (These are asserted on the SEALED
+   `manager1-context.txt` artifact after the run, not narrated.)
+3. **The manager is consulted exactly once, at the PASS boundary, shown
+   `allowed_kinds = [stop]`**, and its proposal is gated. Two outcomes are both
+   acceptable and both will be reported as measured: a `stop` with no approach
+   text is ACCEPTED (a `proposal` entry), and anything else is REFUSED with its
+   typed code (`shape_invalid` if it again attaches approach text to a `stop`,
+   `kind_not_allowed` if it proposes a replan).
+4. **The run's terminal result, attempt count and verification counts are
+   unchanged by advice** — `ACCEPTED_CANDIDATE`, 1 attempt, 0 repairs, `19 passed`.
+5. **The sealed package VALIDATES with the manager seal inside it**
+   (`seal_count == 1`), and the ledger chain verifies.
+
+Still pre-registered as expected-UNOBSERVED: the replan branch.
