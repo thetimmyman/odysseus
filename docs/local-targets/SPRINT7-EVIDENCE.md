@@ -236,3 +236,32 @@ differently per endpoint.
 This is the negative control for the whole calibration: it proves that a window
 boundary is not always observable from the response, which is why the loop refuses
 to dispatch an over-budget packet instead of trusting a successful-looking reply.
+
+## Repair-packet code validated on REAL failure evidence, not a fixture
+
+The PS-635 repair path was exercised against the actual captured pytest output
+from Slice A's P2 failure (a real test run on `local-msr1`), not a hand-written
+sample:
+
+```
+failing tests : ('tests/test_worker_context_ps632.py::test_content_is_rendered',)
+collection err: False
+fingerprint   : 7a0d195bae79f737
+acceptance unchanged: True
+withheld      : ['prior conversation', 'prior repair packets', 'manager reasoning']
+rendered context: 2000 chars (bounded)
+```
+
+The rendered packet contains the objective, the UNCHANGED acceptance criteria, the
+write scope, the exact failing command, the failing test id, a bounded diff of the
+changed file and a bounded error excerpt. Full text:
+`~/scratch/sprint7/evidence/real-repair-packet.txt`.
+
+**Limitation this exposed, recorded rather than hidden:** the extracted
+`failure_reasons` came out as `('Asserti...',)` — because the harness had stored
+only the last 900 characters of the pytest output, and the short-summary line was
+itself cut. A repair packet is only as good as the failure evidence handed to it.
+Consequence for the loop's caller: `verify()` must return enough of the runner's
+output for `parse_verification_failure` to read the summary line, and
+`record_verification` bounds what is PERSISTED (4 000 chars) rather than what is
+parsed. This is a caller-contract note, not a defect in the bounding.
