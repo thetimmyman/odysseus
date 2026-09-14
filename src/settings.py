@@ -152,6 +152,25 @@ DEFAULT_SETTINGS = {
     # Ordered fallback chain for the Utility model (summarization, naming,
     # tidy actions, etc.).
     "utility_model_fallbacks": [],
+    # Execution-target contract (PS-623): capability -> ordered candidate
+    # targets, each {"provider": ..., "model": ...}. Operator-editable in the
+    # settings UI; src/execution_catalog.py reads this and applies the routing
+    # rule (integration_strong -> Pro, implementation_fast -> Flash, bulk_local
+    # -> local Qwen). A capability's list is its ALLOWLIST: there is no
+    # cross-capability fallthrough, so Pro can never silently downgrade to
+    # Flash.
+    "execution_targets": {
+        "integration_strong": [
+            {"provider": "cline-pass", "model": "deepseek-v4-pro"},
+            {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+        ],
+        "implementation_fast": [
+            {"provider": "cline-pass", "model": "deepseek-v4.1-flash"},
+        ],
+        "bulk_local": [
+            {"provider": "ollama", "model": "qwen3.8:27b"},
+        ],
+    },
     "teacher_model": "",
     "teacher_enabled": False,
     "teacher_tier2_enabled": False,
