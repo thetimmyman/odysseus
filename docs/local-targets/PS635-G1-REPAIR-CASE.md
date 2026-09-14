@@ -291,3 +291,74 @@ one-liner for "lexicographically smallest topological order".
 If attempt 1 also passes, G1 is reported as NOT ACHIEVED: the correct conclusion is
 that this worker does not need repairing on bounded fully-specified packets, and
 that manufacturing a defect to force a repair would not be evidence.
+
+---
+
+## OUTCOME of G1d — and a harness defect, not a model defect
+
+Run `g1d`, target `local-rtx4500`.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. attempt 1 FAILS on a stated rule | **CONFIRMED** — `1 failed, 10 passed` |
+| 2. repair packet carries same interface digest + contract | **CONFIRMED** (digest equal, contract verbatim, 4927 chars) |
+| 3. attempt 2 PASSES | **FALSIFIED** — same fingerprint -> escalate |
+| 4. repeated fingerprint -> escalate, no third dispatch | **CONFIRMED** — 2 attempts, 2 repairs, chain ok |
+
+Terminal: `ESCALATE`, failure class `technical`, reason
+`attempt 2 reproduced the same failure (c84287480cf90e62); no progress`.
+
+### The failure was MINE, not the model's — verified before recording
+
+The failing test was `test_isolated_nodes_are_included`, asserting
+`topological_order({"z": ["m"], "m": [], "k": []}) == ["k", "m", "z"]`.
+
+That expectation is WRONG. The edge `z -> m` requires `z` to appear before `m`, and
+the asserted order puts `m` first. Recomputing by hand: ready = {k, z} -> smallest is
+`k`; then {z} -> `z`; then {m} -> `m`. The correct answer is `["k", "z", "m"]`,
+which is exactly what the worker produced.
+
+Reading the artifact confirms the implementation is textbook-correct: every node
+collected from keys and successors, edges deduplicated, in-degree counts, a heap for
+the alphabetical tie-break, and cycle detection by length comparison. It is not
+merely plausible — it is right.
+
+**So G1d produced ZERO model defects.** This is the third time in this work that a
+"failure" turned out to be in the harness (first the streaming tool-call parser,
+then the Slice A packet contract, now this assertion). It is recorded as such, and
+the escalation is NOT counted as evidence about the model's repair ability.
+
+### Hazard this exposes, recorded because it generalises
+
+**To the loop, an incorrect harness expectation is indistinguishable from a real
+implementation defect.** The verifier was confidently red, the repair packet
+faithfully carried a real-looking failure, and the loop escalated on a defect that
+did not exist. The fingerprint mechanism worked perfectly — on a false premise.
+
+Mitigation taken immediately: the G1d test now asserts the PROPERTIES independently
+of the literals — every order must (a) respect every edge and (b) at each step have
+chosen the alphabetically smallest ready node. A wrong hardcoded literal like mine
+now fails that invariant check rather than being silently believed.
+
+---
+
+### One more harness defect found while hardening (recorded)
+
+The first revision of the invariant helper compared FINAL INDICES to decide whether a
+predecessor was satisfied, so it declared a node ready before its predecessor had
+actually been chosen, and failed two tests. Fixed to use incremental readiness
+("predecessor already placed"). The helper now provably rejects the original wrong
+literal (`edge z->m violated`), rejects a tie-break violation, and accepts the correct
+order — checked directly before the run.
+
+## Experiment G1d2 — pre-registration (written BEFORE its run)
+
+Same packet, same target, same contract, same interface. **The only change is the
+corrected verifier** (one wrong literal replaced; independent invariant checks
+added). This is deliberately a different experiment, not a re-run of the same one.
+
+1. **Attempt 1 PASSES** (`11 passed`), `ACCEPTED_CANDIDATE`, 1 attempt, 0 repairs —
+   because the only recorded failure was the harness bug.
+2. If attempt 1 instead fails on a *real* stated rule, the repair packet must carry
+   the same interface digest and contract, and attempt 2 decides the repair result.
+3. Same fingerprint twice -> escalate, no third dispatch.
