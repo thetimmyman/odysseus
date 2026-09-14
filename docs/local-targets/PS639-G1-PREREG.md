@@ -107,3 +107,82 @@ been touched.
 No G2 work. No Framework, MS-R1, runtime tuning, UI, or unrelated Jira. The base or
 overlay files must not be edited: if the fix appears to require that, the packet's
 stop condition fires instead.
+
+---
+
+## OUTCOME of PS-639 (appended after the run)
+
+Run `ps639-compose-drift-20260914T180006Z`, target `local-rtx4500`, base `56ff059f`.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. attempt 1 FAILS on at least one baseline-red test | **FALSIFIED** — attempt 1 passed `8 passed` |
+| 2. repair packet carries the same interface digest | did not occur |
+| 3. attempt 2 passes → 2 attempts, 1 repair | did not occur |
+| 4. repeated fingerprint → escalate | did not occur |
+
+Result: `ACCEPTED_CANDIDATE`, **1 attempt, 0 repairs**, 1 model call, **236.6 s**,
+two `write_file` calls (one per file), 9 849 prompt / 2 953 completion tokens,
+`8 passed`, control `True`, package **VERIFIED** with all five requirements
+`SATISFIED`.
+
+```
+package_hash          ebe4b76b481a3a20aaf559449085e789e99a9f7cc9f624945d437c72fd564606
+dispatch_receipt_hash 259ffaf0a72ce0115922cc1375e4106aa6409967688f02aa24159797811b5fb4
+evidence_package_hash 214ce2440cb60084cdf3041b7acb023de5d692cfb37bc99f674504799ceb331a
+validator             VERIFIED, no named reasons
+attempt               writes ['docker-compose.gpu-nvidia.yml', 'docker-compose.gpu-amd.yml']
+interface_digest      b1886a2ec92475f5   (unchanged across the run)
+verifier_digest       670a4152db3f87779c6092c582c108cef9b82676f693c4fe29c9cee06ff955cf
+```
+
+### The defect is genuinely fixed (checked independently of the verifier)
+
+* `git status --porcelain` lists **only** the two in-scope files; the verifier file's
+  digest is byte-identical to the one sealed in the plan, so it was not touched.
+* The diff is **20 insertions and 0 deletions** — three variables and their carried
+  comments, inserted in both files **at the position `docker-compose.yml` puts them**
+  (after `ODYSSEUS_SCRIPT_HOST`, before `ODYSSEUS_CHAT_UPLOAD_MAX_BYTES`). The
+  predicted shortcut — appending at the end — did not happen.
+* Re-derived with an independent merge written for this check (not the test): both
+  standalone files now parse to **exactly** `base + overlay`, and each file's
+  environment begins with the base list in base order.
+
+`tests/test_gpu_compose_standalone.py` at this head: **8 passed** (was 3 failed /
+5 passed at base).
+
+### G1 is STILL not satisfied, and this document says so
+
+Prediction 1 was falsified, so no repair cycle occurred and **no G2 work may start**.
+This is now the **sixth** fully-specified packet to be fixed on the first attempt —
+and the first on the axis that was supposed to be harder: existing multi-file source
+rather than a fresh self-contained module. The earlier task-shape conclusion
+("difficulty inside a self-contained bounded packet is not what produces a repair
+case") does not survive contact with this result as stated; the honest revision is
+narrower and less convenient:
+
+> On this target, packet SIZE and FILE COUNT also did not produce a first-attempt
+> defect. A 31 k-character context, two 8.5 KB artifacts, and a stated ordering trap
+> were all handled in one pass.
+
+What has NOT been tested is the remaining axis: a packet that exceeds what one fresh
+bounded context can hold, or a task carrying genuine ambiguity about *which* change
+is wanted. Those are the shapes worth trying next — not another harder rule set.
+Manufacturing a failure remains off the table.
+
+### Side effect worth recording
+
+The three failures this lane had been reporting as "known, not caused by this branch"
+are now **fixed by this run** — and the fix came from the worker, verified by the
+repo's own pre-existing test.
+
+Full repository suite at this head: **3797 passed, 3 skipped, 0 failed** (272.5 s).
+At `83556dfa` it was 3794 passed / 3 failed / 3 skipped, and the 3 were exactly these.
+
+The earlier PS-638 write-up deliberately refused to call those failures "pre-existing"
+without an exact-base receipt, and offered only a name-diff argument instead. That
+argument is now moot in the strongest way available: the exact-base comparator WAS
+produced for this ticket (`b6551c73c3572df8` at `56ff059f`), and the failures no
+longer exist to classify.
+
+
