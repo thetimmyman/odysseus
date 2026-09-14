@@ -49,10 +49,16 @@ FAILURE_CLASS_POLICY = "policy"
 FAILURE_CLASS_RUNTIME_PROVIDER = "runtime_provider"
 FAILURE_CLASS_INFRA = "infra"
 FAILURE_CLASS_CONTEXT = "context"
+#: The model answered in prose instead of calling the tool, or the tool channel
+#: produced nothing. A PROTOCOL outcome, not a task verdict — the ledger keeps
+#: these distinct for the same reason and the receipt mirrors it.
+FAILURE_CLASS_PROTOCOL = "protocol"
+FAILURE_CLASS_TOOL_CHANNEL = "tool_channel"
 
 KNOWN_FAILURE_CLASSES = frozenset({
     FAILURE_CLASS_TECHNICAL, FAILURE_CLASS_POLICY, FAILURE_CLASS_RUNTIME_PROVIDER,
-    FAILURE_CLASS_INFRA, FAILURE_CLASS_CONTEXT,
+    FAILURE_CLASS_INFRA, FAILURE_CLASS_CONTEXT, FAILURE_CLASS_PROTOCOL,
+    FAILURE_CLASS_TOOL_CHANNEL,
 })
 
 #: Baseline comparison, per PS-638 hardening item 6.
