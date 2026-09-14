@@ -79,3 +79,57 @@ def test_db_token_storage_round_trip():
     t = asyncio.run(go())
     assert t.access_token == "abc"
     assert srv.oauth_tokens is not None  # persisted as JSON
+
+
+def _storage_with(srv):
+    class _Query:
+        def filter(self, *a):
+            return self
+
+        def first(self):
+            return srv
+
+    class _Session:
+        def query(self, *a):
+            return _Query()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    return mcp_oauth.DbTokenStorage("srv-1", session_factory=lambda: _Session())
+
+
+def test_db_token_storage_load_treats_non_dict_json_as_empty():
+    """PS-602 / upstream #5107: a valid-JSON-but-not-dict oauth_tokens blob must
+    fail closed to an empty store instead of raising on `.get`."""
+    from mcp.shared.auth import OAuthToken  # noqa: F401 (re-import for clarity)
+
+    class FakeSrv:
+        oauth_tokens = "[1, 2, 3]"
+
+    storage = _storage_with(FakeSrv())
+    assert asyncio.run(storage.get_tokens()) is None
+
+
+def test_db_token_storage_update_survives_non_dict_existing_json():
+    """PS-602 / upstream #5107: updating over a non-dict pre-existing blob must
+    reset it to a dict rather than raise TypeError."""
+    from mcp.shared.auth import OAuthToken
+
+    class FakeSrv:
+        oauth_tokens = "[1, 2, 3]"
+
+    srv = FakeSrv()
+    storage = _storage_with(srv)
+
+    async def go():
+        await storage.set_tokens(OAuthToken(access_token="xyz", token_type="Bearer"))
+        return await storage.get_tokens()
+
+    t = asyncio.run(go())
+    assert t.access_token == "xyz"
+    assert '"tokens"' in srv.oauth_tokens
+    assert srv.oauth_tokens.strip().startswith("{")
