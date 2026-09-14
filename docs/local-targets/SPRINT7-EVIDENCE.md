@@ -173,12 +173,26 @@ Measured, in order:
    P2 ran at `num_ctx: 4096`, took an 812-token packet context, returned a correct
    `write_file` tool call carrying a 4 341-byte module, and passed 4 of 5
    harness-owned tests. That turn cost 526.2 s.
-4. **The Slice B long-context recall test at 4 096 did not complete inside the
-   measurement window** (>17 minutes for a ~3 200-token prompt plus a 120-token
-   answer, two rounds). No failure was recorded and no error was returned — it is
-   pure latency, and it is consistent with MS-R1's measured prefill of roughly
-   **9 tok/s** (derived from Slice A: 812-token prompt, 1 235 generated tokens,
-   526 s total) and ~2.83 tok/s decode.
+4. **The Slice B long-context recall test at 4 096 did not return inside the
+   measurement window** (~22 minutes for a ~3 200-token prompt plus a 120-token
+   answer, two rounds). No error and no failure class were recorded. The run was
+   then STOPPED deliberately rather than left as an unbounded benchmark.
+
+   Two pieces of evidence about what happened, one measured and one inferred:
+   - measured: the request was genuinely computing, not hung — sampled at
+     ~800% CPU over a 6 s window (4 800 jiffies), with 21.5 GB RSS.
+   - inferred (labelled as such): a SECOND request began at 01:44 on the node,
+     ~18 minutes after the first. The only path in `run_window` that starts a
+     second attempt is a `context`-class result from the first, so the ~3 200-token
+     prompt most likely did NOT fit the 4 096 window after all — i.e. the
+     document-sizing estimate used (words + 11% observed inflation) under-counts
+     real tokens at this size. That is the same class of error the ticket warns
+     about, and it is the reason the loop refuses to dispatch against a
+     hand-computed budget rather than trusting one.
+
+   Cleanup performed: the orphaned in-flight request was killed and both nodes
+   were returned to their pre-session state (no model resident; minipc GPU back
+   to ~2 MiB) with no host configuration touched at any point.
 
 That arithmetic is the routing conclusion, and it is a measurement rather than a
 preference:
@@ -217,7 +231,10 @@ What each value does NOT claim:
   declared 262144 is explicitly NOT used.
 - **4096 is not a capability estimate.** It is the default serving window, and the
   largest size at which the target has been verified to complete a bounded packet
-  (Slice A). The ladder above it is latency-bound rather than correctness-bound.
+  (Slice A: 812-token context, correct tool call, 4/5 tests). The recall test at
+  that same window did not return in ~22 minutes and most likely overflowed it,
+  so **4096 is a floor established by packet-level evidence, not a demonstrated
+  long-context capability**. Treating msr1 as a long-context node is not supported.
 - Neither value should be read as "safe for any prompt of that size". The packet's
   own budget is `served_context - generation_reserve`, which is what
   `src/local_worker_loop.usable_input_tokens()` enforces before dispatch.
