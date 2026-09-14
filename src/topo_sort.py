@@ -43,7 +43,7 @@ def topological_order(graph: dict) -> list:
                 successors[node].add(succ)
                 in_degree[succ] += 1
 
-    # Seed the heap with every node that has no predecessors.
+    # Seed the min-heap with every node that has no predecessors.
     ready = [node for node in nodes if in_degree[node] == 0]
     heapq.heapify(ready)
 

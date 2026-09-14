@@ -362,3 +362,46 @@ added). This is deliberately a different experiment, not a re-run of the same on
 2. If attempt 1 instead fails on a *real* stated rule, the repair packet must carry
    the same interface digest and contract, and attempt 2 decides the repair result.
 3. Same fingerprint twice -> escalate, no third dispatch.
+
+---
+
+## OUTCOME of G1d2 (appended after the run)
+
+Run `g1d2`, target `local-rtx4500`, base `2d88004c`.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. attempt 1 PASSES (`11 passed`), `ACCEPTED_CANDIDATE`, 1 attempt, 0 repairs | **CONFIRMED** — `11 passed`, 1 attempt, 0 repairs |
+| 2. (conditional) attempt 1 fails on a real stated rule | did not occur |
+| 3. (conditional) repeated fingerprint -> escalate | did not occur |
+
+Result: `ACCEPTED_CANDIDATE`, **1 attempt, 0 repairs**, 1 model call, 1 943-char base
+context, `interface_digest f68189165cc36dff`, chain `(True, None)`.
+
+That confirms G1d's red was the harness, and only the harness: with one wrong
+literal replaced by independent invariant checks, the *same* packet on the *same*
+target one-shots cleanly.
+
+### Process note — this outcome was recorded late, and why that matters
+
+The run completed at 10:45 and its result was never appended, because the
+originating session was interrupted. What recovered it was **not** a transcript:
+it was `~/scratch/sprint7/evidence/g1d2.json`, the run log, and the ledger — i.e.
+exactly the property the design is meant to provide. The interrupted worktree was
+also left with an uncommitted `src/topo_sort.py` (the run's worker artifact, a
+comment-only redraft; sha256 `2058926f627b1d47…` vs the committed
+`9d329bec8498…`). It is committed here as the artifact the accepted run actually
+produced, rather than being reverted to the pre-run file, because reverting it
+would erase what the run measured.
+
+### Standing result of the G1a..G1d2 series
+
+`local-rtx4500` one-shotted **every** fully specified packet in this series: 6 rules
+(G1a), 9 interacting rules (G1b), multi-form assertion parsing (G1c), and a
+7-rule algorithmic graph task (G1d2). **No genuine repair case exists yet.** The
+only deterministic red in the whole series was a harness defect, and the
+repeated-fingerprint stop fired correctly on it — on a false premise.
+
+So G1 is **NOT yet satisfied**, and this document says so rather than counting
+G1d2 as a repair result. A repair case requires a task whose first attempt fails
+for an *implementation* reason while every rule stays stated.
