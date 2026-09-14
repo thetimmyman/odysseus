@@ -255,5 +255,43 @@ Everything else is green, including the 119 new PS-638 tests, the 19-test hidden
 verifier against the committed artifact, and the pre-existing PS-635/PS-632 suites.
 `scripts/ps638-mutations.sh`: 20 mutations applied, all 20 killed, baseline-gated.
 
+---
+
+## Process traps found this session (recorded once, with evidence)
+
+**T1 — a mutation harness killed mid-run contaminates the next run.**
+The first `bash scripts/ps638-mutations.sh` invocation exceeded the tool's 30 s
+limit and was terminated while M17's mutation was applied. `src/evidence_package.py`
+was left with `if False:` in place of `if data is None:`. The next invocation then
+reported a red test under EVERY mutation (an unrelated test proved nothing) and M17
+itself reported `APPLY-FAILED`, because it was already applied. A mutation result
+from a contaminated baseline is worthless. Fixed in the script: it now runs the
+suite once BEFORE mutating and refuses to continue unless the baseline is green,
+saying so explicitly. Evidence: the mutation logs at `/tmp/ps638-mut{,2,3,4,5}.log`
+during this session, and the script's baseline-gate text.
+
+**T2 — `run_commands` entries execute CONCURRENTLY, and it bit twice.**
+(a) A single call pairing "copy the reference implementation and run the hidden
+verifier" with "copy a deliberately wrong implementation" had the second entry
+overwrite `src/bounded_cache.py` before the first entry's pytest read it, so the
+*reference* run reported the wrong implementation's failures and looked like a
+regression in the verifier.
+(b) A `grep` for mutation leftovers ran while a mutation was applied and reported a
+mutation that the restore had already reverted.
+Both were fixed by issuing dependent steps as ONE ordered shell command. This is the
+same trap the operator's notes already list; it is recorded here because it produced
+two actually-misleading intermediate results this session, which is stronger evidence
+than a warning.
+
+**T3 — a hidden verifier must be checked against a reference implementation first.**
+Two real bugs in the G1e verifier were found this way before the run: an ordering
+assertion placed after a `get()` that legitimately reorders, and an identity
+assertion comparing two literal tuples that CPython constant-folds into one object
+(`("k",) is not ("k",)` is False). Without a reference implementation to run against,
+the second would have produced a permanent false red on a correct artifact — the
+same failure mode as G1d, where a wrong hardcoded literal in the harness made the
+loop escalate on a defect that did not exist.
+
+
 
 
