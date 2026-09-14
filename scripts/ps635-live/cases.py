@@ -27,6 +27,10 @@ class Case:
     artifact = ""
     verifier = ""
     max_attempts = 3
+    #: Output budget per round. A packet whose artifacts are large (a compose
+    #: file is ~8.5 KB) needs more than the default, or the write is truncated
+    #: mid-file and the failure would be MINE, not the model's.
+    max_output_tokens = 2400
     positive_control = "the hidden verifier passes on the produced artifact"
     negative_control = "a class that evicts the wrong entry must FAIL"
     control_node_id = ""
@@ -38,6 +42,17 @@ class Case:
 
     def packet(self) -> dict:
         raise NotImplementedError
+
+    def source_material(self, worktree) -> str:
+        """Reference material the worker needs, rendered into its context.
+
+        A packet whose write scope is EXISTING files cannot be judged fairly while
+        the worker can only WRITE: it never sees what it is editing. Rather than
+        widen the tool surface, the current content and the declared read-scope
+        references are placed in the context, where they are covered by the
+        context-projection hash like everything else the worker was shown.
+        """
+        return ""
 
     def preflight(self, context: str) -> None:
         """Refuse to spend a turn on a context that is already wrong."""
@@ -245,6 +260,168 @@ class G1eBoundedCacheCase(Case):
         _assert_interface_rendered(context, self.interface_keys)
 
 
+class PS639ComposeDriftCase(Case):
+    """PS-639 — the first REAL G1 candidate: a naturally occurring source defect.
+
+    The defect is not injected. At base 56ff059f, ``docker-compose.yml`` grew three
+    Pi execution-plane variables and the two standalone GPU compose files — which
+    explicitly claim equivalence to base+overlay — were not regenerated. Three
+    deterministic tests are red on the exact base, in a detached worktree.
+
+    Why this is a fair G1 case and not just a harder puzzle:
+
+    * the contract is COMPLETE — it defines the target state exactly (equality with
+      a merge whose semantics it spells out), and every input it references is
+      supplied in the worker's own context;
+    * it edits EXISTING files, which is the axis the earlier one-shot series never
+      exercised;
+    * the natural shortcut is wrong: ``environment`` is a LIST and the verifier
+      compares it as one, so appending the missing variables at the end of the
+      file still fails. That is a genuine implementation trap, not a hidden-contract
+      trap.
+    """
+
+    name = "ps639-compose-drift"
+    jira_key = "PS-639"
+    base_sha = "56ff059f"
+    artifact = "docker-compose.gpu-nvidia.yml"
+    write_scope_paths = ("docker-compose.gpu-nvidia.yml",
+                         "docker-compose.gpu-amd.yml")
+    verifier = "tests/test_gpu_compose_standalone.py"
+    control_node_id = "test_amd_odysseus_adds_only_overlay"
+    # Each standalone file is ~8.5 KB; the default 2400-token cap would truncate a
+    # faithful rewrite and produce a failure that is MINE, not the model's.
+    max_output_tokens = 7000
+    positive_control = ("both standalone files parse to exactly base+overlay, with "
+                        "no key added and none dropped")
+    negative_control = ("appending the missing variables at the END of the "
+                        "environment list must FAIL: the order is asserted")
+
+    contract = '''Bring two EXISTING files back into exact agreement with the base
+    compose file plus their matching GPU overlay.
+
+    For EACH of these two files:
+        docker-compose.gpu-nvidia.yml   (its overlay is docker/gpu.nvidia.yml)
+        docker-compose.gpu-amd.yml      (its overlay is docker/gpu.amd.yml)
+
+    its COMPLETE parsed YAML content must be IDENTICAL to:
+
+        deep_merge(docker-compose.yml, overlay)
+
+    where the overlay is merged ONLY into services.odysseus. Nothing else in
+    either file may be added, removed, reordered or retyped.
+
+    MERGE SEMANTICS -- this is where a shortcut goes wrong:
+
+    1. Mappings merge recursively.
+    2. LIST-VALUED FIELDS CONCATENATE: the base list's items come FIRST, in the
+       base file's order, then the overlay's items in the overlay's order.
+       ``environment`` is a list, so a variable that exists in the base file must
+       appear at the POSITION the base file puts it. Appending it at the end is
+       WRONG even though the resulting mapping has the same members.
+    3. Scalars are overwritten by the overlay.
+    4. Keys the overlay introduces that the base does not have (``deploy``,
+       ``devices``, ``group_add``) are added; keys neither file mentions are
+       unchanged.
+
+    Each standalone file has therefore DRIFTED: base additions made after it was
+    last regenerated are missing from its services.odysseus.environment. Find the
+    difference by comparing each standalone file against base+overlay -- do not
+    assume which entries are missing, and do not add any entry the merge does not
+    produce.
+
+    FORMATTING IS FREE. The verifier parses both files with yaml.safe_load and
+    compares data structures, so indentation, quoting and comment changes are all
+    acceptable. Content is not: every mapping key, every list item, every list
+    ORDER and every scalar value is compared.
+
+    Write BOTH files. Use write_file once per file with its complete content.
+'''
+
+    interface_keys = ("docker-compose.gpu-nvidia.yml", "docker-compose.gpu-amd.yml")
+    read_scope_paths = ("docker-compose.yml", "docker/gpu.nvidia.yml",
+                        "docker/gpu.amd.yml", "tests/test_gpu_compose_standalone.py")
+
+    def packet(self) -> dict:
+        return {
+            "packet_id": "PS639-compose-drift-rtx",
+            "objective": ("Fix the standalone GPU Compose drift reported by "
+                          "tests/test_gpu_compose_standalone.py: regenerate both "
+                          "standalone files so each equals docker-compose.yml with "
+                          "only its own GPU overlay merged into services.odysseus."),
+            "contract": self.contract,
+            "target_requirements": ["native_tools"],
+            "write_scope": list(self.write_scope_paths),
+            "read_scope": list(self.read_scope_paths),
+            "interface": [
+                {"name": "docker-compose.gpu-nvidia.yml", "required": True,
+                 "type_hint": "path",
+                 "semantics": "standalone NVIDIA file; must equal base + docker/gpu.nvidia.yml"},
+                {"name": "docker-compose.gpu-amd.yml", "required": True,
+                 "type_hint": "path",
+                 "semantics": "standalone AMD file; must equal base + docker/gpu.amd.yml"},
+            ],
+            "test_command": f"python3 -m pytest {self.verifier} -q",
+            "acceptance_criteria": [
+                "each standalone file parses to exactly base+overlay on services.odysseus",
+                "every base environment entry is preserved",
+                "the overlay's environment additions are present, in overlay order, "
+                "AFTER the base entries",
+                "no key from the other vendor's overlay appears",
+                "all other services and top-level volumes remain identical to base",
+            ],
+            "negative_control": self.negative_control,
+            "stop_conditions": ["a file outside the write scope would need changing",
+                                "the base or overlay files would need editing"],
+            "role": "local_implementer",
+            "base_sha": self.base_sha,
+        }
+
+    def source_material(self, worktree) -> str:
+        """The two files being edited, plus every reference the contract names.
+
+        Without this the worker could only WRITE, never see what it is editing, and
+        the packet would be UNFAIR rather than hard. All of it sits inside the
+        context projection, so the projection hash covers exactly what was shown.
+        """
+        parts = ["", "", "=" * 72,
+                 "SOURCE MATERIAL (read scope; shown verbatim)", "=" * 72]
+        for rel in self.write_scope_paths:
+            parts += [f"----- CURRENT CONTENT OF {rel} (this file is WRONG and must "
+                      f"be regenerated) -----",
+                      (worktree / rel).read_text(encoding="utf-8")]
+        for rel in self.read_scope_paths[:3]:
+            parts += [f"----- {rel} (reference) -----",
+                      (worktree / rel).read_text(encoding="utf-8")]
+        return "\n".join(parts) + "\n"
+
+    def preflight(self, context: str) -> None:
+        _assert_interface_rendered(context, self.interface_keys)
+        # The worker must have been shown the content it is asked to fix.
+        for rel in self.write_scope_paths:
+            if f"CURRENT CONTENT OF {rel}" not in context:
+                raise SystemExit(f"context is missing the current content of {rel}")
+        # Negative control on the PROJECTION itself: the merged environment list --
+        # i.e. the answer -- must not be present contiguously anywhere in what the
+        # worker was shown. The contract describes the merge; it must not perform it.
+        import yaml
+        base_env = yaml.safe_load(
+            (self.worktree / "docker-compose.yml").read_text(encoding="utf-8")
+        )["services"]["odysseus"]["environment"]
+        for overlay_rel in ("docker/gpu.nvidia.yml", "docker/gpu.amd.yml"):
+            overlay_env = yaml.safe_load(
+                (self.worktree / overlay_rel).read_text(encoding="utf-8")
+            )["services"]["odysseus"].get("environment") or []
+            if not overlay_env:
+                continue
+            # The answer would read as the base list immediately followed by the
+            # overlay additions. Check for that adjacency, not for the items alone.
+            joined = "\n".join(base_env) + "\n" + "\n".join(overlay_env)
+            if joined in context:
+                raise SystemExit(
+                    f"the merged answer for {overlay_rel} leaked into the context")
+
+
 class NegNoInterfaceCase(G1eBoundedCacheCase):
     """The missing-interface NEGATIVE control.
 
@@ -275,4 +452,5 @@ CASES = {
     L1InterfaceCase.name: L1InterfaceCase,
     G1eBoundedCacheCase.name: G1eBoundedCacheCase,
     NegNoInterfaceCase.name: NegNoInterfaceCase,
+    PS639ComposeDriftCase.name: PS639ComposeDriftCase,
 }

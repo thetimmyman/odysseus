@@ -51,6 +51,15 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+#: The repository this HARNESS lives in. The PS-638 evidence layer is the tool;
+#: a tree under measurement is only ever the subject. Keeping them distinct is
+#: what lets the harness seal a comparator for a BASE commit that predates the
+#: evidence layer entirely — which is exactly what PS-639 needs, since 56ff059f
+#: has no src.attempt_receipt at all.
+HARNESS_ROOT = HERE.parents[1]
+if str(HARNESS_ROOT) not in sys.path:
+    sys.path.insert(0, str(HARNESS_ROOT))
+
 import ollama_client as oc  # noqa: E402  (harness-local transport)
 
 MAX_OUTPUT_TOKENS = 2400
@@ -151,21 +160,28 @@ def control_result(output: str, node_id: str):
 
 # -------------------------------------------------------------- dispatcher ---
 class Dispatcher:
-    """One write_file tool, a bounded retry of the tool channel, full recording.
+    """A write_file tool over the packet's write scope, fully recorded.
 
-    The retry exists because a model that answers in prose instead of calling the
-    tool is a *protocol* outcome, not a task verdict. Every round is recorded, so
-    the extra rounds are visible in the evidence instead of being invisible
-    background magic.
+    MULTI-FILE (added for PS-639): a packet may own more than one file, so the
+    loop keeps calling the tool until every file in the scope has been written or
+    the round budget runs out. Only the first tool call of each round is acted on,
+    and a round that returns prose instead of a call is a PROTOCOL outcome with
+    its own bounded retry — the model is asked for the files still outstanding, by
+    path, rather than being told "call the tool" and left to guess which one.
+
+    Every round and every write is recorded, so extra rounds are visible in the
+    evidence instead of being invisible background magic.
     """
 
     def __init__(self, worktree: Path, write_scope, client, store: RunStore,
-                 *, num_ctx: int):
+                 *, num_ctx: int, max_output_tokens: int = MAX_OUTPUT_TOKENS):
         self.worktree = worktree
         self.scope = [s.lstrip("./") for s in write_scope]
         self.client = client
         self.store = store
         self.num_ctx = num_ctx
+        self.max_output_tokens = max_output_tokens
+        self.max_rounds = max(MAX_EXTRA_ROUNDS + 2, len(self.scope) + 2)
         self.calls: list = []
 
     def __call__(self, context: str, attempt: int):
@@ -173,22 +189,22 @@ class Dispatcher:
 
         started = time.monotonic()
         rounds = 0
-        artifacts: tuple = ()
         failure_class = ""
         status = ""
         timings: dict = {}
-        written = ""
+        pending = list(self.scope)
+        writes: list = []
         model_text = ""
         tool_calls: list = []
         prompt_tokens = 0
         completion_tokens = 0
         messages = [{"role": "user", "content": context}]
 
-        for rnd in range(1, MAX_EXTRA_ROUNDS + 2):
+        for rnd in range(1, self.max_rounds + 1):
             rounds = rnd
             res = self.client.api_streaming_chat(
                 messages, num_ctx=self.num_ctx, tools=WRITE_TOOL,
-                num_predict=MAX_OUTPUT_TOKENS)
+                num_predict=self.max_output_tokens)
             body = res.body or {}
             prompt_tokens = int(body.get("prompt_eval_count") or prompt_tokens or 0)
             completion_tokens = int(body.get("eval_count") or 0)
@@ -232,30 +248,43 @@ class Dispatcher:
                 target = self.worktree / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content)
-                artifacts = (path,)
-                written = path
+                writes.append(path)
+                if path in pending:
+                    pending.remove(path)
                 status = f"wrote {path} ({len(content)} chars)"
-                break
+                if not pending:
+                    break
+                messages.append({"role": "assistant", "content": model_text[:400]})
+                messages.append({"role": "user", "content": (
+                    f'Now call write_file for path "{pending[0]}" with its complete '
+                    "file content. No prose.")})
+                continue
 
             failure_class = "protocol" if model_text else "tool_channel"
             status = f"no tool call (round {rnd})"
             messages.append({"role": "assistant", "content": model_text[:600]})
             messages.append({"role": "user", "content": (
-                f'Call write_file NOW with path "{self.scope[0]}" and the complete '
+                f'Call write_file NOW with path "{pending[0]}" and the complete '
                 "file content. No prose.")})
+
+        if pending and not failure_class:
+            failure_class = "technical"
+            status = f"incomplete write set; never wrote {pending}"
 
         self.calls.append({
             "attempt": attempt, "context": context, "rounds": rounds,
-            "written": written, "model_text": model_text,
+            "writes": writes, "written": writes[-1] if writes else "",
+            "pending": list(pending), "model_text": model_text,
             "tool_calls": tool_calls, "timings": timings,
             "failure_class": failure_class, "status": status,
             "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
             "elapsed_s": round(time.monotonic() - started, 3)})
 
         return lo.DispatchOutcome(
-            artifacts=artifacts, failure_class=failure_class, status=status,
+            artifacts=tuple(writes), failure_class=failure_class, status=status,
             elapsed_s=round(time.monotonic() - started, 3), rounds=rounds,
             timings=timings)
+
 
 
 # ---------------------------------------------------------------- verifier ---
@@ -464,7 +493,8 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
         decided_at=datetime.now(timezone.utc).isoformat())
     write_json(run_dir / "dispatch_receipt.json", dispatch.to_dict())
 
-    base_context = render_worker_context(packet) + case.tool_instruction
+    base_context = render_worker_context(packet) + case.source_material(
+        case.worktree) + case.tool_instruction
     case.preflight(base_context)
     (run_dir / "base_context.txt").write_text(base_context)
 
@@ -472,7 +502,8 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
                              model=client.model, runtime_version=version,
                              worktree=str(case.worktree), served_context=num_ctx)
     dispatcher = Dispatcher(case.worktree, packet["write_scope"], client, store,
-                            num_ctx=num_ctx)
+                            num_ctx=num_ctx,
+                            max_output_tokens=case.max_output_tokens)
     verifier = Verifier(case.worktree, test_rel, store,
                         lambda: snapshot()["snapshot_digest"])
 
@@ -505,13 +536,16 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
         out_ref = store.store(f"attempt{number}-model-output.txt",
                               (call["model_text"] or "").encode("utf-8"))
         artifact_refs = ()
-        if call["written"]:
-            written_path = case.worktree / call["written"]
+        written_paths = tuple(call.get("writes") or ())
+        refs = []
+        for written in written_paths:
+            written_path = case.worktree / written
             if written_path.exists():
                 file_ref = store.store(
-                    f"attempt{number}-artifact-{Path(call['written']).name}",
+                    f"attempt{number}-artifact-{Path(written).name}",
                     written_path.read_bytes())
-                artifact_refs = (ArtifactRef(**file_ref),)
+                refs.append(ArtifactRef(**file_ref))
+        artifact_refs = tuple(refs)
         attempts.append(make_attempt_receipt(
             receipt_id=f"attempt-{run_id}-{number}", run_id=run_id,
             packet_id=packet["packet_id"], attempt=number,
@@ -533,7 +567,7 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
                 {"name": (c.get("function") or {}).get("name", "write_file")}
                 for c in call["tool_calls"]),
             declared_write_set=tuple(packet["write_scope"]),
-            actual_write_set=(call["written"],) if call["written"] else (),
+            actual_write_set=written_paths,
             artifact_refs=artifact_refs,
             failure_class=call["failure_class"]))
         write_json(run_dir / f"attempt_receipt-{number}.json",
@@ -630,6 +664,88 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     return 0
 
 
+def verify_only(worktree: Path, verifier: str, out_dir: Path, *,
+                base_sha: str = "", label: str = "baseline") -> int:
+    """Run a deterministic verifier on a tree and SEAL a PS-638 VerificationReceipt.
+
+    This is the exact-base comparator PS-638 requires before a failure may be
+    called pre-existing. It is bound to the tree it measured and carries the
+    normalized failure fingerprint, so a later claim can CITE it rather than infer
+    it from "the files did not change".
+
+    No EvidencePackage is sealed, deliberately: a package whose requirement
+    closure has verification receipts and no attempt would be rejected by this
+    project's own validator (``no_attempts``), and correctly so — a comparator is
+    not a run. Sealing one anyway would be a document about nothing.
+    """
+    # Imported from the HARNESS tree, not the tree under measurement: the evidence
+    # layer is the tool, and a base commit that predates it can still be sealed.
+    from src.attempt_receipt import ArtifactRef, make_verification_receipt
+    from src.execution_package import seal_verifier_digests
+    from src.repair_packet import failure_fingerprint, parse_verification_failure
+    from src.source_snapshot import take_source_snapshot
+
+    out_dir = Path(out_dir)
+    store = RunStore(out_dir)
+    source = take_source_snapshot(str(worktree), base_sha=base_sha,
+                                  relevant_paths=[verifier])
+    digests = dict(seal_verifier_digests(str(worktree), [verifier]))
+    command = f"python3 -m pytest {verifier} -q -p no:cacheprovider"
+
+    started = time.monotonic()
+    proc = subprocess.run([sys.executable, "-m", "pytest", verifier, "-q",
+                           "-p", "no:cacheprovider"],
+                          cwd=str(worktree), capture_output=True, text=True,
+                          timeout=900)
+    stdout, stderr = proc.stdout or "", proc.stderr or ""
+    elapsed = round(time.monotonic() - started, 3)
+    output = stdout + stderr
+    counts = pytest_counts(stdout)
+    failure = parse_verification_failure(command, proc.returncode, output)
+
+    receipt = make_verification_receipt(
+        receipt_id=f"{label}-{worktree.name}", run_id=label, packet_id=label,
+        attempt=1, execution_package_hash=f"{label}:no-package",
+        verifier_id=verifier, verifier_digest=digests.get(verifier, ""),
+        verifier_paths=(verifier,), source_snapshot_digest=source.snapshot_digest,
+        normalized_command=command, exit_code=proc.returncode,
+        stdout_ref=ArtifactRef(**store.store(f"{label}-stdout.txt",
+                                            stdout.encode("utf-8"))),
+        stderr_ref=ArtifactRef(**store.store(f"{label}-stderr.txt",
+                                            stderr.encode("utf-8"))),
+        worktree=str(worktree), host="local control plane",
+        tests_collected=counts["collected"], tests_executed=counts["executed"],
+        tests_passed=counts["passed"], tests_failed=counts["failed"],
+        tests_skipped=counts["skipped"],
+        requirement_ids=(),          # a comparator closes nothing in a closure
+        proof_class="EXISTING_AUTHORITATIVE",
+        failure_fingerprint=failure_fingerprint(failure),
+        elapsed_s=elapsed)
+
+    write_json(out_dir / "baseline_receipt.json", receipt.to_dict())
+    write_json(out_dir / "baseline_probe.json", {
+        "label": label, "worktree": str(worktree),
+        "head_sha": source.head_sha, "base_sha": source.base_sha,
+        "source_snapshot_digest": source.snapshot_digest,
+        "source_disposition": source.disposition(),
+        "verifier": verifier, "verifier_digest": digests.get(verifier, ""),
+        "exit_code": receipt.exit_code, "outcome": receipt.outcome,
+        "tests_passed": receipt.tests_passed, "tests_failed": receipt.tests_failed,
+        "failure_fingerprint": receipt.failure_fingerprint,
+        "receipt_hash": receipt.receipt_hash,
+        "failing_tests": list(failure.failing_tests),
+        "note": ("exact-base comparator; no model was called and no EvidencePackage "
+                 "was sealed, because a comparator is not a run"),
+    })
+    print(f"{label}: exit {receipt.exit_code} -> {receipt.outcome} "
+          f"({receipt.tests_passed} passed, {receipt.tests_failed} failed) "
+          f"| fingerprint {receipt.failure_fingerprint[:16]}")
+    print(f"  source snapshot {source.snapshot_digest[:16]} @ {source.head_sha[:12]}"
+          f" | receipt {receipt.receipt_hash[:16]}")
+    print(f"  written to {out_dir}")
+    return 0
+
+
 def summarise_run(run_dir: Path) -> int:
     """Rebuild ``run_summary.json`` from records already on disk.
 
@@ -688,10 +804,28 @@ def main() -> int:
     parser.add_argument("--num-ctx", type=int, default=32768)
     parser.add_argument("--summarise", metavar="RUN_DIR",
                         help="re-derive run_summary.json from sealed records only")
+    parser.add_argument("--verify-only", metavar="WORKTREE",
+                        help="seal an exact-base VerificationReceipt; no model call")
+    parser.add_argument("--out", metavar="DIR",
+                        help="output directory for --verify-only")
+    parser.add_argument("--base-sha", default="")
+    parser.add_argument("--label", default="baseline")
     args = parser.parse_args()
 
     if args.summarise:
         return summarise_run(Path(args.summarise))
+
+    if args.verify_only:
+        import cases as case_mod
+        if not args.case or args.case not in case_mod.CASES:
+            print(f"a case is required for --verify-only: {sorted(case_mod.CASES)}",
+                  file=sys.stderr)
+            return 2
+        verifier = case_mod.CASES[args.case]().verifier
+        out = Path(args.out) if args.out else \
+            Path(args.verify_only) / "data" / "live" / f"{args.label}-{utc_stamp()}"
+        return verify_only(Path(args.verify_only).resolve(), verifier, out,
+                           base_sha=args.base_sha, label=args.label)
 
     if not args.worktree:
         parser.error("worktree is required (or use --summarise RUN_DIR)")
