@@ -125,3 +125,63 @@ Neither experiment creates reviewer authority, an auto-approve class, or a gener
 claim that local workers self-correct. The ledger ceiling for a worker-driven run
 remains `ACCEPTED_CANDIDATE`; acceptance still requires a named non-local
 authority.
+
+---
+
+## OUTCOME of experiment 2 (appended after the run)
+
+Run `ps635-loop-demo-2`, target `local-rtx4500`, base `3cb7b7c1`, contract = the
+EXPLICIT-interface variant.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. attempt 1 PASSES | **CONFIRMED** — `5 passed` |
+| 2. loop stops after one attempt, `repairs` empty | **CONFIRMED** — 1 attempt, 0 repairs |
+
+Result: `ACCEPTED_CANDIDATE`, decision `stop`, reason `attempt 1 passed
+deterministic verification`, one context handed to the worker (2 511 chars), ledger
+chain `(True, None)`, verification test file untouched.
+
+## The two experiments together
+
+| | experiment 1 (contract under-specified) | experiment 2 (contract names its interfaces) |
+| --- | --- | --- |
+| attempt 1 | fail (`1 failed, 4 passed`) | **pass (`5 passed`)** |
+| attempt 2 (repair) | fail — guessed again, differently | not needed |
+| repairs recorded | 2 | **0** |
+| terminal result | `ESCALATE` | `ACCEPTED_CANDIDATE` |
+| worker contexts | 2 135 / 3 570 chars | 2 511 chars |
+
+**One variable changed** between the two runs: whether the packet contract names
+its input keys. Same target, same model, same runtime, same single `write_file`
+tool, same harness-owned test the worker never sees, same budget gate, same
+`max_attempts`.
+
+### Causal conclusion
+
+The Slice A failure was caused by the **under-specified packet**, not by the loop,
+the target, or the repair mechanism. And the repair loop does **not** compensate for
+a missing interface: over an under-specified packet it converges on **escalation**,
+which is the safe outcome (it stopped rather than burning turns) but is not a fix.
+
+### Architectural consequence for PS-635 (actionable)
+
+1. **Packet contracts must name their interfaces.** A packet whose interface is
+   unspecified should be **refused at authoring time**, not dispatched and
+   repaired. That check belongs in the packet constructor, next to the existing
+   fail-closed checks for empty `write_scope` / empty `test_command`.
+2. **`failure_fingerprint` earned its place.** It converted "the retry failed" into
+   "the retry failed the SAME way, so stop" — and it did so on the first pair of
+   real attempts, without a human reading the logs.
+3. **A negative result with a control is worth more than a green run.** Experiment 1
+alone would have read as "local workers cannot repair"; experiment 2 shows the
+   loop is sound and the *input* was defective.
+
+### Limits of this evidence
+
+- Two runs, one target, one model family, one task. This establishes a causal
+  relationship for THIS defect class (missing interface specification); it does not
+  generalise to arbitrary repair loops or to semantic (non-deterministic) failures.
+- Nothing here creates reviewer authority or an auto-approve class. The ceiling for
+  a worker-driven run remains `ACCEPTED_CANDIDATE`; acceptance still requires a
+  named non-local authority.
