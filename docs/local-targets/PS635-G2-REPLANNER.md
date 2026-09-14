@@ -5,6 +5,15 @@ outcome.
 
 ## What is new here
 
+One correction to the numbers stated in the pre-registration commit and in the
+first PS-635 comment: the gate runs **12** named checks on every proposal (not
+16), because `packet_valid` and `canonical_agreement` each carry several
+sub-checks (interface, source, write scope, read scope, test command, objective)
+inside one named check rather than as separate names. The refusal-code count (23),
+the refused-delta-key count (68) and the refused-action-name count (34) were
+measured and are correct. The number is corrected here rather than left standing,
+because a count nobody re-derived is how a record starts drifting from its code.
+
 G1 is a loop whose manager is code. G2 adds a MODEL in an **advisory** role, and
 the whole seam is `src/replanner.py`:
 
@@ -12,7 +21,7 @@ the whole seam is `src/replanner.py`:
 | --- | --- |
 | planner input | a bounded projection of CANONICAL state: ledger + validated packet + declared envelope. No transcript, no worker prose, no filesystem. |
 | proposal | typed, schema-validated, content-addressed. Five kinds only: `next_packet`, `replan`, `approach_switch`, `stop`, `escalate`. |
-| gate | deterministic, typed, fail-closed: 16 named checks, each with its own refusal code. |
+| gate | deterministic, typed, fail-closed: 12 named checks run on every proposal (none short-circuits), 23 typed refusal codes, 68 explicitly refused packet-delta keys and 34 refused action names. |
 | effect | at most ONE bounded replan per run, spending the SAME attempt budget; the only field it may change is `approach`. |
 
 Two properties are structural rather than promised:
