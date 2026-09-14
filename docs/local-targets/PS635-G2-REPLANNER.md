@@ -195,3 +195,63 @@ Pre-registered predictions:
    (`seal_count == 1`), and the ledger chain verifies.
 
 Still pre-registered as expected-UNOBSERVED: the replan branch.
+
+---
+
+## OUTCOME of experiment G2-L2 (appended after the run)
+
+Run `g2-replan-control-20260914T222427Z`, target `local-rtx4500`, base `1e362f10`
++ `c01f1a90` + `6d7ffc33` + `975c91fe` + `478e51aa`.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. the worker leg one-shots it again | **CONFIRMED** — `19 passed`, 1 attempt, 0 repairs |
+| 2. the projection states the truth it previously misstated | **CONFIRMED** — sealed `manager1-context.txt`: `attempt 1: PASS  rounds=1  artifacts=['src/bounded_cache.py']  failure_class=-`; no `FAIL (exit` anywhere; `served_context: 32768` |
+| 3. consulted once at the PASS boundary, shown `allowed_kinds = [stop]`, proposal gated | **CONFIRMED** — 1 call, boundary `pass`, 922 prompt / 179 completion tokens, 7.1 s; proposal REFUSED `shape_invalid` |
+| 4. the run's result is unchanged by advice | **CONFIRMED** — `ACCEPTED_CANDIDATE`, 1 attempt, 0 repairs, `19 passed` |
+| 5. the sealed package validates with the manager seal inside it | **CONFIRMED** — `validation_ok True`, 0 reasons, `seal_count 1`, ledger chain `(True, None)` |
+| replan branch | **UNOBSERVED**, as pre-registered and as stated above |
+
+```
+package           f32ec89530bd6cd1…        evidence_package b7f14e9de70a6612…
+manager turn      1 call, pass boundary, 922/179 tokens, 7.081 s
+ledger            proposal_refused verdict_code shape_invalid (approach on a stop)
+                  proposal_hash ab41dafd2a7aaf06…  cited 228d71c8044d866b…
+```
+
+**The corrected projection changed the model's reasoning, which is the point.**
+Run 1's rationale called the history "a metadata or exit-code reporting artifact";
+Run 2's says, plainly, "The canonical history indicates that attempt 1 resulted in
+a PASS with verification exit 0 and 19 tests passed." Same model, same task, same
+prompt template — a projection that states canonical state accurately is what a
+manager can reason from, and the difference is visible in its own words.
+
+### Finding: the local manager attaches approach text to `stop`, twice out of two
+
+Both live turns proposed `stop` (agreement with the deterministic PASS), cited a
+real canonical evidence hash, requested no action and no authority, sent an empty
+`packet_delta` — and both were refused for encoding, because `stop` must not carry
+approach text. This is recorded as measured and **the gate was not relaxed**: a
+`stop` that also steers the next attempt is a contradiction, and the honest
+resolution is to say so.
+
+The likely cause is in the PROTOCOL TEXT, not the model's judgement: the reply
+skeleton in `render_planner_context` shows one JSON object with `"approach"`
+present unconditionally, and this model fills every field it is shown. That is a
+bounded, testable follow-up (state per-kind requirements in the skeleton; then
+re-measure), deliberately NOT bolted on here — a third live run in this session
+would be broadening G2 rather than finishing the seam.
+
+### Where the seam stands after two live controls
+
+* the manager is consulted live, at a deterministic boundary, and its input is
+  canonical state (now provably, including the run's own verdict text);
+* its output is schema-validated and deterministically gated, and both an
+  accepted path and a refused path are recorded in the canonical ledger;
+* a PASS cannot be moved by advice, an attempt cannot be bought by advice, and
+  neither a malformed reply nor a raising advisor can fail a run;
+* the seam is inside the PS-638 package as a `manager_seam` seal whose artifact
+  references the validator loads and hash-checks;
+* **the replan branch is proven hermetically and remains UNOBSERVED live** — the
+  same honest gap as the live repair branch, recorded as a gap rather than filled
+  with a manufactured failure.
