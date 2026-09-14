@@ -140,3 +140,79 @@ stated, so a miss is an implementation DEFECT, not an ambiguity.
 3. **Attempt 2 PASSES** → `ACCEPTED_CANDIDATE`, 2 attempts, 1 recorded repair.
 4. If attempt 2 fails with the same fingerprint: **ESCALATE**, no third dispatch, and
    it is reported as a negative result.
+
+---
+
+## OUTCOME of G1b (appended after the run)
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. attempt 1 FAILS on a stated rule | **FALSIFIED** — `12 passed` on attempt 1 |
+| 2. repair packet built from the failure | did not occur |
+| 3. attempt 2 passes | did not occur |
+
+Result: `ACCEPTED_CANDIDATE`, **1 attempt, 0 repairs**, 1 model call, 2320-char context,
+interface digest `76247a4b4314c6c0`, chain `(True, None)`. Every one of the nine
+interacting rules was implemented correctly first time, including the after-merge
+filter, the earliest-start tie-break and the all-filtered collapse.
+
+### Capability finding (recorded because it is the real result here)
+
+`local-rtx4500` one-shots FULLY SPECIFIED bounded pure-function packets at this
+scale: 6 rules (G1a) and 9 interacting rules (G1b) both passed on the first attempt
+with a single model call and no repair. That is a genuinely useful result for
+routing — and it means a single subtle rule is not enough to produce a repair case.
+
+A synthetic defect is NOT acceptable as a substitute: manufacturing a failure would
+prove nothing about the repair loop. So G1c uses a task whose difficulty is
+inherent — multiple assertion FORMS that must all be parsed — while every rule stays
+stated in the contract.
+
+---
+
+## Experiment G1c — pre-registration (written BEFORE its run)
+
+### Why this task
+
+The repair packet is supposed to carry "expected vs actual" (Section 6), and the
+current code does not extract them — it quotes the raw excerpt. Extracting them is
+real, useful work on a NEW module (so a bad artifact cannot break the loop itself).
+It is also inherently multi-form: equality, containment and truthiness each have a
+different shape in pytest output.
+
+### The packet
+
+| | |
+| --- | --- |
+| packet_id | `G1c-verifier-evidence-rtx` |
+| write scope | `src/verifier_evidence.py` (new module) |
+| verification | `tests/test_verifier_evidence_ps635.py` (harness-owned, never shown) |
+| interface | `output` (required, `str`) |
+
+### The contract (stated in full)
+
+`extract_assertion_evidence(output: str) -> dict` returning exactly
+`{"kind", "expected", "actual"}`:
+
+1. Find the LAST line in `output` matching `AssertionError: assert <EXPR>`.
+2. Strip a trailing comma and surrounding whitespace from `<EXPR>`. If `<EXPR>` is
+   fully wrapped in parentheses, remove ONE layer of them.
+3. `assert A == B`   -> kind `equality`, `actual = A`, `expected = B`
+4. `assert A in B`   -> kind `containment`, `actual = A`, `expected = B`
+5. `assert not A`    -> kind `truthiness`, `expected = "False"`, `actual = A`
+6. anything else     -> kind `other`, `expected = ""`, `actual = ""`
+7. Values are the SOURCE TEXT, trimmed — never evaluated.
+8. No match anywhere in `output` -> kind `other`, `expected = ""`, `actual = ""`.
+
+### Pre-registered predictions
+
+1. **Attempt 1 FAILS** on at least one of the containment / truthiness /
+   paren-stripping rules, with a visible expected-vs-actual assertion.
+2. The repair packet carries the SAME interface digest and contract, and its
+   `failing_tests` names the specific test.
+3. **Attempt 2 PASSES** -> `ACCEPTED_CANDIDATE`, 2 attempts, 1 repair.
+4. Same fingerprint twice -> **ESCALATE**, no third dispatch, reported as negative.
+
+If attempt 1 also passes, the honest conclusion for this session is that
+`local-rtx4500` one-shots bounded fully-specified packets at this scale, and G1 is
+reported as NOT achieved rather than manufactured.
