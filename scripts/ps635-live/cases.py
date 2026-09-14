@@ -147,9 +147,14 @@ class G1eBoundedCacheCase(Case):
     """
 
     name = "g1e-bounded-cache"
-    base_sha = ""
+    base_sha = "654b36fc"
     artifact = "src/bounded_cache.py"
-    verifier = "tests/test_bounded_cache_ps635.py"
+    # The hidden verifier lives OUTSIDE tests/ so the repo suite is unaffected.
+    # (The first live run of this case pointed at tests/ and escalated on pytest
+    # rc=4 "file not found" — a HARNESS defect that judged nothing. The path is
+    # now checked before dispatch, and build_execution_package refuses a plan
+    # whose verifier artifact is absent.)
+    verifier = "scripts/ps635-live/hidden/test_bounded_cache_ps635.py"
     control_node_id = "test_control_evicts_the_least_recently_used"
     positive_control = "every stated rule is implemented as written"
     negative_control = ("a cache that evicts the most-recently-used entry, or "

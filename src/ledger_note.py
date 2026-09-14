@@ -3,20 +3,22 @@ def render_note(payload: dict, *, max_chars: int = 4000) -> str:
     verbatim_lines = payload.get("verbatim_lines")
     block_reason = payload.get("block_reason")
 
-    subject_text = subject if subject is not None else "NONE"
-
-    if verbatim_lines:
-        lines_text = "\n".join("  - " + str(line) for line in verbatim_lines)
+    if subject is None:
+        subject_part = "NONE"
     else:
-        lines_text = "NONE"
+        subject_part = str(subject)
 
-    block_text = block_reason if block_reason is not None else "NONE"
+    if verbatim_lines is None or len(verbatim_lines) == 0:
+        lines_part = "NONE"
+    else:
+        lines_part = "\n".join("  - " + str(line) for line in verbatim_lines)
 
-    rendered = (
-        "SUBJECT: " + subject_text + "\n"
-        "LINES: " + lines_text + "\n"
-        "BLOCK: " + block_text
-    )
+    if block_reason is None:
+        block_part = "NONE"
+    else:
+        block_part = str(block_reason)
+
+    rendered = "SUBJECT: " + subject_part + "\nLINES: " + lines_part + "\nBLOCK: " + block_part
 
     if len(rendered) > max_chars:
         marker = "...[TRUNCATED]"

@@ -317,6 +317,30 @@ def test_sealed_verifier_digests_hash_the_real_artifact(repo):
     assert moved[0][1] != digests[0][1]
 
 
+def test_a_plan_naming_an_absent_verifier_is_refused(source, tmp_path):
+    """A sealed `<absent>` is not an identity.
+
+    Measured live 2026-09-14: a case declared its hidden verifier at the wrong
+    path, the plan sealed `<absent>` as the verifier digest, two model turns were
+    spent, and the loop escalated on pytest rc=4 "file or directory not found".
+    Nothing had judged the code, and the package said the verifier was identified.
+    """
+    plan = VerificationPlan(
+        verifier_id="tests/nowhere.py", command="python3 -m pytest tests/nowhere.py -q",
+        verifier_paths=["tests/nowhere.py"],
+        verifier_digests=seal_verifier_digests(str(tmp_path), ["tests/nowhere.py"]))
+    assert plan.missing_verifiers == ("tests/nowhere.py",)
+    with pytest.raises(ExecutionPackageError) as exc:
+        build_execution_package(PACKET, source=source, verification=plan,
+                                run_id="r-1")
+    assert "does not exist" in str(exc.value)
+
+
+def test_a_plan_with_a_real_verifier_is_accepted(source, plan):
+    assert plan.missing_verifiers == ()
+    assert build(PACKET, source, plan).package_hash
+
+
 def test_a_package_requires_a_verification_plan(source):
     with pytest.raises(ExecutionPackageError):
         build_execution_package(PACKET, source=source, verification=None,

@@ -428,12 +428,12 @@ def run_case(worktree: Path, case_name: str, target_id: str,
     requirement_ids = tuple(r.requirement_id for r in ep.evidence_requirements)
     return _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
                     target_id, num_ctx, version, model_digest, plan, ep,
-                    requirement_ids, relevant, snapshot)
+                    requirement_ids, relevant, snapshot, source_before)
 
 
 def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
              target_id, num_ctx, version, model_digest, plan, ep, requirement_ids,
-             relevant, snapshot) -> int:
+             relevant, snapshot, source_before) -> int:
     import src.local_worker_loop as lo
     from src.attempt_receipt import (
         ArtifactRef, context_projection_digest, make_attempt_receipt,
@@ -630,15 +630,71 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     return 0
 
 
+def summarise_run(run_dir: Path) -> int:
+    """Rebuild ``run_summary.json`` from records already on disk.
+
+    Exists because of a live defect found on 2026-09-14: the E1 run sealed its
+    package and validated it, then crashed while assembling this convenience
+    projection. The evidence was never at risk — the package, the receipts, the
+    artifacts and the validator verdict were all written — but the summary was
+    lost, and the honest repair is to RE-DERIVE it from the sealed records rather
+    than re-run the experiment and spend another model turn.
+
+    Nothing here is a source of truth. It reads what the run wrote.
+    """
+    run_dir = Path(run_dir)
+    package = json.loads((run_dir / "evidence_package.json").read_text())
+    validation = json.loads((run_dir / "validation.json").read_text())
+    provenance = json.loads((run_dir / "ledger_provenance.json").read_text())
+    dispatch = json.loads((run_dir / "dispatch_receipt.json").read_text())
+    execution = package["execution_package"]
+    attempts = package.get("attempt_receipts") or ()
+    verifications = package.get("verification_receipts") or ()
+
+    summary = {
+        "run_id": run_dir.name,
+        "package_hash": execution.get("package_hash"),
+        "dispatch_receipt_hash": dispatch.get("receipt_hash"),
+        "attempt_receipt_hashes": [a.get("receipt_hash") for a in attempts],
+        "verification_receipt_hashes": [v.get("receipt_hash")
+                                       for v in verifications],
+        "evidence_package_hash": package.get("evidence_package_hash"),
+        "validation_ok": validation.get("ok"),
+        "validation_reasons": [i["code"] for i in validation.get("issues") or ()],
+        "requirement_states": validation.get("requirement_states"),
+        "context_projections": [a.get("context_projection_hash") for a in attempts],
+        "repair_fingerprints": [r.get("fingerprint")
+                                for r in provenance.get("repairs") or ()],
+        "terminal_result": provenance.get("terminal_result"),
+        "ledger_chain": provenance.get("chain_ok"),
+        "source_before": execution.get("source"),
+        "recovered": ("this summary was RE-DERIVED from the sealed records after a "
+                      "harness defect aborted the run's summary step; the sealed "
+                      "package and its verdict are the originals"),
+    }
+    write_json(run_dir / "run_summary.json", summary)
+    print(f"recovered summary for {run_dir.name}: "
+          f"terminal {summary['terminal_result']} | "
+          f"validator {'VERIFIED' if validation.get('ok') else 'REJECTED'}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("worktree")
+    parser.add_argument("worktree", nargs="?")
     parser.add_argument("case", nargs="?", default="l1-interface",
                         help="a case name from cases.CASES")
     parser.add_argument("--target", default="local-rtx4500")
     parser.add_argument("--num-ctx", type=int, default=32768)
+    parser.add_argument("--summarise", metavar="RUN_DIR",
+                        help="re-derive run_summary.json from sealed records only")
     args = parser.parse_args()
 
+    if args.summarise:
+        return summarise_run(Path(args.summarise))
+
+    if not args.worktree:
+        parser.error("worktree is required (or use --summarise RUN_DIR)")
     worktree = Path(args.worktree).resolve()
     if not (worktree / "src").is_dir():
         print(f"not an odysseus worktree: {worktree}", file=sys.stderr)

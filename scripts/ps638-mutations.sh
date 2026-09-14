@@ -18,7 +18,7 @@
 set -uo pipefail
 
 WT=${1:-$(cd "$(dirname "$0")/.." && pwd)}
-TESTS="tests/test_evidence_package_ps638.py tests/test_evidence_contract_ps638.py"
+TESTS="tests/test_evidence_package_ps638.py tests/test_evidence_contract_ps638.py tests/test_execution_package_ps638.py tests/test_source_snapshot_ps638.py"
 BACKUP=$(mktemp -d)
 FAILED=0
 APPLIED=0
@@ -28,13 +28,13 @@ run_tests() {
 }
 
 restore_all() {
-  for f in src/evidence_package.py src/evidence_contract.py; do
+  for f in src/evidence_package.py src/evidence_contract.py src/execution_package.py; do
     [[ -f "$BACKUP/$(basename "$f")" ]] && cp "$BACKUP/$(basename "$f")" "$WT/$f"
   done
 }
 trap restore_all EXIT INT TERM
 
-for f in src/evidence_package.py src/evidence_contract.py; do
+for f in src/evidence_package.py src/evidence_contract.py src/execution_package.py; do
   cp "$WT/$f" "$BACKUP/$(basename "$f")"
 done
 
@@ -104,8 +104,8 @@ mutate "M8 writes outside the authorized scope allowed" src/evidence_package.py 
   "s.replace('        outside = sorted(p for p in actual_writes if p not in effective_scope)\n        if outside:', '        outside = []\n        if False:')"
 
 # --- source binding and baseline ---------------------------------------------
-mutate "M9 source drift does not invalidate evidence" src/evidence_package.py \
-  "s.replace('        if not current or current not in accepted:', '        if False:')"
+mutate "M9 a writable package without an interface is not rejected" src/evidence_package.py \
+  "s.replace('    if write_scope and not interface:', '    if False:')"
 
 mutate "M10 pre-existing claim needs no baseline" src/evidence_package.py \
   "s.replace('        if receipt.get(\"claimed_preexisting\"):', '        if False:')"
@@ -132,11 +132,20 @@ mutate "M17 artifacts never rejected as unavailable" src/evidence_package.py \
 mutate "M18 artifact contents not scanned for secrets" src/evidence_package.py \
   "s.replace('        leaked = find_secret_shaped(text, prefix=label)\n        if leaked:', '        leaked = ()\n        if False:')"
 
-mutate "M19 verifications may disagree about their tree" src/evidence_package.py \
-  "s.replace('    if len(verified) > 1:', '    if False:')"
+mutate "M19 an unexplained tree difference is ignored" src/evidence_package.py \
+  "s.replace('    if source_digest and source_digest not in verified:', '    if False:')"
 
-mutate "M20 an unexplained tree difference is ignored" src/evidence_package.py \
-  "s.replace('    if not wrote:', '    if False:')"
+mutate "M20 the current source may differ from every verified tree" src/evidence_package.py \
+  "s.replace('        if not current or current not in verified:', '        if False:')"
+
+mutate "M21 a verification plan may name a verifier that does not exist" src/execution_package.py \
+  "s.replace('    if missing_verifiers:', '    if False:')"
+
+# A rule that existed here on the first revision is deliberately ABSENT:
+# "all verification receipts must agree on their tree". The first real two-attempt
+# run verified a different tree after each attempt — as a repair must — so the rule
+# was withdrawn on live evidence (see _check_verified_source). Its replacement is
+# M20 above: a caller-supplied current source must match a tree that WAS verified.
 
 restore_all
 echo

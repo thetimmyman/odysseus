@@ -455,11 +455,19 @@ def test_a_verified_tree_that_differs_with_no_recorded_write_is_rejected(repo):
     assert result.has(SOURCE_CHANGED_AFTER_VERIFICATION), result.explain()
 
 
-def test_verifications_that_disagree_about_their_tree_are_rejected(repo):
-    payload, _ = make_run(repo, extra_receipt_source_digest="e" * 64)
+def test_verifications_on_different_trees_are_allowed_for_a_repair_run(repo):
+    """A repair run verifies a DIFFERENT tree after each attempt, by design.
+
+    This rule was withdrawn on live evidence (2026-09-14): the first real
+    two-attempt run produced two different verified-tree digests, and a rule
+    demanding they agree would have rejected correct evidence — or pushed authors
+    into recording one digest for several trees, which is the falsehood the check
+    exists to catch.
+    """
+    payload, _ = make_run(repo, extra_receipt_source_digest="e" * 64,
+                          attempts=(1, 2))
     result = validate_evidence_package(payload)
-    assert result.ok is False
-    assert result.has(SOURCE_CHANGED_AFTER_VERIFICATION), result.explain()
+    assert not result.has(SOURCE_CHANGED_AFTER_VERIFICATION), result.explain()
 
 
 # 12. retry history omitted to make a final result look cleaner

@@ -640,7 +640,8 @@ def _recomputed_outcome(receipt: Mapping[str, Any]) -> str:
 
 
 def _check_verifications(payload: Mapping[str, Any], package: Mapping[str, Any],
-                         source_digest: str, issues: list) -> None:
+                         source_digest: str, issues: list,
+                         current_source: Optional[Mapping[str, Any]] = None) -> None:
     """Verify identity, verdict honesty, and WHICH TREE each receipt ran against.
 
     Source rule, and the reason it is not "receipt must equal the package":
@@ -710,33 +711,52 @@ def _check_verifications(payload: Mapping[str, Any], package: Mapping[str, Any],
             "the package declares a negative control but no verification receipt "
             "records one running"))
 
-    _check_verified_source(payload, source_digest, receipts, issues)
+    _check_verified_source(payload, source_digest, receipts, current_source, issues)
 
 
 def _check_verified_source(payload: Mapping[str, Any], source_digest: str,
                            receipts: Sequence[Mapping[str, Any]],
+                           current_source: Optional[Mapping[str, Any]],
                            issues: list) -> None:
-    """The tree a verification ran against must be coherent and explicable."""
+    """Which tree each verification ran against, and whether it still applies.
+
+    Two rules — and NOT a third one, which was WITHDRAWN on live evidence:
+
+    * a verified tree that differs from the sealed input must be EXPLAINED by a
+      recorded write;
+    * a caller-supplied ``current_source`` must be one of the trees that were
+      actually verified.
+
+    The withdrawn rule was "all verification receipts must agree with each other".
+    The first real two-attempt run showed why that is wrong: a repair run
+    verifies a DIFFERENT tree after each attempt by design — that is what a
+    repair IS. Keeping the rule would have rejected correct evidence, and worse,
+    it would have pushed authors to record one shared digest for several
+    different trees, which is precisely the falsehood the check exists to catch.
+    """
     verified = {str(r.get("source_snapshot_digest") or "") for r in receipts}
     verified.discard("")
-    if len(verified) > 1:
-        issues.append(ValidationIssue(
-            SOURCE_CHANGED_AFTER_VERIFICATION,
-            f"verification receipts disagree about the tree they ran against: "
-            f"{sorted(verified)}"))
+    if not verified:
         return
-    if not verified or not source_digest:
-        return
-    if source_digest in verified:
-        return
-    wrote = any((attempt.get("actual_write_set") or ())
-                for attempt in payload.get("attempt_receipts") or ())
-    if not wrote:
-        issues.append(ValidationIssue(
-            SOURCE_CHANGED_AFTER_VERIFICATION,
-            "verification ran against a different tree than the sealed input, "
-            "and no attempt recorded a write that could explain the difference",
-            subject="verification_receipts"))
+
+    if source_digest and source_digest not in verified:
+        wrote = any((attempt.get("actual_write_set") or ())
+                    for attempt in payload.get("attempt_receipts") or ())
+        if not wrote:
+            issues.append(ValidationIssue(
+                SOURCE_CHANGED_AFTER_VERIFICATION,
+                "verification ran against a different tree than the sealed input, "
+                "and no attempt recorded a write that could explain the difference",
+                subject="verification_receipts"))
+
+    if current_source is not None:
+        current = (current_source.get("snapshot_digest", "")
+                   if isinstance(current_source, Mapping) else "")
+        if not current or current not in verified:
+            issues.append(ValidationIssue(
+                SOURCE_CHANGED_AFTER_VERIFICATION,
+                "the source measured now is not any tree this evidence verified; "
+                "the evidence no longer applies", subject="current_source"))
 
 
 
@@ -905,23 +925,9 @@ def validate_evidence_package(
     _check_receipt_hashes(payload, issues)
     source_digest = _check_source(package, issues)
 
-    if current_source is not None:
-        current = (current_source.get("snapshot_digest", "")
-                   if isinstance(current_source, Mapping) else "")
-        verified = {str(r.get("source_snapshot_digest") or "")
-                    for r in payload.get("verification_receipts") or ()}
-        verified.discard("")
-        accepted = verified or {source_digest}
-        if not current or current not in accepted:
-            issues.append(ValidationIssue(
-                SOURCE_CHANGED_AFTER_VERIFICATION,
-                "the source measured now differs from the source this evidence "
-                "was sealed against; the evidence no longer applies",
-                subject="current_source"))
-
     _check_packet_contract(package, issues)
     _check_attempts(payload, package, issues)
-    _check_verifications(payload, package, source_digest, issues)
+    _check_verifications(payload, package, source_digest, issues, current_source)
     _check_artifacts(payload, extensions, issues)
     _check_context_projection(payload, package, extensions, issues)
 

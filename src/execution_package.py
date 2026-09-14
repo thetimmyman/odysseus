@@ -126,6 +126,20 @@ class VerificationPlan:
         if self.timeout_s <= 0:
             raise ExecutionPackageError("verification timeout_s must be positive")
 
+    @property
+    def missing_verifiers(self) -> Tuple[str, ...]:
+        """Declared verifier paths with no real digest.
+
+        ``<absent>`` is the sentinel :func:`seal_verifier_digests` writes for a
+        file that is not there. A plan carrying it names a judge that does not
+        exist, so the digest would seal the ABSENCE as if it were identity.
+        """
+        if not self.verifier_paths:
+            return ()
+        sealed = {path: digest for path, digest in self.verifier_digests}
+        return tuple(path for path in self.verifier_paths
+                     if not sealed.get(path) or sealed[path] == "<absent>")
+
     def digest_of(self, path: str) -> str:
         for rel, digest in self.verifier_digests:
             if rel == path:
@@ -495,6 +509,17 @@ def build_execution_package(
             "source must be a measured SourceSnapshotIdentity")
     if not isinstance(verification, VerificationPlan):
         raise ExecutionPackageError("verification must be a VerificationPlan")
+
+    # A plan that names a judge nobody can find is refused HERE, before dispatch.
+    # Measured live 2026-09-14: a case declared its hidden verifier at the wrong
+    # path, the plan sealed `<absent>` as the verifier identity, two model turns
+    # were spent, and the loop escalated on pytest rc=4 "file or directory not
+    # found". Nothing had judged the code. A sealed absence is not identity.
+    missing_verifiers = verification.missing_verifiers
+    if missing_verifiers:
+        raise ExecutionPackageError(
+            "verification plan names a verifier artifact that does not exist: "
+            f"{list(missing_verifiers)}")
 
     known = {f.name for f in fields(WorkPacket)}
     subset = {k: v for k, v in dict(packet).items() if k in known}
