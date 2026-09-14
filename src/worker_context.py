@@ -95,14 +95,17 @@ def render_worker_context(packet: dict, *, max_chars: int = 4000) -> str:
         "write_scope"          -> list/tuple of str
         "interface"            -> the declared input keys (bare names, mappings or
                                   InterfaceField values); rendered verbatim
+        "contract"             -> str: the exact public surface to implement
+                                  (carried into every repair attempt verbatim)
         "acceptance_criteria"  -> list/tuple of str
         "negative_control"     -> str
         "stop_conditions"      -> list/tuple of str
 
-    OUTPUT: exactly these six labelled sections, in this order:
+    OUTPUT: exactly these seven labelled sections, in this order:
         OBJECTIVE: <objective, or NONE>
         WRITE_SCOPE: <comma-joined scope, or NONE>
         INTERFACE: <one bullet per declared input key, each indented 2 spaces>
+        CONTRACT: <the exact public surface, or NONE>
         ACCEPTANCE: <one bullet per criterion, each indented 2 spaces>
         NEGATIVE_CONTROL: <text, or NONE>
         STOP_IF: <one bullet per condition, each indented 2 spaces>
@@ -133,6 +136,8 @@ def render_worker_context(packet: dict, *, max_chars: int = 4000) -> str:
     objective_text = objective if objective else "NONE"
     scope_text = ", ".join(write_scope) if write_scope else "NONE"
     interface_text = _render_interface(interface)
+    contract = _as_str(packet.get("contract"))
+    contract_text = contract if contract else "NONE"
     acceptance_text = _render_bullets(acceptance)
     negative_text = negative_control if negative_control else "NONE"
     stop_text = _render_bullets(stop_conditions)
@@ -141,6 +146,7 @@ def render_worker_context(packet: dict, *, max_chars: int = 4000) -> str:
         "OBJECTIVE: " + objective_text,
         "WRITE_SCOPE: " + scope_text,
         "INTERFACE: " + interface_text,
+        "CONTRACT: " + contract_text,
         "ACCEPTANCE: " + acceptance_text,
         "NEGATIVE_CONTROL: " + negative_text,
         "STOP_IF: " + stop_text,

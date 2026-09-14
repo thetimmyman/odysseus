@@ -589,3 +589,36 @@ def test_repair_entry_records_the_same_interface_digest_as_the_run(ledger):
     run_digest = next(e for e in entries if e.kind == "run").payload["interface_digest"]
     repair = next(e for e in entries if e.kind == "repair")
     assert repair.payload["repair_packet"]["interface_digest"] == run_digest
+
+
+def test_repair_context_carries_the_original_contract_verbatim():
+    """A repair needs the API spec: failure evidence describes a DEFECT, not the
+    interface being implemented, so dropping the contract would send the worker
+    back without the thing it must implement to."""
+    from src.repair_packet import build_repair_packet, parse_verification_failure, \
+        render_repair_context
+
+    contract = "Implement render_note(payload: dict, *, max_chars: int = 4000) -> str"
+    packet = dict(IFACE_PACKET, contract=contract)
+    failure = parse_verification_failure("pytest -q", 1, FAIL_OUTPUT)
+    repair = build_repair_packet(packet, failure=failure, changed_files={},
+                                 attempt=1, budget_remaining=2)
+    assert repair["contract"] == contract
+    rendered = render_repair_context(repair)
+    assert contract in rendered
+    assert "CONTRACT (UNCHANGED" in rendered
+
+
+def test_worker_context_renders_the_contract_section():
+    from src.worker_context import render_worker_context
+    out = render_worker_context({"objective": "o", "interface": ["k"],
+                                 "contract": "EXACT-API-STRING"})
+    assert "CONTRACT: EXACT-API-STRING" in out
+    assert "CONTRACT: NONE" in render_worker_context({"objective": "o"})
+
+
+def test_contract_is_part_of_the_validated_packet_and_survives_validation():
+    from src.local_worker_loop import validate_dispatchable_packet
+    p = validate_dispatchable_packet(dict(PACKET, contract="API"))
+    assert p.contract == "API"
+    assert p.to_dict()["contract"] == "API"

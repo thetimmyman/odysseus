@@ -86,6 +86,7 @@ _STR_FIELDS = (
     "objective",
     "test_command",
     "negative_control",
+    "contract",
 )
 
 
@@ -138,6 +139,14 @@ class WorkPacket:
 
     packet_id: str
     objective: str
+    #: The exact public surface the worker must implement (module path, callables,
+    #: output shape). Distinct from ``objective`` on purpose: the objective says
+    #: WHAT to build, the contract says the precise API/format to build it to — and
+    #: a REPAIR attempt needs the contract verbatim, because the failure evidence
+    #: describes a defect, not the interface being implemented. Optional so this
+    #: slice adds no new mandatory gate; whoever sets it gets it carried into every
+    #: repair.
+    contract: str = ""
     target_requirements: Tuple[str, ...] = ()
     write_scope: Tuple[str, ...] = ()
     read_scope: Tuple[str, ...] = ()

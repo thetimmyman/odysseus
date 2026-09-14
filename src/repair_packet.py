@@ -172,6 +172,7 @@ def build_repair_packet(packet: Mapping, *, failure: VerificationFailure,
         "attempt": int(attempt),
         "budget_remaining": int(budget_remaining),
         "objective": packet.get("objective", ""),
+        "contract": packet.get("contract", ""),
         **_interface_projection(packet),
         "acceptance_criteria": list(packet.get("acceptance_criteria") or ()),
         "write_scope": list(packet.get("write_scope") or ()),
@@ -204,6 +205,9 @@ def render_repair_context(repair: Mapping, *, max_chars: int = 6000) -> str:
                  f"budget remaining {repair.get('budget_remaining')}")
     lines.append("")
     lines.append(f"OBJECTIVE: {repair.get('objective') or 'NONE'}")
+    lines.append("CONTRACT (UNCHANGED -- implement exactly this):")
+    contract = repair.get("contract") or ""
+    lines.append(contract if contract else "NONE")
     lines.append("ACCEPTANCE (UNCHANGED — do not restate these):")
     for c in repair.get("acceptance_criteria") or []:
         lines.append(f"  - {c}")
