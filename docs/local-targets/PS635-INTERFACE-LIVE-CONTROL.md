@@ -66,3 +66,44 @@ rendered context (`test_rendered_interface_names_are_not_available_anywhere_else
 
 No reviewer authority, no auto-approve class. The ceiling for a worker-driven run
 remains `ACCEPTED_CANDIDATE`; acceptance needs a named non-local authority.
+
+---
+
+## OUTCOME of experiment L1 (appended after the run)
+
+Run `l1-positive` / `l1-negative`, target `local-rtx4500`, base `9efb53bc`.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. positive passes attempt 1, `ACCEPTED_CANDIDATE`, zero repairs | **CONFIRMED** — `8 passed`, 1 attempt, **0 repairs**, 1 model call |
+| 2. negative refused as `packet_invalid` with zero model calls | **CONFIRMED** — `BLOCKED`, `packet_invalid`, 0 attempts, **0 model calls** |
+
+Evidence:
+
+- base context **1 818 chars**, rendered by the SHIPPED `render_worker_context`
+- run-entry `interface_digest = 1d6eda6c43ddca1a`, chain verified `True`
+- decision `stop` — `attempt 1 passed deterministic verification`
+- negative detail: `interface must be non-empty: a writable packet must declare the
+  input keys its contract promises the worker`
+
+The worker's module reads exactly `subject_name`, `verbatim_lines`, `block_reason`.
+None of those names appears anywhere in the context outside the INTERFACE section,
+so the only way it could have read them is through the formal interface path — and
+`test_invented_keys_are_ignored` fails if the module reads synonym guesses instead.
+
+**The interface is no longer decorative.** It is validated, delivered, carried into
+repairs, and digest-bound to the run evidence.
+
+### Honest observation: one edge the contract stated and the worker still missed
+
+For `max_chars` smaller than the truncation marker (14 chars), the produced module
+computes `cut = max_chars - len(marker)`, clamps it to 0, and returns the FULL
+marker — so the result exceeds `max_chars`. The acceptance test bounded at 200 and
+did not cover it, and the contract's wording ("cut it at a character boundary and
+append the exact marker") does not state what to do when the marker itself cannot
+fit.
+
+That is recorded rather than glossed: it is a real, bounded, unstated edge, not a
+delivery failure. It is also the shape of a good G1 repair case IF the contract is
+made explicit about the degenerate bound — a stated requirement the first attempt
+gets wrong for an implementation reason, repairable from the failure evidence.
