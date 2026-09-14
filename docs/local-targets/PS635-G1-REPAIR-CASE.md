@@ -216,3 +216,78 @@ different shape in pytest output.
 If attempt 1 also passes, the honest conclusion for this session is that
 `local-rtx4500` one-shots bounded fully-specified packets at this scale, and G1 is
 reported as NOT achieved rather than manufactured.
+
+---
+
+## OUTCOME of G1c (appended after the run)
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. attempt 1 FAILS on a stated rule | **FALSIFIED** — `8 passed` on attempt 1 |
+| 2-3. repair built, attempt 2 passes | did not occur |
+
+Result: `ACCEPTED_CANDIDATE`, **1 attempt, 0 repairs**, 1 model call, 2275-char context,
+interface digest `0dce35628a445393`, chain `(True, None)`. All eight rules including
+last-match-wins, one-layer paren unwrapping, containment and truthiness forms.
+
+### Three falsified predictions in a row is a finding, not noise
+
+| packet | rules | outcome |
+| --- | --- | --- |
+| G1a interval merge | 6 (one subtle: touching) | **pass on attempt 1** |
+| G1b window stats | 9 interacting | **pass on attempt 1** |
+| G1c assertion-evidence parser | 8, multi-form | **pass on attempt 1** |
+
+With a complete contract, a declared interface and a bounded fresh context at
+2.2-2.3k chars, `local-rtx4500` one-shots bounded pure-function packets at this
+scale — roughly 200-900 generated tokens each, one model call, zero repairs. That
+is a routing-relevant capability result: **well-specified small packets do not need
+the repair path at all.**
+
+It also means "one subtle rule" cannot produce a repair case. G1d therefore uses a
+task with genuine algorithmic difficulty and NO standard-library shortcut, where
+the failure mode is algorithmic rather than lexical.
+
+---
+
+## Experiment G1d — pre-registration (written BEFORE its run)
+
+| | |
+| --- | --- |
+| packet_id | `G1d-toposort-rtx` |
+| write scope | `src/topo_sort.py` (new module) |
+| verification | `tests/test_topo_sort_ps635.py` (harness-owned, never shown) |
+| interface | `graph` (required, `dict[str, list[str]]`) |
+
+### The contract (stated in full)
+
+`topological_order(graph: dict) -> list`:
+
+1. `graph` maps a node to the list of its SUCCESSORS (edges node -> successor).
+2. Return a list containing EVERY node exactly once — including nodes that appear
+   only as a successor and nodes with no edges.
+3. Among the nodes that are currently ready (every predecessor already placed),
+   always choose the **alphabetically smallest**.
+4. Duplicate edges are ignored.
+5. A cycle raises `ValueError`.
+6. Empty input returns `[]`.
+7. The input must not be mutated.
+
+### Why this one can genuinely fail
+
+Rule 3 is the whole task. A correct-looking Kahn implementation that drains a set or
+list of ready nodes produces a valid topological order that is usually NOT
+alphabetical, and the test asserts the exact list. There is no standard-library
+one-liner for "lexicographically smallest topological order".
+
+### Pre-registered predictions
+
+1. **Attempt 1 FAILS** on the exact-order assertions (rule 3) and/or the
+   isolated-node rule, with the expected and actual lists visible.
+2. The repair packet carries the same interface digest and contract verbatim.
+3. **Attempt 2 PASSES** -> `ACCEPTED_CANDIDATE`, 2 attempts, 1 repair.
+4. Same fingerprint twice -> **ESCALATE**, no third dispatch, reported as negative.
+
+If attempt 1 also passes, G1 is reported as NOT ACHIEVED: the correct conclusion is
+that this worker does not need repairing on bounded fully-specified packets, and
+that manufacturing a defect to force a repair would not be evidence.
