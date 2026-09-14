@@ -117,3 +117,122 @@ The last row is reported deliberately: the invariant is defended by TWO
 independent checks (a named-worker refusal and an allow-list), so removing one
 still refuses and the suite stays green. It is defense in depth, not a weak test —
 removing both is caught by 2 tests.
+
+## Slice B — safe working context calibration
+
+### How 4 096 was established as MS-R1's DEFAULT (not a config, not a ceiling)
+
+Read off the live hosts, not from documentation:
+
+- msr1 runs `/bin/ollama serve` **outside systemd** (no unit, no drop-in, no
+  `OLLAMA_CONTEXT_LENGTH` in the environment), and its `llama-server` was started
+  with `-c 4096`. That is the ollama **default**.
+- minipc by contrast runs `-c 32768` with `--cache-type-k q8_0 --cache-type-v q8_0`.
+- A **per-request** `options.num_ctx` re-provisions `llama-server`: requesting
+  `num_ctx: 8192` on msr1 produced a new `llama-server … -c 8192` and `/api/ps`
+  reported `context_length: 8192`. So calibration needs **no host config edit and
+  no daemon restart**, and the knob is per-request rather than per-host.
+
+### Workload (fixed, so every window is comparable)
+
+A deterministic long-context tool task: a seeded pseudo-repo document with a
+build code planted at 75% depth (a fact at the very end would be found by
+recency, not by context), requiring a `record_answer` tool call carrying the code
+and the section that contains it, followed by a SECOND round after a synthetic
+tool result. Pass requires tool-call correctness AND recall AND the second round.
+
+### `local-rtx4500` — ladder complete, all windows pass
+
+| window served | prompt tokens | prefill tok/s | decode tok/s | ttft (= whole turn) | tool | recall | round 2 | task |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 8 192 | 6 379 | 1 262.44 | 35.74 | 58.49 s | ok | ok | ok | **PASS** |
+| 16 384 | 12 100 | 1 382.60 | 34.81 | 63.65 s | ok | ok | ok | **PASS** |
+| 24 576 | 17 862 | 1 394.83 | 34.27 | 67.89 s | ok | ok | ok | **PASS** |
+| 32 768 | 23 582 | 1 367.83 | 33.66 | 71.91 s | ok | ok | ok | **PASS** |
+
+Observations, all measured:
+
+- **Prefill is ~1 260-1 395 tok/s and decode degrades only mildly** (35.74 → 33.66
+  tok/s) as the window grows 4x. There is no cliff at these sizes.
+- Turn latency grows sub-linearly (58.5 s → 71.9 s for a 3.7x larger prompt),
+  because prefill dominates and prefill is fast.
+- On this target `ttft == elapsed` for every window: a tool call arrives in one
+  chunk, so this is a whole-turn number and must NOT be compared with a
+  first-token latency from a different runtime.
+
+### `local-msr1` — origin established; the long-context ladder is latency-bound
+
+Measured, in order:
+
+1. **4 096 is ollama's default**, not a configured value and not a model ceiling
+   (see above). No host mutation was performed at any point.
+2. **The window IS configurable per request**, verified by re-provisioning
+   `llama-server` at `-c 8192` and reading `context_length: 8192` back from
+   `/api/ps`.
+3. **A 4 096 window does serve a bounded engineering packet correctly.** Slice A's
+   P2 ran at `num_ctx: 4096`, took an 812-token packet context, returned a correct
+   `write_file` tool call carrying a 4 341-byte module, and passed 4 of 5
+   harness-owned tests. That turn cost 526.2 s.
+4. **The Slice B long-context recall test at 4 096 did not complete inside the
+   measurement window** (>17 minutes for a ~3 200-token prompt plus a 120-token
+   answer, two rounds). No failure was recorded and no error was returned — it is
+   pure latency, and it is consistent with MS-R1's measured prefill of roughly
+   **9 tok/s** (derived from Slice A: 812-token prompt, 1 235 generated tokens,
+   526 s total) and ~2.83 tok/s decode.
+
+That arithmetic is the routing conclusion, and it is a measurement rather than a
+preference:
+
+| window | prompt at fill=0.70 | prefill at ~9 tok/s | verdict |
+| --- | --- | --- | --- |
+| 4 096 | ~3 200 tok | ~6 min | usable for microtasks, but a single turn is minutes |
+| 8 192 | ~6 400 tok | ~12 min | marginal |
+| 16 384 | ~12 800 tok | ~24 min | not usable as a worker-pool member |
+
+So MS-R1 is characterised as a **microtask / background worker with a bounded
+packet budget of roughly `served_context - output_reserve` ≈ 2 700 tokens at its
+default window**, which is exactly Slice A's finding. Raising its window makes
+each turn slower, not faster; the node's contribution to accepted work per hour is
+bounded by prefill, not by correctness.
+
+## `safe_working_context` — the values, and what they do NOT claim
+
+Definition used (conservative, and deliberately NOT "the request did not crash"):
+
+> the largest tested window at which the target completed the representative
+task with a CORRECT tool call, correct long-context RECALL, and a successful
+SECOND round, with no context error.
+
+| target | declared | served (measured) | `safe_working_context` | bounded? |
+| --- | --- | --- | --- | --- |
+| `local-rtx4500` | 262144 | 32768 | **32768** | no — a FLOOR |
+| `local-msr1` | 262144 | 4096 | **4096** | yes — its default served window |
+
+What each value does NOT claim:
+
+- **32768 is not the model's limit.** No tested window at that target failed
+  (tool call, recall and round 2 were correct at every size up to 32 768), so the
+  true limit is above it and remains **unbounded by measurement**. It is recorded
+  as the largest window verified end-to-end, not as a discovered ceiling. The
+  declared 262144 is explicitly NOT used.
+- **4096 is not a capability estimate.** It is the default serving window, and the
+  largest size at which the target has been verified to complete a bounded packet
+  (Slice A). The ladder above it is latency-bound rather than correctness-bound.
+- Neither value should be read as "safe for any prompt of that size". The packet's
+  own budget is `served_context - generation_reserve`, which is what
+  `src/local_worker_loop.usable_input_tokens()` enforces before dispatch.
+
+### Overflow negative control
+
+Run as a separate probe (`probe_overflow.py`) against `local-rtx4500` because the
+result was too important to bury in the ladder: an oversized prompt behaves
+differently per endpoint.
+
+| endpoint | oversized request (20 012 tokens into a 4 096 window) |
+| --- | --- |
+| `POST /api/chat`, `stream:true` | **hard error** — `exceed_context_size_error`, `n_prompt_tokens: 20012`, `n_ctx: 4096` |
+| `POST /api/generate`, `stream:false` | **SILENT TRUNCATION** — HTTP 200, `done_reason: "length"`, a confident but useless reply, and the returned `context` array shows the prompt cut to the window. **No error.** |
+
+This is the negative control for the whole calibration: it proves that a window
+boundary is not always observable from the response, which is why the loop refuses
+to dispatch an over-budget packet instead of trusting a successful-looking reply.
