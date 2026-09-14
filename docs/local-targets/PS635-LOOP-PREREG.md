@@ -213,3 +213,53 @@ Unifying the two shapes (either by widening `WorkPacket` or by giving the loop a
 typed packet) is the next PS-635 step, and it is a design decision rather than a
 mechanical patch, so it is left explicit here instead of being improvised. Until
 it is done, the gate protects the authoring path, not the dispatch path.
+
+---
+
+## The dispatch-path gate, and the design step that remains
+
+### Done: the loop now refuses a non-dispatchable packet
+
+`run_bounded()` validates its packet mapping against the **WorkPacket primitive's
+own rules** via `validate_dispatchable_packet()`, which calls
+`make_work_packet` on the subset of keys the primitive knows. That means there is
+one definition of a dispatchable packet rather than two:
+
+- manager-side annotations (`role`, `contract`, `base_sha`) are filtered out, not
+  rejected — they are not packet identity;
+- a missing `packet_id` / `objective` / `write_scope` / **`interface`** /
+  `test_command` now refuses the dispatch, recorded as the new failure class
+  **`packet_invalid`** (an authoring error, distinct from every runtime and task
+  failure class because nothing was executed and no model was involved).
+
+The packet gate runs **before** the budget gate, because "this is not a packet"
+and "this does not fit" are different answers. The loop's tests went 26 → 30, and
+the three new controls are mutation-verified: removing the gate call fails
+`test_loop_refuses_a_packet_without_an_interface`,
+`test_loop_refuses_a_packet_without_a_test_command` and
+`test_packet_gate_runs_before_the_budget_gate`.
+
+The fixture gained the now-required `interface` and `test_command`, which is
+itself the change working: the packet shape got stricter and the tests had to say
+so.
+
+### Remains: the declared interface must be RENDERED, or it is decorative
+
+This is the important open point, and it is deliberately NOT improvised here.
+
+Declaring `interface` on the packet does not, by itself, tell the worker anything:
+`build_worker_prompt` renders objective / scope / contract / criteria / negative
+control / stop conditions — it does not render the declared interface. So an
+interface that is declared but never rendered would pass the new gate and still
+produce the original failure.
+
+The coherent design therefore has one more piece: **the fresh worker context (and
+the repair packet) must render the declared interface**, so the key names reach the
+worker. That is precisely PS-635 primitive #3 — `src/worker_context.py` — whose
+contract and verification test are currently fixed to five sections. Adding an
+INTERFACE section is a **contract change** affecting the artifact and its test, so
+it is recorded as the next deliberate step rather than bolted on at the end of a
+long session.
+
+Until that is done, the gate protects against packets that declare nothing; it does
+not yet guarantee that what was declared reaches the worker.

@@ -50,6 +50,8 @@ PACKET = {
     "objective": "implement the thing",
     "role": "local_microtask",
     "write_scope": ["src/thing.py"],
+    "interface": ["objective", "write_scope"],
+    "test_command": "python3 -m pytest tests/test_thing.py -q",
     "acceptance_criteria": ["criterion one", "criterion two"],
     "negative_control": "must fail closed",
     "stop_conditions": ["ambiguous contract"],
@@ -257,13 +259,13 @@ def test_collection_error_is_flagged_distinctly():
 # -------------------------------------------------------------------- loop ---
 
 def _run(ledger, outcomes, verifications, *, base_context="x" * 400,
-         pinned=None, max_attempts=3, **kw):
+         pinned=None, max_attempts=3, packet=None, **kw):
     worker = _Worker(outcomes)
     # generation_reserve is passed explicitly here: the repo default is 4096,
     # which is LARGER than this fixture's 4096 window and therefore refuses
     # everything (see test_default_generation_reserve_refuses_a_4096_window).
     kw.setdefault("generation_reserve", 512)
-    res = run_bounded(PACKET, run_id="r1", ledger=ledger,
+    res = run_bounded(packet or PACKET, run_id="r1", ledger=ledger,
                       pinned=(pinned or PINNED), dispatch=worker,
                       verify=_verifier(verifications), base_context=base_context,
                       max_attempts=max_attempts, **kw)
@@ -411,3 +413,53 @@ def test_loop_records_a_decision_with_a_reason_for_every_terminal_state(ledger):
     decisions = [e for e in ledger.entries_for("r1") if e.kind == "decision"]
     assert decisions and all(e.payload["reason"] for e in decisions)
     assert decisions[-1].payload["decision"] == "stop"
+
+
+
+# ------------------------------------------------- the packet gate (PS-635) ---
+
+def test_loop_refuses_a_packet_without_an_interface(ledger):
+    """NEGATIVE CONTROL earned by measurement (2026-09-14).
+
+    A writable packet that does not declare the input keys its contract promises
+    must be refused BEFORE dispatch. Measured: with an undeclared interface, a
+    local worker guessed the keys, the compact repair packet did NOT recover the
+    mismatch, and the loop escalated after two turns. Refusing at the boundary
+    costs nothing; repairing an unspecified interface costs turns and still fails.
+    """
+    bad = dict(PACKET)
+    bad.pop("interface")
+    res, worker = _run(ledger, [DispatchOutcome(artifacts=("src/thing.py",))],
+                       [_pass()], packet=bad)
+    assert res.result == RESULT_BLOCKED
+    assert res.failure_class == "packet_invalid"
+    assert len(worker.contexts) == 0          # nothing was dispatched
+    assert ledger.failure_class("r1") == "packet_invalid"
+
+
+def test_loop_refuses_a_packet_without_a_test_command(ledger):
+    bad = dict(PACKET)
+    bad.pop("test_command")
+    res, worker = _run(ledger, [DispatchOutcome(artifacts=("src/thing.py",))],
+                       [_pass()], packet=bad)
+    assert res.result == RESULT_BLOCKED and res.failure_class == "packet_invalid"
+    assert len(worker.contexts) == 0
+
+
+def test_packet_gate_runs_before_the_budget_gate(ledger):
+    """"this is not a packet" is a different answer from "this does not fit"."""
+    bad = dict(PACKET)
+    bad.pop("interface")
+    unknown = PinnedTarget(target_id="local-x", host="h", model="m", served_context=None)
+    res, worker = _run(ledger, [DispatchOutcome(artifacts=("src/thing.py",))],
+                       [_pass()], pinned=unknown, packet=bad)
+    assert res.failure_class == "packet_invalid"
+    assert res.budget_refused is False
+
+
+def test_validate_dispatchable_packet_filters_manager_side_keys():
+    """role/contract/base_sha are manager annotations, not packet identity."""
+    from src.local_worker_loop import validate_dispatchable_packet
+    ok = validate_dispatchable_packet(PACKET)   # carries role + extras
+    assert ok.packet_id == "P-T"
+    assert "role" not in ok.to_dict()

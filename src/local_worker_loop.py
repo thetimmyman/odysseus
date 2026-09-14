@@ -29,6 +29,7 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from src.execution_ledger import (
     ExecutionLedger,
     FAILURE_CONTEXT,
+    FAILURE_PACKET_INVALID,
     FAILURE_RUNTIME_PROVIDER,
     KIND_FAILURE,
     RESULT_ACCEPTED_CANDIDATE,
@@ -173,6 +174,29 @@ def usable_input_tokens(served_context: Optional[int], *,
     return max(0, int(served_context) - reserve)
 
 
+def validate_dispatchable_packet(packet: Mapping) -> "object":
+    """Validate a packet mapping against the WorkPacket primitive's own rules.
+
+    Reuses ``src.work_packet.make_work_packet`` rather than restating its rules,
+    so there is ONE definition of a dispatchable packet. The mapping may carry
+    extra keys the primitive does not know (``role``, ``contract``, ``base_sha``);
+    those are filtered out rather than rejected, because they are manager-side
+    annotations that the worker context renders, not packet identity.
+
+    Raises ``WorkPacketError`` when the packet is not dispatchable — which now
+    includes the interface rule earned by measurement: a writable packet that does
+    not declare the input keys its contract promises cannot be repaired into
+    correctness, so it must not be dispatched at all.
+    """
+    from dataclasses import fields
+
+    from src.work_packet import WorkPacket, make_work_packet
+
+    known = {f.name for f in fields(WorkPacket)}
+    subset = {k: v for k, v in dict(packet).items() if k in known}
+    return make_work_packet(**subset)
+
+
 def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
                 pinned: PinnedTarget,
                 dispatch: Callable[[str, int], DispatchOutcome],
@@ -197,6 +221,30 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
         runtime_version=pinned.runtime_version, worktree=pinned.worktree,
         write_scope=list(packet.get("write_scope") or ()),
         base_sha=str(packet.get("base_sha", "")))
+
+    # ---- packet gate: refuse a packet that is not dispatchable AT ALL --------
+    # Before the budget gate, because "this is not a packet" is a different answer
+    # from "this packet does not fit". Measured 2026-09-14: a writable packet whose
+    # contract never named its input keys was dispatched, failed, was repaired, and
+    # the repair failed the SAME way — the loop correctly escalated rather than
+    # converge, but the turns were spent for nothing. An under-specified packet is
+    # now refused at the boundary instead of being repaired into place.
+    try:
+        validate_dispatchable_packet(packet)
+    except ValueError as exc:
+        reason = f"packet is not dispatchable: {exc}"
+        ledger.record_decision(run_id=run_id,
+                               packet_id=str(packet.get("packet_id", "")),
+                               decision=DECISION_BLOCKED, reason=reason,
+                               result=RESULT_BLOCKED)
+        ledger.append(KIND_FAILURE, run_id=run_id,
+                      packet_id=str(packet.get("packet_id", "")),
+                      payload={"failure_class": FAILURE_PACKET_INVALID,
+                               "detail": str(exc)[:300],
+                               "result": RESULT_BLOCKED})
+        return LoopResult(run_id=run_id, result=RESULT_BLOCKED,
+                          failure_class=FAILURE_PACKET_INVALID,
+                          decision=DECISION_BLOCKED, reason=reason, attempts=0)
 
     # ---- budget gate: refuse BEFORE dispatching an over-budget packet --------
     usable = usable_input_tokens(pinned.served_context, generation_reserve=generation_reserve)

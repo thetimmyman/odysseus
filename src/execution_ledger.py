@@ -82,10 +82,15 @@ FAILURE_CONTEXT = "context"
 FAILURE_PROTOCOL = "protocol"
 FAILURE_TOOL_CHANNEL = "tool_channel"
 FAILURE_POLICY = "policy"
+#: The packet itself is not dispatchable (missing id/objective/write scope/
+#: interface/test command). An AUTHORING error, distinct from every runtime and
+#: task failure class above: nothing was executed, and no model was involved.
+FAILURE_PACKET_INVALID = "packet_invalid"
 
 KNOWN_FAILURES = frozenset({FAILURE_TECHNICAL, FAILURE_RUNTIME_PROVIDER,
                             FAILURE_CONTEXT, FAILURE_PROTOCOL,
-                            FAILURE_TOOL_CHANNEL, FAILURE_POLICY})
+                            FAILURE_TOOL_CHANNEL, FAILURE_POLICY,
+                            FAILURE_PACKET_INVALID})
 
 #: Authorities that may NOT commit an acceptance. Anything naming a local worker
 #: is refused; acceptance needs a stronger, separately-accountable authority.
