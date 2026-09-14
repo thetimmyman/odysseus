@@ -185,3 +185,31 @@ alone would have read as "local workers cannot repair"; experiment 2 shows the
 - Nothing here creates reviewer authority or an auto-approve class. The ceiling for
   a worker-driven run remains `ACCEPTED_CANDIDATE`; acceptance still requires a
   named non-local authority.
+
+---
+
+## Action taken on the conclusion: the interface gate
+
+`src/work_packet.py` now has an `interface` field, required for any writable
+packet, and a fail-closed check refusing a packet whose interface is empty:
+
+> `interface must be non-empty: a writable packet must declare the input keys its
+> contract promises the worker`
+
+The measured reason is recorded at the check itself, so the rule carries its
+evidence rather than its author's confidence. Tests grew from 8 to 11, and the new
+control is mutation-verified (removing the gate fails
+`test_empty_interface_is_rejected`).
+
+### Integration gap this exposed, recorded rather than papered over
+
+`run_bounded()` takes a packet as a MAPPING, while the primitive is a frozen
+`WorkPacket`. They are not the same shape: the loop's mappings carry `role`,
+`contract` and `base_sha`, which `WorkPacket` rejects as unknown fields. So the new
+interface gate does **not** yet protect the loop's own inputs — a caller can still
+hand `run_bounded` an interface-less dict.
+
+Unifying the two shapes (either by widening `WorkPacket` or by giving the loop a
+typed packet) is the next PS-635 step, and it is a design decision rather than a
+mechanical patch, so it is left explicit here instead of being improvised. Until
+it is done, the gate protects the authoring path, not the dispatch path.

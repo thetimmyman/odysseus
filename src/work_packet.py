@@ -25,6 +25,7 @@ _TUPLE_FIELDS = (
     "target_requirements",
     "write_scope",
     "read_scope",
+    "interface",
     "acceptance_criteria",
     "evidence_required",
     "stop_conditions",
@@ -91,6 +92,10 @@ class WorkPacket:
     target_requirements: Tuple[str, ...] = ()
     write_scope: Tuple[str, ...] = ()
     read_scope: Tuple[str, ...] = ()
+    #: The INPUT KEYS this packet's contract promises the worker, named exactly
+    #: as the worker must read them. Required for a writable packet -- see the
+    #: fail-closed check in :func:`make_work_packet` for the measured reason.
+    interface: Tuple[str, ...] = ()
     acceptance_criteria: Tuple[str, ...] = ()
     test_command: str = ""
     negative_control: str = ""
@@ -125,6 +130,8 @@ def make_work_packet(**kwargs: Any) -> WorkPacket:
     - ``packet_id`` is missing, empty, or has no non-whitespace character
     - ``objective`` is missing, empty, or has no non-whitespace character
     - ``write_scope`` is empty (a writable packet must own a scope)
+    - ``interface`` is empty (a writable packet must declare the input keys its
+      contract promises -- see the measured reason at the check itself)
     - ``test_command`` is empty (no deterministic verification => not
       dispatchable)
 
@@ -165,6 +172,22 @@ def make_work_packet(**kwargs: Any) -> WorkPacket:
     if len(write_scope) == 0:
         raise WorkPacketError(
             "write_scope must be non-empty: a writable packet must own a scope"
+        )
+
+    # MEASURED REASON (PS-635, 2026-09-14). A writable packet whose contract
+    # never names the keys the worker must read produced this, twice on the same
+    # target: attempt 1 returned `ACCEPTANCE: NONE`, a compact repair packet was
+    # built from the failing assertion, attempt 2 guessed the keys AGAIN and
+    # DIFFERENTLY, the failure fingerprint repeated, and the loop correctly
+    # escalated. Declaring the interface in the contract instead made the same
+    # target pass on attempt 1 with zero repairs. A repair loop cannot recover an
+    # interface that was never specified, so the packet is refused here rather
+    # than dispatched and repaired.
+    interface = coerced.get("interface", ())
+    if len(interface) == 0:
+        raise WorkPacketError(
+            "interface must be non-empty: a writable packet must declare the "
+            "input keys its contract promises the worker"
         )
 
     test_command = coerced.get("test_command", "")
