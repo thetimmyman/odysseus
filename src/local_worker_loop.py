@@ -35,8 +35,10 @@ from src.execution_ledger import (
     RESULT_ACCEPTED_CANDIDATE,
     RESULT_BLOCKED,
     RESULT_ESCALATE,
+    RESULT_IN_PROGRESS,
     RESULT_REJECTED,
 )
+from src.replanner import BOUNDARY_PASS, BOUNDARY_STALL, CONTINUING_KINDS
 from src.repair_packet import (
     VerificationFailure,
     build_repair_packet,
@@ -197,6 +199,110 @@ def validate_dispatchable_packet(packet: Mapping) -> "object":
     return make_work_packet(**subset)
 
 
+#: The approach note is appended to the fresh repair context under this label.
+#: It is a SIBLING of the deterministic repair evidence, never a replacement for
+#: it: the manager adds framing, and the failure evidence, contract, interface and
+#: acceptance criteria stay exactly as the repair packet rendered them.
+APPROACH_LABEL = "\n\nMANAGER_APPROACH (advisory steering only; the contract, "
+APPROACH_LABEL += "interface, scope, criteria and verification below are UNCHANGED):\n"
+
+
+def consult_planner(*, advise, packet: Mapping, validated, ledger: ExecutionLedger,
+                    run_id: str, pinned: "PinnedTarget", boundary: str,
+                    attempts_used: int, max_attempts: int, replans_used: int,
+                    max_replans: int, policy=None) -> dict:
+    """Consult the advisory planner at ONE deterministic decision boundary.
+
+    ``advise(planner_input) -> (proposal | None, reason)`` is injected, so the
+    loop's own logic stays testable without a model. Nothing here decides what
+    the run DOES: it records advice, validates it and reports the verdict. The
+    caller decides, and the caller's options are what the verdict allows.
+
+    Never raises. A planner that crashes, or a reply that is not a proposal, is
+    recorded as a refusal with a typed code — a fault in the advisor must not be
+    able to fail a run, and must not be able to pass for agreement either.
+    """
+    result = {"consulted": False, "boundary": boundary, "plan_input": None,
+              "context": "", "proposal": None, "verdict": None, "ok": False,
+              "kind": "", "approach": "", "approach_digest": "", "refusal": "",
+              "input_digest": ""}
+    if advise is None:
+        return result
+
+    from src.replanner import (CODE_PLANNER_FAULT, CODE_SCHEMA_INVALID,
+                               build_planner_input, make_manager_proposal,
+                               render_planner_context, validate_proposal,
+                               ManagerProposal, PlannerPolicy)
+
+    packet_id = str(packet.get("packet_id", ""))
+    result["consulted"] = True
+    try:
+        plan_input = build_planner_input(
+            ledger=ledger, run_id=run_id, packet=packet, boundary=boundary,
+            max_attempts=max_attempts, max_replans=max_replans,
+            replans_used=replans_used, policy=policy or PlannerPolicy(),
+            validated=validated)
+    except Exception as exc:
+        result["refusal"] = f"planner fault: {exc}"
+        result["error_code"] = CODE_PLANNER_FAULT
+        ledger.record_proposal_refusal(
+            run_id=run_id, packet_id=packet_id, proposal={},
+            code=CODE_PLANNER_FAULT,
+            detail=f"the planner input could not be derived: {exc}")
+        return result
+
+    result["plan_input"] = plan_input
+    result["input_digest"] = plan_input.input_digest
+    result["context"] = render_planner_context(plan_input)
+
+    try:
+        offered, reason = advise(plan_input)
+    except Exception as exc:
+        offered, reason = None, f"the advisor raised {type(exc).__name__}: {exc}"
+
+    if offered is None:
+        detail = reason or "the advisor returned no proposal"
+        result["refusal"] = detail
+        result["error_code"] = CODE_SCHEMA_INVALID
+        ledger.record_proposal_refusal(
+            run_id=run_id, packet_id=packet_id, proposal={},
+            code=CODE_SCHEMA_INVALID, detail=detail)
+        return result
+
+    proposal = offered
+    if not isinstance(proposal, ManagerProposal):
+        try:
+            proposal = make_manager_proposal(**dict(proposal))
+        except Exception as exc:
+            result["refusal"] = f"not a proposal shape: {exc}"
+            result["error_code"] = CODE_SCHEMA_INVALID
+            ledger.record_proposal_refusal(
+                run_id=run_id, packet_id=packet_id,
+                proposal=dict(offered) if isinstance(offered, Mapping) else {},
+                code=CODE_SCHEMA_INVALID, detail=f"not a proposal shape: {exc}")
+            return result
+
+    verdict = validate_proposal(proposal, plan_input=plan_input, packet=packet,
+                               ledger=ledger)
+    result["proposal"] = proposal.to_dict()
+    result["verdict"] = verdict.to_dict()
+    result["ok"] = verdict.ok
+    result["kind"] = proposal.kind
+    result["approach"] = verdict.approach
+    result["approach_digest"] = verdict.approach_digest
+    if verdict.ok:
+        ledger.record_proposal(run_id=run_id, packet_id=packet_id,
+                               proposal=proposal.to_dict(),
+                               verdict=verdict.to_dict())
+    else:
+        result["refusal"] = f"{verdict.code}: {verdict.detail}"
+        result["error_code"] = verdict.code
+        ledger.record_proposal_refusal(
+            run_id=run_id, packet_id=packet_id, proposal=proposal.to_dict(),
+            code=verdict.code, detail=verdict.detail)
+    return result
+
+
 def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
                 pinned: PinnedTarget,
                 dispatch: Callable[[str, int], DispatchOutcome],
@@ -205,13 +311,31 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
                 max_attempts: int = DEFAULT_MAX_ATTEMPTS,
                 generation_reserve: Optional[int] = None,
                 read_changed_files: Optional[Callable[[Mapping], Mapping]] = None,
-                max_context_chars: Optional[int] = None) -> LoopResult:
+                max_context_chars: Optional[int] = None,
+                advise: Optional[Callable[[object], tuple]] = None,
+                max_replans: int = 0,
+                planner_policy=None) -> LoopResult:
     """Run one packet through the bounded loop. Never raises for task outcomes.
 
     ``dispatch(context, attempt) -> DispatchOutcome`` and ``verify() -> dict``
     are injected; ``verify()`` must return at least
     ``{test_command, returncode, passed}`` and should include the runner output,
     which this loop turns into bounded repair evidence.
+
+    ``advise(planner_input) -> (proposal | None, reason)`` is the G2 seam, and it
+    is OPTIONAL and advisory in the strongest sense the design allows:
+
+    * it is consulted only at the deterministic decision boundary where the loop
+      was about to stop, and once at a PASS — never mid-attempt;
+    * its proposal is validated by ``src.replanner`` before it can affect
+      anything, and a refusal is recorded with a typed code;
+    * the only thing a validated proposal can change is the APPROACH text of the
+      next fresh context. It cannot change scope, interface, source,
+      verification, permissions, routing, budget or the run's result;
+    * one run accepts at most ``max_replans`` replans, and a replan consumes the
+      SAME attempt budget the deterministic loop uses, so advice cannot buy
+      attempts;
+    * with ``advise=None`` (the default) the loop behaves exactly as G1 did.
     """
     # Validate ONCE, up front, and keep the validated packet: its interface digest is
     # evidence, and computing it here means the digest recorded on the run is the
@@ -279,6 +403,7 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
     prior_fingerprint = ""
     artifact: Tuple[str, ...] = ()
     last_verification: dict = {}
+    replans_used = 0
 
     for attempt in range(1, max_attempts + 1):
         outcome = dispatch(context, attempt)
@@ -327,6 +452,21 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
 
         if last_verification["passed"]:
             reason = f"attempt {attempt} passed deterministic verification"
+            # G2, PASS boundary: ask the manager once, then ignore its opinion
+            # about the outcome. Deterministic verification already decided this
+            # run, and at a PASS the only legal kinds are terminal ones — so a
+            # "replan" here is REFUSED with a typed code rather than honoured.
+            # The consultation exists to be recorded, not to be obeyed.
+            advice = consult_planner(
+                advise=advise, packet=packet, validated=validated, ledger=ledger,
+                run_id=run_id, pinned=pinned, boundary=BOUNDARY_PASS,
+                attempts_used=attempt, max_attempts=max_attempts,
+                replans_used=replans_used, max_replans=max_replans,
+                policy=planner_policy)
+            if advice["consulted"]:
+                reason += (f"; manager advised {advice['kind'] or 'nothing'}"
+                           + (" (validated)" if advice["ok"] else
+                              f" (refused: {advice.get('error_code', '')})"))
             ledger.record_decision(run_id=run_id,
                                    packet_id=str(packet.get("packet_id", "")),
                                    decision=DECISION_STOP, reason=reason,
@@ -349,12 +489,56 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
                              attempt=attempt,
                              failure_class=(outcome.failure_class or "technical"),
                              fingerprint=fingerprint, repair_packet=repair)
+        # Rendered ONCE, so the replanned attempt and the ordinary repair attempt
+        # are provably given the same deterministic evidence. The manager adds a
+        # labelled approach note; it does not get to rewrite the repair packet.
+        rendered_repair = render_repair_context(
+            repair, max_chars=(max_context_chars or DEFAULT_MAX_REPAIR_CHARS))
 
         # No-progress rule: the SAME failure twice means the repair loop is not
         # converging, and another identical round just burns a slow node's turn.
+        # In G2 this is the one boundary where the decision is genuinely open, so
+        # it is the only place a validated proposal can change what happens next.
         if fingerprint == prior_fingerprint:
+            advice = consult_planner(
+                advise=advise, packet=packet, validated=validated, ledger=ledger,
+                run_id=run_id, pinned=pinned, boundary=BOUNDARY_STALL,
+                attempts_used=attempt, max_attempts=max_attempts,
+                replans_used=replans_used, max_replans=max_replans,
+                policy=planner_policy)
+            if (advice["ok"] and advice["kind"] in CONTINUING_KINDS
+                    and attempt < max_attempts):
+                replans_used += 1
+                reason = (
+                    f"attempt {attempt} reproduced the same failure ({fingerprint}); "
+                    f"manager proposed {advice['kind']} "
+                    f"({str((advice['proposal'] or {}).get('proposal_hash', ''))[:16]}) "
+                    "and the proposal passed deterministic validation -> bounded "
+                    "replan with the same budget")
+                ledger.record_decision(
+                    run_id=run_id, packet_id=str(packet.get("packet_id", "")),
+                    decision=DECISION_NEXT, reason=reason,
+                    result=RESULT_IN_PROGRESS)
+                # A NEW approach resets the repeat detector: the next attempt is
+                # not the same attempt, and if IT fails identically the loop
+                # re-enters this branch with the replan allowance now spent.
+                # ``attempt < max_attempts`` is belt-and-braces on top of the
+                # gate's budget rule: a proposal cannot buy an attempt beyond the
+                # budget, so the loop can never be talked past its own bound.
+                prior_fingerprint = ""
+                context = rendered_repair
+                if advice["approach"]:
+                    context += APPROACH_LABEL + advice["approach"] + "\n"
+                continue
+
             reason = (f"attempt {attempt} reproduced the same failure "
                       f"({fingerprint}); no progress -> escalate")
+            if advice["consulted"] and not advice["ok"]:
+                reason += (f" (manager advice refused: "
+                           f"{advice.get('error_code', '')})")
+            elif advice["consulted"]:
+                reason += (f" (manager advised {advice['kind'] or 'nothing'}, "
+                           "which is not a replan)")
             ledger.record_decision(run_id=run_id,
                                    packet_id=str(packet.get("packet_id", "")),
                                    decision=DECISION_ESCALATE, reason=reason,
@@ -379,9 +563,7 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
                               verification=last_verification)
 
         # Fresh context from the repair packet — never the previous conversation.
-        rendered = render_repair_context(
-            repair, max_chars=(max_context_chars or DEFAULT_MAX_REPAIR_CHARS))
-        context = rendered
+        context = rendered_repair
 
     # Unreachable: the loop returns inside the final iteration above.
     return LoopResult(run_id=run_id, result=RESULT_REJECTED, failure_class="technical",

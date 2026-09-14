@@ -422,6 +422,51 @@ class PS639ComposeDriftCase(Case):
                     f"the merged answer for {overlay_rel} leaked into the context")
 
 
+class G2ReplanControlCase(G1eBoundedCacheCase):
+    """The G2 control: the SAME complete packet as ``g1e``, manager seam ON.
+
+    The task is unchanged on purpose. PS-638's E2 run put this exact packet
+    through G1 on this exact target and one-shotted it (``19 passed``), so the G2
+    arm is directly comparable to a G1 arm on the same corpus rather than being a
+    new task with new confounds — which is what PS-579 needs G0/G1/G2 to be.
+
+    What is measured here is the SEAM, not the worker:
+
+      * the manager is consulted live, at the deterministic decision boundary the
+        loop reaches (a PASS, in the expected case), and its proposal is validated
+        by ``src.replanner`` before it can affect anything;
+      * a PASS is not negotiable: at that boundary only ``stop`` is legal, so a
+        proposal to replan is REFUSED with a typed code and recorded;
+      * the worker leg, the hidden verifier, the attempt budget and the write
+        scope are all untouched by the manager.
+
+    The replan branch itself (a stall becomes a bounded replan) is proven by the
+    committed hermetic suite, and stays UNOBSERVED live for the same reason the
+    live repair branch does: six complete packets have now been one-shotted on
+    attempt 1, and manufacturing a failure to reach it is not evidence.
+    """
+
+    name = "g2-replan-control"
+    base_sha = "1e362f10"
+    #: Turns on the loop's advisory seam for this case.
+    advises = True
+    max_replans = 1
+    #: The manager writes a small JSON object; it does not write files.
+    manager_max_output_tokens = 800
+    positive_control = "every stated rule is implemented as written"
+    negative_control = ("a cache that evicts the most-recently-used entry, or "
+                        "that lets clear() reset the counters, must FAIL")
+
+    def planner_preflight(self, plan_input) -> None:
+        """Refuse to spend a manager turn on a projection that is already wrong."""
+        if plan_input.boundary == "" or not plan_input.allowed_kinds:
+            raise SystemExit("the planner projection declares no boundary")
+        if plan_input.packet_id != self.packet()["packet_id"]:
+            raise SystemExit("the planner projection is about a different packet")
+        if not plan_input.interface_digest:
+            raise SystemExit("the planner projection lost the sealed interface")
+
+
 class NegNoInterfaceCase(G1eBoundedCacheCase):
     """The missing-interface NEGATIVE control.
 
@@ -453,4 +498,5 @@ CASES = {
     G1eBoundedCacheCase.name: G1eBoundedCacheCase,
     NegNoInterfaceCase.name: NegNoInterfaceCase,
     PS639ComposeDriftCase.name: PS639ComposeDriftCase,
+    G2ReplanControlCase.name: G2ReplanControlCase,
 }

@@ -54,9 +54,18 @@ KIND_REPAIR = "repair"
 KIND_DECISION = "decision"
 KIND_ACCEPTANCE = "acceptance"
 KIND_FAILURE = "failure"
+#: G2 (PS-635): an advisory manager proposal that PASSED deterministic
+#: validation, recorded so the advice that influenced a run is canonical
+#: evidence rather than something a transcript has to be trusted for.
+KIND_PROPOSAL = "proposal"
+#: A proposal that was refused, with its typed code. The refusal is evidence
+#: too: "the manager asked for something it may not have" is a finding about
+#: the manager, and dropping it would hide exactly that.
+KIND_PROPOSAL_REFUSED = "proposal_refused"
 
 KNOWN_KINDS = frozenset({KIND_RUN, KIND_ATTEMPT, KIND_VERIFICATION, KIND_REPAIR,
-                         KIND_DECISION, KIND_ACCEPTANCE, KIND_FAILURE})
+                         KIND_DECISION, KIND_ACCEPTANCE, KIND_FAILURE,
+                         KIND_PROPOSAL, KIND_PROPOSAL_REFUSED})
 
 #: Terminal results a run/attempt can carry. NOTE the absence of a plain
 #: ``ACCEPTED`` — see the module docstring.
@@ -251,6 +260,26 @@ class ExecutionLedger:
         failure = payload.get("failure_class")
         if failure and failure not in KNOWN_FAILURES:
             raise LedgerError(f"unknown failure_class: {failure!r}")
+        # G2 (PS-635): a proposal is ADVICE, and the ledger is where that stops
+        # being a convention. An entry of either proposal kind must not carry a
+        # lifecycle result (it would let advice read as state), and an ACCEPTED
+        # proposal must not carry an authority request or a forbidden action --
+        # a validated proposal that still asks for acceptance is a contradiction
+        # in the record, not a judgement call for a later reader.
+        if kind in (KIND_PROPOSAL, KIND_PROPOSAL_REFUSED):
+            if payload.get("result"):
+                raise LedgerError(
+                    f"a {kind} entry must not carry a lifecycle result: a "
+                    "proposal is advice, never state")
+            if kind == KIND_PROPOSAL:
+                if payload.get("requested_actions"):
+                    raise LedgerError(
+                        "an accepted proposal must not request an action: "
+                        f"{payload.get('requested_actions')!r}")
+                if payload.get("requested_authority"):
+                    raise LedgerError(
+                        "an accepted proposal must not request authority: "
+                        f"{payload.get('requested_authority')!r}")
 
 
     # -------------------------------------------------------------- reading ---
@@ -409,6 +438,68 @@ class ExecutionLedger:
                            payload={"authority": authority, "notes": notes,
                                     "result": RESULT_ACCEPTED})
 
+    def record_proposal(self, *, run_id: str, packet_id: str, proposal: dict,
+                        verdict: dict) -> LedgerEntry:
+        """Record a VALIDATED advisory proposal.
+
+        Only called with a verdict that PASSED deterministic validation; the
+        ledger refuses the action/authority fields outright, so a proposal that
+        reached here asking for acceptance would be rejected rather than stored.
+        """
+        payload = {
+            "proposal_id": str(proposal.get("proposal_id", "")),
+            "proposal_hash": str(proposal.get("proposal_hash", "")),
+            "kind": str(proposal.get("kind", "")),
+            "rationale": str(proposal.get("rationale", "")),
+            "accepted": True,
+            "verdict_code": "",
+            "checks": list(verdict.get("checks") or ()),
+        }
+        approach = str(proposal.get("approach") or "")
+        if approach:
+            payload["approach"] = approach
+            payload["approach_digest"] = str(verdict.get("approach_digest") or "")
+        delta = proposal.get("packet_delta") or {}
+        if delta:
+            payload["packet_delta"] = dict(delta)
+        if proposal.get("evidence_refs"):
+            payload["evidence_refs"] = list(proposal["evidence_refs"])
+        if proposal.get("requested_actions"):
+            payload["requested_actions"] = list(proposal["requested_actions"])
+        if proposal.get("requested_authority"):
+            payload["requested_authority"] = list(proposal["requested_authority"])
+        return self.append(KIND_PROPOSAL, run_id=run_id, packet_id=packet_id,
+                           payload=payload)
+
+    def record_proposal_refusal(self, *, run_id: str, packet_id: str,
+                                proposal: dict, code: str, detail: str) -> LedgerEntry:
+        """Record a REFUSED proposal with its typed code and what it asked for."""
+        payload = {
+            "proposal_id": str(proposal.get("proposal_id", "")),
+            "proposal_hash": str(proposal.get("proposal_hash", "")),
+            "kind": str(proposal.get("kind", "")),
+            "rationale": str(proposal.get("rationale", "")),
+            "accepted": False,
+            "verdict_code": str(code),
+            "verdict_detail": str(detail)[:600],
+        }
+        for name in ("requested_actions", "requested_authority", "evidence_refs"):
+            if proposal.get(name):
+                payload[name] = list(proposal[name])
+        delta = proposal.get("packet_delta") or {}
+        if delta:
+            payload["packet_delta"] = dict(delta)
+        return self.append(KIND_PROPOSAL_REFUSED, run_id=run_id,
+                           packet_id=packet_id, payload=payload)
+
+    def proposals(self, run_id: str) -> List[LedgerEntry]:
+        """Accepted proposals for a run, in append order."""
+        return [e for e in self.entries_for(run_id) if e.kind == KIND_PROPOSAL]
+
+    def proposal_refusals(self, run_id: str) -> List[LedgerEntry]:
+        return [e for e in self.entries_for(run_id)
+                if e.kind == KIND_PROPOSAL_REFUSED]
+
     # ------------------------------------------------------- provenance views ---
     def provenance(self, run_id: str) -> dict:
         """Everything a later strong-model reviewer needs, and nothing else.
@@ -429,6 +520,9 @@ class ExecutionLedger:
             "decisions": [e.payload for e in entries if e.kind == KIND_DECISION],
             "failures": [e.payload for e in entries if e.kind == KIND_FAILURE],
             "acceptances": [e.payload for e in entries if e.kind == KIND_ACCEPTANCE],
+            "proposals": [e.payload for e in entries if e.kind == KIND_PROPOSAL],
+            "proposal_refusals": [e.payload for e in entries
+                                  if e.kind == KIND_PROPOSAL_REFUSED],
             "terminal_result": self.terminal_result(run_id),
             "failure_class": self.failure_class(run_id),
             "chain_ok": self.verify_chain()[0],

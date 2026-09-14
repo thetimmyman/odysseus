@@ -400,7 +400,16 @@ def _load(loader, ref: Mapping[str, Any]) -> Optional[bytes]:
 
 def _iter_artifact_refs(payload: Mapping[str, Any]
                         ) -> Iterable[Tuple[str, Mapping[str, Any]]]:
-    """Every content-addressed reference in a package, with a locator label."""
+    """Every content-addressed reference in a package, with a locator label.
+
+    ``seals`` is included deliberately (PS-635 G2, added when the manager seam
+    needed to preserve a planner input/output inside a sealed package): a seal is
+    part of the package's own evidence, and "the bytes are on disk somewhere" is
+    exactly the claim this validator exists to refuse. A reference declared under
+    a seal is therefore loaded and hash-checked like every other one. Seals were
+    previously unexamined, so this can only ADD rejections for a package that
+    declares them — no existing package did.
+    """
     for index, receipt in enumerate(payload.get("attempt_receipts") or ()):
         for key in ("rendered_context_ref", "output_ref"):
             ref = receipt.get(key)
@@ -414,6 +423,13 @@ def _iter_artifact_refs(payload: Mapping[str, Any]
             ref = receipt.get(key)
             if isinstance(ref, Mapping):
                 yield f"verification[{index}].{key}", ref
+    for index, seal in enumerate(payload.get("seals") or ()):
+        if not isinstance(seal, Mapping):
+            continue
+        for key in ("input_ref", "output_ref", "context_ref"):
+            ref = seal.get(key)
+            if isinstance(ref, Mapping):
+                yield f"seals[{index}].{key}", ref
 
 
 def _check_artifacts(payload: Mapping[str, Any], extensions: Mapping[str, bytes],

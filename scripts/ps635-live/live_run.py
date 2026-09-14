@@ -344,6 +344,84 @@ class Verifier:
                 "output": output}
 
 
+# ----------------------------------------------------------------- advisor ---
+class LiveAdvisor:
+    """The G2 manager/replanner, live, on the target model, fully recorded.
+
+    It is the SAME runtime target as the worker (an explicit pin). That is
+    deliberate: G2's question is what a local model can contribute in an ADVISORY
+    role, and the answer is only useful if it is measured on the model the estate
+    actually has. Being the same model as the worker cannot buy this role any
+    authority — ``src.replanner`` refuses scope, interface, source, verification,
+    permission, routing, budget and lifecycle changes, and the loop only consults
+    it at a boundary where it was going to decide deterministically anyway.
+
+    Every turn is recorded (context, raw reply, timing, token counts) so the
+    proposal's provenance is the run's evidence, not a reconstruction.
+    """
+
+    def __init__(self, client, store: RunStore, *, num_ctx: int,
+                 max_output_tokens: int = 800, preflight=None):
+        self.client = client
+        self.store = store
+        self.num_ctx = num_ctx
+        self.max_output_tokens = max_output_tokens
+        self.preflight = preflight
+        self.records: list = []
+
+    def __call__(self, plan_input):
+        import src.replanner as rp
+
+        if self.preflight is not None:
+            self.preflight(plan_input)
+        context = rp.render_planner_context(plan_input)
+        started = time.monotonic()
+        res = self.client.api_streaming_chat(
+            [{"role": "user", "content": context}], num_ctx=self.num_ctx,
+            tools=None, num_predict=self.max_output_tokens, think=False)
+        elapsed = round(time.monotonic() - started, 3)
+        body = res.body or {}
+        record = {
+            "index": len(self.records) + 1,
+            "boundary": plan_input.boundary,
+            "input_digest": plan_input.input_digest,
+            "plan_input": plan_input.to_dict(),
+            "context": context,
+            "ok": bool(res.ok) and not res.runtime_error,
+            "status": (res.error or res.runtime_error or "")[:200],
+            "elapsed_s": elapsed,
+            "prompt_tokens": int(body.get("prompt_eval_count") or 0),
+            "completion_tokens": int(body.get("eval_count") or 0),
+            "model_text": "",
+            "proposal": None,
+            "proposal_reason": "",
+        }
+        if not record["ok"]:
+            self.records.append(record)
+            return None, (f"the manager's turn failed: "
+                          f"{res.error or res.runtime_error}")
+        record["model_text"] = ((body.get("message") or {}).get("content") or "").strip()
+        proposal, reason = rp.parse_proposal_text(
+            record["model_text"], run_id=plan_input.run_id,
+            packet_id=plan_input.packet_id)
+        record["proposal_reason"] = reason
+        record["proposal"] = proposal.to_dict() if proposal is not None else None
+        self.records.append(record)
+        return proposal, reason
+
+    def summary(self) -> dict:
+        """Counters for the run summary; derived from the records, never asserted."""
+        return {
+            "manager_calls": len(self.records),
+            "manager_boundaries": [r["boundary"] for r in self.records],
+            "manager_parsed": [r["proposal"] is not None for r in self.records],
+            "manager_elapsed_s": [r["elapsed_s"] for r in self.records],
+            "manager_prompt_tokens": [r["prompt_tokens"] for r in self.records],
+            "manager_completion_tokens": [r["completion_tokens"] for r in self.records],
+            "manager_kinds": [(r["proposal"] or {}).get("kind", "") for r in self.records],
+        }
+
+
 # ------------------------------------------------------------------ helpers ---
 def changed_files(worktree: Path, write_scope):
     """Bounded diff of the write scope, for the repair packet."""
@@ -358,6 +436,68 @@ def changed_files(worktree: Path, write_scope):
                             + "\n".join("+" + ln for ln in body.splitlines()))
         return out
     return _fn
+
+
+def manager_seals(*, advisor, ledger, run_id: str, packet: Mapping, store, run_dir,
+                  execution_package_hash: str, dispatch_receipt_hash: str,
+                  target_id: str, model: str) -> tuple:
+    """Seal the manager seam into the package, one entry per consultation.
+
+    Each entry binds the planner INPUT (content-addressed, with its digest), the
+    exact manager CONTEXT, the model's raw OUTPUT, the parsed proposal, the
+    deterministic VERDICT and the canonical LEDGER entry it produced — plus the
+    execution identities (package, dispatch receipt, run, packet, target, model)
+    that make the whole chain attributable. The artifact references are checked by
+    the package validator like every other reference in the package, so a seal
+    that cannot produce its bytes is rejected rather than believed.
+    """
+    if advisor is None:
+        return ()
+    entries = [e for e in ledger.entries_for(run_id)
+               if e.kind in ("proposal", "proposal_refused")]
+    seals = []
+    for index, record in enumerate(advisor.records, start=1):
+        ctx_ref = store.store(f"manager{index}-context.txt",
+                              record["context"].encode("utf-8"))
+        input_ref = store.store(
+            f"manager{index}-planner-input.json",
+            (json.dumps(record["plan_input"], indent=2, sort_keys=True,
+                        default=str) + "\n").encode("utf-8"),
+            media_type="application/json")
+        output_ref = store.store(f"manager{index}-model-output.txt",
+                                 (record["model_text"] or "").encode("utf-8"))
+        proposal_ref = store.store(
+            f"manager{index}-proposal.json",
+            (json.dumps({"proposal": record["proposal"],
+                         "parse_reason": record["proposal_reason"]},
+                        indent=2, sort_keys=True, default=str) + "\n").encode("utf-8"),
+            media_type="application/json")
+        entry = entries[index - 1] if index - 1 < len(entries) else None
+        proposal = record["proposal"] or {}
+        seals.append({
+            "seal_id": f"manager_seam-{index}",
+            "run_id": run_id, "packet_id": str(packet.get("packet_id", "")),
+            "execution_package_hash": execution_package_hash,
+            "dispatch_receipt_hash": dispatch_receipt_hash,
+            "manager_target_id": target_id, "manager_model": model,
+            "boundary": record["boundary"],
+            "planner_input_digest": record["input_digest"],
+            "planner_context_ref": ctx_ref,
+            "input_ref": input_ref,
+            "output_ref": output_ref,
+            "proposal_ref": proposal_ref,
+            "proposal_hash": str(proposal.get("proposal_hash", "")),
+            "proposal_kind": str(proposal.get("kind", "")),
+            "manager_turn_ok": bool(record["ok"]),
+            "planner_context_ref_hash": ctx_ref["sha256"],
+            "ledger_entry_hash": (entry.entry_hash if entry is not None else ""),
+            "ledger_entry_kind": (entry.kind if entry is not None else ""),
+            "ledger_verdict_code": (
+                str(entry.payload.get("verdict_code", "")) if entry is not None else ""),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        })
+    write_json(run_dir / "manager_seals.json", {"seals": seals})
+    return tuple(seals)
 
 
 def write_json(path: Path, payload) -> None:
@@ -455,14 +595,30 @@ def run_case(worktree: Path, case_name: str, target_id: str,
         return 0
 
     requirement_ids = tuple(r.requirement_id for r in ep.evidence_requirements)
+    advisor = None
+    planner_policy = None
+    if getattr(case, "advises", False):
+        # G2: the advisory manager runs on the SAME pinned target as the worker.
+        from src.replanner import PlannerPolicy
+
+        advisor = LiveAdvisor(
+            client, store, num_ctx=num_ctx,
+            max_output_tokens=getattr(case, "manager_max_output_tokens", 800),
+            preflight=getattr(case, "planner_preflight", None))
+        planner_policy = PlannerPolicy(
+            allowed_tools=("write_file",), network_policy="tailnet-loopback",
+            capabilities=tuple(packet.get("target_requirements") or ()),
+            verifier_id=test_rel, verifier_digest=plan.digest_of(test_rel))
     return _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
                     target_id, num_ctx, version, model_digest, plan, ep,
-                    requirement_ids, relevant, snapshot, source_before)
+                    requirement_ids, relevant, snapshot, source_before,
+                    advisor=advisor, planner_policy=planner_policy)
 
 
 def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
              target_id, num_ctx, version, model_digest, plan, ep, requirement_ids,
-             relevant, snapshot, source_before) -> int:
+             relevant, snapshot, source_before, *, advisor=None,
+             planner_policy=None) -> int:
     import src.local_worker_loop as lo
     from src.attempt_receipt import (
         ArtifactRef, context_projection_digest, make_attempt_receipt,
@@ -511,7 +667,9 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     result = lo.run_bounded(
         packet, run_id=run_id, ledger=ledger, pinned=pinned, dispatch=dispatcher,
         verify=verifier, base_context=base_context, max_attempts=case.max_attempts,
-        read_changed_files=changed_files(case.worktree, packet["write_scope"]))
+        read_changed_files=changed_files(case.worktree, packet["write_scope"]),
+        advise=advisor, max_replans=int(getattr(case, "max_replans", 0)),
+        planner_policy=planner_policy)
     wall_clock_s = round(time.monotonic() - started, 3)
 
     provenance = ledger.provenance(run_id)
@@ -613,7 +771,12 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     package = seal_evidence_package(
         evidence_package_id=f"evpkg-{run_id}", execution_package=ep,
         dispatch_receipts=(dispatch,), attempt_receipts=tuple(attempts),
-        verification_receipts=tuple(verifications))
+        verification_receipts=tuple(verifications),
+        seals=manager_seals(
+            advisor=advisor, ledger=ledger, run_id=run_id, packet=packet,
+            store=store, run_dir=run_dir, execution_package_hash=ep.package_hash,
+            dispatch_receipt_hash=dispatch.receipt_hash, target_id=target_id,
+            model=client.model))
     payload = package.to_dict()
     write_json(run_dir / "evidence_package.json", payload)
 
@@ -644,6 +807,17 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
                                 for r in provenance.get("repairs") or ()],
         "source_before": source_before, "source_after": snapshot(),
         "ledger_chain": ledger.verify_chain(),
+        "manager": (None if advisor is None else {
+            **advisor.summary(),
+            "records": [{"index": r["index"], "boundary": r["boundary"],
+                         "input_digest": r["input_digest"],
+                         "proposal": r["proposal"],
+                         "parse_reason": r["proposal_reason"],
+                         "status": r["status"]} for r in advisor.records],
+            "ledger_proposals": [e.payload for e in ledger.proposals(run_id)],
+            "ledger_refusals": [e.payload for e in ledger.proposal_refusals(run_id)],
+            "seal_count": len(package.seals),
+        }),
     }
     write_json(run_dir / "run_summary.json", summary)
 

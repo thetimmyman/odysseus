@@ -270,6 +270,30 @@ def test_the_positive_fixture_is_verified_against_its_own_source(repo):
     assert result.ok is True, result.explain()
 
 
+def test_an_artifact_declared_under_seals_is_checked_like_any_other(repo):
+    """MUTATION CONTROL for the seal-ref extension (PS-635 G2).
+
+    A seal is part of the package's own evidence, so a reference it declares must
+    be loadable and hash-correct. Without this the manager seam could seal a
+    planner input/output that nobody could ever produce — evidence in name only.
+    """
+    payload, _source = make_run(repo)
+    good_ref = dict(payload["attempt_receipts"][0]["rendered_context_ref"])
+    payload = reseal_evidence_payload(
+        dict(payload, seals=[{"seal_id": "manager_seam-1",
+                              "input_ref": dict(good_ref),
+                              "output_ref": dict(good_ref)}]))
+    assert validate_evidence_package(payload).ok is True
+
+    payload = reseal_evidence_payload(dict(
+        payload,
+        seals=[{"seal_id": "manager_seam-1",
+                "input_ref": dict(good_ref, sha256="0" * 64)}]))
+    result = validate_evidence_package(payload)
+    assert result.ok is False
+    assert ARTIFACT_HASH_MISMATCH in result.codes
+
+
 # ==================================================== the 15 required cases ===
 # 1. missing / ambiguous source identity
 def test_missing_source_base_sha_is_rejected(repo):
