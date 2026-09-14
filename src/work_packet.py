@@ -289,9 +289,23 @@ def interface_digest_of(value: Any) -> str:
     is what lets a repair packet prove it carries the interface the ORIGINAL packet
     declared, rather than asserting it in prose.
     """
-    fields = _coerce_interface(value)
-    canonical = json.dumps([f.normalized() for f in fields],
-                           separators=(",", ":"), ensure_ascii=False)
+    return interface_digest_from_normalized(
+        [f.normalized() for f in _coerce_interface(value)])
+
+
+def interface_digest_from_normalized(lines: Iterable[str]) -> str:
+    """Digest of ALREADY-normalized interface lines.
+
+    This is the same digest as :func:`interface_digest_of` — that function now
+    delegates here — but it hashes the SERIALIZED form. It exists because a
+    package stores its interface as the normalized strings, and re-coercing those
+    strings back into ``InterfaceField`` values is impossible by design (a
+    normalized line contains whitespace, which a name may not). Without this,
+    evidence validation could not re-hash the interface it was given, and
+    "the interface changed after sealing" would be unverifiable rather than
+    merely undocumented.
+    """
+    canonical = json.dumps(list(lines), separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
