@@ -228,4 +228,32 @@ Two fixes came out of it, and both are in the shipped code with mutation coverag
    that was actually verified, and a verified tree that differs from the sealed
    input must be explained by a recorded write.
 
+---
+
+## Regression state at `aedda95e` (this session's head)
+
+Full repository suite: **3 failed, 3794 passed, 3 skipped** in 282.7 s.
+
+```
+FAILED tests/test_gpu_compose_standalone.py::test_nvidia_standalone_equals_base_plus_overlay
+FAILED tests/test_gpu_compose_standalone.py::test_amd_standalone_equals_base_plus_overlay
+FAILED tests/test_gpu_compose_standalone.py::test_amd_odysseus_adds_only_overlay
+```
+
+**Classification, stated as narrowly as the evidence allows.** PS-579 records these
+same three as pre-existing at `56ff059f`. This session did NOT run an exact-base
+comparator, so it does **not** claim they are proven pre-existing — that claim
+requires a baseline VerificationReceipt bound to the base SHA with a matching
+normalized failure fingerprint, and none was produced here.
+
+What IS proven, mechanically: `git diff --name-only 56ff059f..HEAD` lists every file
+every commit on this branch touched, and it contains **no compose file and not the
+failing test file**. So this branch cannot have caused these three failures. That is
+a weaker statement than a baseline receipt and it is the one made.
+
+Everything else is green, including the 119 new PS-638 tests, the 19-test hidden
+verifier against the committed artifact, and the pre-existing PS-635/PS-632 suites.
+`scripts/ps638-mutations.sh`: 20 mutations applied, all 20 killed, baseline-gated.
+
+
 
