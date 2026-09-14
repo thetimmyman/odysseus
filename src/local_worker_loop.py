@@ -448,7 +448,8 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
             passed=last_verification["passed"],
             returncode=last_verification["returncode"],
             summary=last_verification["summary"],
-            excerpt=str(result.get("output") or result.get("excerpt") or ""))
+            excerpt=str(result.get("output") or result.get("excerpt") or ""),
+            attempt=attempt)
 
         if last_verification["passed"]:
             reason = f"attempt {attempt} passed deterministic verification"

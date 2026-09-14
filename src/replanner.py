@@ -616,6 +616,20 @@ def build_planner_input(*, ledger: Any, run_id: str, packet: Mapping[str, Any],
         excerpt = str(verifications[-1].get("excerpt") or "")[-FAILURE_EXCERPT_CHARS:]
 
     used = len(attempts)
+    # The served window is pinned on the run, but the run entry does not carry it
+    # (the ATTEMPT does, because it was a fact about that dispatch). Found live in
+    # g2-replan-control-20260914T221758Z: the projection told the manager
+    # ``served_context: None`` for a run pinned at 32768, which understates the
+    # target's capability in a context that exists to be reasoned about.
+    served = identity.get("served_context")
+    if served in (None, ""):
+        for candidate in reversed(attempts):
+            if candidate.get("served_context") not in (None, ""):
+                served = candidate["served_context"]
+                break
+        else:
+            if attempts and attempts[-1].get("num_ctx"):
+                served = attempts[-1]["num_ctx"]
     budget_remaining = max(0, int(max_attempts) - used)
     replans_used = int(replans_used)
     allowed = allowed_kinds_for(
@@ -647,7 +661,7 @@ def build_planner_input(*, ledger: Any, run_id: str, packet: Mapping[str, Any],
             "target_id": str(identity.get("target_id") or ""),
             "host": str(identity.get("host") or ""),
             "model": str(identity.get("model") or ""),
-            "served_context": identity.get("served_context"),
+            "served_context": served,
             "worktree": str(identity.get("worktree") or ""),
             "base_sha": str(packet.get("base_sha") or identity.get("base_sha") or ""),
         },
@@ -756,11 +770,27 @@ def render_planner_context(plan_input: "PlannerInput", *,
     lines.append("CANONICAL HISTORY (from the append-only ledger — the ONLY state "
                  "you may reason from; no transcript is available to you):")
     if plan_input.attempts:
+        # Verdicts are joined to attempts BY ATTEMPT NUMBER. If that number is
+        # absent from every verification record, this refuses to guess: reporting
+        # "FAIL" for an attempt with no failure record is how the first live G2
+        # run (g2-replan-control-20260914T221758Z) told the manager that a PASSING
+        # attempt 1 had failed. A single attempt with a single untagged verdict is
+        # paired positionally and says so; anything else is left UNRECORDED.
+        tagged = [v for v in plan_input.verifications if v.get("attempt")]
         for attempt in plan_input.attempts:
             verdict = next((v for v in plan_input.verifications
-                            if v.get("attempt") == attempt.get("attempt")), {})
-            outcome = ("PASS" if verdict.get("passed")
-                       else f"FAIL (exit {verdict.get('returncode')})")
+                            if v.get("attempt") == attempt.get("attempt")), None)
+            paired = ""
+            if (verdict is None and not tagged
+                    and len(plan_input.attempts) == 1
+                    and len(plan_input.verifications) == 1):
+                verdict = plan_input.verifications[0]
+                paired = " (verdict paired positionally: it records no attempt)"
+            if verdict is None:
+                outcome = "VERDICT UNRECORDED"
+            else:
+                outcome = ("PASS" if verdict.get("passed")
+                           else f"FAIL (exit {verdict.get('returncode')})") + paired
             lines.append(
                 f"  attempt {attempt.get('attempt')}: {outcome}"
                 f"  rounds={attempt.get('rounds')}"
@@ -768,6 +798,11 @@ def render_planner_context(plan_input: "PlannerInput", *,
                 f"  failure_class={attempt.get('failure_class') or '-'}")
     else:
         lines.append("  no attempt recorded")
+    for verdict in plan_input.verifications:
+        lines.append(
+            f"  verification(attempt {verdict.get('attempt')}): "
+            f"exit {verdict.get('returncode')} "
+            f"passed={verdict.get('passed')} summary={verdict.get('summary')}")
     lines.append("FAILURE_FINGERPRINTS: "
                  + (", ".join(plan_input.failure_fingerprints) or "NONE"))
     lines.append("PRIOR_APPROACH_DIGESTS: "

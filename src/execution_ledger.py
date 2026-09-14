@@ -387,24 +387,35 @@ class ExecutionLedger:
     def record_verification(self, *, run_id: str, packet_id: str,
                             test_command: str, passed: bool, returncode: int,
                             summary: Sequence[str] = (),
-                            excerpt: str = "") -> LedgerEntry:
+                            excerpt: str = "", attempt: int = 0) -> LedgerEntry:
         """Record the deterministic verdict.
 
         ``passed`` comes from the test runner, never from a model. The excerpt is
         bounded HERE so the ledger cannot accumulate a full test log per attempt:
         the repair packet is built from this, and a repair packet that quotes the
         whole log is not compact.
+
+        ``attempt`` says WHICH attempt this verdict belongs to. It is optional so
+        older writers keep working, but a verification that cannot be attributed
+        to an attempt is a verdict nobody can act on — found live (PS-635 G2, run
+        g2-replan-control-20260914T221758Z): the manager projection joined
+        verdicts to attempts by attempt number, the number was absent, and the
+        advisory context reported a PASSING attempt 1 as FAIL. The projection now
+        refuses to claim a failure it has no record for, and the loop tags every
+        verdict it writes.
         """
+        payload = {
+            "test_command": test_command,
+            "passed": bool(passed),
+            "returncode": int(returncode),
+            "summary": list(summary)[-3:],
+            "excerpt": (excerpt or "")[-4000:],
+            "result": (RESULT_ACCEPTED_CANDIDATE if passed else RESULT_REJECTED),
+        }
+        if attempt:
+            payload["attempt"] = int(attempt)
         return self.append(KIND_VERIFICATION, run_id=run_id,
-                           packet_id=packet_id, payload={
-                               "test_command": test_command,
-                               "passed": bool(passed),
-                               "returncode": int(returncode),
-                               "summary": list(summary)[-3:],
-                               "excerpt": (excerpt or "")[-4000:],
-                               "result": (RESULT_ACCEPTED_CANDIDATE if passed
-                                          else RESULT_REJECTED),
-                           })
+                           packet_id=packet_id, payload=payload)
 
     def record_repair(self, *, run_id: str, packet_id: str, attempt: int,
                       failure_class: str, fingerprint: str,

@@ -266,6 +266,51 @@ def test_the_planner_context_is_bounded_and_marks_truncation(ledger):
     assert rendered.endswith("[PLANNER CONTEXT TRUNCATED]")
 
 
+def test_the_rendered_history_never_invents_a_failure(ledger):
+    """MUTATION CONTROL, earned by the first live G2 run.
+
+    The live manager was handed ``attempt 1: FAIL (exit None)`` for an attempt the
+    deterministic verifier had PASSED, because the verdict record carried no
+    attempt number and the renderer defaulted to FAIL. An advisory context that
+    misstates canonical state is worse than no advisory context.
+    """
+    seed(ledger, attempts=0)
+    ledger.record_attempt(run_id="r1", packet_id=PACKET["packet_id"], attempt=1,
+                          target_id=PINNED.target_id, host=PINNED.host,
+                          num_ctx=32768, served_context=32768, elapsed_s=21.0,
+                          rounds=1, artifacts=[PACKET["write_scope"][0]],
+                          status="wrote the file")
+    # Deliberately UNTAGGED: the loop tags its verdicts, an older writer did not.
+    ledger.record_verification(run_id="r1", packet_id=PACKET["packet_id"],
+                               test_command=PACKET["test_command"], passed=True,
+                               returncode=0, summary=["19 passed"],
+                               excerpt="19 passed in 0.11s")
+    rendered = R.render_planner_context(plan_input(ledger))
+    assert "FAIL (exit" not in rendered
+    assert "attempt 1: PASS" in rendered
+    assert "paired positionally" in rendered
+
+
+def test_the_loop_tags_every_verdict_with_its_attempt(ledger):
+    """The positive half of the same control: the join must actually work."""
+    worker = _Worker([_outcome()])
+    _run(ledger, worker, _verifier([_pass()]))
+    verifications = [e.payload for e in ledger.entries_for("r1")
+                     if e.kind == "verification"]
+    assert [v.get("attempt") for v in verifications] == [1]
+    rendered = R.render_planner_context(plan_input(ledger))
+    assert "attempt 1: PASS" in rendered
+
+
+def test_the_projection_reports_the_served_window_the_run_was_pinned_to(ledger):
+    """Also earned live: the manager was told ``served_context: None``."""
+    worker = _Worker([_outcome()])
+    _run(ledger, worker, _verifier([_pass()]))
+    plan = plan_input(ledger)
+    assert plan.served_context == 32768
+    assert "served_context: 32768" in R.render_planner_context(plan)
+
+
 # --------------------------------------------------------- negative controls ---
 def test_a_valid_approach_switch_is_accepted(ledger):
     """The positive control: without this, every assertion below is vacuous."""
