@@ -51,3 +51,77 @@ Four of five tests passed; only the deterministic test caught the mismatch.
 - It does **not** establish any reviewer authority, any auto-approve class, or any
   general claim that local workers self-correct. The ledger's ceiling for a
   worker-driven run remains `ACCEPTED_CANDIDATE`.
+
+---
+
+## OUTCOME of experiment 1 (appended after the run)
+
+Run `ps635-loop-demo-1`, target `local-rtx4500`, base `3cb7b7c1`.
+
+| pre-registered prediction | outcome |
+| --- | --- |
+| 1. attempt 1 FAILS | **CONFIRMED** — `1 failed, 4 passed`, same assertion |
+| 2. attempt 2 PASSES | **FALSIFIED** — attempt 2 also failed |
+| 3. on a repeated fingerprint the loop escalates, no third dispatch | **CONFIRMED** |
+
+Actual result: `ESCALATE`, 2 attempts, 2 repairs recorded, no third dispatch.
+Reason: `attempt 2 reproduced the same failure (7a0d195bae79f737); no progress`.
+Ledger chain verified `(True, None)`; the verification test file was untouched.
+
+Contexts handed to the worker: **2 135 chars (attempt 1) and 3 570 chars (attempt 2)**
+— i.e. the repair attempt used a fresh, compact, repair-shaped context, never a
+conversation replay. Attempt timings 31.5 s and 23.4 s.
+
+### What attempt 2 actually did — and why it matters
+
+The repair attempt produced *better-engineered* code than attempt 1 (docstrings,
+`__all__`, a `_SECTIONS` table, `_as_text` / `_render_bullets` helpers) and still
+failed the same assertion, because it guessed the input keys **again and
+differently**: it kept `"acceptance"` and additionally invented a `"criteria"`
+key, emitting a `CRITERIA: NONE` section the test does not want.
+
+### Conclusion (per the pre-registered falsification clause)
+
+> **A compact repair packet is NOT sufficient to recover an interface mismatch.**
+
+And the diagnosis is precise, not vague: the repair packet faithfully carried the
+SYMPTOM — the failing assertion shows the rendered output contained
+`ACCEPTANCE: NONE` — but the worker cannot infer the ROOT CAUSE, because the root
+cause is *which key the unseen test reads*, and that is exactly the information the
+packet never contained. Two attempts, two different wrong guesses, same failure.
+
+**Architectural consequence for PS-635:** the repair loop cannot substitute for
+packet quality. A bounded repair loop over an under-specified packet converges on
+**escalation**, not on success — which is the correct, safe behaviour (it stopped
+instead of burning turns), but it means packet contracts MUST name their
+interfaces, and a packet without a specified interface should be refused at
+authoring time rather than dispatched and repaired.
+
+---
+
+## Experiment 2 — pre-registration (written BEFORE the run)
+
+Hypothesis derived from experiment 1: the failure was caused by the under-specified
+PACKET, not by the loop, the target or the repair packet.
+
+**Change: exactly one thing** — the contract now names the packet's INPUT keys
+explicitly (`objective`, `write_scope`, `acceptance_criteria`, `negative_control`,
+`stop_conditions`, `max_chars`). Everything else is identical: same target, same
+tools, same `max_attempts=3`, same harness-owned test the worker never sees, same
+budget gate.
+
+Predictions:
+
+1. **Attempt 1 PASSES** (`1 passed`), reaching `ACCEPTED_CANDIDATE`.
+2. **The loop stops after one attempt** — no repair packet is needed, and
+   `repairs` is empty for the run.
+
+Falsification: if attempt 1 still fails, the cause is NOT the packet's interface
+specification and the diagnosis above is wrong.
+
+## Still not claimed
+
+Neither experiment creates reviewer authority, an auto-approve class, or a general
+claim that local workers self-correct. The ledger ceiling for a worker-driven run
+remains `ACCEPTED_CANDIDATE`; acceptance still requires a named non-local
+authority.
