@@ -69,12 +69,67 @@ def test_empty_interface_is_rejected():
         make_work_packet(**_valid(interface=[]))
 
 
-def test_interface_is_coerced_to_a_tuple():
+def test_interface_is_coerced_to_typed_fields():
+    """A bare name is the SHORTHAND for a required field, not a second shape."""
+    from src.work_packet import InterfaceField
     p = make_work_packet(**_valid(interface=["objective", "acceptance_criteria"]))
-    assert p.interface == ("objective", "acceptance_criteria")
-    assert all(isinstance(x, str) for x in p.interface)
+    assert all(isinstance(x, InterfaceField) for x in p.interface)
+    assert [f.name for f in p.interface] == ["objective", "acceptance_criteria"]
+    assert all(f.required for f in p.interface)
 
 
 def test_interface_survives_to_dict_round_trip():
     p = make_work_packet(**_valid())
-    assert json.loads(json.dumps(p.to_dict()))["interface"] == ["objective", "write_scope"]
+    assert json.loads(json.dumps(p.to_dict()))["interface"] == [
+        {"name": "objective", "required": True, "type_hint": "", "semantics": ""},
+        {"name": "write_scope", "required": True, "type_hint": "", "semantics": ""},
+    ]
+
+
+def test_interface_accepts_the_full_typed_form():
+    p = make_work_packet(**_valid(interface=[
+        {"name": "verbatim_lines", "type_hint": "list[str]",
+         "semantics": "lines quoted exactly"},
+        {"name": "block_reason", "required": False},
+    ]))
+    assert p.interface[0].name == "verbatim_lines"
+    assert p.interface[0].required is True
+    assert p.interface[0].type_hint == "list[str]"
+    assert p.interface[1].required is False
+
+
+def test_interface_name_with_whitespace_is_rejected():
+    """NEGATIVE CONTROL: a name that cannot be a mapping key is not a name."""
+    with pytest.raises(WorkPacketError):
+        make_work_packet(**_valid(interface=["two words"]))
+
+
+def test_duplicate_interface_names_are_rejected():
+    with pytest.raises(WorkPacketError):
+        make_work_packet(**_valid(interface=["a", "a"]))
+
+
+def test_blank_interface_name_is_rejected():
+    with pytest.raises(WorkPacketError):
+        make_work_packet(**_valid(interface=["   "]))
+
+
+def test_unknown_interface_mapping_key_is_rejected():
+    """No hidden second language: only the four declared attributes exist."""
+    with pytest.raises(WorkPacketError):
+        make_work_packet(**_valid(interface=[{"name": "a", "hint": "x"}]))
+
+
+def test_interface_digest_is_stable_and_order_sensitive():
+    """The digest is what proves two attempts were given the SAME interface."""
+    a = make_work_packet(**_valid(interface=["one", "two"]))
+    b = make_work_packet(**_valid(interface=["one", "two"]))
+    c = make_work_packet(**_valid(interface=["two", "one"]))
+    assert a.interface_digest == b.interface_digest
+    assert a.interface_digest != c.interface_digest
+
+
+def test_interface_digest_changes_when_semantics_change():
+    a = make_work_packet(**_valid(interface=[{"name": "k", "semantics": "one"}]))
+    b = make_work_packet(**_valid(interface=[{"name": "k", "semantics": "other"}]))
+    assert a.interface_digest != b.interface_digest

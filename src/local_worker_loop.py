@@ -213,6 +213,16 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
     ``{test_command, returncode, passed}`` and should include the runner output,
     which this loop turns into bounded repair evidence.
     """
+    # Validate ONCE, up front, and keep the validated packet: its interface digest is
+    # evidence, and computing it here means the digest recorded on the run is the
+    # digest of the packet that was actually validated — not a re-derivation.
+    validated = None
+    packet_error = ""
+    try:
+        validated = validate_dispatchable_packet(packet)
+    except ValueError as exc:
+        packet_error = str(exc)
+
     ledger.record_run(
         run_id=run_id, packet_id=str(packet.get("packet_id", "")),
         objective=str(packet.get("objective", "")),
@@ -220,7 +230,9 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
         host=pinned.host, model=pinned.model,
         runtime_version=pinned.runtime_version, worktree=pinned.worktree,
         write_scope=list(packet.get("write_scope") or ()),
-        base_sha=str(packet.get("base_sha", "")))
+        base_sha=str(packet.get("base_sha", "")),
+        interface_digest=(validated.interface_digest if validated else ""),
+        interface=(validated.normalized_interface() if validated else ()))
 
     # ---- packet gate: refuse a packet that is not dispatchable AT ALL --------
     # Before the budget gate, because "this is not a packet" is a different answer
@@ -229,10 +241,8 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
     # the repair failed the SAME way — the loop correctly escalated rather than
     # converge, but the turns were spent for nothing. An under-specified packet is
     # now refused at the boundary instead of being repaired into place.
-    try:
-        validate_dispatchable_packet(packet)
-    except ValueError as exc:
-        reason = f"packet is not dispatchable: {exc}"
+    if packet_error:
+        reason = f"packet is not dispatchable: {packet_error}"
         ledger.record_decision(run_id=run_id,
                                packet_id=str(packet.get("packet_id", "")),
                                decision=DECISION_BLOCKED, reason=reason,
@@ -240,7 +250,7 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
         ledger.append(KIND_FAILURE, run_id=run_id,
                       packet_id=str(packet.get("packet_id", "")),
                       payload={"failure_class": FAILURE_PACKET_INVALID,
-                               "detail": str(exc)[:300],
+                               "detail": packet_error[:300],
                                "result": RESULT_BLOCKED})
         return LoopResult(run_id=run_id, result=RESULT_BLOCKED,
                           failure_class=FAILURE_PACKET_INVALID,

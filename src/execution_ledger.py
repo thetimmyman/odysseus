@@ -313,19 +313,27 @@ class ExecutionLedger:
     def record_run(self, *, run_id: str, packet_id: str, objective: str,
                    role: str, target_id: str, host: str, model: str,
                    runtime_version: str, worktree: str, write_scope: Sequence[str],
-                   base_sha: str = "") -> LedgerEntry:
+                   base_sha: str = "", interface_digest: str = "",
+                   interface: Sequence[str] = ()) -> LedgerEntry:
         """Open a run and pin its execution identity.
 
         The identity fields live here rather than being inferred later, because a
         result whose target cannot be named is not evidence — PS-579's problem
-        was a result attributed to a generic "local qwen".
+        was a result attributed to a generic "local qwen". The interface digest is
+        recorded for the same reason: it is what proves the worker was given the
+        SAME declared input keys on every attempt, including the repair attempt.
         """
-        return self.append(KIND_RUN, run_id=run_id, packet_id=packet_id, payload={
+        payload = {
             "objective": objective, "role": role, "target_id": target_id,
             "host": host, "model": model, "runtime_version": runtime_version,
             "worktree": worktree, "write_scope": list(write_scope),
             "base_sha": base_sha, "result": RESULT_IN_PROGRESS,
-        })
+            "interface_digest": interface_digest,
+        }
+        if interface:
+            payload["interface"] = list(interface)
+        return self.append(KIND_RUN, run_id=run_id, packet_id=packet_id,
+                           payload=payload)
 
     def record_attempt(self, *, run_id: str, packet_id: str, attempt: int,
                        target_id: str, host: str, num_ctx: int,

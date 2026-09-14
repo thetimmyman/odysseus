@@ -131,14 +131,38 @@ def _bounded_diff(text: str, limit: int = MAX_DIFF_CHARS_PER_FILE) -> str:
     return text[:limit] + "\n...[DIFF TRUNCATED]"
 
 
+def _interface_projection(packet: Mapping) -> dict:
+    """The packet's declared interface, projected for a repair packet.
+
+    Copied VERBATIM in meaning: the repair packet carries the same declared input
+    keys, normalised the same way, with a digest computed by the packet primitive's
+    own definition. Nothing here may rename, reinterpret, infer or "improve" the
+    interface — a repair that is allowed to restate the interface could quietly
+    change the task, which is the same failure mode as letting it restate the
+    acceptance criteria.
+    """
+    raw = packet.get("interface")
+    try:
+        from src.work_packet import coerce_interface, interface_digest_of
+
+        fields = coerce_interface(raw)
+    except Exception as exc:  # malformed interface: surface it, do not hide it
+        return {"interface": raw, "interface_digest": "",
+                "interface_error": str(exc)[:200]}
+    return {"interface": [f.normalized() for f in fields],
+            "interface_digest": interface_digest_of(fields)}
+
+
 def build_repair_packet(packet: Mapping, *, failure: VerificationFailure,
                         changed_files: Mapping[str, str],
                         attempt: int, budget_remaining: int) -> dict:
     """Build the bounded repair packet for one failed attempt.
 
-    The objective and the acceptance criteria are copied UNCHANGED on purpose.
-    A repair that is allowed to restate acceptance is how a failing task quietly
-    becomes a passing one.
+    The objective, the interface and the acceptance criteria are copied UNCHANGED
+    on purpose, and this function accepts no parameter that could override any of
+    them. A repair that is allowed to restate acceptance is how a failing task
+    quietly becomes a passing one; a repair allowed to restate the interface is how
+    a worker gets a different task without anyone recording it.
     """
     files: Dict[str, str] = {}
     for path, diff in list(changed_files.items())[:MAX_CHANGED_FILES]:
@@ -148,6 +172,7 @@ def build_repair_packet(packet: Mapping, *, failure: VerificationFailure,
         "attempt": int(attempt),
         "budget_remaining": int(budget_remaining),
         "objective": packet.get("objective", ""),
+        **_interface_projection(packet),
         "acceptance_criteria": list(packet.get("acceptance_criteria") or ()),
         "write_scope": list(packet.get("write_scope") or ()),
         "negative_control": packet.get("negative_control", ""),
@@ -183,6 +208,17 @@ def render_repair_context(repair: Mapping, *, max_chars: int = 6000) -> str:
     for c in repair.get("acceptance_criteria") or []:
         lines.append(f"  - {c}")
     lines.append(f"WRITE_SCOPE: {', '.join(repair.get('write_scope') or []) or 'NONE'}")
+    lines.append("INTERFACE (UNCHANGED -- these exact input keys are the contract):")
+    iface = repair.get("interface") or []
+    if iface:
+        for item in iface:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - NONE")
+    if repair.get("interface_error"):
+        lines.append(f"  !! INTERFACE DECLARATION REJECTED: {repair['interface_error']}")
+    if repair.get("interface_digest"):
+        lines.append(f"INTERFACE_DIGEST: {repair['interface_digest']}")
     lines.append(f"EXPECTED_BEHAVIOR: {repair.get('expected_behavior')}")
     lines.append("")
     lines.append(f"FAILING_COMMAND: {repair.get('failing_command')}")
@@ -209,6 +245,9 @@ def render_repair_context(repair: Mapping, *, max_chars: int = 6000) -> str:
     lines.append(repair.get("error_excerpt") or "")
     lines.append("")
     lines.append("Call the tool again with the corrected file content. Do not explain.")
+    lines.append("Repair the DEFECT shown below. Do NOT change the objective, the "
+                 "interface, the write scope or the acceptance criteria: those are "
+                 "unchanged and are not yours to reinterpret.")
     text = "\n".join(lines)
     if len(text) > max_chars:
         marker = "\n...[CONTEXT TRUNCATED]"

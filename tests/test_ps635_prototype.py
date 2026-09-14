@@ -463,3 +463,129 @@ def test_validate_dispatchable_packet_filters_manager_side_keys():
     ok = validate_dispatchable_packet(PACKET)   # carries role + extras
     assert ok.packet_id == "P-T"
     assert "role" not in ok.to_dict()
+
+
+# --------------------------------------- the interface must be DELIVERED ---
+# The packet primitive can validate an interface and the loop can require one, and
+# the interface can still never reach the worker. These controls exist so a
+# decorative implementation is CAUGHT rather than looking green.
+
+IFACE_PACKET = dict(PACKET, interface=[
+    {"name": "subject_name", "type_hint": "str", "semantics": "the subject line"},
+    {"name": "verbatim_lines", "type_hint": "list[str]"},
+    {"name": "block_reason", "required": False, "type_hint": "str"},
+])
+
+
+def test_rendered_context_carries_every_declared_interface_name():
+    """CONTROL for a decorative interface: declared but never delivered.
+
+    Each declared name must appear in the rendered context EXACTLY as declared,
+    in the canonical form the interface digest hashes. If the renderer ever stops
+    emitting the INTERFACE section this fails, which is the whole point: an
+    interface that is validated, stored and invisible would pass every other test
+    in this file.
+    """
+    from src.worker_context import render_worker_context
+    from src.work_packet import make_work_packet
+
+    validated = make_work_packet(**{k: IFACE_PACKET[k] for k in
+                                    ("packet_id", "objective", "write_scope",
+                                     "test_command", "interface")})
+    rendered = render_worker_context(IFACE_PACKET)
+    assert "INTERFACE:" in rendered
+    for canonical in validated.normalized_interface():
+        assert canonical in rendered, f"declared interface entry missing: {canonical}"
+
+
+def test_rendered_interface_names_are_not_available_anywhere_else():
+    """The names must come from the INTERFACE section, not from accidental hints.
+
+    This is what makes the live control meaningful: if a name were also present in
+    the objective or acceptance prose, a pass would prove nothing about delivery.
+    """
+    from src.worker_context import render_worker_context
+
+    packet = dict(IFACE_PACKET, objective="Implement the note renderer.",
+                  acceptance_criteria=["renders SUBJECT on its own line"])
+    rendered = render_worker_context(packet)
+    body_before_interface = rendered.split("INTERFACE:")[0]
+    for name in ("subject_name", "verbatim_lines", "block_reason"):
+        assert name not in body_before_interface, (
+            f"{name} leaked outside the INTERFACE section; the control would be void")
+
+
+def test_interface_section_is_omitted_only_when_nothing_is_declared():
+    from src.worker_context import render_worker_context
+    assert "INTERFACE: NONE" in render_worker_context({"objective": "x"})
+    assert "INTERFACE: NONE" not in render_worker_context(IFACE_PACKET)
+
+
+def test_repair_context_carries_the_same_immutable_interface():
+    """The repair attempt must get the ORIGINAL interface, provably."""
+    from src.repair_packet import build_repair_packet, parse_verification_failure, \
+        render_repair_context
+    from src.work_packet import interface_digest_of
+
+    failure = parse_verification_failure("pytest -q", 1, FAIL_OUTPUT)
+    repair = build_repair_packet(IFACE_PACKET, failure=failure, changed_files={},
+                                 attempt=1, budget_remaining=2)
+    assert repair["interface_digest"] == interface_digest_of(IFACE_PACKET["interface"])
+    rendered = render_repair_context(repair)
+    assert "INTERFACE (UNCHANGED" in rendered
+    for name in ("subject_name", "verbatim_lines", "block_reason"):
+        assert name in rendered
+    assert repair["interface_digest"] in rendered   # the digest travels with it
+
+
+def test_repair_packet_cannot_be_asked_to_override_the_contract():
+    """STRUCTURAL CONTROL: no parameter exists that could restate the contract.
+
+    A repair that can be handed a different interface or different acceptance
+    criteria is a repair that can silently change the task. The guarantee is that
+    the seam does not offer one — not that callers are careful.
+    """
+    import inspect
+
+    from src.repair_packet import build_repair_packet
+
+    params = set(inspect.signature(build_repair_packet).parameters)
+    assert params == {"packet", "failure", "changed_files", "attempt",
+                      "budget_remaining"}, params
+    for forbidden in ("interface", "acceptance_criteria", "objective",
+                      "write_scope", "contract"):
+        assert forbidden not in params
+
+
+def test_repair_packet_carries_the_unchanged_objective_and_scope_too():
+    from src.repair_packet import build_repair_packet, parse_verification_failure
+
+    failure = parse_verification_failure("pytest -q", 1, FAIL_OUTPUT)
+    repair = build_repair_packet(IFACE_PACKET, failure=failure, changed_files={},
+                                 attempt=1, budget_remaining=1)
+    assert repair["objective"] == IFACE_PACKET["objective"]
+    assert repair["write_scope"] == IFACE_PACKET["write_scope"]
+    assert repair["acceptance_criteria"] == IFACE_PACKET["acceptance_criteria"]
+
+
+def test_interface_digest_is_recorded_on_the_run_entry(ledger):
+    """Evidence integrity: the digest of the VALIDATED packet is on the ledger."""
+    from src.work_packet import interface_digest_of
+
+    _run(ledger, [DispatchOutcome(artifacts=("src/thing.py",))], [_pass()],
+         packet=IFACE_PACKET)
+    run_entry = next(e for e in ledger.entries_for("r1") if e.kind == "run")
+    assert run_entry.payload["interface_digest"] == interface_digest_of(
+        IFACE_PACKET["interface"])
+    assert run_entry.payload["interface"]
+
+
+def test_repair_entry_records_the_same_interface_digest_as_the_run(ledger):
+    """The attempt and its repair are provably working on one interface."""
+    _run(ledger, [DispatchOutcome(artifacts=("src/thing.py",)),
+                  DispatchOutcome(artifacts=("src/thing.py",))],
+         [_fail(), _pass()], packet=IFACE_PACKET)
+    entries = ledger.entries_for("r1")
+    run_digest = next(e for e in entries if e.kind == "run").payload["interface_digest"]
+    repair = next(e for e in entries if e.kind == "repair")
+    assert repair.payload["repair_packet"]["interface_digest"] == run_digest
