@@ -57,10 +57,11 @@ Two properties are structural rather than promised:
 * the loop: with no advisor it behaves EXACTLY as G1 did; a validated
   `approach_switch` produces one extra bounded attempt whose context carries the
   approach note AND the unchanged repair evidence/contract/interface; a refused
-  proposal leaves the deterministic escalation intact; the manager is consulted
-  once at a PASS and is not obeyed; an advisor that returns nothing, or raises,
-  cannot fail a run; advice cannot buy an attempt past the budget, and a second
-  stall escalates once the replan allowance is spent.
+  proposal leaves the deterministic escalation intact; a PASS consults NOTHING and
+  is terminated deterministically by the verifier (the advisor is not called at a
+  PASS — see the bounded correction appended at the end); an advisor that returns
+  nothing, or raises, cannot fail a run; advice cannot buy an attempt past the
+  budget, and a second stall escalates once the replan allowance is spent.
 
 ## The live control
 
@@ -264,3 +265,69 @@ would be broadening G2 rather than finishing the seam.
 * **the replan branch is proven hermetically and remains UNOBSERVED live** — the
   same honest gap as the live repair branch, recorded as a gap rather than filled
   with a manufactured failure.
+
+---
+
+## BOUNDED CORRECTION (PS-635, after the G2 freeze review)
+
+Two architectural corrections, both hermetic — **no additional RTX turns were
+spent**, and no failure was manufactured to exercise the replan branch.
+
+### 1. A PASS no longer consults the planner at all
+
+`verification PASS -> ACCEPTED_CANDIDATE`, full stop. The loop no longer spends a
+manager call at that boundary. Superseded statements: pre-registration
+prediction 2/3 and outcome rows about "consulted once at the PASS boundary" in
+Runs 1 and 2 describe the seam AS IT WAS when those runs happened; they are left
+intact as history, and they no longer describe the code.
+
+Why: at a PASS the deterministic verifier has already decided the run, so the only
+thing a consultation could produce was an opinion about a settled outcome — a model
+call that cannot change anything. Broader planning after a COMPLETED packet belongs
+above the worker loop, which can project the finished canonical evidence
+(`build_planner_input(..., boundary=BOUNDARY_PASS)` still works, still offers only
+terminal kinds) without inserting a model into the run that produced it.
+
+Properties, each with a test:
+* `advise=None` remains byte-identical G1 behaviour;
+* **a PASS makes zero planner calls** — the test's advisor RAISES if it is
+  consulted, so a regression fails loudly rather than silently costing a turn;
+* no-progress remains eligible for one bounded, validated proposal;
+* nothing about the planner gains review/acceptance/landing authority (unchanged).
+
+### 2. The reply protocol is kind-specific (the live finding, fixed at the source)
+
+The two live controls returned otherwise-grounded `stop` proposals refused
+`shape_invalid` because ONE universal skeleton showed an `approach` field, and this
+model fills every field it is shown. Validation was NOT relaxed. Instead:
+
+* `PROPOSAL_SCHEMAS` is now the single source of truth for which fields each kind
+  may carry, and it drives three things that must not drift: the protocol the model
+  is OFFERED, the gate's shape check (`proposal_schema_errors`), and a published
+  discriminated `PROPOSAL_JSON_SCHEMA` (`oneOf` per kind, `additionalProperties:
+  false`, and `not: {required: [approach]}` for the kinds that may not carry it);
+* the rendered protocol now shows **one skeleton per legal kind**, containing only
+  that kind's fields, plus per-kind required/illegal notes;
+* the fields that exist only so a model can ASK for something
+  (`requested_actions`, `requested_authority`, `packet_delta`) are no longer
+  dangled in the protocol at all — they remain representable and refused, because a
+  refusal with a typed code is better evidence than an impossible request, but
+  nothing invites a model to fill them;
+* every existing refusal control is retained: `stop`/`escalate`/`next_packet` with
+  approach text still fail `shape_invalid`, `replan`/`approach_switch` with no
+  approach still fail `shape_invalid`, and a repeated approach still fails
+  `approach_repeated`.
+
+The schema test earned its place immediately: the first version of
+`PROPOSAL_JSON_SCHEMA` nested `not` INSIDE `properties`, which would have declared
+a property literally named "not" instead of forbidding `approach`. Asserting the
+schema caught it; eyeballing it had not.
+
+### G2 status after the correction: FROZEN
+
+Unchanged, and unchanged on purpose:
+* genuine failed-first-attempt repair uplift: **UNOBSERVED** (no failure
+  manufactured);
+* live no-progress -> replan: **UNOBSERVED** live (proven hermetically);
+* fresh challenger: **DEFERRED**;
+* no reviewer/acceptance/landing authority anywhere; ceiling `ACCEPTED_CANDIDATE`.

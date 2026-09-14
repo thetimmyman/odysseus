@@ -311,6 +311,88 @@ def test_the_projection_reports_the_served_window_the_run_was_pinned_to(ledger):
     assert "served_context: 32768" in R.render_planner_context(plan)
 
 
+# ------------------------------------------------ kind-specific reply schema ---
+def test_the_offered_protocol_shows_each_kind_only_its_legal_fields(ledger):
+    """MUTATION CONTROL for the live finding: no kind is offered an illegal field.
+
+    Two live controls returned otherwise-grounded `stop` proposals refused
+    `shape_invalid` because a single universal skeleton showed `approach`, which
+    is illegal for `stop`. The protocol must now be per-kind.
+    """
+    seed(ledger)
+    rendered = R.render_planner_context(plan_input(ledger, boundary=R.BOUNDARY_STALL))
+    protocol = rendered.split("REPLY PROTOCOL")[1]
+    for kind in R.STALL_KINDS:
+        line = next((l for l in protocol.splitlines()
+                     if l.startswith(f'  {{"kind": "{kind}"')), "")
+        assert line, f"no skeleton offered for {kind}"
+        assert '"approach"' in line if kind in R.APPROACH_REQUIRED_KINDS else \
+            '"approach"' not in line, kind
+    # The fields that exist only so a model can ASK for something are no longer
+    # dangled in front of it.
+    assert "requested_actions" not in protocol
+    assert "requested_authority" not in protocol
+    assert "packet_delta" not in protocol
+
+
+def test_the_offered_protocol_and_the_gate_are_one_schema(ledger):
+    """Drift control: the table drives the protocol AND the gate's shape check."""
+    seed(ledger)
+    for kind, schema in R.PROPOSAL_SCHEMAS.items():
+        legal = R.make_manager_proposal(
+            proposal_id=f"p-{kind}", run_id="r1", packet_id=PACKET["packet_id"],
+            kind=kind, rationale="because of the recorded evidence",
+            approach=("do it the other way" if kind in R.APPROACH_REQUIRED_KINDS
+                      else ""),
+            evidence_refs=[ledger.entries_for("r1")[0].entry_hash])
+        assert R.proposal_schema_errors(legal) == (), kind
+        for forbidden in schema["forbidden"]:
+            if forbidden != "approach":
+                continue
+            illegal = R.make_manager_proposal(
+                proposal_id=f"p-{kind}-bad", run_id="r1",
+                packet_id=PACKET["packet_id"], kind=kind,
+                rationale="because of the recorded evidence",
+                approach="steer the next attempt",
+                evidence_refs=[ledger.entries_for("r1")[0].entry_hash])
+            assert R.proposal_schema_errors(illegal), kind
+            v = verdict(ledger, illegal)
+            assert v.ok is False and v.code == R.CODE_SHAPE_INVALID, kind
+    # And the reverse direction: a continuing kind with no approach is refused.
+    bare = R.make_manager_proposal(
+        proposal_id="p-noreplan", run_id="r1", packet_id=PACKET["packet_id"],
+        kind="replan", rationale="because of the recorded evidence",
+        evidence_refs=[ledger.entries_for("r1")[0].entry_hash])
+    assert R.proposal_schema_errors(bare)
+    v = verdict(ledger, bare)
+    assert v.ok is False and v.code == R.CODE_SHAPE_INVALID
+
+
+def test_the_json_schema_is_a_discriminated_union_per_kind():
+    schema = R.PROPOSAL_JSON_SCHEMA
+    assert schema["discriminator"] == "kind"
+    branches = {b["properties"]["kind"]["const"]: b for b in schema["oneOf"]}
+    assert set(branches) == set(R.KNOWN_KINDS)
+    for kind, branch in branches.items():
+        assert branch["additionalProperties"] is False
+        assert branch["required"][0] == "kind"
+        if kind in R.APPROACH_REQUIRED_KINDS:
+            assert "approach" in branch["properties"]
+            assert "approach" in branch["required"]
+        else:
+            assert "approach" not in branch["properties"]
+            assert branch.get("not") == {"required": ["approach"]}
+
+
+def test_every_schema_branch_has_a_protocol_skeleton():
+    for kind in R.KNOWN_KINDS:
+        skeleton = R.proposal_skeleton(kind)
+        assert skeleton["kind"] == kind
+        assert set(skeleton) <= set(R.PROPOSAL_FIELDS)
+        assert skeleton["evidence_refs"] == ["<one ledger entry hash from EVIDENCE INDEX>"]
+        assert ('approach' in skeleton) == (kind in R.APPROACH_REQUIRED_KINDS)
+
+
 # --------------------------------------------------------- negative controls ---
 def test_a_valid_approach_switch_is_accepted(ledger):
     """The positive control: without this, every assertion below is vacuous."""
@@ -631,28 +713,65 @@ def test_a_refused_proposal_leaves_the_g1_outcome_untouched(ledger):
     assert refusals[0].payload["verdict_code"] == "scope_widening"
 
 
-def test_the_loop_consults_the_manager_at_a_pass_and_does_not_obey_it(ledger):
-    """MUTATION CONTROL: the PASS boundary ignores advice about the outcome."""
+def test_a_pass_makes_zero_planner_calls(ledger):
+    """MUTATION CONTROL for the bounded correction: PASS is deterministic.
+
+    The loop must terminate on a verified PASS without consulting any advisor.
+    The advisor here raises, so if the loop consults it at all this test fails
+    loudly instead of silently spending a model turn.
+    """
+    calls = []
+
+    def _must_not_be_called(plan):
+        calls.append(plan.boundary)
+        raise AssertionError("the advisor was consulted at a PASS boundary")
+
     worker = _Worker([_outcome()])
-    result = _run(ledger, worker, _verifier([_pass()]),
-                  advise=_advisor_returning(kind="replan",
-                                            approach="keep going anyway"))
+    result = _run(ledger, worker, _verifier([_pass()]), advise=_must_not_be_called)
     assert result.result == RESULT_ACCEPTED_CANDIDATE and result.attempts == 1
-    assert "manager advised" in result.reason
-    refusals = ledger.proposal_refusals("r1")
-    assert [r.payload["verdict_code"] for r in refusals] == ["kind_not_allowed"]
+    assert calls == []
+    assert "manager" not in result.reason
+    assert ledger.proposals("r1") == [] and ledger.proposal_refusals("r1") == []
+    assert [e.payload["decision"] for e in ledger.entries_for("r1")
+            if e.kind == "decision"] == ["stop"]
+
+
+def test_a_pass_records_no_proposal_even_when_an_advisor_offers_a_stop(ledger):
+    """The advisor that would have agreed is now never asked — and never recorded."""
+    calls = []
+
+    def _counter(plan):
+        calls.append(plan)
+        return (R.make_manager_proposal(
+            proposal_id="p1", run_id=plan.run_id, packet_id=plan.packet_id,
+            kind="stop", rationale="the verifier passed",
+            evidence_refs=[plan.evidence_index[0]]), "")
+
+    worker = _Worker([_outcome()])
+    _run(ledger, worker, _verifier([_pass()]), advise=_counter)
+    assert calls == []
     assert ledger.proposals("r1") == []
 
 
-def test_an_advisor_that_agrees_with_a_pass_is_recorded(ledger):
+def test_above_loop_planning_can_still_project_a_finished_run(ledger):
+    """The PASS boundary survives for consumers ABOVE the loop.
+
+    The loop no longer consults anything at a PASS, but broader planning over a
+    completed packet still gets a projection: it can read finished canonical
+    evidence and is offered exactly the terminal kinds.
+    """
     worker = _Worker([_outcome()])
-    _run(ledger, worker, _verifier([_pass()]),
-         advise=lambda plan: (R.make_manager_proposal(
-             proposal_id="p1", run_id=plan.run_id, packet_id=plan.packet_id,
-             kind="stop", rationale="the verifier passed",
-             evidence_refs=[plan.evidence_index[0]]), ""))
-    proposals = ledger.proposals("r1")
-    assert len(proposals) == 1 and proposals[0].payload["kind"] == "stop"
+    _run(ledger, worker, _verifier([_pass()]))
+    plan = R.build_planner_input(
+        ledger=ledger, run_id="r1", packet=PACKET, boundary=R.BOUNDARY_PASS,
+        max_attempts=3, max_replans=1, policy=POLICY)
+    assert plan.allowed_kinds == (R.KIND_STOP,)
+    assert plan.budget_remaining == 2          # budget is NOT consumed by a PASS
+    assert [v.get("attempt") for v in plan.verifications] == [1]
+    rendered = R.render_planner_context(plan)
+    assert 'if kind = "stop"' in rendered
+    assert "replan" not in rendered.split("REPLY PROTOCOL")[1]
+
 
 
 def test_an_advisor_that_returns_nothing_is_a_recorded_refusal(ledger):

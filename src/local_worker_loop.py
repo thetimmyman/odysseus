@@ -38,7 +38,7 @@ from src.execution_ledger import (
     RESULT_IN_PROGRESS,
     RESULT_REJECTED,
 )
-from src.replanner import BOUNDARY_PASS, BOUNDARY_STALL, CONTINUING_KINDS
+from src.replanner import BOUNDARY_STALL, CONTINUING_KINDS
 from src.repair_packet import (
     VerificationFailure,
     build_repair_packet,
@@ -325,8 +325,9 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
     ``advise(planner_input) -> (proposal | None, reason)`` is the G2 seam, and it
     is OPTIONAL and advisory in the strongest sense the design allows:
 
-    * it is consulted only at the deterministic decision boundary where the loop
-      was about to stop, and once at a PASS — never mid-attempt;
+    * it is consulted ONLY at the no-progress boundary — the single point where
+      the loop was about to escalate a repeated deterministic failure. A PASS
+      never consults it: verification decides, the loop records and stops;
     * its proposal is validated by ``src.replanner`` before it can affect
       anything, and a refusal is recorded with a typed code;
     * the only thing a validated proposal can change is the APPROACH text of the
@@ -452,22 +453,17 @@ def run_bounded(packet: Mapping, *, run_id: str, ledger: ExecutionLedger,
             attempt=attempt)
 
         if last_verification["passed"]:
+            # PASS is deterministic and TERMINAL: the verifier decided this run,
+            # and the loop records that and stops. No manager turn is spent here.
+            # (PS-635 bounded correction: an earlier revision consulted the
+            # advisor at this boundary to have it "agree" with a decision the
+            # verifier had already made. Advice that cannot change anything is
+            # not worth a model call, and a PASS that waits on a model is not the
+            # deterministic pass this loop claims to be. Broader planning after a
+            # completed packet belongs ABOVE this loop and can read the completed
+            # canonical evidence — a projection over finished state, not a
+            # consultation inside the run that produced it.)
             reason = f"attempt {attempt} passed deterministic verification"
-            # G2, PASS boundary: ask the manager once, then ignore its opinion
-            # about the outcome. Deterministic verification already decided this
-            # run, and at a PASS the only legal kinds are terminal ones — so a
-            # "replan" here is REFUSED with a typed code rather than honoured.
-            # The consultation exists to be recorded, not to be obeyed.
-            advice = consult_planner(
-                advise=advise, packet=packet, validated=validated, ledger=ledger,
-                run_id=run_id, pinned=pinned, boundary=BOUNDARY_PASS,
-                attempts_used=attempt, max_attempts=max_attempts,
-                replans_used=replans_used, max_replans=max_replans,
-                policy=planner_policy)
-            if advice["consulted"]:
-                reason += (f"; manager advised {advice['kind'] or 'nothing'}"
-                           + (" (validated)" if advice["ok"] else
-                              f" (refused: {advice.get('error_code', '')})"))
             ledger.record_decision(run_id=run_id,
                                    packet_id=str(packet.get("packet_id", "")),
                                    decision=DECISION_STOP, reason=reason,

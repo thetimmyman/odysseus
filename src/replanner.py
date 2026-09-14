@@ -75,8 +75,16 @@ MAX_APPROACH_CHARS = 600
 MAX_RATIONALE_CHARS = 1200
 DEFAULT_MAX_CONTEXT_CHARS = 4000
 
-#: Boundaries at which the loop may consult the planner. The boundary is a
-#: deterministic fact about the run, not the manager's opinion about it.
+#: Boundaries a planner input can describe. The boundary is a deterministic fact
+#: about a run, not the manager's opinion about it.
+#:
+#: ``BOUNDARY_PASS`` is RETAINED for consumers ABOVE the worker loop: broader
+#: planning after a completed packet may build a projection over the finished
+#: canonical evidence and ask "is this run over?". The loop itself no longer
+#: consults anything at a PASS (PS-635 bounded correction): a deterministic pass
+#: terminates the loop, and spending a model call to have an advisor agree with a
+#: decision that is already made is exactly the kind of decorative step this seam
+#: exists to avoid.
 BOUNDARY_PASS = "pass"
 BOUNDARY_STALL = "stall"
 BOUNDARY_EXHAUSTED = "exhausted"
@@ -106,6 +114,156 @@ def allowed_kinds_for(boundary: str, *, budget_remaining: int,
     if boundary in (BOUNDARY_STALL, BOUNDARY_EXHAUSTED):
         return STALL_KINDS
     return TERMINAL_KINDS
+
+
+# ------------------------------------------------------- per-kind proposal ---
+#: ONE definition of which fields each kind may carry. It is used for three
+#: things that must not drift apart:
+#:
+#:   1. the protocol the model is OFFERED (one skeleton per legal kind, showing
+#:      only the fields that kind may carry);
+#:   2. the gate's shape check (:func:`proposal_schema_errors`);
+#:   3. the machine-readable :data:`PROPOSAL_JSON_SCHEMA` (a discriminated union).
+#:
+#: Why kind-specific rather than one universal object (measured, PS-635): two live
+#: manager controls on RTX4500 returned otherwise-grounded ``stop`` proposals that
+#: were refused ``shape_invalid`` because the single universal skeleton showed an
+#: ``approach`` field, and this model fills every field it is shown. The fix is to
+#: stop OFFERING illegal fields — NOT to relax the gate, which still refuses them.
+PROPOSAL_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
+    KIND_NEXT_PACKET: {
+        "required": ("rationale", "evidence_refs"),
+        "forbidden": ("approach",),
+        "meaning": ("retry the SAME packet once more, with no change to the "
+                    "approach"),
+    },
+    KIND_REPLAN: {
+        "required": ("rationale", "approach", "evidence_refs"),
+        "forbidden": (),
+        "meaning": ("change how the next attempt is framed, within the same "
+                    "contract, interface, scope and verification"),
+    },
+    KIND_APPROACH_SWITCH: {
+        "required": ("rationale", "approach", "evidence_refs"),
+        "forbidden": (),
+        "meaning": ("switch to a materially different approach for the next "
+                    "attempt"),
+    },
+    KIND_STOP: {
+        "required": ("rationale", "evidence_refs"),
+        "forbidden": ("approach",),
+        "meaning": "the run is finished; no further attempt is wanted",
+    },
+    KIND_ESCALATE: {
+        "required": ("rationale", "evidence_refs"),
+        "forbidden": ("approach",),
+        "meaning": "hand the run to a stronger or human authority",
+    },
+}
+
+#: ``approach`` is the one field whose legality depends on the kind, which is why
+#: the tables above are the source of truth for BOTH directions.
+APPROACH_REQUIRED_KINDS = frozenset(
+    kind for kind, schema in PROPOSAL_SCHEMAS.items()
+    if "approach" in schema["required"])
+APPROACH_FORBIDDEN_KINDS = frozenset(
+    kind for kind, schema in PROPOSAL_SCHEMAS.items()
+    if "approach" in schema["forbidden"])
+
+#: The reply field names a proposal may carry at all. Deliberately short: the
+#: fields a model could use to ASK for authority/scope/routing/permission/budget or
+#: verification changes are still refused by the gate, but they are NOT offered in
+#: the protocol, because a field shown is a field this kind of model fills.
+PROPOSAL_FIELDS: Tuple[str, ...] = ("kind", "rationale", "approach", "evidence_refs")
+
+
+def proposal_skeleton(kind: str) -> dict:
+    """The exact object the protocol offers for ``kind`` — and nothing extra.
+
+    Generated from :data:`PROPOSAL_SCHEMAS`, so the text the model is shown and the
+    rule it is judged by are the same rule in the same order, every time.
+    """
+    schema = PROPOSAL_SCHEMAS[kind]
+    skeleton: dict = {"kind": kind}
+    for name in ("rationale", "approach", "evidence_refs"):
+        if name not in schema["required"]:
+            continue
+        if name == "rationale":
+            skeleton[name] = "<why this is the right next step>"
+        elif name == "approach":
+            skeleton[name] = ("<short steering note for the next attempt: what to "
+                              "do DIFFERENTLY>")
+        else:
+            skeleton[name] = ["<one ledger entry hash from EVIDENCE INDEX>"]
+    return skeleton
+
+
+def proposal_schema_errors(proposal: "ManagerProposal") -> Tuple[str, ...]:
+    """Every shape violation of ``proposal`` against its OWN kind's schema.
+
+    Shape only. Whether a well-shaped proposal may be ACTED on is the gate's
+    business, and whether a reply is constructible at all is
+    :func:`make_manager_proposal`'s. This answers the narrower question the model
+    was told the answer to: do the fields match the kind?
+    """
+    schema = PROPOSAL_SCHEMAS.get(proposal.kind)
+    if schema is None:
+        return (f"unknown proposal kind {proposal.kind!r}",)
+    has_approach = bool(
+        str(proposal.approach or "").strip()
+        or str(proposal.packet_delta.get(DELTA_APPROACH) or "").strip())
+    problems: list = []
+    for name in schema["required"]:
+        if name == "rationale" and not str(proposal.rationale or "").strip():
+            problems.append("rationale must be non-empty")
+        elif name == "approach" and not has_approach:
+            problems.append(
+                f"kind {proposal.kind!r} must carry approach text: a switch with no "
+                "new approach is the same attempt again")
+        elif name == "evidence_refs" and not proposal.evidence_refs:
+            problems.append(
+                "evidence_refs must cite at least one ledger entry hash")
+    for name in schema["forbidden"]:
+        if name == "approach" and has_approach:
+            problems.append(f"kind {proposal.kind!r} must not carry approach text")
+    return tuple(problems)
+
+
+#: The same schema, machine-checkable, as a discriminated union. Published so an
+#: API surface or a harness can validate a raw reply without re-implementing the
+#: rules; the test suite asserts it agrees with the gate for every kind.
+def _json_schema_branch(kind: str) -> dict:
+    """One branch of the discriminated union, built from the kind's schema.
+
+    ``not: {required: [approach]}`` is a SIBLING of ``properties``: it forbids the
+    field outright, rather than declaring a property named "not". (The first
+    version of this got that nesting wrong and the schema test caught it — which
+    is the argument for asserting the schema instead of eyeballing it.)
+    """
+    schema = PROPOSAL_SCHEMAS[kind]
+    properties: dict = {
+        "kind": {"const": kind},
+        "rationale": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "minItems": 1,
+                          "items": {"type": "string"}},
+    }
+    if "approach" in schema["required"]:
+        properties["approach"] = {"type": "string", "minLength": 1}
+    branch: dict = {
+        "properties": properties,
+        "required": ["kind", *schema["required"]],
+        "additionalProperties": False,
+    }
+    if "approach" in schema["forbidden"]:
+        branch["not"] = {"required": ["approach"]}
+    return branch
+
+
+PROPOSAL_JSON_SCHEMA: Mapping[str, Any] = {
+    "schema_version": PROPOSAL_SCHEMA_VERSION,
+    "discriminator": "kind",
+    "oneOf": tuple(_json_schema_branch(kind) for kind in sorted(KNOWN_KINDS)),
+}
 
 
 # ----------------------------------------------------------- verdict codes ---
@@ -713,17 +871,49 @@ def build_planner_input(*, ledger: Any, run_id: str, packet: Mapping[str, Any],
 
 
 # --------------------------------------------------------- planner context ---
-_PROTOCOL = (
-    'REPLY PROTOCOL — reply with ONE JSON object and nothing else:\n'
-    '{"kind": "<one of the allowed kinds>", "rationale": "<why>", '
-    '"approach": "<short steering note for the next attempt>", '
-    '"evidence_refs": ["<ledger entry hash from EVIDENCE INDEX>"], '
-    '"requested_actions": [], "requested_authority": [], "packet_delta": {}}\n'
-    'You are ADVISING, not deciding. You cannot accept, approve, ship, land, '
-    'route, change scope, change the interface, change the verification or '
-    'change the budget: those are not yours, and asking for them is refused and '
-    'recorded. The only thing you may change is "approach".'
+_ADVISORY_RULES = (
+    'You are ADVISING, not deciding. You cannot accept, approve, ship, land, route, '
+    'change the target, change scope, change the interface, change the verification '
+    'or change the budget: there is no field here for any of those, and a proposal '
+    'that asks for one is refused and recorded. For a kind that carries "approach", '
+    'that text is the only thing you can change.'
 )
+
+
+def render_reply_protocol(allowed_kinds: Sequence[str]) -> str:
+    """The reply specification for exactly the kinds this boundary allows.
+
+    One skeleton PER KIND, generated from :data:`PROPOSAL_SCHEMAS`, so no kind is
+    ever shown a field it may not carry. This replaces an earlier single universal
+    object whose ``approach`` field was shown for every kind: two live controls
+    (PS-635, RTX4500) had otherwise-grounded ``stop`` proposals refused
+    ``shape_invalid`` because the model filled the field it was shown.
+    """
+    lines = ["REPLY PROTOCOL — reply with ONE JSON object and nothing else."]
+    lines.append("Emit EXACTLY the fields shown for the kind you choose; no others.")
+    for kind in allowed_kinds:
+        schema = PROPOSAL_SCHEMAS.get(kind)
+        if schema is None:
+            continue
+        lines.append(f'if kind = "{kind}"  ({schema["meaning"]}):')
+        lines.append("  " + json.dumps(proposal_skeleton(kind)))
+    required = [k for k in allowed_kinds if k in APPROACH_REQUIRED_KINDS]
+    forbidden = [k for k in allowed_kinds if k in APPROACH_FORBIDDEN_KINDS]
+    if required or forbidden:
+        parts = []
+        if required:
+            parts.append(f'"approach" is REQUIRED for {", ".join(required)}')
+        if forbidden:
+            parts.append(
+                f'"approach" is ILLEGAL for {", ".join(forbidden)} (and for the '
+                "other kinds shown above without it); a proposal carrying it for "
+                "the wrong kind is refused as shape_invalid")
+        lines.append("; ".join(parts) + ".")
+    lines.append(f'"rationale" must be non-empty and "evidence_refs" must cite at '
+                 f'least one hash from the EVIDENCE INDEX.')
+    lines.append(_ADVISORY_RULES)
+    return "\n".join(lines)
+
 
 
 def render_planner_context(plan_input: "PlannerInput", *,
@@ -816,7 +1006,7 @@ def render_planner_context(plan_input: "PlannerInput", *,
                  "evidence_refs):")
     lines.append(bullets(plan_input.evidence_index))
     lines.append("")
-    lines.append(_PROTOCOL)
+    lines.append(render_reply_protocol(plan_input.allowed_kinds))
 
     text = "\n".join(lines)
     if len(text) <= max_chars:
@@ -1157,24 +1347,22 @@ def validate_proposal(proposal: ManagerProposal, *, plan_input: PlannerInput,
             detail=f"{plan_input.budget_remaining} attempt(s) and "
                    f"{plan_input.replans_remaining} replan(s) remain"))
 
-    # ---- 16. a genuinely new approach, or nothing --------------------------
-    if proposal.kind in APPROACH_REQUIRED_KINDS and not approach:
-        checks.append(_check(
-            "approach", False, CODE_SHAPE_INVALID,
-            f"kind {proposal.kind!r} must carry approach text: a switch with no "
-            "new approach is the same attempt again"))
-    elif (proposal.kind in APPROACH_REQUIRED_KINDS
-          and digest in tuple(plan_input.prior_approach_digests)):
+    # ---- 16. the fields match the kind (one schema, offered and enforced) ---
+    shape_problems = proposal_schema_errors(proposal)
+    repeated = (proposal.kind in APPROACH_REQUIRED_KINDS
+                and digest in tuple(plan_input.prior_approach_digests))
+    if repeated:
         checks.append(_check(
             "approach", False, CODE_APPROACH_REPEATED,
             f"approach digest {digest} has already been tried in this run"))
-    elif proposal.kind in (KIND_STOP, KIND_ESCALATE, KIND_NEXT_PACKET) and approach:
+    elif shape_problems:
         checks.append(_check(
-            "approach", False, CODE_SHAPE_INVALID,
-            f"kind {proposal.kind!r} must not carry approach text"))
+            "approach", False, CODE_SHAPE_INVALID, "; ".join(shape_problems)))
     else:
-        checks.append(_check("approach", True,
-                             detail=f"approach digest {digest or 'NONE'}"))
+        checks.append(_check(
+            "approach", True,
+            detail=(f"approach digest {digest or 'NONE'}; fields match the "
+                    f"{proposal.kind} schema")))
 
     failures = [c for c in checks if not c["ok"]]
     return ProposalVerdict(

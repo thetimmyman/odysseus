@@ -432,11 +432,12 @@ class G2ReplanControlCase(G1eBoundedCacheCase):
 
     What is measured here is the SEAM, not the worker:
 
-      * the manager is consulted live, at the deterministic decision boundary the
-        loop reaches (a PASS, in the expected case), and its proposal is validated
-        by ``src.replanner`` before it can affect anything;
-      * a PASS is not negotiable: at that boundary only ``stop`` is legal, so a
-        proposal to replan is REFUSED with a typed code and recorded;
+      * the manager is consulted ONLY at the loop's no-progress boundary. A PASS
+        therefore spends ZERO manager calls (PS-635 bounded correction): the run
+        below is expected to be pure G1 plus a sealed, empty manager seam, and the
+        case still wires the advisor so that a stall would exercise it;
+      * a PASS is not negotiable: at that boundary only ``stop`` is legal, and the
+        loop does not even ask — verification decides, the loop records and stops;
       * the worker leg, the hidden verifier, the attempt budget and the write
         scope are all untouched by the manager.
 
