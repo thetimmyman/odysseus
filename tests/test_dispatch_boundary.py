@@ -31,7 +31,11 @@ NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
 #: Fixture profiles are "created" a little BEFORE the decision clock, so a declared
 #: receipt is genuinely fresh and a negative age stays a failure case rather than
 #: an accident of the fixture's date.
-SEEDED_AT = datetime.datetime.utcnow() - datetime.timedelta(minutes=30)
+#:
+#: The seed MUST be derived from NOW, not from the wall clock. The dispatcher
+#: evaluates freshness against the pinned decision clock, so a wall-clock seed
+#: eventually becomes future-dated relative to NOW and all candidates refuse.
+SEEDED_AT = NOW.replace(tzinfo=None) - datetime.timedelta(minutes=30)
 
 
 def _db():
@@ -94,6 +98,16 @@ def _candidates(*profile_ids):
 def _resolve(db, task, *profile_ids, **kwargs):
     return dbd.resolve_dispatch(db, task, _candidates(*profile_ids), now=NOW,
                                 decision_id="dec-test", **kwargs)
+
+
+# ================================================== the fixture's own clock ===
+def test_the_fixture_clock_is_pinned_to_the_decision_clock():
+    """The freshness fixture must not drift with wall-clock time."""
+    assert SEEDED_AT.tzinfo is None
+    seeded = SEEDED_AT.replace(tzinfo=datetime.timezone.utc)
+    assert seeded < NOW
+    assert NOW - seeded == datetime.timedelta(minutes=30)
+    assert seeded != datetime.datetime.utcnow() - datetime.timedelta(minutes=30)
 
 
 # ============================================================= the decision ===
@@ -369,6 +383,5 @@ def test_the_recorder_proves_a_local_only_dispatch_made_no_hosted_call():
     recorder.record(target_id="profile:p-openrouter", locality="hosted", model="m")
     with pytest.raises(dbd.DispatchBoundaryError):
         recorder.assert_no_hosted()
-
 
 
