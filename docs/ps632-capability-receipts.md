@@ -118,3 +118,48 @@ capability removed, declared-only vs measured requirement, MS-R1 inference, and 
 receipt that is not the one bound into the evidence).
 `tests/test_ps605_ps632_seam.py` — the translation layer and the harness guards.
 
+## 8. Live proof (one discovery + one dispatch, RTX4500, real)
+
+```
+odysseus-capability discover --target local-rtx4500 \
+  --configured-context 32768 --safe-context 32768 \
+  --safe-context-source "PS-632 ladder 2026-09-14: 8K/16K/24K/32K recall+tool+multi-round all passed" \
+  --backend cuda
+```
+
+| Link | Value |
+| --- | --- |
+| profile | `local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7` |
+| persisted receipt | `2a2c45b8282f042cd70fe2aec9ed301d39886c5c77db9f6150e5656cd07b368b` |
+| model | `qwen3.8:27b`, digest `d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28`, family `qwen35`, quantization `unknown` (the runtime does not report one — recorded as unknown, not guessed) |
+| context | declared 262144 / served 32768 / **safe 32768** (from the ladder, with its source) |
+| measured capabilities | `native_tools` (real tool call), `readonly_analysis`; tool semantics `native_call_proven`; declared list `[completion, vision]` recorded separately |
+| runtime | ollama 0.32.11, backend `cuda`, repository/commit/image digest NOT COLLECTED (ollama exposes none) |
+| freshness | observed 2026-09-15T12:29:49Z, ttl 604800s, health live (health ttl 300s) |
+| **dispatch receipt refs** | `["2a2c45b8…"]` — the PS-632 receipt hash, verbatim |
+| dispatch receipt | `598dfff3d8aca99f…`, `decided_by=ps605_policy`, policy `routing_policy@1.2+sha256:4df270ad9543772d` |
+| ExecutionPackage | `51132835c7d206db…` |
+| AttemptReceipt | `dispatch_receipt_hash = 598dfff3d8aca99f…` (identical), runtime 0.32.11 |
+| chain check | `ok=true`, including `receipt_ref_matches_store=true` |
+| terminal | `ACCEPTED_CANDIDATE`, 1 model call, EvidencePackage `31edbba4…`, VerificationReceipt `f1a34050…`, validator VERIFIED, ledger chain valid, no advisor records |
+
+Two topology requirements are visible in the same run's `capability_inputs.json`:
+
+* `local-msr1` skipped — "registry does not give this host the inference role
+  (roles=['deterministic_verifier', 'governance_ci', 'arm64_ci'])";
+* `local-framework` skipped — "unqualified: no independently qualified profile for
+  this host".
+
+Store history after three discoveries: `abe1d1f7… → c7cf46cb… (supersedes abe1d1f7…)
+→ 2a2c45b8… (supersedes c7cf46cb…)`, with `previous_receipt_hash` in the index. The
+receipt hash changes because it covers `observed_at`, and a re-measurement supersedes
+rather than rewrites.
+
+**Defect the live run found (and how it failed):** the harness looked the pin up by
+`selected_target_id`, which was a host id before this slice and is now an exact
+profile id. It refused with `pin_profile_mismatch` and **0 model calls** — the guard
+worked — and the lookup was corrected to the profile id (`3c326964`). This is worth
+recording: the integration's fail-closed behaviour caught a real regression that the
+hermetic tests could not, because they never had two identity levels to confuse.
+
+
