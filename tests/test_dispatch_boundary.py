@@ -255,8 +255,17 @@ def test_the_pin_guard_refuses_a_different_model_or_locality_before_dispatch():
                               model="deepseek-v4-pro",
                               chat_url="https://openrouter.ai/api/v1")
     assert err.value.code == dbd.PIN_PROFILE_MISMATCH
-    pin = dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
-                                chat_url="http://192.168.1.34:11434/v1")
+    # STRENGTHENED 2026-09-15: a different LOCAL address used to be accepted, which
+    # meant a decision pinning one endpoint could be executed on another service in
+    # the same locality (two loopback ports, or two LAN hosts). Locality alone is not
+    # an identity: the pin now carries the endpoint, and only that endpoint passes.
+    with pytest.raises(dbd.DispatchPinViolation) as err:
+        dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
+                              chat_url="http://192.168.1.34:11434/v1")
+    assert err.value.code == dbd.PIN_ENDPOINT_MISMATCH
+    pin = dbd.verify_invocation(
+        bound, profile_id="p-rtx", model="qwen3.8:27b",
+        chat_url=str(bound.pin_for("p-rtx").get("endpoint") or ""))
     assert pin["target_id"] == "profile:p-rtx" and pin["locality"] == "local"
 
 

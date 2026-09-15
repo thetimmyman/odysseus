@@ -646,13 +646,6 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
             PIN_MODEL_MISMATCH,
             f"resolved model {model!r} is not the pinned model {pinned_model!r}",
             decision_id=bound.decision.decision_id)
-    pinned_endpoint = str(pin.get("endpoint") or "").rstrip("/")
-    if pinned_endpoint and str(chat_url or "").rstrip("/") != pinned_endpoint:
-        raise DispatchPinViolation(
-            PIN_ENDPOINT_MISMATCH,
-            "resolved endpoint " + repr(str(chat_url or "")) + " is not the pinned "
-            "endpoint " + repr(pinned_endpoint),
-            decision_id=bound.decision.decision_id)
     resolved_local = endpoint_is_local(chat_url)
     if resolved_local != (pin.get("locality") == LOCALITY_LOCAL):
         raise DispatchPinViolation(
@@ -660,6 +653,17 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
             "resolved endpoint locality "
             f"({'local' if resolved_local else 'hosted'}) contradicts the pinned "
             f"locality {pin.get('locality')!r}",
+            decision_id=bound.decision.decision_id)
+    # THEN the exact endpoint. Locality is the coarser signal ("a local pin must not
+    # resolve to a hosted URL") and is reported first; two LOOPBACK endpoints are
+    # equally local, so without this second check the host's Ollama port would pass
+    # for a pinned HaloBox port -- found by the live adapter controls.
+    pinned_endpoint = str(pin.get("endpoint") or "").rstrip("/")
+    if pinned_endpoint and str(chat_url or "").rstrip("/") != pinned_endpoint:
+        raise DispatchPinViolation(
+            PIN_ENDPOINT_MISMATCH,
+            "resolved endpoint " + repr(str(chat_url or "")) + " is not the pinned "
+            "endpoint " + repr(pinned_endpoint),
             decision_id=bound.decision.decision_id)
     return pin
 

@@ -103,8 +103,17 @@ The dispatch pin checked LOCALITY only, so `http://127.0.0.1:11434` (the host's
 Ollama service) and `http://127.0.0.1:9999` were both accepted as the pinned
 endpoint - two loopback ports are equally "local". `pin_for` now carries the
 endpoint and `verify_invocation` raises `pin_endpoint_mismatch` before any request.
-Both controls now refuse with zero model calls. This is a production-dispatch
-hardening that also protects RTX (the harness already passes the spec endpoint).
+Both controls now refuse with zero model calls. The endpoint check runs AFTER the
+locality check on purpose: locality is the coarser, security-relevant signal ("a
+local pin must not resolve to a hosted URL") and keeps its own code, while the exact
+endpoint is a second, finer check.
+
+This is a production-dispatch HARDENING, and it changed one existing expectation:
+`tests/test_dispatch_boundary.py` used to assert that a different LOCAL address was
+acceptable for the same model. That is the same hole in a different coat (two LAN
+hosts, or two loopback ports, for one pinned decision), so the test now asserts the
+strengthened contract, with the change recorded in the test itself. RTX is unaffected
+in practice: the harness already passes the decision's own spec endpoint.
 
 ## 8. Heartbeat (a 300 s liveness clock needs one)
 
