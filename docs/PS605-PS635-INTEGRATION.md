@@ -140,4 +140,40 @@ It is deliberately NOT:
 Its cross-package surface is now the narrow public contract in §2: no private
 `routing_engine` names remain in the boundary.
 
+## 7. The controlled real local execution
+
+One run, `l1-interface`, on the qualified RTX4500 Qwen profile through the integrated
+production path (`--target local-rtx4500` as a PREFERENCE; `num_ctx 32768`):
+
+| Link | Value |
+| --- | --- |
+| measured fleet | `local-rtx4500`: healthy, `native_tools=True` (proven by a real tool call), `served_context=32768`, `last_probe=2026-09-15T04:05…` |
+| PS-605 decision | selected `local-rtx4500`, reason `selected_local_only_candidate`, provenance `measured`, policy `routing_policy@1.2+sha256:4df270ad9543772d` |
+| DispatchDecisionReceipt | `decided_by=ps605_policy` (NOT `explicit_pin`), host `minipc`, model `qwen3.8:27b`, runtime `0.32.11`, digest `d94d964641c7…`, `receipt_hash=6e387097cae05802…` |
+| AttemptReceipt | target `local-rtx4500`, host `minipc`, model `qwen3.8:27b`, runtime `0.32.11`, `dispatch_receipt_hash=6e387097cae05802…`, `execution_package_hash=eedc5ee2885376d2…` |
+| chain check | `dispatch_chain.json`: `ok=true`, `attempts_bound=true`, `attempts_on_the_pinned_target=true`, `receipt_target_matches_pin=true` |
+| ExecutionPackage | `eedc5ee2885376d2b8856d0d62a08114e5ea0b953ab704e99dec828c2dcc1ebc` |
+| EvidencePackage | `6423f109b6e66f2e…`, validator **VERIFIED**, 0 reasons |
+| verification | attempt 1: exit 0 → **PASS** (8 passed, 0 failed) |
+| terminal result | `ACCEPTED_CANDIDATE`, 1 attempt, **1 model call**, no advisor records |
+| ledger | `run` → `attempt` → `verification` → `decision`; chain valid; no `acceptance` entry |
+
+G1/G2 invariants, re-checked on this run and by the suites (328 focused tests +
+3924 in the full suite):
+
+* verifier PASS → `ACCEPTED_CANDIDATE` (never `ACCEPTED`; the ledger has no
+  `acceptance` entry, so no acceptance authority was exercised);
+* PASS → zero planner/advisor calls (`manager: null`, one model call, which is the
+  worker's);
+* `advise=None` preserves G1 behaviour (the l1-interface case runs with no advisor);
+* at most one bounded proposal on eligible no-progress/repeated failure, and no
+  manager/replanner acceptance or routing authority
+  (`tests/test_replanner_ps635.py`, the ledger's `_reject_unrepresentable`);
+* no landing authority and no manufactured repair case: this run is one-shot, the
+  repair path was never entered, and repair uplift stays **UNOBSERVED**.
+
+**A hosted invocation remains UNOBSERVED** — there is no hosted leg in this path and
+none was manufactured.
+
+
 
