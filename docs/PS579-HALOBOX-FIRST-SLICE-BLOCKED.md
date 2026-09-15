@@ -113,6 +113,10 @@ None of these five is a benchmark run, and none is a qualification rerun.
 * No model task was executed; no preregistration was sealed (the gate is BEFORE the
 first model call, so a sealed prereg for a cell that cannot dispatch would be a
 document about nothing).
+* Deterministic verification at this tip (`9dff4ee6`): focused dispatch/routing/PS-632/
+PS-638 tests **74 passed**; full suite **3957 passed, 3 skipped, 0 failed** (exit 0) -
+run after the separate RTX-131K commits and with no test or `src/` change from this
+slice.
 * No host tuning: GTT, IOMMU, Vulkan, memory limits, kernel, firmware and runtime flags
 were read-only this session.
 * Corpus contracts untouched. This is therefore NOT a `CORPUS_CONTRACT_PROBLEM`.
