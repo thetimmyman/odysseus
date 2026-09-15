@@ -51,7 +51,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Tuple
+from typing import Mapping, Sequence, Tuple
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -527,30 +527,40 @@ def route_packet(worktree: Path, packet: Mapping, ep, run_id: str, run_dir: Path
     import src.local_target_routing as ltr
     from src.dispatch_routing import RoutingRefused
     from src.execution_package import make_dispatch_receipt
-    from src.local_targets import probe_fleet, registered_targets, target_by_id
+    from src.local_targets import registered_targets, target_by_id
+    from src.target_capability_store import store_from_env
 
     spec = target_by_id(preferred_target_id)
     if spec is None:
         raise SystemExit(f"unknown target {preferred_target_id!r}; registered: "
                          f"{[s.target_id for s in registered_targets()]}")
-    records = probe_fleet([spec])
-    write_json(run_dir / "fleet_probe.json", {
-        "probed": [r.to_dict() for r in records],
-        "scope": ("this slice probes the qualified target; the registry itself is "
-                  "untouched, and multi-candidate refusal/fallback is proven in the "
-                  "PS-605 live controls and the integration tests")})
+    # PS-632: routing reads PERSISTED capability receipts. The harness does not probe
+    # here — `odysseus-capability discover` measures and stores, and a missing or
+    # stale receipt is a refusal rather than a reason to go and look.
+    store = store_from_env()
+    persisted = ltr.persisted_routing_inputs(store)
+    write_json(run_dir / "capability_inputs.json", {
+        "store": store.directory,
+        "store_audit": store.verify(),
+        "candidates": [{"target_id": p.target_id, "profile_id": p.profile_id}
+                       for p in persisted.profiles],
+        "bound_receipts": dict(persisted.bound_receipts),
+        "skipped": [dict(s) for s in persisted.skipped]})
+    records = store.entries_for_host(spec.target_id)
 
     try:
-        bound, inputs = ltr.resolve_fleet_dispatch(
-            records, packet=packet,
+        bound = ltr.resolve_persisted_dispatch(
+            persisted, packet=packet,
             role=role or str(packet.get("role") or "local_implementer"),
             execution_package_hash=ep.package_hash, run_id=run_id,
             preferred_target_id=preferred_target_id, decision_id=f"dec-{run_id}")
+        inputs = persisted
     except (RoutingRefused, ltr.FleetRoutingError) as exc:
         refusal = exc.to_dict() if hasattr(exc, "to_dict") else {"reason": str(exc)}
         sealed = seal_dispatch_refusal(
             refusal, packet=packet, execution_package_hash=ep.package_hash,
-            run_id=run_id, records=records, run_dir=run_dir)
+            run_id=run_id, records=records, run_dir=run_dir,
+            capability_skips=[dict(s) for s in persisted.skipped])
         # The canonical record of "this run stopped before dispatch" is the ledger,
         # which already owns run state; the refusal file above carries the routing
         # reasons. The run is opened with an EMPTY execution identity on purpose: no
@@ -610,13 +620,14 @@ def route_packet(worktree: Path, packet: Mapping, ep, run_id: str, run_dir: Path
                             bound.decision.to_dict()["candidates"]
                             if c.get("eligible")]})
     return {"refused": False, "bound": bound, "dispatch": dispatch,
-            "records": records, "spec": spec,
+            "records": records, "spec": spec, "persisted": persisted,
             "dispatch_receipt_hash": dispatch.receipt_hash}
 
 
 def seal_dispatch_refusal(refusal: Mapping, *, packet: Mapping,
                           execution_package_hash: str, run_id: str,
-                          records, run_dir: Path) -> dict:
+                          records, run_dir: Path,
+                          capability_skips: Sequence = ()) -> dict:
     """Seal a PS-605 refusal: auditable, package-bound, immutable, no AttemptReceipt.
 
     PS-638's ``DispatchDecisionReceipt`` CANNOT represent this: it requires a
@@ -639,6 +650,8 @@ def seal_dispatch_refusal(refusal: Mapping, *, packet: Mapping,
         "refusal": dict(refusal),
         "fleet": [{"target_id": r.target_id, "health": r.health,
                    "proven": list(r.proven_capabilities())} for r in records],
+        # Why each host had no acceptable PERSISTED capability receipt, verbatim.
+        "capability_skips": [dict(s) for s in capability_skips],
         "attempt_receipts": [],
         "note": ("no attempt occurred, so there is no AttemptReceipt and no "
                  "EvidencePackage: a sealed package about a run that did not happen "
@@ -1012,9 +1025,20 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
         "attempts_on_the_pinned_target": all(a.target_id == dispatch.selected_target_id
                                              for a in attempts),
     }
+    # PS-632: the capability receipt the decision relied on must be the PERSISTED
+    # receipt the store currently holds for that target. A dispatch that cites a
+    # capability nothing measured is exactly what this catches.
+    persisted = (routing or {}).get("persisted")
+    refs = tuple(dispatch.capability_receipt_refs)
+    stored = (persisted.bound_receipts.get(dispatch.selected_target_id, "")
+              if persisted is not None else "")
+    chain["capability_receipt_refs"] = list(refs)
+    chain["stored_receipt_hash"] = stored
+    chain["receipt_ref_matches_store"] = bool(refs) and refs[0] == stored
     chain["ok"] = bool(chain["attempts_bound"]
                        and chain["receipt_target_matches_pin"]
-                       and chain["attempts_on_the_pinned_target"])
+                       and chain["attempts_on_the_pinned_target"]
+                       and chain["receipt_ref_matches_store"])
     write_json(run_dir / "dispatch_chain.json", chain)
     if not chain["ok"]:
         write_json(run_dir / "result.json", {

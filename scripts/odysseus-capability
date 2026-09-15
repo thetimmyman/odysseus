@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""odysseus-capability — PS-632 capability registry: measure, persist, inspect.
+
+Three actions, and the split between them is the point:
+
+    discover   MEASURE a registered host and PERSIST a TargetCapabilityReceipt
+    show       print the current receipt(s) and whether they are still valid
+    verify     audit the store: every line hashes, every index entry resolves
+
+Routing reads what `discover` stored
+(`src.local_target_routing.persisted_routing_inputs`); it never probes. A router that
+measures is a router that can make a capability appear by wanting it.
+
+    odysseus-capability discover --target local-rtx4500 \
+        --configured-context 32768 --safe-context 32768 \
+        --safe-context-source "PS-632 ladder: 8K/16K/24K/32K recall+tool+multi-round"
+    odysseus-capability show [--target local-rtx4500] [--json]
+    odysseus-capability verify
+
+A profile-level fact the probe cannot observe (configured context, the empirically
+safe context and how it was established, the backend, the host baseline) is supplied
+here EXPLICITLY. Omitting it stores an UNQUALIFIED receipt — never a plausible
+default, because once a default is on disk it is indistinguishable from a measurement.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.local_targets import (  # noqa: E402
+    DEFAULT_HEALTH_TTL_S, DEFAULT_QUALIFICATION_TTL_S, HEALTH_HEALTHY,
+    ROLE_INFERENCE, probe_fleet, registered_targets, target_by_id)
+from src.target_capability_store import (  # noqa: E402
+    CapabilityStoreError, TargetCapabilityStore)
+
+
+def _store(args) -> TargetCapabilityStore:
+    return TargetCapabilityStore(args.store or "")
+
+
+def _receipt_or_die(store: TargetCapabilityStore, target_id: str):
+    receipt = store.current_for_host(target_id)
+    if receipt is None:
+        sys.stderr.write(f"no persisted receipt for {target_id!r}\n")
+        raise SystemExit(2)
+    return receipt
+
+
+def cmd_discover(args) -> int:
+    spec = target_by_id(args.target)
+    if spec is None:
+        sys.stderr.write(f"unknown target {args.target!r}; registered: "
+                         f"{[s.target_id for s in registered_targets()]}\n")
+        return 2
+    if ROLE_INFERENCE not in (spec.roles or ()):
+        # Discovery may still MEASURE a non-inference host (its verifier role has its
+        # own evidence), but the receipt is stored WITHOUT an inference role, so no
+        # inference request can select it.
+        sys.stderr.write(
+            f"note: {args.target!r} has no inference role {list(spec.roles or ())}; "
+            "the receipt will not be routable for inference\n")
+    if not str(spec.qualification_ref or "").strip():
+        sys.stderr.write(
+            f"note: {args.target!r} has no qualification reference, so its receipt "
+            "will not be routable until an exact profile is qualified\n")
+
+    records = probe_fleet([spec])
+    record = records[0]
+    facts = {
+        "configured_context": args.configured_context,
+        "safe_working_context": args.safe_context,
+        "safe_context_source": args.safe_context_source,
+        "backend": args.backend,
+        "runtime_repository": args.runtime_repository,
+        "runtime_commit": args.runtime_commit,
+        "runtime_image_digest": args.runtime_image_digest,
+        "ttl_s": args.ttl_s,
+        "health_ttl_s": args.health_ttl_s,
+        "notes": args.notes,
+        "host_baseline": json.loads(args.host_baseline) if args.host_baseline else {},
+    }
+
+    from src.local_target_routing import sync_receipts_from_records
+
+    store = _store(args)
+    previous = store.current_for_host(spec.target_id)
+    entries = sync_receipts_from_records(
+        store, records, profiles_by_host={spec.target_id: facts},
+        ttl_s=args.ttl_s, health_ttl_s=args.health_ttl_s)
+    receipt = _receipt_or_die(store, spec.target_id)
+
+    changed = bool(previous) and previous.identity_digest() != receipt.identity_digest()
+    report = {
+        "action": "discover", "target_id": spec.target_id,
+        "host_id": receipt.host_id, "profile_id": receipt.profile_id,
+        "receipt_hash": receipt.receipt_hash,
+        "identity_digest": receipt.identity_digest(),
+        "observed_at": receipt.observed_at, "ttl_s": receipt.ttl_s,
+        "health": receipt.health, "health_ttl_s": receipt.health_ttl_s,
+        "health_state": receipt.health_state(),
+        "qualification": receipt.qualification_state(),
+        "model": receipt.model.to_dict(), "runtime": receipt.runtime.to_dict(),
+        "context": receipt.context.to_dict(),
+        "measured_capabilities": list(receipt.capabilities.measured),
+        "declared_capabilities": list(receipt.capabilities.declared),
+        "tool_semantics": receipt.capabilities.tool_semantics,
+        "roles": list(receipt.roles),
+        "qualification_ref": receipt.qualification_ref,
+        "store": {"directory": store.directory, "entry": entries[0]},
+        "previous_receipt_hash": previous.receipt_hash if previous else "",
+        "material_identity_changed": changed,
+        "superseded_note": (
+            "a materially different identity was measured: the previous receipt is "
+            "preserved but no longer current, and its qualification does NOT carry "
+            "over" if changed else ""),
+    }
+    if receipt.health != HEALTH_HEALTHY:
+        report["warning"] = (
+            f"the host answered but health={receipt.health} "
+            f"({','.join(record.failure_classes) or 'no detail'}); the receipt is "
+            "stored and will not route until it is healthy")
+    print(json.dumps(report, indent=2, default=str))
+    return 0
+
+
+def cmd_show(args) -> int:
+    store = _store(args)
+    try:
+        receipts = ([_receipt_or_die(store, args.target)] if args.target
+                    else list(store.current_all().values()))
+    except CapabilityStoreError as exc:
+        sys.stderr.write(f"capability store unusable: {exc}\n")
+        return 3
+    payload = [{**r.to_dict(), "qualification": r.qualification_state(),
+                "health_state": r.health_state(),
+                "is_routable": (r.qualification_state() == "valid"
+                                and r.health_state() == "live")}
+               for r in receipts]
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+    if not payload:
+        print("no receipts stored")
+    for entry in payload:
+        print(f"{entry['host_id']}  {entry['profile_id']}")
+        print(f"  receipt {entry['receipt_hash'][:16]}  observed {entry['observed_at']}"
+              f"  ttl {entry['ttl_s']}s")
+        print(f"  qualification {entry['qualification']}  health "
+              f"{entry['health_state']}  routable {entry['is_routable']}")
+        print(f"  model {entry['model']['model_id']} digest "
+              f"{entry['model']['digest'][:16]} quant {entry['model']['quantization']}")
+        print(f"  context configured {entry['context']['configured_context']} "
+              f"served {entry['context']['served_context']} safe "
+              f"{entry['context']['safe_working_context']}")
+        print(f"  measured {entry['capabilities']['measured']}  declared "
+              f"{entry['capabilities']['declared']}")
+        print(f"  roles {entry['roles']}  qualification_ref "
+              f"{entry['qualification_ref']!r}")
+    return 0
+
+
+def cmd_verify(args) -> int:
+    store = _store(args)
+    report = store.verify()
+    print(json.dumps({"store": store.directory, **report}, indent=2, default=str))
+    return 0 if report["ok"] else 4
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--store", default="",
+                        help="store dir (default <data_root>/target_capabilities)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    discover = sub.add_parser("discover", help="measure and persist a receipt")
+    discover.add_argument("--target", required=True)
+    discover.add_argument("--configured-context", type=int, default=0)
+    discover.add_argument("--safe-context", type=int, default=0,
+                          help="the empirically safe working context, MEASURED")
+    discover.add_argument("--safe-context-source", default="",
+                          help="how that safe context was established")
+    discover.add_argument("--backend", default="")
+    discover.add_argument("--runtime-repository", default="")
+    discover.add_argument("--runtime-commit", default="")
+    discover.add_argument("--runtime-image-digest", default="")
+    discover.add_argument("--host-baseline", default="",
+                          help="JSON object of host-sensitive identity fields")
+    discover.add_argument("--ttl-s", type=int, default=0)
+    discover.add_argument("--health-ttl-s", type=int, default=0)
+    discover.add_argument("--notes", default="")
+    discover.set_defaults(func=cmd_discover)
+
+    show = sub.add_parser("show", help="print current receipts")
+    show.add_argument("--target", default="")
+    show.add_argument("--json", action="store_true")
+    show.set_defaults(func=cmd_show)
+
+    verify = sub.add_parser("verify", help="audit the store")
+    verify.set_defaults(func=cmd_verify)
+
+    args = parser.parse_args()
+    if args.command == "discover":
+        # Zero means "not declared": fall back to the registry defaults rather than
+        # storing a zero TTL, which would make every receipt expire instantly.
+        args.ttl_s = int(args.ttl_s or DEFAULT_QUALIFICATION_TTL_S)
+        args.health_ttl_s = int(args.health_ttl_s or DEFAULT_HEALTH_TTL_S)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

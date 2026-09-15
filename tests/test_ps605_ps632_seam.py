@@ -46,6 +46,19 @@ def harness():
     return _live_run()
 
 
+def _qualified_spec(target_id="local-test-1", *, ssh_host="testhost",
+                   model="qwen3.8:27b", roles=None, qualification_ref="test-profile"):
+    """A test-owned spec: translation tests must not depend on fleet policy."""
+    from src.local_targets import (NETWORK_TAILNET, PRIVACY_LOCAL_ONLY,
+                                   ROLE_INFERENCE, LocalTargetSpec)
+    return LocalTargetSpec(
+        target_id=target_id, label=target_id, ssh_host=ssh_host,
+        endpoint="http://127.0.0.1:11434", model=model,
+        privacy_class=PRIVACY_LOCAL_ONLY, network_class=NETWORK_TAILNET,
+        roles=tuple(roles) if roles is not None else (ROLE_INFERENCE,),
+        qualification_ref=qualification_ref)
+
+
 RAW_TOOL_CAPABLE = {
     "reachable": True, "version": "0.32.11",
     "model": {"name": "qwen3.8:27b", "digest": "d94d9646",
@@ -71,7 +84,7 @@ PACKET = {
 
 
 def _record(raw, *, spec=None, probed_at=""):
-    return build_capability(spec or DEFAULT_TARGETS[0], raw,
+    return build_capability(spec or _qualified_spec(), raw,
                             probed_at=probed_at or NOW.isoformat())
 
 
@@ -82,7 +95,7 @@ def test_a_measured_record_becomes_a_measured_receipt_bound_to_its_own_probe():
     assert len(inputs.profiles) == 1 and not inputs.skipped
     profile = inputs.profiles[0]
     receipt = inputs.receipts[0]
-    assert profile.target_id == TARGET_RTX_4500
+    assert profile.target_id == "local-test-1"
     assert profile.locality == dr.LOCALITY_LOCAL
     assert profile.inference is True
     assert profile.network_policy == NETWORK_TAILNET      # the registry's own name
@@ -134,9 +147,12 @@ def test_unknown_requirements_fail_closed_instead_of_passing_quietly():
 
 def test_the_seam_selects_nothing_by_itself():
     """`routing_inputs` returns inputs; only PS-605 turns them into a choice."""
-    records = [_record(RAW_TOOL_CAPABLE, spec=spec) for spec in DEFAULT_TARGETS]
+    specs = [_qualified_spec(f"local-test-{i}", ssh_host=f"host{i}")
+             for i in (1, 2, 3)]
+    records = [_record(RAW_TOOL_CAPABLE, spec=spec) for spec in specs]
     inputs = ltr.routing_inputs(records, now=NOW)
     assert len(inputs.profiles) == 3
+    assert [s["target_id"] for s in inputs.skipped] == []
     assert not hasattr(inputs, "selected")
 
 
@@ -154,12 +170,14 @@ def test_the_packet_decides_what_the_request_asks_for():
 
 
 def test_a_stated_preference_is_a_preference_not_a_pin(harness):
-    records = [_record(RAW_TOOL_CAPABLE, spec=spec) for spec in DEFAULT_TARGETS]
+    specs = [_qualified_spec("local-test-a", ssh_host="hosta"),
+             _qualified_spec("local-test-b", ssh_host="hostb")]
+    records = [_record(RAW_TOOL_CAPABLE, spec=spec) for spec in specs]
     bound, _inputs = ltr.resolve_fleet_dispatch(
         records, packet=PACKET, role="local_implementer",
         execution_package_hash="abc", run_id="r1",
-        preferred_target_id="local-framework", decision_id="d-pref")
-    assert bound.decision.selected_profile.target_id == "local-framework"
+        preferred_target_id="local-test-b", decision_id="d-pref")
+    assert bound.decision.selected_profile.target_id == "local-test-b"
     assert bound.decision.fallback_used is False
 
     # A preferred target that cannot be a candidate is skipped BEFORE the decision,
@@ -167,17 +185,18 @@ def test_a_stated_preference_is_a_preference_not_a_pin(harness):
     # turns that into a refusal, because executing on a node the operator did not
     # name is not the harness's decision to make.
     broken = _record({**RAW_TOOL_CAPABLE, "reachable": False},
-                     spec=target_by_id("local-framework"))
-    good = _record(RAW_TOOL_CAPABLE, spec=target_by_id(TARGET_RTX_4500))
+                     spec=_qualified_spec("local-test-b", ssh_host="hostb"))
+    good = _record(RAW_TOOL_CAPABLE, spec=_qualified_spec("local-test-a",
+                                                         ssh_host="hosta"))
     bound2, inputs2 = ltr.resolve_fleet_dispatch(
         [broken, good], packet=PACKET, role="local_implementer",
         execution_package_hash="abc", run_id="r1",
-        preferred_target_id="local-framework", decision_id="d-pref2")
-    assert bound2.decision.selected_profile.target_id == TARGET_RTX_4500
-    assert [s["target_id"] for s in inputs2.skipped] == ["local-framework"]
-    assert harness.preference_violation("local-framework",
+        preferred_target_id="local-test-b", decision_id="d-pref2")
+    assert bound2.decision.selected_profile.target_id == "local-test-a"
+    assert [s["target_id"] for s in inputs2.skipped] == ["local-test-b"]
+    assert harness.preference_violation("local-test-b",
                                         bound2.decision.selected_profile.target_id)
-    assert harness.preference_violation(TARGET_RTX_4500,
+    assert harness.preference_violation("local-test-a",
                                         bound2.decision.selected_profile.target_id) == ""
 
 
@@ -187,14 +206,14 @@ def test_a_tool_less_node_cannot_be_selected_for_a_writable_packet():
         ltr.resolve_fleet_dispatch([record], packet=PACKET, role="local_implementer",
                                    execution_package_hash="abc", run_id="r1")
     rules = {a.profile_id: a.rule for a in err.value.assessments}
-    assert rules[TARGET_RTX_4500] in (dr.REFUSED_ROLE, dr.REFUSED_CAPABILITY_MISSING,
-                                      dr.REFUSED_TOOL)
+    assert rules["local-test-1"] in (dr.REFUSED_ROLE, dr.REFUSED_CAPABILITY_MISSING,
+                                     dr.REFUSED_TOOL)
 
 
 # ============================================================= the refusal seal ===
 def _sealed_refusal(tmp_path, harness, *, code="privacy_local_only_no_eligible_target"):
     refusal = {"code": code, "refused": True, "reason": "no eligible local target",
-               "candidates": [{"profile_id": TARGET_RTX_4500,
+               "candidates": [{"profile_id": "local-test-1",
                                "rule": dr.REFUSED_CAPABILITY_MISSING}]}
     return harness.seal_dispatch_refusal(
         refusal, packet=PACKET, execution_package_hash="pkg-hash", run_id="run-x",
@@ -211,7 +230,7 @@ def test_a_refusal_seals_auditable_package_bound_evidence_with_no_attempt(tmp_pa
     assert payload["refusal"]["code"] == "privacy_local_only_no_eligible_target"
     assert payload["attempt_receipts"] == []                  # no attempt occurred
     assert harness.dispatch_refusal_is_intact(payload)         # immutable
-    assert payload["fleet"][0]["target_id"] == TARGET_RTX_4500
+    assert payload["fleet"][0]["target_id"] == "local-test-1"
 
 
 def test_mutating_a_sealed_refusal_breaks_it(tmp_path, harness):
@@ -232,11 +251,11 @@ def test_mutating_a_sealed_refusal_breaks_it(tmp_path, harness):
 # ============================================================== the harness guards ===
 def test_a_client_that_disagrees_with_the_decision_is_refused(harness):
     class Client:
-        ssh_host = "minipc"
+        ssh_host = "testhost"
         model = "qwen3.8:27b"
 
     class WrongHost(Client):
-        ssh_host = "framework"
+        ssh_host = "somewhere-else"
 
     class WrongModel(Client):
         model = "qwen2.5:3b"
@@ -245,7 +264,7 @@ def test_a_client_that_disagrees_with_the_decision_is_refused(harness):
     bound, _ = ltr.resolve_fleet_dispatch(
         [_record(RAW_TOOL_CAPABLE)], packet=PACKET, role="local_implementer",
         execution_package_hash="abc", run_id="r1", decision_id="d-guard")
-    spec = target_by_id(TARGET_RTX_4500)
+    spec = _qualified_spec("local-test-1", ssh_host="minipc")
     assert harness.pin_matches_client(bound, spec, Client()) == (True, "")
     ok, why = harness.pin_matches_client(bound, spec, WrongHost())
     assert ok is False and "host" in why

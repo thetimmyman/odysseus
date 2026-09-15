@@ -349,6 +349,12 @@ class CapabilityReceipt:
     host: str = ""
     notes: str = ""
     provenance: str = PROVENANCE_DECLARED
+    #: The PS-632 persisted-receipt hash this capability evidence came from, when
+    #: there is one. PS-605's own receipt_hash covers its ROUTING view; this is the
+    #: identity that resolves back to the exact measured capability evidence, so a
+    #: later reader can re-derive what the profile could do instead of trusting a
+    #: decision-time summary of it.
+    source_receipt_hash: str = ""
     schema_version: int = SCHEMA_VERSION
     receipt_hash: str = field(default="")
 
@@ -402,6 +408,7 @@ class CapabilityReceipt:
             "healthy": self.healthy, "runtime_version": self.runtime_version,
             "model_digest": self.model_digest, "host": self.host, "notes": self.notes,
             "provenance": self.provenance,
+            "source_receipt_hash": self.source_receipt_hash,
         }
 
     def to_dict(self) -> dict:
@@ -900,8 +907,14 @@ class DispatchDecision:
         """Content hashes of the receipts that made the selection defensible."""
         refs: list = []
         for receipt in (self.selected_receipt,):
-            if receipt is not None and receipt.receipt_hash not in refs:
-                refs.append(receipt.receipt_hash)
+            if receipt is None:
+                continue
+            # A persisted PS-632 receipt is the stronger reference: it is the
+            # capability EVIDENCE identity, not a decision-time summary of it.
+            ref = str(getattr(receipt, "source_receipt_hash", "")
+                      or receipt.receipt_hash)
+            if ref not in refs:
+                refs.append(ref)
         return tuple(refs)
 
     def attempt_binding(self) -> dict:

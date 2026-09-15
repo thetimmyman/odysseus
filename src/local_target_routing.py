@@ -41,8 +41,8 @@ from src import dispatch_boundary as dbd
 from src import dispatch_routing as dr
 from src.local_targets import (
     CAP_NATIVE_TOOLS, CAP_READONLY_ANALYSIS, CAP_STREAMING, HEALTH_HEALTHY,
-    KNOWN_CAPABILITIES, NETWORK_TAILNET, PRIVACY_LOCAL_ONLY,
-    LocalTargetCapability)
+    KNOWN_CAPABILITIES, NETWORK_TAILNET, PRIVACY_LOCAL_ONLY, ROLE_INFERENCE,
+    LocalTargetCapability, receipt_from_capability)
 
 #: Registry requirement name -> the PS-605 capabilities it proves. Total for the
 #: registry's known names; anything else refuses (see ``requirement_capabilities``).
@@ -115,6 +115,24 @@ def requirement_capabilities(required: Sequence[str]) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(translated))
 
 
+def roles_from_capabilities(capabilities: Iterable[str]) -> Tuple[str, ...]:
+    """Roles that follow from PS-605-level capabilities.
+
+    A proven tool channel is what makes a node an implementer/repair/debug/review
+    target; text generation alone makes it a read-only analyst. Deriving roles from
+    capability (rather than from a spec field) is what stops a role being re-added by
+    editing configuration without a new measurement.
+    """
+    caps = set(capabilities)
+    roles: List[str] = []
+    if dr.CAP_SINGLE_TOOL_CALL in caps:
+        roles.extend([dr.ROLE_IMPLEMENTER, dr.ROLE_REPAIR, dr.ROLE_DEBUGGER,
+                      dr.ROLE_REVIEWER])
+    if dr.CAP_TEXT_GENERATION in caps:
+        roles.extend([dr.ROLE_SCOUT, dr.ROLE_SCOUT_ROUTER])
+    return tuple(dict.fromkeys(roles))
+
+
 def roles_for_record(record: LocalTargetCapability) -> Tuple[str, ...]:
     """The roles a measured node may serve, derived from PROVEN capability.
 
@@ -135,7 +153,20 @@ def roles_for_record(record: LocalTargetCapability) -> Tuple[str, ...]:
 
 
 def _skip_reason(record: LocalTargetCapability, *, now: datetime.datetime) -> str:
-    """Why this record cannot become a routing input, or "" when it can."""
+    """Why this record cannot become a routing input, or "" when it can.
+
+    The role/qualification gate is the registry's topology policy and applies to the
+    in-memory path exactly as it does to the persisted one: MS-R1 has no inference
+    role, and Framework has no qualification reference, so neither becomes a
+    candidate just because a probe answered.
+    """
+    roles = tuple(record.spec.roles or ())
+    if ROLE_INFERENCE not in roles:
+        return (f"the registry does not give this host the inference role "
+                f"(roles={list(roles)})")
+    if not str(record.spec.qualification_ref or "").strip():
+        return ("unqualified: no independently qualified profile for this host "
+                "(research/Phase-0 metadata is not qualification)")
     if record.health != HEALTH_HEALTHY:
         detail = ",".join(record.failure_classes) or "no detail"
         return f"health={record.health} ({detail})"
@@ -281,3 +312,198 @@ def resolve_fleet_dispatch(records: Sequence[LocalTargetCapability], *,
 
 
 
+
+# ================================================ persisted receipts (PS-632 store) ===
+@dataclass(frozen=True)
+class PersistedRoutingInputs:
+    """Routing inputs built from PERSISTED receipts, with every refusal recorded."""
+
+    profiles: Tuple[Any, ...] = ()
+    receipts: Tuple[Any, ...] = ()
+    network_classes: Mapping[str, str] = field(default_factory=dict)
+    skipped: Tuple[Mapping[str, str], ...] = ()
+    bound_receipts: Mapping[str, str] = field(default_factory=dict)
+
+    def target_ids(self) -> Tuple[str, ...]:
+        return tuple(p.target_id for p in self.profiles)
+
+    def receipt_hash_for(self, target_id: str) -> str:
+        return str(self.bound_receipts.get(target_id) or "")
+
+
+def sync_receipts_from_records(store, records: Sequence[LocalTargetCapability], *,
+                               profiles_by_host: Mapping[str, Mapping[str, Any]] = None,
+                               ttl_s: int = DEFAULT_RECEIPT_TTL_S,
+                               health_ttl_s: int = 300) -> List[Mapping[str, Any]]:
+    """MEASURE -> PERSIST. The only writer of the capability store (PS-632).
+
+    Routing never calls this: a router that measures is a router that can make a
+    capability appear by wanting it. The discovery command measures and stores; the
+    router reads what is stored.
+
+    ``profiles_by_host`` carries the profile-level facts a probe cannot observe
+    (configured context, the empirically safe context and its source, backend and
+    host baseline). A record with no such entry is stored UNQUALIFIED rather than
+    given a plausible default.
+    """
+    by_host = dict(profiles_by_host or {})
+    stored: List[Mapping[str, Any]] = []
+    for record in records:
+        spec = record.spec
+        facts = dict(by_host.get(spec.target_id) or {})
+        receipt = receipt_from_capability(
+            record,
+            configured_context=int(facts.get("configured_context") or 0),
+            safe_working_context=int(facts.get("safe_working_context") or 0),
+            safe_context_source=str(facts.get("safe_context_source") or ""),
+            backend=str(facts.get("backend") or ""),
+            host_baseline=facts.get("host_baseline") or {},
+            runtime_repository=str(facts.get("runtime_repository") or ""),
+            runtime_commit=str(facts.get("runtime_commit") or ""),
+            runtime_image_digest=str(facts.get("runtime_image_digest") or ""),
+            ttl_s=int(facts.get("ttl_s") or ttl_s),
+            health_ttl_s=int(facts.get("health_ttl_s") or health_ttl_s),
+            roles=spec.roles, qualification_ref=spec.qualification_ref,
+            notes=str(facts.get("notes") or ""))
+        stored.append(store.append(receipt))
+    return stored
+
+
+def persisted_routing_inputs(store, *, now=None,
+                             specs: Sequence[Any] = None) -> PersistedRoutingInputs:
+    """PERSISTED receipts -> PS-605 routing inputs. Reads only; selects nothing.
+
+    A host contributes a candidate only when ALL of these hold, and each failure is
+    recorded with its own reason so a refusal is auditable:
+
+      * the registry gives the host the inference role and a qualification ref
+        (MS-R1 has neither; Framework has no qualification yet);
+      * the store has a current receipt for it (no receipt is not "unlimited");
+      * the receipt's qualification is valid — not expired, not future-dated, not
+        invalidated, not identity-drifted, with a MEASURED safe context and an exact
+        artifact digest;
+      * its short-lived liveness is live.
+    """
+    from src.local_targets import (INVALIDATED_UNHEALTHY, ROLE_INFERENCE,
+                                   registered_targets)
+    from src.target_capability_store import CapabilityStoreError
+
+    moment = now or datetime.datetime.now(datetime.timezone.utc)
+    pool = list(specs) if specs is not None else list(registered_targets())
+    profiles: List[Any] = []
+    receipts: List[Any] = []
+    skipped: List[Dict[str, str]] = []
+    network_classes: Dict[str, str] = {}
+    bound: Dict[str, str] = {}
+
+    for spec in pool:
+        host_id = spec.target_id
+        if ROLE_INFERENCE not in (spec.roles or ()):
+            skipped.append({"target_id": host_id, "reason": (
+                "registry does not give this host the inference role "
+                f"(roles={list(spec.roles or ())})")})
+            continue
+        if not str(spec.qualification_ref or "").strip():
+            skipped.append({"target_id": host_id, "reason": (
+                "unqualified: no independently qualified profile for this host "
+                "(research/Phase-0 metadata is not qualification)")})
+            continue
+        try:
+            receipt = store.current_for_host(host_id)
+        except CapabilityStoreError as exc:
+            skipped.append({"target_id": host_id,
+                            "reason": f"capability store unusable: {exc}"})
+            continue
+        if receipt is None:
+            skipped.append({"target_id": host_id, "reason": (
+                "no persisted capability receipt for this host: measure it with "
+                "odysseus-capability discover")})
+            continue
+
+        state = receipt.qualification_state(now=moment)
+        if state != "valid":
+            skipped.append({"target_id": host_id, "profile_id": receipt.profile_id,
+                            "receipt_hash": receipt.receipt_hash,
+                            "reason": f"receipt not qualified: {state}"})
+            continue
+        health = receipt.health_state(now=moment)
+        if health != "live":
+            skipped.append({"target_id": host_id, "profile_id": receipt.profile_id,
+                            "receipt_hash": receipt.receipt_hash,
+                            "reason": f"liveness not live: {health}"})
+            continue
+
+        mapped: set = set()
+        for name in receipt.capabilities.measured:
+            mapped.update(CAPABILITY_MAP.get(name, ()))
+        # Roles come from the RECEIPT (registry policy recorded at measurement time),
+        # so a role cannot be re-added by editing a spec without a new receipt.
+        # The registry's roles are POLICY (they gate routability); PS-605's role
+        # vocabulary is what the selector understands, so the profile declares the
+        # intersection plus the roles its proven capabilities imply.
+        policy_roles = [r for r in (receipt.roles or spec.roles or ())
+                        if r in dr.ROLE_CAPABILITIES]
+        roles = tuple(dict.fromkeys(
+            policy_roles + list(roles_from_capabilities(mapped))))
+        profiles.append(dr.make_target_profile(
+            target_id=host_id, profile_id=receipt.profile_id,
+            provider=receipt.runtime.provider or receipt.runtime.runtime_kind,
+            host=receipt.host.ssh_host or spec.ssh_host,
+            runtime_kind=receipt.runtime.runtime_kind,
+            runtime_version=receipt.runtime.version,
+            model=receipt.model.model_id, model_digest=receipt.model.digest,
+            locality=dr.LOCALITY_LOCAL, endpoint_url=spec.endpoint or "",
+            roles=frozenset(roles),
+            tools=frozenset({"write_file"}) if CAP_NATIVE_TOOLS in set(
+                receipt.capabilities.measured) else frozenset(),
+            network_policy=receipt.network_class,
+            inference=True, cost_rank=0, budget_class="local"))
+        receipts.append(dr.make_capability_receipt(
+            receipt_id=receipt.receipt_hash, profile_id=receipt.profile_id,
+            target_id=host_id, capabilities=frozenset(mapped),
+            exactness=dr.EXACTNESS_EXACT, observed_at=receipt.observed_at,
+            ttl_s=int(receipt.ttl_s), healthy=True,
+            runtime_version=receipt.runtime.version,
+            model_digest=receipt.model.digest,
+            host=receipt.host.ssh_host or spec.ssh_host,
+            notes=(f"ps632 persisted receipt {receipt.receipt_hash[:16]} "
+                   f"(profile {receipt.profile_id})"),
+            provenance=dr.PROVENANCE_MEASURED,
+            source_receipt_hash=receipt.receipt_hash))
+        network_classes[host_id] = receipt.network_class
+        bound[host_id] = receipt.receipt_hash
+
+    return PersistedRoutingInputs(
+        profiles=tuple(profiles), receipts=tuple(receipts),
+        network_classes=network_classes, skipped=tuple(skipped), bound_receipts=bound)
+
+
+def resolve_persisted_dispatch(inputs: PersistedRoutingInputs, *,
+                               packet: Mapping[str, Any], role: str,
+                               execution_package_hash: str = "", run_id: str = "",
+                               preferred_target_id: str = "",
+                               policy: Any = None,
+                               now: Optional[datetime.datetime] = None,
+                               decision_id: str = "") -> Any:
+    """Ask PS-605 to choose among PERSISTED receipts. Selects nothing itself.
+
+    Takes the already-read inputs (so the caller can seal exactly what routing saw)
+    and binds them through PS-605's single selection path. A stated preference is
+    still only a preference: PS-605 records whether it could honour it, and the
+    caller decides whether a different target is a refusal.
+    """
+    if not inputs.profiles:
+        raise FleetRoutingError(
+            "no persisted capability receipt is routable: "
+            f"{[dict(s) for s in inputs.skipped]}")
+    request = request_for_packet(
+        packet, role=role, inputs=inputs, execution_package_hash=execution_package_hash,
+        run_id=run_id)
+    if preferred_target_id:
+        request = dataclasses.replace(
+            request, preferred_profile_ids=(preferred_target_id,))
+    return dbd.resolve_from_estate(
+        dbd.TargetEstate(profiles=inputs.profiles, receipts=inputs.receipts,
+                         skipped=inputs.skipped),
+        request, network_classes=inputs.network_classes, policy=policy, now=now,
+        decision_id=decision_id)
