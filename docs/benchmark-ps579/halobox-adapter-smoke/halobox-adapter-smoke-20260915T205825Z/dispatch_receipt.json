@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "receipt_id": "dispatch-dec-smoke-halobox-adapter-smoke-20260915T205825Z",
+  "execution_package_hash": "8f2c25ebe551c9c7e3661c10cdd5c2bac8e8f237f615f74b14898a3dca37b152",
+  "run_id": "halobox-adapter-smoke-20260915T205825Z",
+  "packet_id": "HALOBOX-ADAPTER-SMOKE",
+  "requested_role": "local_implementer",
+  "requested_capabilities": [
+    "text_generation",
+    "single_tool_call",
+    "exact_reference_semantics"
+  ],
+  "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d",
+  "candidates_considered": [
+    {
+      "target_id": "local-framework-halobox",
+      "profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+      "provider": "llama-server",
+      "locality": "local",
+      "eligible": true,
+      "rule": "eligible",
+      "reason": "all filters passed",
+      "capability_receipt_id": "06ff25c1d676b735153c7fec5591c3fcbda595da279a215b9ad2f9040582bfe8",
+      "capability_receipt_hash": "245a641acce33bb6dbe64fb00e84fc5fb8fd14995bb06d758a9015a1e6c61b23",
+      "capability_receipt_observed_at": "2026-09-15T20:58:25.002407+00:00",
+      "capability_receipt_freshness_s": 0,
+      "capability_receipt_ttl_s": 604800,
+      "budget_class": "local",
+      "exactness": "exact_reference_intent",
+      "cost_rank": 0,
+      "preference_rank": 1,
+      "selected": true,
+      "reason_code": "selected_local_only_candidate",
+      "fallback_used": false,
+      "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+      "budget_facts": {
+        "request_budget_class": "",
+        "selected_budget_class": "local",
+        "max_cost_rank": 0,
+        "selected_cost_rank": 0,
+        "eligible_candidates": 1,
+        "candidates_considered": 1
+      },
+      "resource_facts": {}
+    }
+  ],
+  "capability_receipt_refs": [
+    "06ff25c1d676b735153c7fec5591c3fcbda595da279a215b9ad2f9040582bfe8"
+  ],
+  "selected_target_id": "local-framework-halobox",
+  "selected_host": "framework",
+  "selected_model": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+  "selected_runtime_kind": "llama-server",
+  "selected_runtime_version": "b1-29e091e",
+  "selected_model_digest": "8bc229db96a6e574467bf02f5fe17966cd2b41fb2604ce4d701175d3f2ea5fb8",
+  "selected_backend": "",
+  "granted_tools": [
+    "write_file"
+  ],
+  "granted_write_scope": [],
+  "granted_read_scope": [],
+  "network_policy": "tailnet-loopback",
+  "decided_by": "ps605_policy",
+  "reason": "selected_local_only_candidate: local-only work selected a local profile; every hosted candidate was refused by policy",
+  "decided_at": "2026-09-15T20:58:25.229712+00:00",
+  "receipt_hash": "f5cb838507a745fd41ca1579963cd0a9fe13dd678a58e66ebb0c6a3b732218e6"
+}

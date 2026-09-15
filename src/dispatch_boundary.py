@@ -121,6 +121,10 @@ BOUNDARY_REFUSED_NO_ENDPOINT = "candidate_has_no_enabled_endpoint"
 PIN_TARGET_MISMATCH = "pin_target_mismatch"
 PIN_MODEL_MISMATCH = "pin_model_mismatch"
 PIN_LOCALITY_MISMATCH = "pin_locality_mismatch"
+#: The endpoint itself, not just its locality. Two loopback endpoints are equally
+#: "local", so a locality-only check cannot tell the pinned HaloBox port from the
+#: host's Ollama port -- or from any other local service on any other port.
+PIN_ENDPOINT_MISMATCH = "pin_endpoint_mismatch"
 PIN_PROFILE_MISMATCH = "pin_profile_mismatch"
 INVOCATION_REFUSED_BEFORE_DISPATCH = "invocation_refused_before_dispatch"
 EVIDENCE_HASH_MISMATCH = "evidence_hash_mismatch"
@@ -495,6 +499,7 @@ class BoundDispatch:
                     "provider": profile.provider, "host": profile.host,
                     "model": profile.model, "runtime_kind": profile.runtime_kind,
                     "locality": profile.locality,
+                    "endpoint": str(getattr(profile, "endpoint_url", "") or ""),
                     "selected": (assessment.profile_id
                                  == self.decision.selected_profile.profile_id),
                 }
@@ -640,6 +645,13 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
         raise DispatchPinViolation(
             PIN_MODEL_MISMATCH,
             f"resolved model {model!r} is not the pinned model {pinned_model!r}",
+            decision_id=bound.decision.decision_id)
+    pinned_endpoint = str(pin.get("endpoint") or "").rstrip("/")
+    if pinned_endpoint and str(chat_url or "").rstrip("/") != pinned_endpoint:
+        raise DispatchPinViolation(
+            PIN_ENDPOINT_MISMATCH,
+            "resolved endpoint " + repr(str(chat_url or "")) + " is not the pinned "
+            "endpoint " + repr(pinned_endpoint),
             decision_id=bound.decision.decision_id)
     resolved_local = endpoint_is_local(chat_url)
     if resolved_local != (pin.get("locality") == LOCALITY_LOCAL):

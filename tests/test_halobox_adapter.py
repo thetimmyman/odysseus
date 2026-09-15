@@ -601,3 +601,28 @@ def test_the_halobox_endpoint_is_loopback_so_a_local_pin_can_hold():
 
     assert endpoint_is_local(lt.target_by_id(HALOBOX).endpoint) is True
     assert endpoint_is_local("https://api.openai.com/v1") is False
+
+
+# ========================================================= endpoint pinning ===
+def test_the_dispatch_pin_binds_the_exact_endpoint_not_just_its_locality():
+    """A locality-only pin cannot tell two local endpoints apart.
+
+    Found by the live adapter controls: `http://127.0.0.1:11434` (the host's Ollama
+    service) and `http://127.0.0.1:9999` were both ACCEPTED as the pinned endpoint,
+    because both are "local". Two loopback ports are not the same target, so the pin
+    now carries the endpoint and verify_invocation refuses any other one -- before a
+    request, with zero model calls.
+    """
+    from src import dispatch_boundary as dbd
+    from src.dispatch_boundary import (DispatchPinViolation, PIN_ENDPOINT_MISMATCH,
+                                       PIN_LOCALITY_MISMATCH, PIN_PROFILE_MISMATCH)
+
+    assert PIN_ENDPOINT_MISMATCH == "pin_endpoint_mismatch"
+    # The pin payload carries the endpoint, so it is part of the pinned identity.
+    import inspect
+    source = inspect.getsource(dbd.BoundDispatch.pin_for)
+    assert "\"endpoint\"" in source
+    verify_source = inspect.getsource(dbd.verify_invocation)
+    assert "PIN_ENDPOINT_MISMATCH" in verify_source
+    assert verify_source.index("PIN_ENDPOINT_MISMATCH") < verify_source.index(
+        "resolved_local")

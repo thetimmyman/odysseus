@@ -1,0 +1,19 @@
+{
+  "transport_ok": true,
+  "runtime_error": "",
+  "tool_calls": 1,
+  "writes_executed": [
+    "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/artifacts/smoke_nonce.txt"
+  ],
+  "policy_error": "",
+  "nonce_file": "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/artifacts/smoke_nonce.txt",
+  "nonce_expected": "HBX-2111AF84E4AB",
+  "nonce_file_content": "HBX-2111AF84E4AB",
+  "nonce_written_through_tool": true,
+  "prompt_tokens": 399,
+  "completion_tokens": 153,
+  "chunks": 124,
+  "ttft_s": 7.216,
+  "num_ctx_requested": 32768,
+  "num_ctx_served": 65536
+}

@@ -1,0 +1,3 @@
+Write the file 'docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke_nonce.txt' using the write_file tool. Its content must be exactly:
+HBX-391D5313F461
+Nothing else.

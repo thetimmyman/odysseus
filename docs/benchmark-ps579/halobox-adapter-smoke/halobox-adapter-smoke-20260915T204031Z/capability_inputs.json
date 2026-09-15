@@ -1,0 +1,38 @@
+{
+  "store": "/home/tdefreest/scratch/ps632-store",
+  "store_audit": {
+    "ok": true,
+    "receipts": 46,
+    "profiles": [
+      "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+      "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx131072:d94d964641c7",
+      "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7"
+    ],
+    "problems": []
+  },
+  "bound_receipts": {
+    "local-framework-halobox": "2f1d09546b8763b34700b26d67fa39232c8c3bc0bcc36479c7aaa822d2ea48f5"
+  },
+  "candidates": [
+    {
+      "target_id": "local-framework-halobox",
+      "profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6"
+    }
+  ],
+  "skipped": [
+    {
+      "target_id": "local-rtx4500",
+      "profile_id": "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx131072:d94d964641c7",
+      "receipt_hash": "ca763a252941f6cd1d33bba7ff2faf68b226487a20102ddc634e8e6ee8032d3d",
+      "reason": "liveness not live: liveness_expired"
+    },
+    {
+      "target_id": "local-msr1",
+      "reason": "registry does not give this host the inference role (roles=['deterministic_verifier', 'governance_ci', 'arm64_ci'])"
+    },
+    {
+      "target_id": "local-framework",
+      "reason": "unqualified: no independently qualified profile for this host (research/Phase-0 metadata is not qualification)"
+    }
+  ]
+}

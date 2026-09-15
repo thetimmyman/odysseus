@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "decision_id": "dec-smoke-halobox-adapter-smoke-20260915T210744Z",
+  "request": {
+    "run_id": "halobox-adapter-smoke-20260915T210744Z",
+    "packet_id": "HALOBOX-ADAPTER-SMOKE",
+    "execution_package_hash": "67bd0a2968e32ce33dc243f01e854564f232fcb7b4c8504be6fc0e3bd9f9aa3d",
+    "domain": "general_swe",
+    "role": "local_implementer",
+    "capabilities": [
+      "text_generation",
+      "single_tool_call",
+      "exact_reference_semantics"
+    ],
+    "exactness": "exact_reference_intent",
+    "sensitivity": "internal",
+    "local_only": true,
+    "required_tools": [
+      "write_file"
+    ],
+    "network_policy": "tailnet-loopback",
+    "budget_class": "",
+    "max_cost_rank": 0,
+    "preferred_profile_ids": [
+      "local-framework-halobox"
+    ],
+    "write_scope": [],
+    "read_scope": []
+  },
+  "policy": {
+    "schema_version": 1,
+    "version": "1.2",
+    "policy_hash": "4df270ad9543772de75364bde0f12111abb69e606c0b49481c7b51ad428a6d21",
+    "source": "src.routing_policy.load_policy",
+    "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d"
+  },
+  "candidates": [
+    {
+      "target_id": "local-framework-halobox",
+      "profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+      "provider": "llama-server",
+      "locality": "local",
+      "eligible": true,
+      "rule": "eligible",
+      "reason": "all filters passed",
+      "capability_receipt_id": "e99b759d406e1cf84213682559fa2b88300f61f24e1f0876e537a9d341322fa8",
+      "capability_receipt_hash": "c8231ccb1ad71c7b63a3e83be63289e9bbe581d437a50e43716d509675f025f5",
+      "capability_receipt_observed_at": "2026-09-15T21:07:44.182312+00:00",
+      "capability_receipt_freshness_s": 0,
+      "capability_receipt_ttl_s": 604800,
+      "budget_class": "local",
+      "exactness": "exact_reference_intent",
+      "cost_rank": 0,
+      "preference_rank": 1
+    }
+  ],
+  "selected_profile": {
+    "schema_version": 1,
+    "target_id": "local-framework-halobox",
+    "profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+    "provider": "llama-server",
+    "host": "framework",
+    "runtime_kind": "llama-server",
+    "runtime_version": "b1-29e091e",
+    "model": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "model_digest": "8bc229db96a6e574467bf02f5fe17966cd2b41fb2604ce4d701175d3f2ea5fb8",
+    "backend": "",
+    "locality": "local",
+    "exactness": "exact_reference_intent",
+    "roles": [
+      "debugger",
+      "local_implementer",
+      "local_repair",
+      "read_only_analyst",
+      "reviewer",
+      "scout"
+    ],
+    "tools": [
+      "write_file"
+    ],
+    "network_policy": "tailnet-loopback",
+    "budget_class": "local",
+    "cost_rank": 0,
+    "inference": true
+  },
+  "selected_receipt_hash": "c8231ccb1ad71c7b63a3e83be63289e9bbe581d437a50e43716d509675f025f5",
+  "reason_code": "selected_local_only_candidate",
+  "reason": "local-only work selected a local profile; every hosted candidate was refused by policy",
+  "fallback_used": false,
+  "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+  "preference_rank": 1,
+  "budget_facts": {
+    "request_budget_class": "",
+    "selected_budget_class": "local",
+    "max_cost_rank": 0,
+    "selected_cost_rank": 0,
+    "eligible_candidates": 1,
+    "candidates_considered": 1
+  },
+  "resource_facts": {},
+  "granted_tools": [
+    "write_file"
+  ],
+  "granted_write_scope": [],
+  "granted_read_scope": [],
+  "network_policy": "tailnet-loopback",
+  "observed_at": "2026-09-15T21:07:44.425168+00:00",
+  "receipt_hash": "39e91e644c7f6acfa6b768f6b3c1a048ba17b422099730043098bcd13ff21d84",
+  "decision_hash": "f11a3e52a59ef2147fa6375bf287008b180f2342eb4cc2a44130060a8d2de35e"
+}

@@ -1,0 +1,41 @@
+{
+  "ok": false,
+  "issues": [
+    {
+      "code": "source_identity_missing_or_ambiguous",
+      "detail": "source identity is incomplete: missing ['base_sha']",
+      "subject": ""
+    },
+    {
+      "code": "context_projection_missing_interface",
+      "detail": "the sealed interface is not present in the worker context: ['nonce | required | str -- the exact nonce to write']",
+      "subject": "attempt_receipts[0]"
+    }
+  ],
+  "requirement_states": [
+    {
+      "requirement_id": "deterministic_verification",
+      "state": "SATISFIED",
+      "receipt_id": "43b0142e8d14a21dab4d023a867dc3cfef3d24c4edc8379685f25705e70e8534",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "source_binding",
+      "state": "SATISFIED",
+      "receipt_id": "43b0142e8d14a21dab4d023a867dc3cfef3d24c4edc8379685f25705e70e8534",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "negative_control",
+      "state": "SATISFIED",
+      "receipt_id": "43b0142e8d14a21dab4d023a867dc3cfef3d24c4edc8379685f25705e70e8534",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "context_delivery",
+      "state": "SATISFIED",
+      "receipt_id": "43b0142e8d14a21dab4d023a867dc3cfef3d24c4edc8379685f25705e70e8534",
+      "detail": "PASS by HARNESS_HIDDEN"
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "receipt_id": "attempt-halobox-adapter-smoke-20260915T210744Z-1",
+  "run_id": "halobox-adapter-smoke-20260915T210744Z",
+  "packet_id": "HALOBOX-ADAPTER-SMOKE",
+  "attempt": 1,
+  "repair_of": 0,
+  "execution_package_hash": "67bd0a2968e32ce33dc243f01e854564f232fcb7b4c8504be6fc0e3bd9f9aa3d",
+  "dispatch_receipt_hash": "39e91e644c7f6acfa6b768f6b3c1a048ba17b422099730043098bcd13ff21d84",
+  "generation_token": "",
+  "target_id": "local-framework-halobox",
+  "host": "framework",
+  "model": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+  "runtime_kind": "llama-server",
+  "runtime_version": "b1-29e091e",
+  "model_version": "8bc229db96a6e574467bf02f5fe17966cd2b41fb2604ce4d701175d3f2ea5fb8",
+  "context_projection_hash": "837ce057ade7a3b65118e7bf506c29ad3f60175e6288421837d62f6a3d7396aa",
+  "rendered_context_ref": {
+    "artifact_id": "smoke-context.txt",
+    "sha256": "837ce057ade7a3b65118e7bf506c29ad3f60175e6288421837d62f6a3d7396aa",
+    "media_type": "text/plain",
+    "size": 865,
+    "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210744Z/artifacts/smoke-context.txt"
+  },
+  "output_ref": {
+    "artifact_id": "smoke-model-output.txt",
+    "sha256": "fd326e24d25637c57667ccbd5562c41e3e6381c2049fed23fc733db9e089fba7",
+    "media_type": "text/plain",
+    "size": 388,
+    "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210744Z/artifacts/smoke-model-output.txt"
+  },
+  "requested_context": 32768,
+  "served_context": 65536,
+  "started_at": "",
+  "ended_at": "2026-09-15T21:07:51.450394+00:00",
+  "elapsed_s": 7.022,
+  "finish_reason": "tool_calls",
+  "prompt_tokens": 585,
+  "completion_tokens": 117,
+  "tool_invocations": [
+    {
+      "name": "write_file"
+    }
+  ],
+  "declared_write_set": [
+    "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210744Z/artifacts/smoke_nonce.txt"
+  ],
+  "actual_write_set": [
+    "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210744Z/artifacts/smoke_nonce.txt"
+  ],
+  "artifact_refs": [
+    {
+      "artifact_id": "smoke-context.txt",
+      "sha256": "837ce057ade7a3b65118e7bf506c29ad3f60175e6288421837d62f6a3d7396aa",
+      "media_type": "text/plain",
+      "size": 865,
+      "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210744Z/artifacts/smoke-context.txt"
+    },
+    {
+      "artifact_id": "smoke-model-output.txt",
+      "sha256": "fd326e24d25637c57667ccbd5562c41e3e6381c2049fed23fc733db9e089fba7",
+      "media_type": "text/plain",
+      "size": 388,
+      "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210744Z/artifacts/smoke-model-output.txt"
+    }
+  ],
+  "failure_class": "",
+  "receipt_hash": "692d37018fd050baaac7362506789bf5e7881ce16d5dc6e452dfa4e656c687a0"
+}

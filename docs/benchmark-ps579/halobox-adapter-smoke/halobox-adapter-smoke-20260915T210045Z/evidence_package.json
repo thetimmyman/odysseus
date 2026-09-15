@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "evidence_package_id": "evpkg-halobox-adapter-smoke-20260915T210045Z",
+  "sealed_at": "2026-09-15T21:00:52.885269+00:00",
+  "execution_package": {
+    "schema_version": 1,
+    "package_id": "HALOBOX-ADAPTER-SMOKE:halobox-adapter-smoke-20260915T210045Z",
+    "run_id": "halobox-adapter-smoke-20260915T210045Z",
+    "packet_id": "HALOBOX-ADAPTER-SMOKE",
+    "jira_key": "PS-579",
+    "parent_ids": [],
+    "source": {
+      "schema_version": 1,
+      "repo_root": "/home/tdefreest/Documents/PersonalOS/odysseus-github-ps579",
+      "repo_identity": "git@github.com:thetimmyman/odysseus.git",
+      "base_sha": "",
+      "head_sha": "c11ab1a2e254495ae179555db55f37b0b36b3301",
+      "branch": "ps-579-rtx-g0g1g2",
+      "worktree": "/home/tdefreest/Documents/PersonalOS/odysseus-github-ps579",
+      "detached": false,
+      "staged_paths": [],
+      "unstaged_paths": [
+        "scripts/odysseus-capability",
+        "scripts/ps635-live/ollama_client.py",
+        "src/local_target_routing.py",
+        "src/local_targets.py",
+        "tests/test_local_targets.py"
+      ],
+      "untracked_paths": [
+        "docs/PS579-HALOBOX-ADAPTER-SEAM.md",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T203156Z/capability_inputs.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T204031Z/artifacts/smoke-context.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T204031Z/artifacts/smoke-model-output.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T204031Z/capability_inputs.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T204031Z/dispatch_receipt.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T204031Z/routing_decision.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T204031Z/smoke_check.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T204734Z/capability_inputs.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/artifacts/smoke-context.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/artifacts/smoke-model-output.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/artifacts/smoke_nonce.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/attempt_receipt-1.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/capability_inputs.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/dispatch_receipt.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/routing_decision.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205602Z/smoke_check.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/artifacts/smoke-context.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/artifacts/smoke-model-output.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/artifacts/smoke_nonce.txt",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/attempt_receipt-1.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/capability_inputs.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/dispatch_chain.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/dispatch_receipt.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/evidence_package.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/routing_decision.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/run_summary.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/smoke_check.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/validation.json",
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T205825Z/verification_receipt-1.json",
+        "scripts/ps579-halobox-smoke.py",
+        "scripts/ps635-live/llama_server_client.py",
+        "scripts/ps635-live/runtime_client.py",
+        "tests/test_halobox_adapter.py"
+      ],
+      "tracked_diff_digest": "22f98492dd6902005f997ed0d79c497b5afbda8fe29b0d398d94b682418471db",
+      "untracked_digest": "1d827bc7833c49c4f2a1b252ce4a5de42af49341eee3e45f8c803b1126b2782b",
+      "relevant_digests": [],
+      "truncated_paths": [],
+      "diff_truncated": false,
+      "snapshot_digest": "bf48e4742afe705812e65f00b84dda2e81770cc6fea6ec08215d09fd5921315d"
+    },
+    "objective": "Adapter smoke only: write one file containing the exact nonce given in the request. No corpus task.",
+    "contract": "Call write_file once with path 'docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke_nonce.txt' and content exactly the nonce from the user message.",
+    "interface": [
+      "nonce | required | str -- the exact nonce to write"
+    ],
+    "interface_digest": "e013038a49feeb30",
+    "acceptance_criteria": [
+      "the file exists and holds exactly the nonce"
+    ],
+    "write_scope": [
+      "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke_nonce.txt"
+    ],
+    "read_scope": [],
+    "required_capabilities": [],
+    "execution_role": "local_implementer",
+    "allowed_tools": [
+      "write_file"
+    ],
+    "network_policy": "tailnet-loopback (ssh to the target's HaloBox loopback)",
+    "negative_control": "prose, or a tool call that wrote nothing, must FAIL",
+    "stop_conditions": [
+      "any transport error"
+    ],
+    "budgets": {
+      "context_tokens": 0,
+      "output_tokens": 0,
+      "time_seconds": 0,
+      "max_attempts": 3,
+      "max_repair_chars": 6000
+    },
+    "verification": {
+      "verifier_id": "smoke:nonce-file-content",
+      "command": "smoke:nonce-file-content",
+      "verifier_paths": [],
+      "verifier_digests": [],
+      "positive_control": "the written file holds exactly the nonce",
+      "negative_control": "prose, or a tool call that wrote nothing, must FAIL",
+      "timeout_s": 600,
+      "hidden_from_worker": true
+    },
+    "evidence_requirements": [
+      {
+        "requirement_id": "deterministic_verification",
+        "kind": "deterministic_verification",
+        "vantage": "harness worktree",
+        "expected_verifier": "smoke:nonce-file-content",
+        "independence": "HARNESS_HIDDEN",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      },
+      {
+        "requirement_id": "source_binding",
+        "kind": "source_binding",
+        "vantage": "harness worktree",
+        "expected_verifier": "src.source_snapshot.take_source_snapshot",
+        "independence": "EXISTING_AUTHORITATIVE",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      },
+      {
+        "requirement_id": "negative_control",
+        "kind": "negative_control",
+        "vantage": "harness worktree",
+        "expected_verifier": "smoke:nonce-file-content (negative control)",
+        "independence": "HARNESS_HIDDEN",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      },
+      {
+        "requirement_id": "context_delivery",
+        "kind": "context_delivery",
+        "vantage": "adapter smoke workspace",
+        "expected_verifier": "the sealed smoke transcript",
+        "independence": "HARNESS_HIDDEN",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      }
+    ],
+    "package_hash": "dad0f7cd6295af0a2b62f0e0c2645b7c7f47b782005021e35cabe2984ef029ce"
+  },
+  "dispatch_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "dispatch-dec-smoke-halobox-adapter-smoke-20260915T210045Z",
+      "execution_package_hash": "dad0f7cd6295af0a2b62f0e0c2645b7c7f47b782005021e35cabe2984ef029ce",
+      "run_id": "halobox-adapter-smoke-20260915T210045Z",
+      "packet_id": "HALOBOX-ADAPTER-SMOKE",
+      "requested_role": "local_implementer",
+      "requested_capabilities": [
+        "text_generation",
+        "single_tool_call",
+        "exact_reference_semantics"
+      ],
+      "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d",
+      "candidates_considered": [
+        {
+          "target_id": "local-framework-halobox",
+          "profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx262144:8bc229db96a6",
+          "provider": "llama-server",
+          "locality": "local",
+          "eligible": true,
+          "rule": "eligible",
+          "reason": "all filters passed",
+          "capability_receipt_id": "ac1fd117efc39be9ce7f8969495d2cd91eafc5b0d41004914100fca330a75f5b",
+          "capability_receipt_hash": "d077a072e3c546a9bbb2177f54146a4a4c76b76483ebda67846527ef01cd7392",
+          "capability_receipt_observed_at": "2026-09-15T21:00:33.190341+00:00",
+          "capability_receipt_freshness_s": 12,
+          "capability_receipt_ttl_s": 604800,
+          "budget_class": "local",
+          "exactness": "exact_reference_intent",
+          "cost_rank": 0,
+          "preference_rank": 1,
+          "selected": true,
+          "reason_code": "selected_local_only_candidate",
+          "fallback_used": false,
+          "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+          "budget_facts": {
+            "request_budget_class": "",
+            "selected_budget_class": "local",
+            "max_cost_rank": 0,
+            "selected_cost_rank": 0,
+            "eligible_candidates": 1,
+            "candidates_considered": 1
+          },
+          "resource_facts": {}
+        }
+      ],
+      "capability_receipt_refs": [
+        "ac1fd117efc39be9ce7f8969495d2cd91eafc5b0d41004914100fca330a75f5b"
+      ],
+      "selected_target_id": "local-framework-halobox",
+      "selected_host": "framework",
+      "selected_model": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "selected_runtime_kind": "llama-server",
+      "selected_runtime_version": "b1-29e091e",
+      "selected_model_digest": "8bc229db96a6e574467bf02f5fe17966cd2b41fb2604ce4d701175d3f2ea5fb8",
+      "selected_backend": "",
+      "granted_tools": [
+        "write_file"
+      ],
+      "granted_write_scope": [],
+      "granted_read_scope": [],
+      "network_policy": "tailnet-loopback",
+      "decided_by": "ps605_policy",
+      "reason": "selected_local_only_candidate: local-only work selected a local profile; every hosted candidate was refused by policy",
+      "decided_at": "2026-09-15T21:00:45.202223+00:00",
+      "receipt_hash": "c6b90ea2f45cd9bf94d82c39d159690a7dcba9d24c56dfff1e28bb2c95a4a5cb"
+    }
+  ],
+  "attempt_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "attempt-halobox-adapter-smoke-20260915T210045Z-1",
+      "run_id": "halobox-adapter-smoke-20260915T210045Z",
+      "packet_id": "HALOBOX-ADAPTER-SMOKE",
+      "attempt": 1,
+      "repair_of": 0,
+      "execution_package_hash": "dad0f7cd6295af0a2b62f0e0c2645b7c7f47b782005021e35cabe2984ef029ce",
+      "dispatch_receipt_hash": "c6b90ea2f45cd9bf94d82c39d159690a7dcba9d24c56dfff1e28bb2c95a4a5cb",
+      "generation_token": "",
+      "target_id": "local-framework-halobox",
+      "host": "framework",
+      "model": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "runtime_kind": "llama-server",
+      "runtime_version": "b1-29e091e",
+      "model_version": "8bc229db96a6e574467bf02f5fe17966cd2b41fb2604ce4d701175d3f2ea5fb8",
+      "context_projection_hash": "d2530e6582a530e4f3d3ade65732bf5bba36c7a61fe0e8bae7cc5ff9a0b62d6d",
+      "rendered_context_ref": {
+        "artifact_id": "smoke-context.txt",
+        "sha256": "d2530e6582a530e4f3d3ade65732bf5bba36c7a61fe0e8bae7cc5ff9a0b62d6d",
+        "media_type": "text/plain",
+        "size": 211,
+        "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke-context.txt"
+      },
+      "output_ref": {
+        "artifact_id": "smoke-model-output.txt",
+        "sha256": "258218fed4c70807ea100e770ce19cb4ec73214d691ce33933b244673f3b8904",
+        "media_type": "text/plain",
+        "size": 388,
+        "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke-model-output.txt"
+      },
+      "requested_context": 32768,
+      "served_context": 65536,
+      "started_at": "",
+      "ended_at": "2026-09-15T21:00:52.884550+00:00",
+      "elapsed_s": 7.68,
+      "finish_reason": "tool_calls",
+      "prompt_tokens": 401,
+      "completion_tokens": 172,
+      "tool_invocations": [
+        {
+          "name": "write_file"
+        }
+      ],
+      "declared_write_set": [
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke_nonce.txt"
+      ],
+      "actual_write_set": [
+        "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke_nonce.txt"
+      ],
+      "artifact_refs": [
+        {
+          "artifact_id": "smoke-context.txt",
+          "sha256": "d2530e6582a530e4f3d3ade65732bf5bba36c7a61fe0e8bae7cc5ff9a0b62d6d",
+          "media_type": "text/plain",
+          "size": 211,
+          "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke-context.txt"
+        },
+        {
+          "artifact_id": "smoke-model-output.txt",
+          "sha256": "258218fed4c70807ea100e770ce19cb4ec73214d691ce33933b244673f3b8904",
+          "media_type": "text/plain",
+          "size": 388,
+          "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke-model-output.txt"
+        }
+      ],
+      "failure_class": "",
+      "receipt_hash": "6ce21712705d42263721a258e4df4aa8edebf3694efabb8479f7ac6eccec235e"
+    }
+  ],
+  "verification_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "verify-halobox-adapter-smoke-20260915T210045Z-1",
+      "run_id": "halobox-adapter-smoke-20260915T210045Z",
+      "packet_id": "HALOBOX-ADAPTER-SMOKE",
+      "attempt": 1,
+      "execution_package_hash": "dad0f7cd6295af0a2b62f0e0c2645b7c7f47b782005021e35cabe2984ef029ce",
+      "verifier_id": "smoke:nonce-file-content",
+      "verifier_digest": "",
+      "verifier_paths": [],
+      "source_snapshot_digest": "bf48e4742afe705812e65f00b84dda2e81770cc6fea6ec08215d09fd5921315d",
+      "worktree": "/home/tdefreest/Documents/PersonalOS/odysseus-github-ps579",
+      "host": "framework",
+      "container": "",
+      "normalized_command": "smoke:nonce-file-content",
+      "exit_code": 0,
+      "timeout_s": 0,
+      "started_at": "2026-09-15T21:00:52.884550+00:00",
+      "ended_at": "2026-09-15T21:00:52.884550+00:00",
+      "elapsed_s": 7.68,
+      "stdout_ref": {
+        "artifact_id": "smoke-model-output.txt",
+        "sha256": "258218fed4c70807ea100e770ce19cb4ec73214d691ce33933b244673f3b8904",
+        "media_type": "text/plain",
+        "size": 388,
+        "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke-model-output.txt"
+      },
+      "stderr_ref": {
+        "artifact_id": "smoke-model-output.txt",
+        "sha256": "258218fed4c70807ea100e770ce19cb4ec73214d691ce33933b244673f3b8904",
+        "media_type": "text/plain",
+        "size": 388,
+        "storage_uri": "file:///home/tdefreest/Documents/PersonalOS/odysseus-github-ps579/docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210045Z/artifacts/smoke-model-output.txt"
+      },
+      "stdout_complete": true,
+      "stderr_complete": true,
+      "stdout_bytes": 388,
+      "stderr_bytes": 0,
+      "tests_collected": 1,
+      "tests_executed": 1,
+      "tests_passed": 1,
+      "tests_failed": 0,
+      "tests_skipped": 0,
+      "expected": "the written file holds exactly the nonce",
+      "observed": "nonce_file_content='HBX-391D5313F461'",
+      "control_id": "smoke:write_file-with-the-nonce",
+      "control_expected": "FAIL if the file is missing or holds anything else",
+      "control_observed": "tool_calls=1",
+      "control_passed": true,
+      "write_set_reconciliation": [],
+      "tool_versions": [],
+      "proof_class": "HARNESS_HIDDEN",
+      "requirement_ids": [
+        "deterministic_verification",
+        "source_binding",
+        "negative_control",
+        "context_delivery"
+      ],
+      "blocked_reason": "",
+      "failure_fingerprint": "",
+      "claimed_preexisting": false,
+      "baseline_receipt_hash": "",
+      "baseline_source_digest": "",
+      "baseline_failure_fingerprint": "",
+      "outcome": "PASS",
+      "receipt_hash": "79dbb79c4958f1425fe12590989dec540234bbea262cfe26f61ed973c1f8f834"
+    }
+  ],
+  "requirement_states": [
+    {
+      "requirement_id": "deterministic_verification",
+      "state": "SATISFIED",
+      "receipt_id": "79dbb79c4958f1425fe12590989dec540234bbea262cfe26f61ed973c1f8f834",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "source_binding",
+      "state": "SATISFIED",
+      "receipt_id": "79dbb79c4958f1425fe12590989dec540234bbea262cfe26f61ed973c1f8f834",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "negative_control",
+      "state": "SATISFIED",
+      "receipt_id": "79dbb79c4958f1425fe12590989dec540234bbea262cfe26f61ed973c1f8f834",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "context_delivery",
+      "state": "SATISFIED",
+      "receipt_id": "79dbb79c4958f1425fe12590989dec540234bbea262cfe26f61ed973c1f8f834",
+      "detail": "PASS by HARNESS_HIDDEN"
+    }
+  ],
+  "waivers": {},
+  "seals": [],
+  "evidence_package_hash": "d662506dfe4d14d0daa64f147428e6456f4fa1d8023dd2f21d6b607242a67213"
+}

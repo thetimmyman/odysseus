@@ -1,0 +1,12 @@
+{
+  "execution_package_hash": "8f2c25ebe551c9c7e3661c10cdd5c2bac8e8f237f615f74b14898a3dca37b152",
+  "dispatch_receipt_hash": "f5cb838507a745fd41ca1579963cd0a9fe13dd678a58e66ebb0c6a3b732218e6",
+  "capability_receipt_refs": [
+    "06ff25c1d676b735153c7fec5591c3fcbda595da279a215b9ad2f9040582bfe8"
+  ],
+  "stored_receipt_hash": "06ff25c1d676b735153c7fec5591c3fcbda595da279a215b9ad2f9040582bfe8",
+  "selected_profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+  "receipt_ref_matches_store": true,
+  "attempt_binds_dispatch": true,
+  "ok": true
+}
