@@ -365,7 +365,11 @@ def sync_receipts_from_records(store, records: Sequence[LocalTargetCapability], 
             health_ttl_s=int(facts.get("health_ttl_s") or health_ttl_s),
             roles=spec.roles, qualification_ref=spec.qualification_ref,
             notes=str(facts.get("notes") or ""))
-        stored.append(store.append(receipt))
+        # Name what this receipt replaces, so the append-only history carries the
+        # link itself rather than leaving a reader to compare timestamps.
+        existing = store.current_for_host(spec.target_id)
+        stored.append(store.append(
+            receipt, supersedes=(existing.receipt_hash if existing else "")))
     return stored
 
 
