@@ -208,6 +208,8 @@ class Dispatcher:
 
         for rnd in range(1, self.max_rounds + 1):
             rounds = rnd
+            runtime_state = self.client.runtime_state()
+            state_elapsed = runtime_state.pop("elapsed_s", 0)
             res = self.client.api_streaming_chat(
                 messages, num_ctx=self.num_ctx, tools=WRITE_TOOL,
                 num_predict=self.max_output_tokens)
@@ -218,7 +220,9 @@ class Dispatcher:
                 "elapsed_s": res.elapsed_s, "ttft_s": res.ttft_s,
                 "eval_count": body.get("eval_count"),
                 "prompt_eval_count": body.get("prompt_eval_count"),
-                "incremental": body.get("_incremental", None)}
+                "incremental": body.get("_incremental", None),
+                "runtime_state_before": runtime_state,
+                "runtime_state_probe_s": state_elapsed}
             if not res.ok:
                 failure_class = "runtime_provider"
                 status = (res.error or "")[:150]

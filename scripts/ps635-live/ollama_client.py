@@ -195,6 +195,46 @@ class Target:
         r = self.api("/api/ps", timeout=20)
         return r.body if r.ok else {}
 
+    def runtime_state(self) -> dict:
+        """Capture one cheap pre-request state snapshot for benchmark forensics.
+
+        This is deliberately separate from the model request and is not used for
+        routing, retries, or acceptance.  A single SSH command records Ollama's
+        loaded-model state, host load, and best-effort NVIDIA utilization.  The
+        probe duration is returned so it can be excluded from API timing.
+        """
+        started = time.monotonic()
+        remote = (
+            "printf 'LOADAVG '; cat /proc/loadavg; "
+            "printf 'OLLAMA_PS '; curl -sS --max-time 10 "
+            "'http://127.0.0.1:11434/api/ps'; "
+            "printf '\\nGPU '; "
+            "(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total "
+            "--format=csv,noheader,nounits 2>/dev/null || true)"
+        )
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 self.ssh_host, remote],
+                capture_output=True, text=True, timeout=25,
+            )
+            output = proc.stdout or ""
+            return {
+                "ok": proc.returncode == 0,
+                "elapsed_s": round(time.monotonic() - started, 3),
+                "returncode": proc.returncode,
+                "raw": output[:4000],
+                "error": (proc.stderr or "").strip()[:300],
+            }
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "ok": False,
+                "elapsed_s": round(time.monotonic() - started, 3),
+                "returncode": None,
+                "raw": "",
+                "error": str(exc)[:300],
+            }
+
     def served_context(self) -> Optional[int]:
         for m in (self.ps().get("models") or []):
             if m.get("name") == self.model:
