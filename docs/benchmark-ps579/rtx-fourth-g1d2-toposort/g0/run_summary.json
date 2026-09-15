@@ -1,0 +1,144 @@
+{
+  "run_id": "g1d2-toposort-20260915T155735Z",
+  "case": "g1d2-toposort",
+  "arm": "g0",
+  "target": "local-rtx4500",
+  "num_ctx": 32768,
+  "wall_clock_s": 17.269,
+  "result": {
+    "run_id": "g1d2-toposort-20260915T155735Z",
+    "result": "ACCEPTED_CANDIDATE",
+    "failure_class": "",
+    "decision": "stop",
+    "reason": "attempt 1 passed deterministic verification",
+    "attempts": 1,
+    "artifact": [
+      "src/topo_sort.py"
+    ],
+    "verification": {
+      "test_command": "python3 -m pytest tests/test_topo_sort_ps635.py -q -p no:cacheprovider",
+      "returncode": 0,
+      "passed": true,
+      "summary": [
+        "11 passed, 1 warning in 0.16s"
+      ]
+    },
+    "budget_refused": false
+  },
+  "model_calls": 1,
+  "packet_interface_digest": "fac6d37529c6b3ce",
+  "package_hash": "ce8a0ab9c86d9401eb7b622a6d22f635c44c96fb1864dc742ff1776df9b01832",
+  "dispatch_receipt_hash": "4c257d2488acaecc072600ce95bff794d1035ec14402143b58a5fc3979d47012",
+  "attempt_receipt_hashes": [
+    "9f0a0d709d4859dbd5b8004b9ecda0358c8964179eaec5f0bd071034b7145f56"
+  ],
+  "verification_receipt_hashes": [
+    "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297"
+  ],
+  "evidence_package_hash": "d3f6f08425588e9d74264b6390593bf899891511a7f5af823a5a4757f46dc9d4",
+  "validation_ok": true,
+  "validation_reasons": [],
+  "requirement_states": [
+    {
+      "requirement_id": "deterministic_verification",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "source_binding",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "negative_control",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "scope_check",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "context_delivery",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    }
+  ],
+  "context_projections": [
+    "553b7778e9ecdaa6194c5e624f9f300bf3ffd8080fcb350efa5e09683a700939"
+  ],
+  "repair_fingerprints": [],
+  "source_before": {
+    "schema_version": 1,
+    "repo_root": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+    "repo_identity": "git@github.com:thetimmyman/odysseus.git",
+    "base_sha": "2d88004c",
+    "head_sha": "1c0df6c1e3330dea3c9f1ed514ed0e1aa76ab9f0",
+    "branch": "HEAD",
+    "worktree": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+    "detached": true,
+    "staged_paths": [
+      "src/topo_sort.py"
+    ],
+    "unstaged_paths": [],
+    "untracked_paths": [],
+    "tracked_diff_digest": "f9ed6abc87963cc4eafd6d401b59cb54dc0f74d5c9893e18986f10908f93a42b",
+    "untracked_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "relevant_digests": [
+      [
+        "src/topo_sort.py",
+        "9d329bec8498492b4fc5f5d6767c1715da6222a18ce5418ecde027adef741d12"
+      ],
+      [
+        "tests/test_topo_sort_ps635.py",
+        "3e8f84b3dbbbf9838d8abd5b18262887740aa535046ce331208139e4e6de7f5b"
+      ]
+    ],
+    "truncated_paths": [],
+    "diff_truncated": false,
+    "snapshot_digest": "97ff65a9aee3c607faa6af0c008ef5c99b9e7db5d1b793226a0a39a2090c6b1d"
+  },
+  "source_after": {
+    "schema_version": 1,
+    "repo_root": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+    "repo_identity": "git@github.com:thetimmyman/odysseus.git",
+    "base_sha": "2d88004c",
+    "head_sha": "1c0df6c1e3330dea3c9f1ed514ed0e1aa76ab9f0",
+    "branch": "HEAD",
+    "worktree": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+    "detached": true,
+    "staged_paths": [
+      "src/topo_sort.py"
+    ],
+    "unstaged_paths": [
+      "src/topo_sort.py"
+    ],
+    "untracked_paths": [],
+    "tracked_diff_digest": "5b185d280d59edff30e91b6a8bc6733ed698afdb6cda86d38c99aee9d70d28a2",
+    "untracked_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "relevant_digests": [
+      [
+        "src/topo_sort.py",
+        "161cbc981e7eaeddc91728000cef0806cdbafdbf349ff91fd5c0b0761dd73c1a"
+      ],
+      [
+        "tests/test_topo_sort_ps635.py",
+        "3e8f84b3dbbbf9838d8abd5b18262887740aa535046ce331208139e4e6de7f5b"
+      ]
+    ],
+    "truncated_paths": [],
+    "diff_truncated": false,
+    "snapshot_digest": "c82c972f3e690b50a0c6a609f5694bd08ac59982a17b053dca00988398541688"
+  },
+  "ledger_chain": [
+    true,
+    null
+  ],
+  "manager": null
+}

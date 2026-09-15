@@ -1,0 +1,174 @@
+{
+  "request": {
+    "run_id": "g1d2-toposort-20260915T155826Z",
+    "packet_id": "G1d2-toposort-rtx",
+    "execution_package_hash": "862acae2d0fccc85e977775e9340e3719ad3e003e29efe1300164a111a9ecee7",
+    "domain": "general_swe",
+    "role": "local_implementer",
+    "capabilities": [
+      "text_generation",
+      "single_tool_call",
+      "exact_reference_semantics"
+    ],
+    "exactness": "exact_reference_intent",
+    "sensitivity": "internal",
+    "local_only": true,
+    "required_tools": [
+      "write_file"
+    ],
+    "network_policy": "tailnet-loopback",
+    "budget_class": "",
+    "max_cost_rank": 0,
+    "preferred_profile_ids": [
+      "local-rtx4500"
+    ],
+    "write_scope": [],
+    "read_scope": []
+  },
+  "decision": {
+    "schema_version": 1,
+    "decision_id": "dec-g1d2-toposort-20260915T155826Z",
+    "request": {
+      "run_id": "g1d2-toposort-20260915T155826Z",
+      "packet_id": "G1d2-toposort-rtx",
+      "execution_package_hash": "862acae2d0fccc85e977775e9340e3719ad3e003e29efe1300164a111a9ecee7",
+      "domain": "general_swe",
+      "role": "local_implementer",
+      "capabilities": [
+        "text_generation",
+        "single_tool_call",
+        "exact_reference_semantics"
+      ],
+      "exactness": "exact_reference_intent",
+      "sensitivity": "internal",
+      "local_only": true,
+      "required_tools": [
+        "write_file"
+      ],
+      "network_policy": "tailnet-loopback",
+      "budget_class": "",
+      "max_cost_rank": 0,
+      "preferred_profile_ids": [
+        "local-rtx4500"
+      ],
+      "write_scope": [],
+      "read_scope": []
+    },
+    "policy": {
+      "schema_version": 1,
+      "version": "1.2",
+      "policy_hash": "4df270ad9543772de75364bde0f12111abb69e606c0b49481c7b51ad428a6d21",
+      "source": "src.routing_policy.load_policy",
+      "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d"
+    },
+    "candidates": [
+      {
+        "target_id": "local-rtx4500",
+        "profile_id": "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7",
+        "provider": "ollama",
+        "locality": "local",
+        "eligible": true,
+        "rule": "eligible",
+        "reason": "all filters passed",
+        "capability_receipt_id": "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0",
+        "capability_receipt_hash": "c71c7a767d9a4737e70c8201b6224537baaff8bea7651003e2e55aeb84941538",
+        "capability_receipt_observed_at": "2026-09-15T15:56:05.722994+00:00",
+        "capability_receipt_freshness_s": 140,
+        "capability_receipt_ttl_s": 604800,
+        "budget_class": "local",
+        "exactness": "exact_reference_intent",
+        "cost_rank": 0,
+        "preference_rank": 1
+      }
+    ],
+    "selected_profile": {
+      "schema_version": 1,
+      "target_id": "local-rtx4500",
+      "profile_id": "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7",
+      "provider": "ollama",
+      "host": "minipc",
+      "runtime_kind": "ollama",
+      "runtime_version": "0.32.11",
+      "model": "qwen3.8:27b",
+      "model_digest": "d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28",
+      "backend": "",
+      "locality": "local",
+      "exactness": "exact_reference_intent",
+      "roles": [
+        "debugger",
+        "deterministic_verifier",
+        "local_implementer",
+        "local_repair",
+        "read_only_analyst",
+        "reviewer",
+        "scout"
+      ],
+      "tools": [
+        "write_file"
+      ],
+      "network_policy": "tailnet-loopback",
+      "budget_class": "local",
+      "cost_rank": 0,
+      "inference": true
+    },
+    "selected_receipt_hash": "c71c7a767d9a4737e70c8201b6224537baaff8bea7651003e2e55aeb84941538",
+    "reason_code": "selected_local_only_candidate",
+    "reason": "local-only work selected a local profile; every hosted candidate was refused by policy",
+    "fallback_used": false,
+    "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+    "preference_rank": 1,
+    "budget_facts": {
+      "request_budget_class": "",
+      "selected_budget_class": "local",
+      "max_cost_rank": 0,
+      "selected_cost_rank": 0,
+      "eligible_candidates": 1,
+      "candidates_considered": 1
+    },
+    "resource_facts": {},
+    "granted_tools": [
+      "write_file"
+    ],
+    "granted_write_scope": [],
+    "granted_read_scope": [],
+    "network_policy": "tailnet-loopback",
+    "observed_at": "2026-09-15T15:58:26.291426+00:00",
+    "receipt_hash": "a6c9256e7c7767024af73eb3409d196bbcda1b4d4fb76535390b3768e9f3c474",
+    "decision_hash": "a7b9139a01053a816407de02ddc433c598b87819ae92d2e435cfeb2b049b163c"
+  },
+  "policy": {
+    "schema_version": 1,
+    "version": "1.2",
+    "policy_hash": "4df270ad9543772de75364bde0f12111abb69e606c0b49481c7b51ad428a6d21",
+    "source": "src.routing_policy.load_policy",
+    "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d"
+  },
+  "provenance": {
+    "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7": "measured"
+  },
+  "skipped_candidates": [
+    {
+      "target_id": "local-msr1",
+      "reason": "registry does not give this host the inference role (roles=['deterministic_verifier', 'governance_ci', 'arm64_ci'])"
+    },
+    {
+      "target_id": "local-framework",
+      "reason": "unqualified: no independently qualified profile for this host (research/Phase-0 metadata is not qualification)"
+    }
+  ],
+  "selected_target_id": "local-rtx4500",
+  "dispatch_receipt_hash": "a6c9256e7c7767024af73eb3409d196bbcda1b4d4fb76535390b3768e9f3c474",
+  "fleet_skipped": [
+    {
+      "target_id": "local-msr1",
+      "reason": "registry does not give this host the inference role (roles=['deterministic_verifier', 'governance_ci', 'arm64_ci'])"
+    },
+    {
+      "target_id": "local-framework",
+      "reason": "unqualified: no independently qualified profile for this host (research/Phase-0 metadata is not qualification)"
+    }
+  ],
+  "candidate_order": [
+    "local-rtx4500"
+  ]
+}

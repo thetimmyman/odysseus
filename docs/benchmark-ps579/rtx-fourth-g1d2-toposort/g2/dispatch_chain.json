@@ -1,0 +1,18 @@
+{
+  "execution_package_hash": "862acae2d0fccc85e977775e9340e3719ad3e003e29efe1300164a111a9ecee7",
+  "dispatch_receipt_hash": "a6c9256e7c7767024af73eb3409d196bbcda1b4d4fb76535390b3768e9f3c474",
+  "attempts_bound": true,
+  "attempt_targets": [
+    "local-rtx4500"
+  ],
+  "pinned_target_id": "local-rtx4500",
+  "run_target_id": "local-rtx4500",
+  "receipt_target_matches_pin": true,
+  "attempts_on_the_pinned_target": true,
+  "capability_receipt_refs": [
+    "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0"
+  ],
+  "stored_receipt_hash": "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0",
+  "receipt_ref_matches_store": true,
+  "ok": true
+}

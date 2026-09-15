@@ -1,0 +1,30 @@
+{
+  "store": "/home/tdefreest/scratch/ps632-store",
+  "store_audit": {
+    "ok": true,
+    "receipts": 41,
+    "profiles": [
+      "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7"
+    ],
+    "problems": []
+  },
+  "candidates": [
+    {
+      "target_id": "local-rtx4500",
+      "profile_id": "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7"
+    }
+  ],
+  "bound_receipts": {
+    "local-rtx4500": "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0"
+  },
+  "skipped": [
+    {
+      "target_id": "local-msr1",
+      "reason": "registry does not give this host the inference role (roles=['deterministic_verifier', 'governance_ci', 'arm64_ci'])"
+    },
+    {
+      "target_id": "local-framework",
+      "reason": "unqualified: no independently qualified profile for this host (research/Phase-0 metadata is not qualification)"
+    }
+  ]
+}

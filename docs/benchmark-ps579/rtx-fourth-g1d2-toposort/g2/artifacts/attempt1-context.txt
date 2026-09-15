@@ -1,0 +1,27 @@
+OBJECTIVE: Implement the deterministic topological ordering helper used by ledger work-packet planning, to the contract and interface declared on this packet.
+WRITE_SCOPE: src/topo_sort.py
+INTERFACE: graph | required | dict[str, list[str]] -- directed graph mapping each node to successors
+CONTRACT: Implement exactly this public function:
+
+    topological_order(graph: dict[str, list[str]]) -> list[str]
+
+    The graph maps each node to its list of SUCCESSOR nodes (edge node ->
+    successor). Return every node exactly once, including nodes that appear only
+    as successors and nodes with no edges. At each step choose the
+    alphabetically smallest node that is currently ready: every predecessor must
+    already be placed. Ignore duplicate edges. Raise ValueError for a cycle,
+    including a self-loop. Return [] for an empty graph. Do not mutate graph.
+
+    Use only the standard library. No placeholders or TODOs. Write the complete
+    module with the function and any private helpers it needs.
+ACCEPTANCE:   - every key and successor-only node appears exactly once
+  - each edge points from an earlier node to a later node
+  - the alphabetically smallest currently-ready node is selected
+  - duplicate edges are ignored and cycles raise ValueError
+  - empty input returns [] and the input is not mutated
+NEGATIVE_CONTROL: a topological order that violates an edge or chooses a larger ready node must FAIL
+STOP_IF:   - contract is ambiguous
+  - path outside write scope
+
+TASK: implement the module at the path in WRITE_SCOPE, to the CONTRACT, reading its inputs from the keys declared in the INTERFACE section.
+Use the write_file tool exactly once with the complete file content. Standard library only. No placeholders, no TODOs. Do not explain.

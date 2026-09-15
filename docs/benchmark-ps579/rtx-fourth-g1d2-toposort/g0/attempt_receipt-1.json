@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "receipt_id": "attempt-g1d2-toposort-20260915T155735Z-1",
+  "run_id": "g1d2-toposort-20260915T155735Z",
+  "packet_id": "G1d2-toposort-rtx",
+  "attempt": 1,
+  "repair_of": 0,
+  "execution_package_hash": "ce8a0ab9c86d9401eb7b622a6d22f635c44c96fb1864dc742ff1776df9b01832",
+  "dispatch_receipt_hash": "4c257d2488acaecc072600ce95bff794d1035ec14402143b58a5fc3979d47012",
+  "generation_token": "",
+  "target_id": "local-rtx4500",
+  "host": "minipc",
+  "model": "qwen3.8:27b",
+  "runtime_kind": "ollama",
+  "runtime_version": "0.32.11",
+  "model_version": "d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28",
+  "context_projection_hash": "553b7778e9ecdaa6194c5e624f9f300bf3ffd8080fcb350efa5e09683a700939",
+  "rendered_context_ref": {
+    "artifact_id": "attempt1-context.txt",
+    "sha256": "553b7778e9ecdaa6194c5e624f9f300bf3ffd8080fcb350efa5e09683a700939",
+    "media_type": "text/plain",
+    "size": 1758,
+    "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-context.txt"
+  },
+  "output_ref": {
+    "artifact_id": "attempt1-model-output.txt",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "media_type": "text/plain",
+    "size": 0,
+    "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-model-output.txt"
+  },
+  "requested_context": 32768,
+  "served_context": 32768,
+  "started_at": "",
+  "ended_at": "2026-09-15T15:57:53.010921+00:00",
+  "elapsed_s": 15.985,
+  "finish_reason": "wrote src/topo_sort.py (1739 chars)",
+  "prompt_tokens": 655,
+  "completion_tokens": 470,
+  "tool_invocations": [
+    {
+      "name": "write_file"
+    }
+  ],
+  "declared_write_set": [
+    "src/topo_sort.py"
+  ],
+  "actual_write_set": [
+    "src/topo_sort.py"
+  ],
+  "artifact_refs": [
+    {
+      "artifact_id": "attempt1-artifact-topo_sort.py",
+      "sha256": "161cbc981e7eaeddc91728000cef0806cdbafdbf349ff91fd5c0b0761dd73c1a",
+      "media_type": "text/plain",
+      "size": 1739,
+      "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-artifact-topo_sort.py"
+    }
+  ],
+  "failure_class": "",
+  "receipt_hash": "9f0a0d709d4859dbd5b8004b9ecda0358c8964179eaec5f0bd071034b7145f56"
+}

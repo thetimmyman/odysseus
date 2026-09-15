@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "receipt_id": "dispatch-dec-g1d2-toposort-20260915T155801Z",
+  "execution_package_hash": "cd5b433bea4e4d7d504ca896e76155c2f3a725952990fff133b422eaa024da05",
+  "run_id": "g1d2-toposort-20260915T155801Z",
+  "packet_id": "G1d2-toposort-rtx",
+  "requested_role": "local_implementer",
+  "requested_capabilities": [
+    "text_generation",
+    "single_tool_call",
+    "exact_reference_semantics"
+  ],
+  "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d",
+  "candidates_considered": [
+    {
+      "target_id": "local-rtx4500",
+      "profile_id": "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7",
+      "provider": "ollama",
+      "locality": "local",
+      "eligible": true,
+      "rule": "eligible",
+      "reason": "all filters passed",
+      "capability_receipt_id": "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0",
+      "capability_receipt_hash": "c71c7a767d9a4737e70c8201b6224537baaff8bea7651003e2e55aeb84941538",
+      "capability_receipt_observed_at": "2026-09-15T15:56:05.722994+00:00",
+      "capability_receipt_freshness_s": 116,
+      "capability_receipt_ttl_s": 604800,
+      "budget_class": "local",
+      "exactness": "exact_reference_intent",
+      "cost_rank": 0,
+      "preference_rank": 1,
+      "selected": true,
+      "reason_code": "selected_local_only_candidate",
+      "fallback_used": false,
+      "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+      "budget_facts": {
+        "request_budget_class": "",
+        "selected_budget_class": "local",
+        "max_cost_rank": 0,
+        "selected_cost_rank": 0,
+        "eligible_candidates": 1,
+        "candidates_considered": 1
+      },
+      "resource_facts": {}
+    }
+  ],
+  "capability_receipt_refs": [
+    "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0"
+  ],
+  "selected_target_id": "local-rtx4500",
+  "selected_host": "minipc",
+  "selected_model": "qwen3.8:27b",
+  "selected_runtime_kind": "ollama",
+  "selected_runtime_version": "0.32.11",
+  "selected_model_digest": "d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28",
+  "selected_backend": "",
+  "granted_tools": [
+    "write_file"
+  ],
+  "granted_write_scope": [],
+  "granted_read_scope": [],
+  "network_policy": "tailnet-loopback",
+  "decided_by": "ps605_policy",
+  "reason": "selected_local_only_candidate: local-only work selected a local profile; every hosted candidate was refused by policy",
+  "decided_at": "2026-09-15T15:58:02.647354+00:00",
+  "receipt_hash": "6c32f7dc2a2d1bab2440010b830786820d1de59ae6259d0de7aac09e34162c9e"
+}

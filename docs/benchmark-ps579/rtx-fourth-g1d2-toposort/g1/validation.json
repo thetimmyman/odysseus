@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "issues": [],
+  "requirement_states": [
+    {
+      "requirement_id": "deterministic_verification",
+      "state": "SATISFIED",
+      "receipt_id": "2ae13d729909100cbb0fefe50bf3739779b3778b7652bbe716c461d4d9f74fd3",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "source_binding",
+      "state": "SATISFIED",
+      "receipt_id": "2ae13d729909100cbb0fefe50bf3739779b3778b7652bbe716c461d4d9f74fd3",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "negative_control",
+      "state": "SATISFIED",
+      "receipt_id": "2ae13d729909100cbb0fefe50bf3739779b3778b7652bbe716c461d4d9f74fd3",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "scope_check",
+      "state": "SATISFIED",
+      "receipt_id": "2ae13d729909100cbb0fefe50bf3739779b3778b7652bbe716c461d4d9f74fd3",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "context_delivery",
+      "state": "SATISFIED",
+      "receipt_id": "2ae13d729909100cbb0fefe50bf3739779b3778b7652bbe716c461d4d9f74fd3",
+      "detail": "PASS by HARNESS_HIDDEN"
+    }
+  ]
+}

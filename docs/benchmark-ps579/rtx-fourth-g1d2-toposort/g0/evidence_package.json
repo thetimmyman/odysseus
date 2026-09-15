@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "evidence_package_id": "evpkg-g1d2-toposort-20260915T155735Z",
+  "sealed_at": "2026-09-15T15:57:53.011687+00:00",
+  "execution_package": {
+    "schema_version": 1,
+    "package_id": "G1d2-toposort-rtx:g1d2-toposort-20260915T155735Z",
+    "run_id": "g1d2-toposort-20260915T155735Z",
+    "packet_id": "G1d2-toposort-rtx",
+    "jira_key": "PS-635",
+    "parent_ids": [],
+    "source": {
+      "schema_version": 1,
+      "repo_root": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+      "repo_identity": "git@github.com:thetimmyman/odysseus.git",
+      "base_sha": "2d88004c",
+      "head_sha": "1c0df6c1e3330dea3c9f1ed514ed0e1aa76ab9f0",
+      "branch": "HEAD",
+      "worktree": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+      "detached": true,
+      "staged_paths": [
+        "src/topo_sort.py"
+      ],
+      "unstaged_paths": [],
+      "untracked_paths": [],
+      "tracked_diff_digest": "f9ed6abc87963cc4eafd6d401b59cb54dc0f74d5c9893e18986f10908f93a42b",
+      "untracked_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "relevant_digests": [
+        [
+          "src/topo_sort.py",
+          "9d329bec8498492b4fc5f5d6767c1715da6222a18ce5418ecde027adef741d12"
+        ],
+        [
+          "tests/test_topo_sort_ps635.py",
+          "3e8f84b3dbbbf9838d8abd5b18262887740aa535046ce331208139e4e6de7f5b"
+        ]
+      ],
+      "truncated_paths": [],
+      "diff_truncated": false,
+      "snapshot_digest": "97ff65a9aee3c607faa6af0c008ef5c99b9e7db5d1b793226a0a39a2090c6b1d"
+    },
+    "objective": "Implement the deterministic topological ordering helper used by ledger work-packet planning, to the contract and interface declared on this packet.",
+    "contract": "Implement exactly this public function:\n\n    topological_order(graph: dict[str, list[str]]) -> list[str]\n\n    The graph maps each node to its list of SUCCESSOR nodes (edge node ->\n    successor). Return every node exactly once, including nodes that appear only\n    as successors and nodes with no edges. At each step choose the\n    alphabetically smallest node that is currently ready: every predecessor must\n    already be placed. Ignore duplicate edges. Raise ValueError for a cycle,\n    including a self-loop. Return [] for an empty graph. Do not mutate graph.\n\n    Use only the standard library. No placeholders or TODOs. Write the complete\n    module with the function and any private helpers it needs.",
+    "interface": [
+      "graph | required | dict[str, list[str]] -- directed graph mapping each node to successors"
+    ],
+    "interface_digest": "fac6d37529c6b3ce",
+    "acceptance_criteria": [
+      "every key and successor-only node appears exactly once",
+      "each edge points from an earlier node to a later node",
+      "the alphabetically smallest currently-ready node is selected",
+      "duplicate edges are ignored and cycles raise ValueError",
+      "empty input returns [] and the input is not mutated"
+    ],
+    "write_scope": [
+      "src/topo_sort.py"
+    ],
+    "read_scope": [],
+    "required_capabilities": [],
+    "execution_role": "local_implementer",
+    "allowed_tools": [
+      "write_file"
+    ],
+    "network_policy": "tailnet-loopback (ssh to the target's ollama loopback)",
+    "negative_control": "a topological order that violates an edge or chooses a larger ready node must FAIL",
+    "stop_conditions": [
+      "contract is ambiguous",
+      "path outside write scope"
+    ],
+    "budgets": {
+      "context_tokens": 0,
+      "output_tokens": 0,
+      "time_seconds": 0,
+      "max_attempts": 3,
+      "max_repair_chars": 6000
+    },
+    "verification": {
+      "verifier_id": "tests/test_topo_sort_ps635.py",
+      "command": "python3 -m pytest tests/test_topo_sort_ps635.py -q",
+      "verifier_paths": [
+        "tests/test_topo_sort_ps635.py"
+      ],
+      "verifier_digests": [
+        [
+          "tests/test_topo_sort_ps635.py",
+          "3e8f84b3dbbbf9838d8abd5b18262887740aa535046ce331208139e4e6de7f5b"
+        ]
+      ],
+      "positive_control": "every graph rule is implemented and the verifier passes",
+      "negative_control": "a topological order that violates an edge or chooses a larger ready node must FAIL",
+      "timeout_s": 600,
+      "hidden_from_worker": true
+    },
+    "evidence_requirements": [
+      {
+        "requirement_id": "deterministic_verification",
+        "kind": "deterministic_verification",
+        "vantage": "harness worktree",
+        "expected_verifier": "tests/test_topo_sort_ps635.py",
+        "independence": "HARNESS_HIDDEN",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      },
+      {
+        "requirement_id": "source_binding",
+        "kind": "source_binding",
+        "vantage": "harness worktree",
+        "expected_verifier": "src.source_snapshot.take_source_snapshot",
+        "independence": "EXISTING_AUTHORITATIVE",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      },
+      {
+        "requirement_id": "negative_control",
+        "kind": "negative_control",
+        "vantage": "harness worktree",
+        "expected_verifier": "tests/test_topo_sort_ps635.py (negative control)",
+        "independence": "HARNESS_HIDDEN",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      },
+      {
+        "requirement_id": "scope_check",
+        "kind": "scope_check",
+        "vantage": "harness worktree",
+        "expected_verifier": "actual write set vs authorized write scope",
+        "independence": "EXISTING_AUTHORITATIVE",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      },
+      {
+        "requirement_id": "context_delivery",
+        "kind": "context_delivery",
+        "vantage": "harness worktree",
+        "expected_verifier": "the rendered-context artifact",
+        "independence": "HARNESS_HIDDEN",
+        "freshness_rule": "",
+        "allow_blocked": false,
+        "mandatory": true
+      }
+    ],
+    "package_hash": "ce8a0ab9c86d9401eb7b622a6d22f635c44c96fb1864dc742ff1776df9b01832"
+  },
+  "dispatch_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "dispatch-dec-g1d2-toposort-20260915T155735Z",
+      "execution_package_hash": "ce8a0ab9c86d9401eb7b622a6d22f635c44c96fb1864dc742ff1776df9b01832",
+      "run_id": "g1d2-toposort-20260915T155735Z",
+      "packet_id": "G1d2-toposort-rtx",
+      "requested_role": "local_implementer",
+      "requested_capabilities": [
+        "text_generation",
+        "single_tool_call",
+        "exact_reference_semantics"
+      ],
+      "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d",
+      "candidates_considered": [
+        {
+          "target_id": "local-rtx4500",
+          "profile_id": "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7",
+          "provider": "ollama",
+          "locality": "local",
+          "eligible": true,
+          "rule": "eligible",
+          "reason": "all filters passed",
+          "capability_receipt_id": "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0",
+          "capability_receipt_hash": "c71c7a767d9a4737e70c8201b6224537baaff8bea7651003e2e55aeb84941538",
+          "capability_receipt_observed_at": "2026-09-15T15:56:05.722994+00:00",
+          "capability_receipt_freshness_s": 89,
+          "capability_receipt_ttl_s": 604800,
+          "budget_class": "local",
+          "exactness": "exact_reference_intent",
+          "cost_rank": 0,
+          "preference_rank": 1,
+          "selected": true,
+          "reason_code": "selected_local_only_candidate",
+          "fallback_used": false,
+          "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+          "budget_facts": {
+            "request_budget_class": "",
+            "selected_budget_class": "local",
+            "max_cost_rank": 0,
+            "selected_cost_rank": 0,
+            "eligible_candidates": 1,
+            "candidates_considered": 1
+          },
+          "resource_facts": {}
+        }
+      ],
+      "capability_receipt_refs": [
+        "bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0"
+      ],
+      "selected_target_id": "local-rtx4500",
+      "selected_host": "minipc",
+      "selected_model": "qwen3.8:27b",
+      "selected_runtime_kind": "ollama",
+      "selected_runtime_version": "0.32.11",
+      "selected_model_digest": "d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28",
+      "selected_backend": "",
+      "granted_tools": [
+        "write_file"
+      ],
+      "granted_write_scope": [],
+      "granted_read_scope": [],
+      "network_policy": "tailnet-loopback",
+      "decided_by": "ps605_policy",
+      "reason": "selected_local_only_candidate: local-only work selected a local profile; every hosted candidate was refused by policy",
+      "decided_at": "2026-09-15T15:57:35.350033+00:00",
+      "receipt_hash": "4c257d2488acaecc072600ce95bff794d1035ec14402143b58a5fc3979d47012"
+    }
+  ],
+  "attempt_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "attempt-g1d2-toposort-20260915T155735Z-1",
+      "run_id": "g1d2-toposort-20260915T155735Z",
+      "packet_id": "G1d2-toposort-rtx",
+      "attempt": 1,
+      "repair_of": 0,
+      "execution_package_hash": "ce8a0ab9c86d9401eb7b622a6d22f635c44c96fb1864dc742ff1776df9b01832",
+      "dispatch_receipt_hash": "4c257d2488acaecc072600ce95bff794d1035ec14402143b58a5fc3979d47012",
+      "generation_token": "",
+      "target_id": "local-rtx4500",
+      "host": "minipc",
+      "model": "qwen3.8:27b",
+      "runtime_kind": "ollama",
+      "runtime_version": "0.32.11",
+      "model_version": "d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28",
+      "context_projection_hash": "553b7778e9ecdaa6194c5e624f9f300bf3ffd8080fcb350efa5e09683a700939",
+      "rendered_context_ref": {
+        "artifact_id": "attempt1-context.txt",
+        "sha256": "553b7778e9ecdaa6194c5e624f9f300bf3ffd8080fcb350efa5e09683a700939",
+        "media_type": "text/plain",
+        "size": 1758,
+        "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-context.txt"
+      },
+      "output_ref": {
+        "artifact_id": "attempt1-model-output.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "media_type": "text/plain",
+        "size": 0,
+        "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-model-output.txt"
+      },
+      "requested_context": 32768,
+      "served_context": 32768,
+      "started_at": "",
+      "ended_at": "2026-09-15T15:57:53.010921+00:00",
+      "elapsed_s": 15.985,
+      "finish_reason": "wrote src/topo_sort.py (1739 chars)",
+      "prompt_tokens": 655,
+      "completion_tokens": 470,
+      "tool_invocations": [
+        {
+          "name": "write_file"
+        }
+      ],
+      "declared_write_set": [
+        "src/topo_sort.py"
+      ],
+      "actual_write_set": [
+        "src/topo_sort.py"
+      ],
+      "artifact_refs": [
+        {
+          "artifact_id": "attempt1-artifact-topo_sort.py",
+          "sha256": "161cbc981e7eaeddc91728000cef0806cdbafdbf349ff91fd5c0b0761dd73c1a",
+          "media_type": "text/plain",
+          "size": 1739,
+          "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-artifact-topo_sort.py"
+        }
+      ],
+      "failure_class": "",
+      "receipt_hash": "9f0a0d709d4859dbd5b8004b9ecda0358c8964179eaec5f0bd071034b7145f56"
+    }
+  ],
+  "verification_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "verify-g1d2-toposort-20260915T155735Z-1",
+      "run_id": "g1d2-toposort-20260915T155735Z",
+      "packet_id": "G1d2-toposort-rtx",
+      "attempt": 1,
+      "execution_package_hash": "ce8a0ab9c86d9401eb7b622a6d22f635c44c96fb1864dc742ff1776df9b01832",
+      "verifier_id": "tests/test_topo_sort_ps635.py",
+      "verifier_digest": "3e8f84b3dbbbf9838d8abd5b18262887740aa535046ce331208139e4e6de7f5b",
+      "verifier_paths": [
+        "tests/test_topo_sort_ps635.py"
+      ],
+      "source_snapshot_digest": "c82c972f3e690b50a0c6a609f5694bd08ac59982a17b053dca00988398541688",
+      "worktree": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+      "host": "minipc",
+      "container": "",
+      "normalized_command": "python3 -m pytest tests/test_topo_sort_ps635.py -q -p no:cacheprovider",
+      "exit_code": 0,
+      "timeout_s": 0,
+      "started_at": "2026-09-15T15:57:51.430235+00:00",
+      "ended_at": "2026-09-15T15:57:52.587552+00:00",
+      "elapsed_s": 1.157,
+      "stdout_ref": {
+        "artifact_id": "attempt1-verifier-stdout.txt",
+        "sha256": "46bf400c23afb545cb42ce34b5f019b2b057baf7baeab17f064a891ffb223aba",
+        "media_type": "text/plain",
+        "size": 596,
+        "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-verifier-stdout.txt"
+      },
+      "stderr_ref": {
+        "artifact_id": "attempt1-verifier-stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "media_type": "text/plain",
+        "size": 0,
+        "storage_uri": "file:///home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/data/live/g1d2-toposort-20260915T155735Z/artifacts/attempt1-verifier-stderr.txt"
+      },
+      "stdout_complete": true,
+      "stderr_complete": true,
+      "stdout_bytes": 596,
+      "stderr_bytes": 0,
+      "tests_collected": 11,
+      "tests_executed": 11,
+      "tests_passed": 11,
+      "tests_failed": null,
+      "tests_skipped": null,
+      "expected": "the hidden verifier passes on the produced artifact",
+      "observed": "11 passed, 1 warning in 0.16s",
+      "control_id": "test_ready_nodes_are_chosen_alphabetically",
+      "control_expected": "FAIL for an implementation the contract forbids",
+      "control_observed": "node id present in tests/test_topo_sort_ps635.py",
+      "control_passed": true,
+      "write_set_reconciliation": [],
+      "tool_versions": [],
+      "proof_class": "HARNESS_HIDDEN",
+      "requirement_ids": [
+        "deterministic_verification",
+        "source_binding",
+        "negative_control",
+        "scope_check",
+        "context_delivery"
+      ],
+      "blocked_reason": "",
+      "failure_fingerprint": "a0092bc54bdead92",
+      "claimed_preexisting": false,
+      "baseline_receipt_hash": "",
+      "baseline_source_digest": "",
+      "baseline_failure_fingerprint": "",
+      "outcome": "PASS",
+      "receipt_hash": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297"
+    }
+  ],
+  "requirement_states": [
+    {
+      "requirement_id": "deterministic_verification",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "source_binding",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "negative_control",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "scope_check",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "context_delivery",
+      "state": "SATISFIED",
+      "receipt_id": "a7e3ef8317a3ee1a35796b3c53d2f9e6cb3fcdc012840acfaf34142ccf3a0297",
+      "detail": "PASS by HARNESS_HIDDEN"
+    }
+  ],
+  "waivers": {},
+  "seals": [],
+  "evidence_package_hash": "d3f6f08425588e9d74264b6390593bf899891511a7f5af823a5a4757f46dc9d4"
+}

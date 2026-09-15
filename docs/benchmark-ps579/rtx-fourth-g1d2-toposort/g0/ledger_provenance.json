@@ -1,0 +1,81 @@
+{
+  "run_id": "g1d2-toposort-20260915T155735Z",
+  "identity": {
+    "objective": "Implement the deterministic topological ordering helper used by ledger work-packet planning, to the contract and interface declared on this packet.",
+    "role": "local_implementer",
+    "target_id": "local-rtx4500",
+    "host": "minipc",
+    "model": "qwen3.8:27b",
+    "runtime_version": "0.32.11",
+    "worktree": "/home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0",
+    "write_scope": [
+      "src/topo_sort.py"
+    ],
+    "base_sha": "2d88004c",
+    "result": "IN_PROGRESS",
+    "interface_digest": "fac6d37529c6b3ce",
+    "interface": [
+      "graph | required | dict[str, list[str]] -- directed graph mapping each node to successors"
+    ]
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "target_id": "local-rtx4500",
+      "host": "minipc",
+      "num_ctx": 32768,
+      "served_context": 32768,
+      "elapsed_s": 15.985,
+      "rounds": 1,
+      "artifacts": [
+        "src/topo_sort.py"
+      ],
+      "status": "wrote src/topo_sort.py (1739 chars)",
+      "result": "IN_PROGRESS",
+      "timings": {
+        "round1": {
+          "elapsed_s": 15.716,
+          "ttft_s": 15.715,
+          "eval_count": 470,
+          "prompt_eval_count": 655,
+          "incremental": false,
+          "runtime_state_before": {
+            "ok": true,
+            "returncode": 0,
+            "raw": "LOADAVG 2.00 1.74 1.60 1/3682 39228\nOLLAMA_PS {\"models\":[{\"name\":\"qwen3.8:27b\",\"model\":\"qwen3.8:27b\",\"size\":18721286388,\"digest\":\"d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28\",\"details\":{\"parent_model\":\"\",\"format\":\"gguf\",\"family\":\"qwen35\",\"families\":[\"qwen35\"],\"parameter_size\":\"27.3B\",\"quantization_level\":\"unknown\"},\"expires_at\":\"2026-09-16T15:57:35.068353216Z\",\"size_vram\":18721286388,\"context_length\":32768}]}\nGPU NVIDIA RTX PRO 4500 Blackwell, 0, 19070, 32623\n",
+            "error": ""
+          },
+          "runtime_state_probe_s": 0.268
+        }
+      }
+    }
+  ],
+  "verifications": [
+    {
+      "test_command": "python3 -m pytest tests/test_topo_sort_ps635.py -q -p no:cacheprovider",
+      "passed": true,
+      "returncode": 0,
+      "summary": [
+        "11 passed, 1 warning in 0.16s"
+      ],
+      "excerpt": "...........                                                              [100%]\n=============================== warnings summary ===============================\ncore/database.py:15\n  /home/tdefreest/scratch/worktrees/ps579-fourth-g1d2-toposort/g0/core/database.py:15: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)\n    Base = declarative_base()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n11 passed, 1 warning in 0.16s\n",
+      "result": "ACCEPTED_CANDIDATE",
+      "attempt": 1
+    }
+  ],
+  "repairs": [],
+  "decisions": [
+    {
+      "decision": "stop",
+      "reason": "attempt 1 passed deterministic verification",
+      "result": "ACCEPTED_CANDIDATE"
+    }
+  ],
+  "failures": [],
+  "acceptances": [],
+  "proposals": [],
+  "proposal_refusals": [],
+  "terminal_result": "ACCEPTED_CANDIDATE",
+  "failure_class": "",
+  "chain_ok": true
+}
