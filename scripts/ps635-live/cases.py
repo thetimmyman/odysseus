@@ -422,6 +422,73 @@ class PS639ComposeDriftCase(Case):
                     f"the merged answer for {overlay_rel} leaked into the context")
 
 
+class G1d2ToposortCase(Case):
+    """G1d2 — the corrected, source-bound deterministic graph packet."""
+
+    name = "g1d2-toposort"
+    jira_key = "PS-635"
+    base_sha = "2d88004c"
+    artifact = "src/topo_sort.py"
+    verifier = "tests/test_topo_sort_ps635.py"
+    control_node_id = "test_ready_nodes_are_chosen_alphabetically"
+    positive_control = "every graph rule is implemented and the verifier passes"
+    negative_control = (
+        "a topological order that violates an edge or chooses a larger ready node "
+        "must FAIL"
+    )
+
+    contract = '''Implement exactly this public function:
+
+    topological_order(graph: dict[str, list[str]]) -> list[str]
+
+    The graph maps each node to its list of SUCCESSOR nodes (edge node ->
+    successor). Return every node exactly once, including nodes that appear only
+    as successors and nodes with no edges. At each step choose the
+    alphabetically smallest node that is currently ready: every predecessor must
+    already be placed. Ignore duplicate edges. Raise ValueError for a cycle,
+    including a self-loop. Return [] for an empty graph. Do not mutate graph.
+
+    Use only the standard library. No placeholders or TODOs. Write the complete
+    module with the function and any private helpers it needs.'''
+
+    interface_keys = ("graph",)
+
+    def packet(self) -> dict:
+        return {
+            "packet_id": "G1d2-toposort-rtx",
+            "objective": (
+                "Implement the deterministic topological ordering helper used by "
+                "ledger work-packet planning, to the contract and interface "
+                "declared on this packet."
+            ),
+            "contract": self.contract,
+            "target_requirements": ["native_tools"],
+            "write_scope": self.write_scope,
+            "read_scope": [],
+            "interface": [
+                {"name": "graph", "required": True,
+                 "type_hint": "dict[str, list[str]]",
+                 "semantics": "directed graph mapping each node to successors"},
+            ],
+            "acceptance_criteria": [
+                "every key and successor-only node appears exactly once",
+                "each edge points from an earlier node to a later node",
+                "the alphabetically smallest currently-ready node is selected",
+                "duplicate edges are ignored and cycles raise ValueError",
+                "empty input returns [] and the input is not mutated",
+            ],
+            "test_command": f"python3 -m pytest {self.verifier} -q",
+            "negative_control": self.negative_control,
+            "evidence_required": ["deterministic_verification", "source_binding"],
+            "stop_conditions": ["contract is ambiguous", "path outside write scope"],
+            "role": "local_implementer",
+            "base_sha": self.base_sha,
+        }
+
+    def preflight(self, context: str) -> None:
+        _assert_interface_rendered(context, self.interface_keys)
+
+
 class G2ReplanControlCase(G1eBoundedCacheCase):
     """The G2 control: the SAME complete packet as ``g1e``, manager seam ON.
 
@@ -497,6 +564,7 @@ class NegNoInterfaceCase(G1eBoundedCacheCase):
 CASES = {
     L1InterfaceCase.name: L1InterfaceCase,
     G1eBoundedCacheCase.name: G1eBoundedCacheCase,
+    G1d2ToposortCase.name: G1d2ToposortCase,
     NegNoInterfaceCase.name: NegNoInterfaceCase,
     PS639ComposeDriftCase.name: PS639ComposeDriftCase,
     G2ReplanControlCase.name: G2ReplanControlCase,
