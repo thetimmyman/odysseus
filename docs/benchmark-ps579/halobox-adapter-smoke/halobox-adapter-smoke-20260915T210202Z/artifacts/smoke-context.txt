@@ -1,0 +1,6 @@
+Write the file 'docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260915T210202Z/artifacts/smoke_nonce.txt' using the write_file tool. Its content must be exactly:
+HBX-637859E0E34E
+Nothing else.
+
+INTERFACE:
+nonce | required | str -- the exact nonce to write
