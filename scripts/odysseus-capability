@@ -68,7 +68,35 @@ def cmd_discover(args) -> int:
             f"note: {args.target!r} has no qualification reference, so its receipt "
             "will not be routable until an exact profile is qualified\n")
 
-    records = probe_fleet([spec])
+    from src.local_targets import inspector_for
+
+    stored = _store(args).current_for_host(spec.target_id)
+    inspector = inspector_for(spec)
+    reuse_note = ""
+    if args.reuse_identity_from_store and stored is not None:
+        aux = {}
+        for entry in (stored.model.auxiliary_artifacts or ()):
+            name, _, digest = str(entry).partition("=")
+            if name and digest:
+                aux[name] = digest
+        sizes = (stored.context.options or {}).get("artifact_shard_sizes") or {}
+        shards = []
+        for path in (spec.artifact_paths or ()):
+            name = str(path).rsplit("/", 1)[-1]
+            if name in aux and name in sizes:
+                shards.append({"path": str(path), "artifact": name,
+                               "sha256": aux[name],
+                               "size_bytes": int(sizes[name])})
+        if shards and len(shards) == len(spec.artifact_paths or ()):
+            inspector.known_identity = {"digest": stored.model.digest,
+                                        "shards": shards}
+            reuse_note = ("heartbeat: reusing the artifact identity measured in "
+                          f"receipt {stored.receipt_hash[:16]} after a size check")
+        else:
+            reuse_note = ("heartbeat requested but the stored receipt lacks shard "
+                          "sizes/hashes; hashing instead")
+
+    records = probe_fleet([spec], inspector=inspector)
     record = records[0]
     facts = {
         "configured_context": args.configured_context,
@@ -192,6 +220,13 @@ def main() -> int:
     discover.add_argument("--ttl-s", type=int, default=0)
     discover.add_argument("--health-ttl-s", type=int, default=0)
     discover.add_argument("--notes", default="")
+    discover.add_argument(
+        "--reuse-identity-from-store", action="store_true",
+        help="HEARTBEAT: reuse the artifact identity already MEASURED in the store "
+             "when every declared shard still has its recorded size, instead of "
+             "re-hashing tens of GiB. A size change falls back to a full re-hash, so "
+             "this can refresh liveness but can never carry an old digest onto new "
+             "bytes.")
     discover.set_defaults(func=cmd_discover)
 
     show = sub.add_parser("show", help="print current receipts")
