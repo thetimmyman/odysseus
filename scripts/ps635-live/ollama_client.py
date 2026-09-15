@@ -253,6 +253,14 @@ TARGETS = {
 }
 
 
-def target(target_id: str) -> Target:
-    host, model = TARGETS[target_id]
-    return Target(target_id, host, model)
+def target(target_id: str):
+    """The client this target's REGISTRY runtime kind requires.
+
+    This used to be a two-entry ollama dict, which made the client an assumption
+    about the runtime rather than a consequence of the registered profile. The
+    registry now decides, so a llama-server profile gets the OpenAI-compatible
+    client and an unregistered id still raises KeyError (fail closed).
+    """
+    from runtime_client import client_for_target
+
+    return client_for_target(target_id)

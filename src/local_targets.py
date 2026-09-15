@@ -83,11 +83,58 @@ TARGET_RTX_4500 = "local-rtx4500"
 TARGET_MSR1 = "local-msr1"
 TARGET_FRAMEWORK = "local-framework"
 
+#: The Framework HaloBox Same-GGUF execution profile (PS-624 disposition
+#: QUALIFIED_EXPERIMENTAL). This is a PROFILE-scoped target, deliberately separate
+#: from TARGET_FRAMEWORK: the Framework HOST keeps no generic inference capability,
+#: and a request for HaloBox either resolves to this exact profile or refuses.
+TARGET_FRAMEWORK_HALOBOX = "local-framework-halobox"
+
+#: The exact PS-624 profile identity, and the qualification reference that makes the
+#: target routable. Both are one string on purpose: the qualification IS the profile.
+HALOBOX_PROFILE_ID = (
+    "framework/halobox-same-gguf/vulkan/qwen38-flash-next-ud-iq4_xs"
+    "@halo-box-29e091e")
+HALOBOX_QUALIFICATION_REF = f"ps624-qualified:{HALOBOX_PROFILE_ID}"
+
+#: The sealed PS-624 HaloBox runtime build. A different commit is a different profile.
+HALOBOX_RUNTIME_COMMIT = "29e091ea5b228ac1735cde369e68e6767a53e510"
+
+#: HaloBox's own endpoint on the Framework host, taken from the SEALED PS-624 launch
+#: command (halobox-control/launch.sh: --host 127.0.0.1 --port 8731). NOT 11434:
+#: that is the host's Ollama service and must never stand in for this profile.
+HALOBOX_ENDPOINT_PORT = "http://127.0.0.1:8731"
+
+#: The sealed launch also fixes the slot count: -c 262144 --parallel 4 is what
+#: splits the configured window into per-request windows (262144 / 4 = 65536).
+HALOBOX_PARALLEL_SLOTS = 4
+
+#: The alias Odysseus addresses on this profile. The sealed launch passes no
+#: --alias, so llama-server reports the shard PATH as the model id; the addressed
+#: alias is that path's basename, and the full served id is kept in the receipt's
+#: runtime options as measured evidence.
+HALOBOX_MODEL_ALIAS = "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+
+#: The sealed split-GGUF shards. Identity is per-shard SHA-256 (measured at probe).
+HALOBOX_ARTIFACT_PATHS: Tuple[str, ...] = (
+    "/mnt/framework-data/models/halogen-flash-same-gguf/UD-IQ4_XS"
+    "/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "/mnt/framework-data/models/halogen-flash-same-gguf/UD-IQ4_XS"
+    "/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+    "/mnt/framework-data/models/halogen-flash-same-gguf/UD-IQ4_XS"
+    "/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+)
+
 #: Transports. Both reachable targets bind ollama to loopback and are therefore
 #: only addressable over ssh; a target that later exposes a routable endpoint
 #: uses ``http`` and nothing else in this module changes.
 TRANSPORT_SSH = "ssh"
 TRANSPORT_HTTP = "http"
+
+#: Runtime kinds. ``runtime_kind`` selects the INSPECTOR (measurement) and the
+#: CLIENT (invocation), and it is part of the receipt's material identity, so a
+#: runtime change is a profile change rather than a silent substitution.
+RUNTIME_OLLAMA = "ollama"
+RUNTIME_LLAMA_SERVER = "llama-server"
 
 #: Measured health states. ``unreachable`` and ``degraded`` are DIFFERENT from
 #: ``unhealthy`` on purpose: the first means we could not ask, the second means
@@ -156,6 +203,15 @@ class LocalTargetSpec:
     #: PS-632 measured receipt, or "" when nothing qualifies it. Empty means NOT
     #: ROUTABLE, and research/Phase-0 metadata never fills this in.
     qualification_ref: str = ""
+    #: Artifact files whose CONTENT is part of this profile's identity (a split GGUF
+    #: is three files, and a receipt that names only an alias names nothing). The
+    #: paths are configuration; their hashes are MEASURED at probe time.
+    artifact_paths: Tuple[str, ...] = ()
+    #: True when the qualified launch FIXES the served window, so a runtime serving
+    #: a different window is a DIFFERENT profile even though "served" is a live fact
+    #: rather than material identity. Set on the HaloBox profile, whose sealed launch
+    #: is -c 262144; a 131072-server must not answer a 262144-qualified request.
+    requires_exact_served_context: bool = False
 
     @property
     def transport(self) -> str:
@@ -181,6 +237,8 @@ class LocalTargetSpec:
             "max_concurrency": self.max_concurrency,
             "roles": list(self.roles),
             "qualification_ref": self.qualification_ref,
+            "artifact_paths": list(self.artifact_paths),
+            "requires_exact_served_context": self.requires_exact_served_context,
         }
 
 
@@ -223,6 +281,27 @@ DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
         # deliberately no generic "framework" capability.
         roles=(ROLE_INFERENCE,),
         qualification_ref="",
+    ),
+    LocalTargetSpec(
+        target_id=TARGET_FRAMEWORK_HALOBOX,
+        label=("Framework Strix Halo / HaloBox same-GGUF Vulkan "
+               "(Qwen3.8 Flash-Next UD-IQ4_XS)"),
+        ssh_host="framework",
+        # HaloBox's OWN endpoint. The Framework Ollama service at 11434 is a
+        # different runtime and can never satisfy this profile.
+        endpoint=HALOBOX_ENDPOINT_PORT,
+        model=HALOBOX_MODEL_ALIAS,
+        runtime_kind=RUNTIME_LLAMA_SERVER,
+        # Only what the PS-624 qualification actually established: inference.
+        roles=(ROLE_INFERENCE,),
+        qualification_ref=HALOBOX_QUALIFICATION_REF,
+        # Sealed launch: --parallel 4, which is also what splits 262144 into a
+        # 65536 per-request slot window.
+        max_concurrency=HALOBOX_PARALLEL_SLOTS,
+        artifact_paths=HALOBOX_ARTIFACT_PATHS,
+        # The sealed launch fixes the served window at 262144; serving anything else
+        # is a different execution profile, not a smaller one.
+        requires_exact_served_context=True,
     ),
 )
 
@@ -721,6 +800,423 @@ class OllamaInspector:
             }
         return raw
 
+class LlamaServerInspector:
+    """Live inspector for an OpenAI-compatible llama.cpp server (HaloBox).
+
+    Same RAW-OBSERVATION contract as :class:`OllamaInspector`, so
+    :func:`build_capability` and the whole receipt path are SHARED rather than
+    duplicated. That is the point of the seam: the runtime dimension changes which
+    inspector answers, not what a capability record is.
+
+    Provenance discipline, because this profile's qualification came from somewhere
+    else:
+
+      * MEASURED - endpoint health, served context, a real tool call, a real stream,
+        and the SHA-256 of every declared artifact read off the target's disk;
+      * DETECTED - runtime present, model resident (the server answers ``/props``
+        and served a completion);
+      * SEALED/QUALIFICATION - the runtime commit, the qualification reference and
+        the empirically safe context are supplied by the CALLER as qualification
+        inputs. They are never produced here and never relabelled as measurements.
+
+    Artifact hashing is the one expensive step (87 GiB of split GGUF), so it is
+    explicit and skippable: ``probe_artifacts=False`` yields a record with no model
+    digest, which the receipt path then treats as NOT QUALIFIED. A cheap probe must
+    never look like a measured artifact.
+    """
+
+    #: Identical prompt and schema to the ollama inspector, deliberately: the tool
+    #: proof has to mean the same thing on both runtimes to be comparable at all.
+    TOOL_PROMPT = OllamaInspector.TOOL_PROMPT
+    TOOL_SCHEMA = OllamaInspector.TOOL_SCHEMA
+
+    def __init__(self, *, timeout: int = 25, probe_tools: bool = True,
+                 probe_streaming: bool = True, probe_artifacts: bool = True,
+                 artifact_timeout: int = 900, known_identity: Optional[dict] = None):
+        self.timeout = timeout
+        self.probe_tools = probe_tools
+        self.probe_streaming = probe_streaming
+        self.probe_artifacts = probe_artifacts
+        self.artifact_timeout = artifact_timeout
+        #: A previously MEASURED artifact identity ({"shards": [{"path", "sha256",
+        #: "size_bytes"}], "digest": ...}), so a liveness HEARTBEAT does not re-hash
+        #: 87 GiB of split GGUF every 300 seconds. Reuse is conditional on every
+        #: declared path still having its recorded SIZE; any change falls through to
+        #: a full re-hash, so a heartbeat can refresh liveness but can never carry
+        #: old qualification onto a different artifact.
+        self.known_identity = known_identity or {}
+
+    # ------------------------------------------------------------ transport ---
+    def api(self, spec: LocalTargetSpec, path: str, body: Optional[dict] = None) -> dict:
+        """One API call, returning ``{'ok','http','body','err'}`` (same as ollama)."""
+        url = f"{spec.endpoint.rstrip('/')}{path}"
+        if spec.transport == TRANSPORT_HTTP:
+            import urllib.request
+
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(
+                url, data=data,
+                headers={"Content-Type": "application/json"} if data else {},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return {"ok": True, "http": str(resp.status), "err": "",
+                            "body": json.loads(resp.read().decode() or "{}")}
+            except Exception as exc:  # noqa: BLE001 - a probe never propagates
+                return {"ok": False, "http": "", "body": {}, "err": str(exc)[:200]}
+        remote = self._curl_command(url, body)
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes",
+                 "-o", f"ConnectTimeout={min(self.timeout, 8)}",
+                 spec.ssh_host, remote],
+                input=json.dumps(body) if body is not None else None,
+                capture_output=True, text=True, timeout=self.timeout + 10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return {"ok": False, "http": "", "body": {}, "err": str(exc)[:200]}
+        if proc.returncode != 0:
+            return {"ok": False, "http": "", "body": {},
+                    "err": (proc.stderr or proc.stdout or "").strip()[:200]}
+        try:
+            return {"ok": True, "http": "200",
+                    "body": json.loads(proc.stdout or "{}"), "err": ""}
+        except json.JSONDecodeError:
+            return {"ok": False, "http": "", "body": {},
+                    "err": f"non-JSON reply: {(proc.stdout or '')[:120]}"}
+
+    @staticmethod
+    def _curl_command(url: str, body: Optional[dict] = None) -> str:
+        if body is None:
+            return f"curl -sS --max-time 25 '{url}'"
+        return (f"curl -sS --max-time 25 '{url}' "
+                f"-H 'Content-Type: application/json' -d @-")
+
+    def raw_text(self, spec: LocalTargetSpec, path: str, body: Optional[dict],
+                 timeout: int = 120) -> tuple:
+        """A streaming reply is SSE text, not JSON: read it as text.
+
+        Honours the spec's transport exactly like :meth:`api`, so the same
+        inspector serves a tunnelled loopback endpoint and a directly reachable
+        one without a second code path.
+        """
+        url = f"{spec.endpoint.rstrip('/')}{path}"
+        if spec.transport == TRANSPORT_HTTP:
+            import urllib.request
+
+            req = urllib.request.Request(
+                url, data=json.dumps(body).encode() if body is not None else None,
+                headers={"Content-Type": "application/json"} if body is not None else {})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return True, resp.read().decode(), ""
+            except Exception as exc:  # noqa: BLE001
+                return False, "", str(exc)[:200]
+        remote = (f"curl -sS -N --max-time {timeout} '{url}' "
+                  f"-H 'Content-Type: application/json' -d @-")
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 spec.ssh_host, remote],
+                input=json.dumps(body) if body is not None else None,
+                capture_output=True, text=True, timeout=timeout + 15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return False, "", str(exc)[:200]
+        if proc.returncode != 0:
+            return False, proc.stdout or "", (proc.stderr or "").strip()[:200]
+        return True, proc.stdout or "", ""
+
+    # -------------------------------------------------------- artifact identity -
+    def _reuse_identity(self, spec: LocalTargetSpec, paths: tuple):
+        """Reuse a measured identity IF every declared artifact still has its size.
+
+        Sizes are cheap to read and a changed GGUF necessarily changes size; when a
+        size differs this returns ``None`` so the caller does the full hash. What it
+        must NEVER do is hand back a digest it cannot tie to the bytes on disk.
+        """
+        known = list(self.known_identity.get("shards") or [])
+        if len(known) != len(paths):
+            return None
+        by_path = {str(s.get("path") or ""): s for s in known}
+        for path in paths:
+            if path not in by_path or not int(by_path[path].get("size_bytes") or 0):
+                return None
+        quoted = " ".join(f"'{p}'" for p in paths)
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 spec.ssh_host, f"stat -c '%s %n' {quoted}"],
+                capture_output=True, text=True, timeout=self.timeout + 15,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if proc.returncode != 0:
+            return None
+        sizes = {}
+        for line in (proc.stdout or "").splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                try:
+                    sizes[parts[1]] = int(parts[0])
+                except ValueError:
+                    return None
+        shards = []
+        for path in paths:
+            entry = dict(by_path[path])
+            if sizes.get(path) != int(entry.get("size_bytes") or 0):
+                return None
+            shards.append(entry)
+        return {"ok": True, "err": "", "shards": shards,
+                "digest": str(self.known_identity.get("digest") or ""),
+                "total_bytes": sum(int(s.get("size_bytes") or 0) for s in shards),
+                "source": "reused_after_size_check"}
+
+    def artifact_identity(self, spec: LocalTargetSpec) -> dict:
+        """SHA-256 every declared artifact ON THE TARGET, then compose one digest.
+
+        A split GGUF is three files. A receipt that names only an alias names
+        nothing, so the shard hashes are measured where they live and the composite
+        digest becomes the model identity that drift detection compares.
+        """
+        paths = tuple(str(p) for p in (spec.artifact_paths or ()) if str(p).strip())
+        if paths and self.known_identity.get("shards"):
+            reused = self._reuse_identity(spec, paths)
+            if reused is not None:
+                return reused
+        if not paths:
+            return {"ok": False, "err": "no artifact paths declared on the spec",
+                    "shards": [], "digest": "", "total_bytes": 0}
+        quoted = " ".join(f"'{p}'" for p in paths)
+        remote = f"sha256sum {quoted}; echo '--SIZES--'; stat -c '%s %n' {quoted}"
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 spec.ssh_host, remote],
+                capture_output=True, text=True, timeout=self.artifact_timeout + 60,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return {"ok": False, "err": str(exc)[:200], "shards": [],
+                    "digest": "", "total_bytes": 0}
+        if proc.returncode != 0:
+            return {"ok": False, "err": (proc.stderr or "").strip()[:200],
+                    "shards": [], "digest": "", "total_bytes": 0}
+        sizes: Dict[str, int] = {}
+        shards: List[dict] = []
+        hashes_section = True
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line == "--SIZES--":
+                hashes_section = False
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            if hashes_section:
+                shards.append({"path": parts[1].lstrip("*"), "sha256": parts[0]})
+            else:
+                try:
+                    sizes[parts[1]] = int(parts[0])
+                except ValueError:
+                    continue
+        if len(shards) != len(paths):
+            return {"ok": False,
+                    "err": f"hashed {len(shards)} of {len(paths)} declared artifacts",
+                    "shards": shards, "digest": "", "total_bytes": 0}
+        for shard in shards:
+            shard["size_bytes"] = sizes.get(shard["path"], 0)
+            name = shard["path"].rsplit("/", 1)[-1]
+            shard["artifact"] = name
+        digest = _digest_of([{"artifact": s["artifact"], "sha256": s["sha256"]}
+                             for s in shards])
+        return {"ok": True, "err": "", "shards": shards, "digest": digest,
+                "total_bytes": sum(int(s["size_bytes"] or 0) for s in shards),
+                "source": "measured_by_hash"}
+
+    # ------------------------------------------------------------- the probes --
+    def _tool_question(self, spec: LocalTargetSpec) -> dict:
+        return self.api(spec, "/v1/chat/completions", {
+            "model": spec.model,
+            "messages": [{"role": "user", "content": self.TOOL_PROMPT}],
+            "tools": [self.TOOL_SCHEMA],
+            "stream": False,
+            "temperature": 0,
+            "max_tokens": 256,
+        })
+
+    def _completion(self, spec: LocalTargetSpec) -> dict:
+        return self.api(spec, "/v1/chat/completions", {
+            "model": spec.model,
+            "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+            "stream": False,
+            "temperature": 0,
+            "max_tokens": 8,
+        })
+
+    def _streaming_probe(self, spec: LocalTargetSpec) -> dict:
+        ok, text, err = self.raw_text(spec, "/v1/chat/completions", {
+            "model": spec.model,
+            "messages": [{"role": "user", "content": "Count from 1 to 5."}],
+            "stream": True,
+            "max_tokens": 32,
+        })
+        data_lines = [line for line in (text or "").splitlines()
+                      if line.strip().startswith("data:")]
+        chunks = [line for line in data_lines if "[DONE]" not in line]
+        return {"ok": bool(ok and chunks), "err": err if not chunks else "",
+                "data_lines": len(data_lines), "chunks": len(chunks),
+                "incremental": len(chunks) > 1}
+
+    def inspect(self, spec: LocalTargetSpec) -> dict:
+        """The raw observation :func:`build_capability` turns into a record."""
+        raw: dict = {"reachable": False, "failure_classes": []}
+        health = self.api(spec, "/health")
+        props = self.api(spec, "/props")
+        if not health["ok"] and not props["ok"]:
+            raw["failure_classes"].append("runtime_unreachable")
+            raw["error"] = health["err"] or props["err"]
+            return raw
+        raw["reachable"] = True
+        raw["api_kind"] = "openai-compatible:llama-server"
+        raw["health"] = dict(health["body"]) if health["ok"] else {}
+
+        settings = dict((props["body"].get("default_generation_settings") or {}))
+        build_info = str(props["body"].get("build_info") or "")
+        raw["version"] = build_info
+        # /v1/models is where a llama-server states what it is actually serving:
+        # the model id, the per-slot context, the parameter count and the runtime's
+        # OWN quantisation report. Preferred over parsing the artifact filename,
+        # which is a label while this is the runtime's account of itself.
+        listing = self.api(spec, "/v1/models")
+        served_row: dict = {}
+        if listing["ok"]:
+            rows = listing["body"].get("data") or listing["body"].get("models") or []
+            if rows:
+                served_row = dict(rows[0])
+        meta = dict(served_row.get("meta") or {})
+        served_id = str(served_row.get("id") or served_row.get("name") or "")
+        n_ctx = 0
+        for candidate in (meta.get("n_ctx"), settings.get("n_ctx"),
+                          props["body"].get("n_ctx")):
+            if isinstance(candidate, int) and candidate > 0:
+                n_ctx = candidate
+                break
+        model_path = str(props["body"].get("model_path") or served_id)
+        slots = props["body"].get("total_slots")
+
+        artifact = (self.artifact_identity(spec) if self.probe_artifacts
+                    else {"ok": False, "err": "artifact probe disabled", "shards": [],
+                          "digest": "", "total_bytes": 0})
+        raw["artifacts"] = artifact
+        if not artifact["ok"]:
+            # A profile whose artifact identity was not measured has NO identity
+            # digest, so the receipt it produces cannot be qualified. Say so in the
+            # failure classes instead of quietly emitting an alias-only record.
+            raw["failure_classes"].append("artifact_identity_unmeasured")
+            raw["artifact_error"] = artifact.get("err", "")
+        raw["auxiliary_artifacts"] = tuple(
+            f"{s['artifact']}={s['sha256']}" for s in artifact["shards"])
+
+        # Quantisation is read off the artifact FILENAMES (a measured local fact),
+        # not copied from prose: the split file names carry UD-IQ4_XS.
+        ftype = str(meta.get("ftype") or "")
+        names = " ".join(s["artifact"] for s in artifact["shards"]) or model_path
+        quantisation = ""
+        if ftype:
+            # e.g. "IQ4_XS - 4.25 bpw" -> IQ4_XS (the runtime's own report)
+            quantisation = ftype.split("-")[0].strip().replace(" ", "_")
+        if not quantisation:
+            for token in names.replace("-", "_").replace(".", "_").split("_"):
+                if token.upper().startswith("IQ") or token.upper().startswith("Q") and any(
+                        c.isdigit() for c in token):
+                    quantisation = token.upper()
+        served_alias = (served_id.rsplit("/", 1)[-1] if served_id.startswith("/")
+                        else served_id)
+        raw["model"] = {
+            "name": served_alias or spec.model,
+            "model": served_alias or spec.model,
+            "digest": artifact["digest"],
+            "size": int(artifact["total_bytes"] or 0),
+            "details": {"family": "", "quantization_level": quantisation,
+                        "context_length": n_ctx or None,
+                        "model_path": model_path},
+            "capabilities": ["completion"],
+        }
+        raw["runtime_options"] = {
+            "api_kind": raw["api_kind"], "build_info": build_info,
+            "artifact_identity_source": artifact.get("source", "unmeasured"),
+            "artifact_shard_sizes": {s["artifact"]: int(s["size_bytes"] or 0)
+                                     for s in artifact["shards"]},
+            "model_path": model_path, "parallel": slots,
+            "served_context": n_ctx or None,
+            "served_model_id": served_id or None,
+            "runtime_reported_size_bytes": int(meta.get("size") or 0),
+            "runtime_reported_params": int(meta.get("n_params") or 0),
+            "runtime_reported_ftype": ftype or None,
+            "runtime_reported_n_ctx_train": int(meta.get("n_ctx_train") or 0),
+            "residency_evidence": (
+                "props/model_path present and the server answered a completion"
+                if model_path else ""),
+        }
+
+        completion = self._completion(spec)
+        if not completion["ok"]:
+            raw["failure_classes"].append("completion_probe_failed")
+            raw["error"] = completion["err"]
+        else:
+            choices = completion["body"].get("choices") or []
+            message = (choices[0].get("message") or {}) if choices else {}
+            # Qwen3.8 may spend a short probe's entire budget in the
+            # OpenAI-compatible ``reasoning_content`` field. That is still a
+            # real assistant completion (and usage is present); treating it as
+            # unavailable would make the inspector lie about a live runtime.
+            served = bool(message.get("content") or message.get("reasoning_content")
+                          or message.get("tool_calls"))
+            raw["runtime_options"]["completion_served"] = served
+            if not served:
+                raw["failure_classes"].append("completion_empty")
+
+        if n_ctx:
+            raw["ps"] = {"models": [{"name": spec.model, "model": spec.model,
+                                     "context_length": n_ctx}]}
+        else:
+            raw["ps"] = {}
+            raw["failure_classes"].append("served_context_unmeasured")
+
+        if self.probe_tools:
+            proof = self._tool_question(spec)
+            calls = []
+            if proof["ok"]:
+                for choice in (proof["body"].get("choices") or []):
+                    message = choice.get("message") or {}
+                    calls.extend(message.get("tool_calls") or [])
+            raw["tool_proof"] = {"ok": proof["ok"], "tool_calls": len(calls),
+                                 "error": proof["err"]}
+            raw["runtime_options"]["tool_calls_observed"] = len(calls)
+
+        if self.probe_streaming:
+            stream = self._streaming_probe(spec)
+            raw["streaming"] = bool(stream["ok"])
+            raw["runtime_options"]["streaming_chunks"] = stream["chunks"]
+            if not stream["ok"]:
+                raw["failure_classes"].append("streaming_unproven")
+        return raw
+
+
+def inspector_for(spec: LocalTargetSpec):
+    """The inspector a spec's ``runtime_kind`` requires.
+
+    ONE probe path, two runtimes: the registry decides which adapter answers, and
+    nothing downstream (capability record, receipt, store, routing) needs to know
+    which one it was.
+    """
+    kind = str(getattr(spec, "runtime_kind", "") or RUNTIME_OLLAMA).strip().lower()
+    if kind == RUNTIME_LLAMA_SERVER:
+        return LlamaServerInspector()
+    return OllamaInspector()
+
 def _apply_timings(rec: LocalTargetCapability, timings: dict) -> LocalTargetCapability:
     """Merge measured timing fields onto a record. Only MEASURED keys are set.
 
@@ -811,6 +1307,13 @@ def build_capability(
         if isinstance(served, int) and served > 0:
             rec.served_context = served
 
+    # A streamed probe is MEASURED or absent, never assumed: the ollama inspector
+    # does not emit this key, so its records still carry ``None`` (unproven) rather
+    # than inheriting a flag they did not earn.
+    streaming_flag = raw.get("streaming")
+    if streaming_flag is not None:
+        rec.streaming = bool(streaming_flag)
+
     proof = raw.get("tool_proof")
     if proof is None:
         # Not asked (or not askable). UNPROVEN, not incapable — the distinction
@@ -843,10 +1346,10 @@ def build_capability(
 def probe_target(
     spec: LocalTargetSpec,
     *,
-    inspector: Optional[OllamaInspector] = None,
+    inspector: Optional[object] = None,
 ) -> LocalTargetCapability:
     """Measure one target. An unreachable node is a record, not an exception."""
-    inspector = inspector or OllamaInspector()
+    inspector = inspector or inspector_for(spec)
     raw = inspector.inspect(spec)
     return build_capability(spec, raw)
 
@@ -868,10 +1371,11 @@ def probe_fleet(
     real fitness numbers. Without it the records are capability-complete but
     fitness-blind, and selection falls back to a deterministic ID tie-break.
     """
-    inspector = inspector or OllamaInspector()
     timings = dict(timings_by_target or {})
     return tuple(
-        apply_timings(probe_target(spec, inspector=inspector), timings.get(spec.target_id, {}))
+        apply_timings(
+            probe_target(spec, inspector=inspector or inspector_for(spec)),
+            timings.get(spec.target_id, {}))
         for spec in specs
     )
 

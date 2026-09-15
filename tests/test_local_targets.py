@@ -81,9 +81,17 @@ def _records(**overrides):
 
 def test_fleet_is_three_distinct_targets_not_one_label():
     specs = lt.registered_targets()
-    assert len(specs) == 3
-    assert len({s.target_id for s in specs}) == 3
+    assert len(specs) == 4
+    assert len({s.target_id for s in specs}) == 4
+    # THREE hosts, four targets: the Framework host now carries its generic entry
+    # plus the profile-scoped HaloBox entry, which is exactly the distinction that
+    # stops "framework" from becoming a capability.
     assert len({s.ssh_host for s in specs}) == 3
+    halobox = lt.target_by_id(lt.TARGET_FRAMEWORK_HALOBOX)
+    generic = lt.target_by_id(lt.TARGET_FRAMEWORK)
+    assert halobox.ssh_host == generic.ssh_host
+    assert halobox.runtime_kind != generic.runtime_kind
+    assert halobox.endpoint != generic.endpoint
     assert "local_qwen" not in {s.target_id for s in specs}
 
 
@@ -533,10 +541,11 @@ def test_probe_fleet_keeps_a_dead_node_in_the_snapshot():
     }
     recs = lt.probe_fleet(inspector=_FakeInspector(replies))
     snap = lt.fleet_snapshot(list(recs))
-    assert snap["fleet_size"] == 3
-    assert snap["unreachable"] == 3  # the fake makes every node unreachable
+    assert snap["fleet_size"] == 4
+    assert snap["unreachable"] == 4  # the fake makes every node unreachable
     assert {t["target_id"] for t in snap["targets"]} == {
-        lt.TARGET_RTX_4500, lt.TARGET_MSR1, lt.TARGET_FRAMEWORK
+        lt.TARGET_RTX_4500, lt.TARGET_MSR1, lt.TARGET_FRAMEWORK,
+        lt.TARGET_FRAMEWORK_HALOBOX,
     }
 
 

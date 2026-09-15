@@ -444,6 +444,32 @@ def persisted_routing_inputs(store, *, now=None,
                                     f"safe={context.safe_working_context}")})
                 continue
 
+        # A profile whose qualified launch FIXES the window must actually be serving
+        # the window that launch implies. This is the one drift that changes no
+        # digest, because "served" is a live fact and not material identity - so it
+        # needs its own fail-closed rule rather than a silent pass into an
+        # unqualified window. The sealed HaloBox launch is -c 262144 --parallel 4,
+        # and llama.cpp splits that across slots (measured live on the target:
+        # n_slots = 4, n_ctx_slot = 65536), so the expected per-request window is
+        # configured // max_concurrency.
+        if bool(getattr(spec, "requires_exact_served_context", False)):
+            served = int(receipt.context.served_context or 0)
+            configured = int(receipt.context.configured_context or 0)
+            slots = max(1, int(getattr(spec, "max_concurrency", 1) or 1))
+            expected = (configured // slots) if configured else 0
+            if expected and served != expected:
+                skipped.append({"target_id": host_id,
+                                "profile_id": receipt.profile_id,
+                                "receipt_hash": receipt.receipt_hash,
+                                "reason": (
+                                    "served context "
+                                    f"{served} does not match the {expected} "
+                                    "this profile's sealed launch implies "
+                                    f"(configured {configured} across {slots} "
+                                    "slot(s))")})
+                continue
+
+
         state = receipt.qualification_state(now=moment)
         if state != "valid":
             skipped.append({"target_id": host_id, "profile_id": receipt.profile_id,
