@@ -168,6 +168,97 @@ def _skip(db, run_id, profile_id, model, status, reason, summaries, model_run_id
     })
 
 
+def _ps605_options(task) -> dict:
+    """The PS-605 routing inputs a RoutingTask row can honestly supply.
+
+    ``max_cost_rank`` comes from the task's OWN allow_free/paid/premium flags, so a
+    free-only task cannot be routed to a paid profile even if one scores higher.
+    ``policy_domain`` is read from the task's own ``inputs`` JSON when it declares
+    one (a task may legitimately say which policy domain it belongs to); otherwise
+    the work is general software engineering. ``role`` is left unset on purpose —
+    the boundary derives it from the task type and the estate's declared roles.
+    """
+    if getattr(task, "allow_premium_models", False):
+        max_cost_rank = 2
+    elif getattr(task, "allow_paid_models", False):
+        max_cost_rank = 1
+    else:
+        max_cost_rank = 0
+    domain = "general_swe"
+    raw = getattr(task, "inputs", None)
+    if raw:
+        try:
+            declared = json.loads(raw)
+        except (TypeError, ValueError):
+            declared = {}
+        if isinstance(declared, dict) and str(declared.get("policy_domain") or "").strip():
+            domain = str(declared["policy_domain"]).strip()
+    return {"domain": domain, "max_cost_rank": max_cost_rank}
+
+
+def _resolve_ps605_dispatch(db, task, candidates: List[dict], run_dir: str):
+    """Resolve the PS-605 decision this run must obey.
+
+    Returns ``(bound, recorder, refusal)``: exactly one of ``bound``/``refusal`` is
+    set. A refusal carries the per-candidate reasons, which are written to the run
+    dir so the reason survives even though no model was called.
+    """
+    from src.dispatch_boundary import (
+        DispatchBoundaryError, InvocationRecorder, RoutingRefused, resolve_dispatch,
+    )
+
+    recorder = InvocationRecorder()
+    try:
+        bound = resolve_dispatch(db, task, candidates, **_ps605_options(task))
+        return bound, recorder, None
+    except RoutingRefused as exc:
+        refusal = exc.to_dict()
+        refusal["stage"] = "ps605_selection"
+    except DispatchBoundaryError as exc:
+        refusal = {"refused": True,
+                   "code": getattr(exc, "code", "dispatch_boundary_error"),
+                   "reason": str(exc), "stage": "ps605_boundary"}
+    path = os.path.join(run_dir, "dispatch_refusal.json")
+    with open(path, "w") as handle:
+        json.dump(refusal, handle, indent=2)
+    return None, recorder, refusal
+
+
+def _write_dispatch_record(run_dir: str, bound, attempts: List[dict],
+                           recorder) -> str:
+    """Write the decision + attempt bindings + invocation log for this run.
+
+    This is the production artifact a PS-638 envelope consumes: the receipt fields,
+    one attempt binding per attempt, and every invocation the dispatcher performed.
+    """
+    record = {
+        # The full PS-605 record (decision + request + policy) AND the PS-638 receipt
+        # fields: the first is the provenance, the second is what a PS-638 envelope
+        # consumes, and both are needed to validate the dispatch later.
+        "dispatch": bound.to_dict(),
+        "dispatch_receipt": bound.decision.to_ps638_receipt_kwargs(),
+        "dispatch_receipt_hash": bound.decision.receipt_hash,
+        "decision_id": bound.decision.decision_id,
+        "decision_hash": bound.decision.decision_hash,
+        "policy": bound.policy.to_dict(),
+        "execution_package": {
+            "packet_id": bound.request.packet_id,
+            "execution_package_hash": bound.request.execution_package_hash,
+            "domain": bound.request.domain, "role": bound.request.role,
+            "data_sensitivity": bound.request.sensitivity,
+        },
+        "capability_receipts": [r.to_dict() for r in bound.estate.receipts],
+        "capability_provenance": bound.estate.provenance_summary(),
+        "skipped_candidates": [dict(s) for s in bound.estate.skipped],
+        "attempts": attempts,
+        "invocations": recorder.records,
+    }
+    path = os.path.join(run_dir, "dispatch_receipt.json")
+    with open(path, "w") as handle:
+        json.dump(record, handle, indent=2, default=str)
+    return path
+
+
 def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                         allow_premium_override: bool = False) -> dict:
     """Fan out to the top `max_attempts` candidates from route_task()'s
@@ -191,6 +282,12 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
     attempted = 0       # real API-call attempts (completed or errored), not skips/blocks
     any_blocked = False
     summaries = []
+    # PS-605 state, initialised BEFORE the try so the tail of this function can
+    # write the dispatch record without re-deriving what happened.
+    bound = None
+    recorder = None
+    attempts: List[dict] = []
+    run_dir = ""
 
     try:
         bundle = build_context_bundle(task)
@@ -205,13 +302,40 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
         run_dir = os.path.join(archive_root(), task.id, run_id)
         os.makedirs(run_dir, exist_ok=True)
 
+        bound, recorder, refusal = _resolve_ps605_dispatch(
+            db, task, candidates, run_dir)
+        if bound is None:
+            # PS-605 refused: NOTHING may run. The refusal is the outcome, and the
+            # run records it with zero model calls rather than proceeding to pick a
+            # target by itself.
+            run.status = "failed"
+            run.summary = json.dumps({"refused_before_dispatch": refusal})
+            run.next_action = str(refusal.get("code") or "")
+            db.commit()
+            return {
+                "run_id": run_id, "task_id": task.id, "status": run.status,
+                "spend_total_usd": 0.0, "spend_premium_usd": 0.0,
+                "model_runs": [], "refused": refusal,
+                "attempted": 0, "policy_ref": None,
+                # Same SHAPE as a run that dispatched, so a caller does not have to
+                # branch on key presence to learn that nothing was attempted.
+                "dispatch_receipt_path": None, "dispatch_receipt_hash": None,
+                "selected_target_id": None, "attempts": [], "invocations": [],
+            }
+        bundle["ps605_dispatch"] = bound.to_dict()
+
         # Section 18: manifest first, before any model is called -- a run that
         # crashes mid-fan-out still has its provenance on disk and in the DB.
         # A manifest failure propagates to the outer handler (fail-closed:
         # no provenance record, no run).
         _write_run_manifest(db, task, run_id, run_dir, bundle)
 
-        for candidate in candidates:
+        # The candidates the DECISION allows, in the DECISION's order. A candidate
+        # PS-605 refused is not offered to the loop at all, so there is no point
+        # after the decision where the dispatcher could choose a refused target.
+        execution_candidates = bound.execution_order(candidates)
+        attempts: List[dict] = []
+        for candidate in execution_candidates:
             if attempted >= max_attempts:
                 break
 
@@ -263,6 +387,35 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                     )
                 chat_url, model_name, headers = resolved
 
+                # PS-605 pin guard: the invocation must be the DECISION's, checked
+                # BEFORE the network call. A mismatch is a policy refusal, not a
+                # provider error, and it is recorded as its own class.
+                from src.dispatch_boundary import (
+                    DispatchPinViolation, attempt_for, verify_invocation,
+                )
+
+                try:
+                    pin = verify_invocation(
+                        bound, profile_id=candidate["profile_id"],
+                        model=model_name, chat_url=chat_url)
+                except DispatchPinViolation as exc:
+                    any_blocked = True
+                    recorder.record(target_id=str(candidate.get("profile_id")),
+                                    locality="", model=model_name, ok=False,
+                                    detail=exc.code, attempt=attempted)
+                    _skip(db, run_id, profile.id, profile.model, "policy_refused",
+                          f"{exc.code}: {exc.reason}", summaries)
+                    continue
+                recorder.record(target_id=pin["target_id"], locality=pin["locality"],
+                                model=model_name,
+                                endpoint_host=pin.get("host", ""),
+                                attempt=attempted)
+                attempts.append(attempt_for(
+                    bound, attempt=attempted, profile_id=candidate["profile_id"],
+                    run_id=run_id, model=model_name,
+                    host=str(pin.get("host") or ""),
+                    runtime_kind=str(pin.get("runtime_kind") or "")).to_dict())
+
                 response_text, usage = llm_call_with_usage(
                     chat_url, model_name, [{"role": "user", "content": prompt_text}],
                     max_tokens=profile.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
@@ -284,7 +437,16 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 with open(response_path, "w") as f:
                     f.write(response_text)
 
-                artifacts = {"response_text_path": response_path, "prompt_path": prompt_path}
+                artifacts = {
+                    "response_text_path": response_path, "prompt_path": prompt_path,
+                    # PS-605 binding: WHICH decision authorised this attempt and on
+                    # which pinned target it ran, recorded per attempt so a later
+                    # reader does not have to join across tables to find it.
+                    "dispatch_receipt_hash": bound.decision.receipt_hash,
+                    "dispatch_decision_id": bound.decision.decision_id,
+                    "routed_target_id": pin["target_id"],
+                    "policy_ref": bound.policy.policy_ref,
+                }
                 patch_validation = None
                 patch_summary = None
                 # Phase 3 (extraction/shape-validation only -- no apply/verify/
@@ -369,8 +531,25 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
     db.commit()
     db.refresh(run)
 
+    # The run's routing provenance, written even when every attempt failed: the
+    # decision, the attempt bindings and the invocation log are the evidence that
+    # THIS target ran under THAT receipt.
+    dispatch_receipt_path = None
+    if bound is not None and run_dir:
+        dispatch_receipt_path = _write_dispatch_record(
+            run_dir, bound, attempts, recorder)
+
     return {
         "run_id": run_id, "task_id": task.id, "status": run.status,
         "spend_total_usd": round(spent_so_far, 4), "spend_premium_usd": round(premium_spent, 4),
         "model_runs": summaries,
+        "dispatch_receipt_path": dispatch_receipt_path,
+        "dispatch_receipt_hash": (bound.decision.receipt_hash if bound else None),
+        "policy_ref": (bound.policy.policy_ref if bound else None),
+        "selected_target_id": (bound.decision.selected_profile.target_id
+                               if bound else None),
+        "attempts": attempts,
+        "invocations": (recorder.records if recorder else []),
+        "refused": None,
     }
+
