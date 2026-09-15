@@ -829,8 +829,11 @@ def run_case(worktree: Path, case_name: str, target_id: str,
         print(f"{run_id}: PIN_VIOLATION — {why} (0 model calls)")
         return 0
     try:
+        # The pin is looked up by the EXACT profile id (PS-632: a host id is not a
+        # profile id any more), and the invocation must match that profile's model.
         dbd.verify_invocation(routing["bound"],
-                              profile_id=dispatch.selected_target_id,
+                              profile_id=(routing["bound"].decision
+                                          .selected_profile.profile_id),
                               model=client.model,
                               chat_url=routing["spec"].endpoint or "")
     except Exception as exc:
