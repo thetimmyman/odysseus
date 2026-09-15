@@ -28,6 +28,13 @@ No Halogen or stale benchmark process is running; **Ollama is resident**
 (`/bin/ollama serve` + a `llama-server -c 262144` child holding ~35.9 GB GTT), which is
 the restored PS-624 teardown state.
 
+**The runtime itself is present and identity-matched** (read-only checks over ssh):
+`git -C /mnt/framework-data/repos/halo-box/llama.cpp rev-parse HEAD` returns exactly
+`29e091ea5b228ac1735cde369e68e6767a53e510`, and
+`/mnt/framework-data/repos/halo-box/llama.cpp/build/bin/llama-server` exists (built
+Sep 14 16:29) alongside `llama-cli` and `llama-bench`. So the blocker is NOT runtime
+availability or identity drift - it is the missing dispatch plumbing below.
+
 ## 2. The blocker, stated as four concrete gaps
 
 **(G1) No profile-scoped qualified registry entry - routing refuses by design.**
