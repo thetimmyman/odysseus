@@ -228,3 +228,143 @@ reconciled (all four were already present), the accounting is corrected, no
 semantic conflict remains, and the fourth task is already preregistered. This
 recommendation does NOT authorise a failure-conditioned corpus, which must wait
 until the ordinary internal corpus is frozen or separately preregistered.
+
+---
+
+## 12. Fourth-task state resolution (SUPERSEDES section 11's "unrun" clause)
+
+Two reports disagreed: one described the G1d2 fourth task as COMPLETED with sealed
+evidence and the decision `FREEZE_INTERNAL_CORPUS_FOR_RUNTIME_COMPARISON`, while
+section 11 above (written earlier the same afternoon) said `n = 3` and pronounced
+the fourth task "adopted but not run". This section resolves it. Section 11 is left
+in place, unedited, because the reason it was wrong is part of the record.
+
+### 12.1 Ancestry - no divergence, no reset, no rebase
+
+| check | result |
+| --- | --- |
+| `git rev-parse HEAD` at resolution | `ac4c5a75` (after the import commit in 12.4) |
+| `git merge-base 1c0df6c1 2f60384a` | `1c0df6c1` |
+| `git merge-base --is-ancestor 1c0df6c1 2f60384a` | **exit 0 - yes, an ancestor** |
+| `git merge-base --is-ancestor 2f60384a 1c0df6c1` | exit 1 - not an ancestor (expected) |
+
+The two commits are on ONE linear line: `1c0df6c1` -> `b5632c71` -> `2f60384a`.
+There was no concurrent odysseus branch, no reset, no rebase and no lost commit.
+`b5632c71` (the fixture-clock fix) and `2f60384a` (this reconciliation) both sit on
+top of the preregistration commit.
+
+### 12.2 Cause of the n=3 / n=4 discrepancy
+
+The discrepancy was **not** a git disagreement. The fourth-task run really happened,
+but its evidence was written into the PERSONALOS control-plane workspace at
+`/home/tdefreest/Documents/PersonalOS/docs/benchmark-ps579/rtx-fourth-g1d2-toposort/`
+as **UNTRACKED files**, and it was never committed to any odysseus ref:
+`git log --all --diff-filter=A -- docs/benchmark-ps579/*` returns NOTHING, and
+`docs/benchmark-ps579/` did not exist in the canonical tree at all.
+
+So section 11 was accurate about the odysseus branch and wrong about the project:
+the branch knew the preregistration (`1c0df6c1`) and the packet (`bc71eced`) and had
+no way to see a run whose evidence lived outside the repository, uncommitted. That
+is a PLACEMENT defect in the evidence, not a contradiction in the run.
+
+### 12.3 Validation performed on the reported evidence
+
+| reported item | reported value | verified |
+| --- | --- | --- |
+| preregistration SHA-256 | `d23bfbf4c01fec58...` | **MATCHES** (`git show 1c0df6c1:docs/PS579-PREREG-FOURTH-G1D2-TOPOSORT-RTX.md \| sha256sum`) |
+| preregistration committed | - | `2026-09-15 11:56:59-04:00` = 15:56:59Z |
+| G0 run started | - | `15:57:35Z` - **36 s AFTER the preregistration commit** |
+| G0 / G1 / G2 EvidencePackage | `5c95ae1c...` / `81692d09...` / `4acd89c7...` | **ALL THREE MATCH**, and still match after import |
+| base | `2d88004c` | matches `source_before.base_sha` in all three arms |
+| interface digest | `fac6d37529c6b3ce` | matches `run_summary.packet_interface_digest` in all three |
+| verifier SHA-256 | `3e8f84b3...` | **MATCHES** `git show 2d88004c:tests/test_topo_sort_ps635.py` |
+| source SHA-256 `9d329bec...` | reported for "source" | it is the hash of the PRE-EXISTING BASE `src/topo_sort.py` at `2d88004c` (see 12.5) |
+| context projection | `553b7778...` | matches `context_projections[0]` in all three arms (one projection each) |
+| PS-632 receipt bound | `bad2e249330fd8c2...` | `dispatch_chain.stored_receipt_hash` and `capability_receipt_refs` in all three; store audit `ok=true` |
+| dispatch receipt hash | `c71c7a767d9a4737...` | present in `dispatch_receipt.json` and `routing_decision.json` |
+| chain / validator | VERIFIED | `chain_ok=true`, `attempts_bound=true`, `receipt_ref_matches_store=true`, `validation.ok=true`, ledger chain `[true, null]`, all requirement states `SATISFIED` |
+| result per arm | `ACCEPTED_CANDIDATE`, 11/11, 1 attempt, 1 call, 0 repairs, 0 planner calls | confirmed from the sealed summaries (`11 passed`, `manager: null`, 0 repairs) |
+
+### 12.4 Source-equivalence of the three arms
+
+`source_before` for G0/G1/G2 is identical in every substantive field: `base_sha`,
+`head_sha` (`1c0df6c1e333...`), `staged_paths` (1), `unstaged_paths` (0),
+`untracked_paths` (0), `tracked_diff_digest` and `untracked_digest`. The ONLY
+arm-specific values are `repo_root` / `worktree` (the arm's own directory) and
+`snapshot_digest`, which hashes those paths. So the three arms are source-equivalent
+and the arm is the changed variable, as required.
+
+All three arms produced the SAME artifact,
+`161cbc981e7eaeddc91728000cef0806cdbafdbf349ff91fd5c0b0761dd73c1a`, and the sealed
+copy in `artifacts/attempt1-artifact-topo_sort.py` matches the subject tree in every
+arm. The worker therefore did write a complete module; this was not a no-op run.
+
+### 12.5 G1d2 benchmark strength: WEAK BENCHMARK CELL (valid evidence, weak cell)
+
+This is a separate question from whether the chain is valid, and the answer is
+unfavourable.
+
+**The reported "exact base verification: 11/11 passed" means the verifier passes on
+the UNCHANGED base.** Independently reproduced here, with no model involved: materialise
+`git show 2d88004c:src/topo_sort.py` (sha256 `9d329bec8498492b...`) next to
+`git show 2d88004c:tests/test_topo_sort_ps635.py` (`3e8f84b3...`) in a scratch tree and
+run the verifier -> **11 passed**. The base artifact is the reported "source SHA-256"
+(`9d329bec...`), i.e. `src/topo_sort.py` ALREADY EXISTED and already satisfied the
+verifier before any worker action.
+
+Consequences, stated plainly:
+
+* **What the worker was expected to do:** rewrite `src/topo_sort.py` from scratch to
+the contract (`topological_order(graph)` with alphabetical tie-breaking, duplicate
+edges ignored, `ValueError` on cycles including self-loops, `[]` for an empty graph,
+no mutation, standard library only).
+* **What it actually did:** wrote a complete module
+(`161cbc981e7eaedd...`), byte-identical across all three arms, which passes 11/11.
+* **What acceptance therefore proves:** that the worker can produce a small passing
+module. It does NOT prove the base needed changing, because the identical verifier
+passes on the untouched base as well. A no-op would have scored the same.
+* **Does the verifier distinguish a meaningful patch from unchanged base?** NO. There
+is no base-vs-delta assertion, no failing-before/passing-after pair, and no
+per-cell pre-state reset to "artifact absent" as the independent harness does for
+`l1-interface` and `g1e-bounded-cache`. The cell's pre-state was a full tree at base
+`2d88004c` WITH the correct artifact already present.
+
+**Classification: `WEAK_BENCHMARK_CELL`.** It is retained - the evidence is valid,
+source-bound, post-preregistration and chain-verified - but it must NOT be used as
+strong runtime-comparison evidence, and its four-arm cumulative row should be read as
+"one more acceptance that the target does not fail" rather than "one more measured
+difference in engineering work".
+
+A second accounting caution belongs next to it: the cumulative table in
+`PS579-FOURTH-RESULTS.md` uses the ORIGINAL PS-639 wall times
+(`199.514/205.999/349.998`), so G2's cumulative 395.354 s - and the derived 36.42
+accepted-candidate/hour - is dominated by the single PS-639 G2 cell whose anomaly the
+balanced-order control later classified as `RUNTIME_VARIANCE`. Acceptance counts are
+unaffected (all cells genuinely accepted); only the derived throughput figure carries
+the stale anomaly. This is noted rather than restated, because re-deriving it would
+mean mixing the original cells with the balanced control's cells.
+
+### 12.6 Corrected canonical state
+
+**State A - `CANONICAL_INTERNAL_CORPUS_N4`.**
+
+Canonical distinct internal tasks, each with an accepted sealed cell per arm:
+1. `G1e-bounded-cache-rtx` (discriminating: artifact absent at base)
+2. `l1-interface` (discriminating: artifact absent at base)
+3. `PS639-compose-drift-rtx` (discriminating: genuinely red baseline at `56ff059f`)
+4. `G1d2-toposort-rtx` (WEAK BENCHMARK CELL: base already passes; see 12.5)
+
+Balanced PS-639 repeats remain timing controls and the independent-lineage repetitions
+remain replication; neither adds task diversity. Sample accounting therefore stays
+exact: 4 distinct tasks, 12 arm cells, and **3 of the 4 tasks are discriminating**.
+
+Restored decision: **`FREEZE_INTERNAL_CORPUS_FOR_RUNTIME_COMPARISON`**, with the
+weak-cell caveat attached and no runtime comparison executed in this session.
+
+### 12.7 What was and was not run
+
+Run: git inspection, hash validation, chain re-validation, one deterministic verifier
+reproduction against the base blob, and the full test suite. NOT run: any model task,
+any Framework/Halogen comparison, any historical-failure corpus, Terminal-Bench, Pi
+Local Coding Bench, or PS-578 work. No evidence was rewritten and no model execution
+was duplicated.
