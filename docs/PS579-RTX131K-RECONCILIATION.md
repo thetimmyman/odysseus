@@ -12,7 +12,7 @@ Framework comparison and does not change frozen G0/G1/G2 behavior.
 - branch: `ps-579-rtx-g0g1g2`
 - dispatch fixture fix: `b5632c715e6face9b178a2fb795529d544b34419`
 - independent source fix inspected: `de260ae825b2b2a0539c75aeae06cb0396538e1e`
-- full suite after the fixture fix: `3956 passed, 3 skipped, 0 failed`
+- full suite after the fixture fix and RTX routing gate: `3957 passed, 3 skipped, 0 failed`
 
 The 17 dispatch-boundary failures were caused by a test-only receipt seeded
 from wall clock (`utcnow() - 30 minutes`) while the decision clock was pinned
@@ -38,7 +38,10 @@ The distinct PS-632 profile is:
 
 Receipt hash:
 
-`e2c195a3c791d1da7b315768a0c75b381492762477220b90385e9d4022ff0daf`
+`ca763a252941f6cd1d33bba7ff2faf68b226487a20102ddc634e8e6ee8032d3d`
+
+This is a fresh liveness receipt for the same profile; it supersedes the
+qualification receipt `e2c195a3c791d1da7b315768a0c75b381492762477220b90385e9d4022ff0daf`.
 
 Identity digest:
 
