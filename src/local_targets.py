@@ -14,7 +14,7 @@ the target can call a tool at all. Those are not cosmetic differences. Measured
                  x86_64 i9-12900H, 31.1GB RAM, driver 595.84
                  declared caps ["completion","vision"]        <- NO tools declared
                  proven native tool call: YES (add_numbers a=17 b=25, correct)
-                 serving context (from /api/ps): 32768; cold load 53.2s
+                 historical serving context: 32768; current qualified profile: 131072
   local-msr1     MINISFORUM MS-R1   aarch64 12-core 62.3GB   ollama 0.33.3
                  qwen3.8:27b 16.52GB Q4_K_M (parent qwen3.8:27b-q4_K_M)
                  declared caps ["completion","tools","thinking","vision"]
@@ -36,9 +36,10 @@ Two lessons, both of which changed this module's design:
 
 A third measured fact that routing must respect: the *declared* context length
 (262144) is not the *serving* window. ``/api/ps`` reported 32768 for the loaded
-model on the RTX node. A packet sized from the declared number would be
-dispatched into a window that does not exist, so ``safe_working_context`` stays
-``None`` until it is measured and is never inferred from the declared maximum.
+model on the RTX node. The distinct 2026-09-15 qualification measured 131072
+with context-integrity fixtures. The persisted router requires exactly 131072
+for the RTX worker, so a lower receipt is refused rather than used as a silent
+fallback.
 
 Design rules, all load-bearing:
 

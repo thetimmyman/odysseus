@@ -50,10 +50,10 @@ RAW = {
                           "family": "qwen3"},
               "capabilities": []},
     "ps": {"models": [{"name": "qwen3.8:27b", "size_vram": 20401094656,
-                       "context_length": 32768}]},
+                       "context_length": 131072}]},
     "tool_proof": {"ok": True, "tool_calls": 1},
     "timings": {"decode_tok_s": 37.1, "ttft_s": 0.4},
-    "runtime_options": {"num_ctx": 32768, "num_gpu_layers": 99,
+    "runtime_options": {"num_ctx": 131072, "num_gpu_layers": 99,
                         "thinking": False},
 }
 
@@ -75,7 +75,7 @@ def record(raw=None, *, spec_=None, probed_at=""):
                             probed_at=probed_at or NOW.isoformat())
 
 
-def receipt(*, raw=None, spec_=None, safe=32768, configured=32768,
+def receipt(*, raw=None, spec_=None, safe=131072, configured=131072,
             observed_at="", ttl_s=DEFAULT_QUALIFICATION_TTL_S,
             health_ttl_s=DEFAULT_HEALTH_TTL_S, probed_at=""):
     return receipt_from_capability(
@@ -115,13 +115,13 @@ def test_exact_digest_and_quantization_are_exposed_and_authoritative():
     assert r.model.size_bytes == 18854541537
     assert r.runtime.version == "0.32.11"
     assert r.runtime.backend == "cuda"
-    assert r.context.configured_context == 32768
-    assert r.context.served_context == 32768          # measured from /api/ps
-    assert r.context.safe_working_context == 32768    # measurement, not the 262144
+    assert r.context.configured_context == 131072
+    assert r.context.served_context == 131072          # measured from /api/ps
+    assert r.context.safe_working_context == 131072    # measurement, not the 262144
     assert r.context.safe_working_context != r.model.declared_context
     assert r.limits.decode_tok_s == 37.1
     assert r.limits.vram_resident_bytes == 20401094656
-    assert r.context.options.get("num_ctx") == 32768
+    assert r.context.options.get("num_ctx") == 131072
 
 
 def test_the_receipt_hash_covers_its_own_content():
@@ -325,6 +325,14 @@ def test_a_fresh_receipt_routes_and_binds_its_own_hash(tmp_path):
     assert kwargs["capability_receipt_refs"] == (r.receipt_hash,)
 
 
+def test_rtx_lower_context_receipt_is_not_a_worker_fallback(tmp_path):
+    s = store(tmp_path)
+    s.append(receipt(safe=32768, configured=32768))
+    inputs = _inputs(s)
+    assert inputs.target_ids() == ()
+    assert "requires exact 131072 context" in inputs.skipped[0]["reason"]
+
+
 # ---------------------------------------------------------------- negative controls ---
 def test_control_1_mutating_the_model_digest_after_sealing_invalidates(tmp_path):
     s = store(tmp_path)
@@ -473,7 +481,5 @@ def test_the_persisted_path_reads_only_and_selects_nothing(tmp_path):
     s = store(tmp_path)
     _inputs(s)
     assert list(s.entries()) == []
-
-
 
 

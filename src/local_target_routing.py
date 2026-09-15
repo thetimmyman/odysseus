@@ -37,6 +37,8 @@ import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+RTX4500_REQUIRED_CONTEXT = 131072
+
 from src import dispatch_boundary as dbd
 from src import dispatch_routing as dr
 from src.local_targets import (
@@ -423,6 +425,24 @@ def persisted_routing_inputs(store, *, now=None,
                 "no persisted capability receipt for this host: measure it with "
                 "odysseus-capability discover")})
             continue
+
+        # The RTX4500 worker policy is intentionally exact: a stale or drifted
+        # lower-context receipt must fail closed rather than becoming a silent
+        # 32K fallback.  A new PS-632 qualification is required for any change.
+        if host_id == "local-rtx4500":
+            context = receipt.context
+            if any(int(value or 0) != RTX4500_REQUIRED_CONTEXT for value in (
+                    context.configured_context, context.served_context,
+                    context.safe_working_context)):
+                skipped.append({"target_id": host_id,
+                                "profile_id": receipt.profile_id,
+                                "receipt_hash": receipt.receipt_hash,
+                                "reason": (
+                                    "RTX4500 requires exact 131072 context; "
+                                    f"receipt has configured={context.configured_context}, "
+                                    f"served={context.served_context}, "
+                                    f"safe={context.safe_working_context}")})
+                continue
 
         state = receipt.qualification_state(now=moment)
         if state != "valid":
