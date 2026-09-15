@@ -798,8 +798,10 @@ def run_case(worktree: Path, case_name: str, target_id: str,
     target_id = dispatch.selected_target_id
     pin = routing["bound"].pin_for(
         routing["bound"].decision.selected_profile.profile_id)
-    version = str(pin.get("runtime_version") or "")
-    model_digest = str(pin.get("model_digest") or "")
+    # Runtime identity comes from the RECEIPT (one source): the pin carries the
+    # target/host/model, the receipt carries what the runtime reported.
+    version = str(dispatch.selected_runtime_version or "")
+    model_digest = str(dispatch.selected_model_digest or "")
 
     # The runtime client is built FROM the decision, then checked against it. A
     # mismatch stops the run: this is the point where a hand-pin would have to
