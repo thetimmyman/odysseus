@@ -640,6 +640,15 @@ def seal_dispatch_refusal(refusal: Mapping, *, packet: Mapping,
     """
     from src.execution_package import _canonical, _sha256_hex, utc_now
 
+    def measured_capabilities(record) -> list:
+        method = getattr(record, "measured_capabilities", None)
+        if callable(method):
+            return list(method())
+        legacy = getattr(record, "proven_capabilities", None)
+        if callable(legacy):
+            return list(legacy())
+        return []
+
     payload = {
         "schema_version": 1,
         "kind": "dispatch_refusal",
@@ -648,8 +657,9 @@ def seal_dispatch_refusal(refusal: Mapping, *, packet: Mapping,
         "packet_id": str(packet.get("packet_id") or ""),
         "execution_package_hash": execution_package_hash,
         "refusal": dict(refusal),
-        "fleet": [{"target_id": r.target_id, "health": r.health,
-                   "proven": list(r.proven_capabilities())} for r in records],
+        "fleet": [{"target_id": (getattr(r, "target_id", None)
+                                    or getattr(r, "host_id", "")), "health": r.health,
+                   "proven": measured_capabilities(r)} for r in records],
         # Why each host had no acceptable PERSISTED capability receipt, verbatim.
         "capability_skips": [dict(s) for s in capability_skips],
         "attempt_receipts": [],
@@ -707,7 +717,7 @@ def pin_matches_client(bound, spec, client) -> Tuple[bool, str]:
 
 
 def run_case(worktree: Path, case_name: str, target_id: str,
-             num_ctx: int) -> int:
+             num_ctx: int, arm: str = "g1") -> int:
     sys.path.insert(0, str(worktree))
     import cases as case_mod
     import src.local_worker_loop as lo
@@ -861,13 +871,14 @@ def run_case(worktree: Path, case_name: str, target_id: str,
     return _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
                     target_id, num_ctx, version, model_digest, plan, ep,
                     requirement_ids, relevant, snapshot, source_before,
-                    advisor=advisor, planner_policy=planner_policy, routing=routing)
+                    advisor=advisor, planner_policy=planner_policy, routing=routing,
+                    arm=arm)
 
 
 def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
              target_id, num_ctx, version, model_digest, plan, ep, requirement_ids,
              relevant, snapshot, source_before, *, advisor=None,
-             planner_policy=None, routing=None) -> int:
+             planner_policy=None, routing=None, arm="g1") -> int:
     import src.local_worker_loop as lo
     from src.attempt_receipt import (
         ArtifactRef, context_projection_digest, make_attempt_receipt,
@@ -908,10 +919,14 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     started = time.monotonic()
     result = lo.run_bounded(
         packet, run_id=run_id, ledger=ledger, pinned=pinned, dispatch=dispatcher,
-        verify=verifier, base_context=base_context, max_attempts=case.max_attempts,
+        verify=verifier, base_context=base_context,
+        # G0 is the existing raw Dispatcher used once with the same packet and
+        # verifier; it has no repair or replanning. G1/G2 use their frozen loop.
+        max_attempts=1 if arm == "g0" else case.max_attempts,
         read_changed_files=changed_files(case.worktree, packet["write_scope"]),
-        advise=advisor, max_replans=int(getattr(case, "max_replans", 0)),
-        planner_policy=planner_policy)
+        advise=advisor if arm == "g2" else None,
+        max_replans=int(getattr(case, "max_replans", 0)) if arm == "g2" else 0,
+        planner_policy=planner_policy if arm == "g2" else None)
     wall_clock_s = round(time.monotonic() - started, 3)
 
     provenance = ledger.provenance(run_id)
@@ -1074,7 +1089,7 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     write_json(run_dir / "validation.json", validation.to_dict())
 
     summary = {
-        "run_id": run_id, "case": case.name, "target": target_id,
+        "run_id": run_id, "case": case.name, "arm": arm, "target": target_id,
         "num_ctx": num_ctx, "wall_clock_s": wall_clock_s,
         "result": result.to_dict(), "model_calls": len(dispatcher.calls),
         "packet_interface_digest": ep.interface_digest,
@@ -1268,6 +1283,8 @@ def main() -> int:
                         help="output directory for --verify-only")
     parser.add_argument("--base-sha", default="")
     parser.add_argument("--label", default="baseline")
+    parser.add_argument("--arm", choices=("g0", "g1", "g2"), default="g1",
+                        help="evaluation arm: raw one-shot, frozen G1, or frozen G2")
     args = parser.parse_args()
 
     if args.summarise:
@@ -1291,13 +1308,8 @@ def main() -> int:
     if not (worktree / "src").is_dir():
         print(f"not an odysseus worktree: {worktree}", file=sys.stderr)
         return 2
-    return run_case(worktree, args.case, args.target, args.num_ctx)
+    return run_case(worktree, args.case, args.target, args.num_ctx, args.arm)
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-
-
-
