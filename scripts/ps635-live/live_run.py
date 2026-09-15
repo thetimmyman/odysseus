@@ -25,15 +25,20 @@ verdict, next to the raw artifacts the package references.
 
 What it deliberately does NOT do:
 
-* it does not choose a target (PS-605 owns routing). The target is an explicit
-  operator pin, and the DispatchDecisionReceipt records ``explicit_pin`` with no
-  policy reference, because that is what actually happened;
+* it does not choose a target: PS-605 owns routing. ``--target`` is a PREFERENCE
+  submitted through the routing boundary, the measured fleet is read from PS-632's
+  registry (``src.local_targets``), and the DispatchDecisionReceipt records
+  ``ps605_policy`` with its policy reference. A preferred target that is not
+  independently eligible produces a REFUSAL, never a quiet re-point;
 * it does not accept work. The ceiling stays ACCEPTED_CANDIDATE;
 * it does not soften the validator to make a run look good. A rejected package
   is written out as rejected, with its named reasons.
 
 Usage:
     live_run.py <worktree> <case> [--target local-rtx4500] [--num-ctx 32768]
+
+``--target`` is the target the operator PREFERS, not the target that runs: PS-605
+selects from the measured fleet and the receipt records what it did.
 """
 from __future__ import annotations
 
@@ -46,6 +51,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping, Tuple
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -505,11 +511,194 @@ def write_json(path: Path, payload) -> None:
                                default=str) + "\n")
 
 
+def route_packet(worktree: Path, packet: Mapping, ep, run_id: str, run_dir: Path,
+                 *, preferred_target_id: str, ledger, role: str = "") -> dict:
+    """Ask PS-605 which target may run this packet. The harness does NOT choose.
+
+    Returns ``{"refused": True, ...}`` when PS-605 refuses (nothing is dispatched and
+    the refusal is sealed), or ``{"refused": False, "bound": ..., "dispatch": ...}``
+    where ``dispatch`` is PS-638's own ``DispatchDecisionReceipt``, built from
+    PS-605's decision — the only thing the caller may pin.
+
+    ``preferred_target_id`` travels as a PREFERENCE through PS-605, never applied
+    directly: if the preferred target is not independently eligible, PS-605 records
+    why and the run is refused rather than quietly re-pointed.
+    """
+    import src.local_target_routing as ltr
+    from src.dispatch_routing import RoutingRefused
+    from src.execution_package import make_dispatch_receipt
+    from src.local_targets import probe_fleet, registered_targets, target_by_id
+
+    spec = target_by_id(preferred_target_id)
+    if spec is None:
+        raise SystemExit(f"unknown target {preferred_target_id!r}; registered: "
+                         f"{[s.target_id for s in registered_targets()]}")
+    records = probe_fleet([spec])
+    write_json(run_dir / "fleet_probe.json", {
+        "probed": [r.to_dict() for r in records],
+        "scope": ("this slice probes the qualified target; the registry itself is "
+                  "untouched, and multi-candidate refusal/fallback is proven in the "
+                  "PS-605 live controls and the integration tests")})
+
+    try:
+        bound, inputs = ltr.resolve_fleet_dispatch(
+            records, packet=packet,
+            role=role or str(packet.get("role") or "local_implementer"),
+            execution_package_hash=ep.package_hash, run_id=run_id,
+            preferred_target_id=preferred_target_id, decision_id=f"dec-{run_id}")
+    except (RoutingRefused, ltr.FleetRoutingError) as exc:
+        refusal = exc.to_dict() if hasattr(exc, "to_dict") else {"reason": str(exc)}
+        sealed = seal_dispatch_refusal(
+            refusal, packet=packet, execution_package_hash=ep.package_hash,
+            run_id=run_id, records=records, run_dir=run_dir)
+        # The canonical record of "this run stopped before dispatch" is the ledger,
+        # which already owns run state; the refusal file above carries the routing
+        # reasons. The run is opened with an EMPTY execution identity on purpose: no
+        # target was selected, and naming one would misattribute the refusal.
+        ledger.record_run(run_id=run_id, packet_id=packet["packet_id"],
+                          objective=str(packet.get("objective") or ""),
+                          role=str(packet.get("role") or "local_implementer"),
+                          target_id="", host="", model="", runtime_version="",
+                          worktree=str(worktree),
+                          write_scope=packet.get("write_scope") or (),
+                          base_sha=str(packet.get("base_sha") or ""),
+                          interface_digest=getattr(ep, "interface_digest", ""))
+        # No AttemptReceipt exists because no attempt happened.
+        ledger.record_decision(run_id=run_id, packet_id=packet["packet_id"],
+                               decision="blocked",
+                               reason=f"ps605 refusal: {refusal.get('code')}",
+                               result="BLOCKED")
+        return {"refused": True, "refusal": refusal, "refusal_path": sealed["path"],
+                "refusal_hash": sealed["refusal_hash"],
+                "ledger_chain": ledger.verify_chain()}
+
+    dispatch = make_dispatch_receipt(**bound.decision.to_ps638_receipt_kwargs())
+    code = preference_violation(preferred_target_id, dispatch.selected_target_id)
+    if code:
+        # PS-605 chose a different node than the operator named. Refuse instead of
+        # dispatching: the preference is a constraint, not a hint to be overridden.
+        refusal = {"code": code, "refused": True,
+                   "reason": (f"the operator preferred {preferred_target_id!r}; PS-605 "
+                              f"selected {dispatch.selected_target_id!r}, and "
+                              "executing on another node is not this run's decision "
+                              "to make"),
+                   "candidates": [a.to_dict() for a in bound.decision.candidates]}
+        sealed = seal_dispatch_refusal(
+            refusal, packet=packet, execution_package_hash=ep.package_hash,
+            run_id=run_id, records=records, run_dir=run_dir)
+        ledger.record_run(run_id=run_id, packet_id=packet["packet_id"],
+                          objective=str(packet.get("objective") or ""),
+                          role=str(packet.get("role") or "local_implementer"),
+                          target_id="", host="", model="", runtime_version="",
+                          worktree=str(worktree),
+                          write_scope=packet.get("write_scope") or (),
+                          base_sha=str(packet.get("base_sha") or ""),
+                          interface_digest=getattr(ep, "interface_digest", ""))
+        ledger.record_decision(run_id=run_id, packet_id=packet["packet_id"],
+                               decision="blocked", reason=f"ps605 refusal: {code}",
+                               result="BLOCKED")
+        return {"refused": True, "refusal": refusal, "refusal_path": sealed["path"],
+                "refusal_hash": sealed["refusal_hash"],
+                "ledger_chain": ledger.verify_chain()}
+    write_json(run_dir / "dispatch_receipt.json", dispatch.to_dict())
+    write_json(run_dir / "routing_decision.json", {
+        **bound.to_dict(),
+        "selected_target_id": dispatch.selected_target_id,
+        "dispatch_receipt_hash": dispatch.receipt_hash,
+        "fleet_skipped": [dict(s) for s in inputs.skipped],
+        "candidate_order": [c["target_id"] for c in
+                            bound.decision.to_dict()["candidates"]
+                            if c.get("eligible")]})
+    return {"refused": False, "bound": bound, "dispatch": dispatch,
+            "records": records, "spec": spec,
+            "dispatch_receipt_hash": dispatch.receipt_hash}
+
+
+def seal_dispatch_refusal(refusal: Mapping, *, packet: Mapping,
+                          execution_package_hash: str, run_id: str,
+                          records, run_dir: Path) -> dict:
+    """Seal a PS-605 refusal: auditable, package-bound, immutable, no AttemptReceipt.
+
+    PS-638's ``DispatchDecisionReceipt`` CANNOT represent this: it requires a
+    selected target, host and model, and a refusal has none. Inventing empty strings
+    there would be a lie dressed as a receipt — and a test asserts that builder
+    refuses empty selections, so the gap is pinned rather than papered over. The
+    canonical record that a run stopped before dispatch is the ExecutionLedger; this
+    file adds the routing REASONS, bound to the same package hash and
+    content-addressed, so a later reader can re-derive it without a second authority.
+    """
+    from src.execution_package import _canonical, _sha256_hex, utc_now
+
+    payload = {
+        "schema_version": 1,
+        "kind": "dispatch_refusal",
+        "sealed_at": utc_now(),
+        "run_id": run_id,
+        "packet_id": str(packet.get("packet_id") or ""),
+        "execution_package_hash": execution_package_hash,
+        "refusal": dict(refusal),
+        "fleet": [{"target_id": r.target_id, "health": r.health,
+                   "proven": list(r.proven_capabilities())} for r in records],
+        "attempt_receipts": [],
+        "note": ("no attempt occurred, so there is no AttemptReceipt and no "
+                 "EvidencePackage: a sealed package about a run that did not happen "
+                 "would be a document about nothing"),
+    }
+    payload["refusal_hash"] = _sha256_hex(_canonical(payload))
+    path = run_dir / "dispatch_refusal.json"
+    write_json(path, payload)
+    return {"path": str(path), "refusal_hash": payload["refusal_hash"],
+            "payload": payload}
+
+
+def dispatch_refusal_is_intact(payload: Mapping) -> bool:
+    """True when a sealed refusal still hashes to its own fields."""
+    from src.execution_package import _canonical, _sha256_hex
+
+    body = {k: v for k, v in dict(payload).items() if k != "refusal_hash"}
+    return payload.get("refusal_hash") == _sha256_hex(_canonical(body))
+
+
+def preference_violation(preferred_target_id: str,
+                         selected_target_id: str) -> str:
+    """A stated preference that was not selected is a REFUSAL, not a re-point.
+
+    The operator's ``--target`` expresses which node this run is allowed to use; if
+    PS-605 selects a different one (because the preferred node is unhealthy, stale or
+    ineligible), executing anyway would be exactly the silent substitution the
+    integrity rules forbid. Returns the refusal code, or "" when they agree.
+    """
+    if not preferred_target_id or preferred_target_id == selected_target_id:
+        return ""
+    return "preferred_target_not_selected"
+
+
+def pin_matches_client(bound, spec, client) -> Tuple[bool, str]:
+    """The runtime client must BE the pinned target: host and model must agree.
+
+    The last line of defence after the decision: if the client that will actually
+    run the packet is not the host/model the receipt names, the run must stop rather
+    than execute on a target the evidence cannot describe.
+    """
+    pin = bound.pin_for(bound.decision.selected_profile.profile_id)
+    if pin is None:
+        return False, "the selected profile is not in the decision's eligible set"
+    for name, pinned, actual in (("host", str(pin.get("host") or ""),
+                                  str(getattr(client, "ssh_host", "") or "")),
+                                 ("model", str(pin.get("model") or ""),
+                                  str(getattr(client, "model", "") or ""))):
+        if pinned and actual and pinned != actual:
+            return False, (f"{name}: the decision pinned {pinned!r}, the runtime "
+                           f"client is {actual!r}")
+    return True, ""
+
+
 def run_case(worktree: Path, case_name: str, target_id: str,
              num_ctx: int) -> int:
     sys.path.insert(0, str(worktree))
     import cases as case_mod
     import src.local_worker_loop as lo
+    from src import dispatch_boundary as dbd
     from src.attempt_receipt import (
         ArtifactRef, context_projection_digest, make_attempt_receipt,
         make_verification_receipt)
@@ -518,9 +707,11 @@ def run_case(worktree: Path, case_name: str, target_id: str,
     from src.evidence_package import (
         find_secret_shaped, seal_evidence_package, validate_evidence_package)
     from src.execution_ledger import ExecutionLedger
+    # NOTE: the operator-pin receipt builder is deliberately not imported any more:
+    # PS-605 selects the target and the receipt records that it did.
     from src.execution_package import (
-        DECIDED_BY_EXPLICIT_PIN, VerificationPlan, build_execution_package,
-        default_requirements, make_dispatch_receipt, seal_verifier_digests)
+        VerificationPlan, build_execution_package, default_requirements,
+        make_dispatch_receipt, seal_verifier_digests)
     from src.repair_packet import failure_fingerprint, parse_verification_failure
     from src.source_snapshot import take_source_snapshot
     from src.worker_context import render_worker_context
@@ -531,8 +722,6 @@ def run_case(worktree: Path, case_name: str, target_id: str,
     run_dir = worktree / "data" / "live" / run_id
     store = RunStore(run_dir)
     ledger = ExecutionLedger(str(run_dir / "ledger.jsonl"))
-    client = oc.target(target_id)
-
     packet = case.packet()
     test_rel = case.verifier
     relevant = sorted(set(list(packet["write_scope"]) + [test_rel]))
@@ -550,11 +739,6 @@ def run_case(worktree: Path, case_name: str, target_id: str,
             "paths": list(leaks), "model_calls": 0})
         print(f"REFUSED before dispatch: secret-shaped content at {list(leaks)}")
         return 0
-
-    version = (client.api("/api/version", timeout=20).body or {}).get("version", "")
-    tags = client.api("/api/tags", timeout=40).body or {}
-    model_digest = next((m.get("digest") for m in (tags.get("models") or ())
-                         if m.get("name") == client.model), "")
 
     source_before = snapshot()
     plan = VerificationPlan(
@@ -594,6 +778,53 @@ def run_case(worktree: Path, case_name: str, target_id: str,
               f"(0 model calls)\n  reason: {str(exc)[:200]}")
         return 0
 
+    # ---- PS-605 is the routing authority. The harness does not choose. ---------
+    routing = route_packet(worktree, packet, ep, run_id, run_dir,
+                           preferred_target_id=target_id, ledger=ledger)
+    if routing["refused"]:
+        write_json(run_dir / "result.json", {
+            "run_id": run_id, "result": "REFUSED", "model_calls": 0,
+            "package_sealed": False, "ps605_refusal": routing["refusal"],
+            "dispatch_refusal_path": routing["refusal_path"],
+            "dispatch_refusal_hash": routing["refusal_hash"],
+            "reason": ("PS-605 refused this packet against the measured fleet: no "
+                       "target may be selected, so no model was called and no "
+                       "package was sealed")})
+        print(f"{run_id}: REFUSED by PS-605 "
+              f"({routing['refusal'].get('code')}) — 0 model calls, no dispatch")
+        return 0
+
+    dispatch = routing["dispatch"]
+    target_id = dispatch.selected_target_id
+    pin = routing["bound"].pin_for(
+        routing["bound"].decision.selected_profile.profile_id)
+    version = str(pin.get("runtime_version") or "")
+    model_digest = str(pin.get("model_digest") or "")
+
+    # The runtime client is built FROM the decision, then checked against it. A
+    # mismatch stops the run: this is the point where a hand-pin would have to
+    # happen, and it cannot.
+    client = oc.target(target_id)
+    agreed, why = pin_matches_client(routing["bound"], routing["spec"], client)
+    if not agreed:
+        write_json(run_dir / "pin_violation.json", {
+            "run_id": run_id, "result": "PIN_VIOLATION", "reason": why,
+            "model_calls": 0, "dispatch_receipt_hash": dispatch.receipt_hash,
+            "selected_target_id": dispatch.selected_target_id})
+        print(f"{run_id}: PIN_VIOLATION — {why} (0 model calls)")
+        return 0
+    try:
+        dbd.verify_invocation(routing["bound"],
+                              profile_id=dispatch.selected_target_id,
+                              model=client.model,
+                              chat_url=routing["spec"].endpoint or "")
+    except Exception as exc:
+        write_json(run_dir / "pin_violation.json", {
+            "run_id": run_id, "result": "PIN_VIOLATION", "reason": str(exc),
+            "model_calls": 0, "dispatch_receipt_hash": dispatch.receipt_hash})
+        print(f"{run_id}: PIN_VIOLATION — {exc} (0 model calls)")
+        return 0
+
     requirement_ids = tuple(r.requirement_id for r in ep.evidence_requirements)
     advisor = None
     planner_policy = None
@@ -612,13 +843,13 @@ def run_case(worktree: Path, case_name: str, target_id: str,
     return _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
                     target_id, num_ctx, version, model_digest, plan, ep,
                     requirement_ids, relevant, snapshot, source_before,
-                    advisor=advisor, planner_policy=planner_policy)
+                    advisor=advisor, planner_policy=planner_policy, routing=routing)
 
 
 def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
              target_id, num_ctx, version, model_digest, plan, ep, requirement_ids,
              relevant, snapshot, source_before, *, advisor=None,
-             planner_policy=None) -> int:
+             planner_policy=None, routing=None) -> int:
     import src.local_worker_loop as lo
     from src.attempt_receipt import (
         ArtifactRef, context_projection_digest, make_attempt_receipt,
@@ -629,24 +860,15 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     from src.repair_packet import failure_fingerprint, parse_verification_failure
     from src.worker_context import render_worker_context
 
-    dispatch = make_dispatch_receipt(
-        receipt_id=f"dispatch-{run_id}", execution_package_hash=ep.package_hash,
-        run_id=run_id, packet_id=packet["packet_id"],
-        requested_role="local_implementer",
-        requested_capabilities=tuple(packet.get("target_requirements") or ()),
-        selected_target_id=target_id, selected_host=client.ssh_host,
-        selected_model=client.model, selected_runtime_kind="ollama",
-        selected_runtime_version=version, selected_model_digest=model_digest,
-        granted_tools=("write_file",),
-        granted_write_scope=tuple(packet["write_scope"]),
-        granted_read_scope=tuple(packet.get("read_scope") or ()),
-        network_policy="tailnet-loopback",
-        decided_by="explicit_pin",
-        reason=(f"operator pinned {target_id}; PS-605 policy routing is not wired "
-                "for this packet, so no policy reference is claimed"),
-        candidates_considered=({"target_id": target_id, "eligible": True,
-                                "reason": "explicit operator pin"},),
-        decided_at=datetime.now(timezone.utc).isoformat())
+    # PS-605's decision, sealed as PS-638's OWN receipt type. The harness does not
+    # construct a receipt from an operator pin any more: there is no code path here
+    # that can name a target PS-605 did not select.
+    dispatch = routing["dispatch"]
+    pin = routing["bound"].pin_for(
+        routing["bound"].decision.selected_profile.profile_id)
+    if dispatch.selected_target_id != target_id or str(pin.get("target_id")) != target_id:
+        raise SystemExit(
+            f"routing/dispatch disagree about the target: {target_id!r}")
     write_json(run_dir / "dispatch_receipt.json", dispatch.to_dict())
 
     base_context = render_worker_context(packet) + case.source_material(
@@ -654,8 +876,10 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
     case.preflight(base_context)
     (run_dir / "base_context.txt").write_text(base_context)
 
-    pinned = lo.PinnedTarget(target_id=target_id, host=client.ssh_host,
-                             model=client.model, runtime_version=version,
+    # The pinned target is the DECISION's identity, field for field.
+    pinned = lo.PinnedTarget(target_id=target_id, host=str(pin.get("host") or ""),
+                             model=str(pin.get("model") or ""),
+                             runtime_version=version,
                              worktree=str(case.worktree), served_context=num_ctx)
     dispatcher = Dispatcher(case.worktree, packet["write_scope"], client, store,
                             num_ctx=num_ctx,
@@ -710,9 +934,10 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
             repair_of=0 if number == 1 else number - 1,
             execution_package_hash=ep.package_hash,
             dispatch_receipt_hash=dispatch.receipt_hash,
-            target_id=target_id, host=client.ssh_host, model=client.model,
-            runtime_kind="ollama", runtime_version=version,
-            model_version=model_digest,
+            target_id=target_id, host=str(pin.get("host") or ""),
+            model=str(pin.get("model") or ""),
+            runtime_kind=str(pin.get("runtime_kind") or "ollama"),
+            runtime_version=version, model_version=model_digest,
             context_projection_hash=context_projection_digest(call["context"]),
             rendered_context_ref=ArtifactRef(**ctx_ref),
             output_ref=ArtifactRef(**out_ref),
@@ -767,6 +992,36 @@ def _execute(case, packet, test_rel, run_id, run_dir, store, ledger, client,
             failure_fingerprint=failure_fingerprint(failure)))
         write_json(run_dir / f"verification_receipt-{number}.json",
                    verifications[-1].to_dict())
+
+    # The chain, checked rather than assumed, before anything is sealed: package
+    # hash -> dispatch receipt hash -> every attempt's dispatch_receipt_hash -> the
+    # target that actually ran. A break here means the evidence would describe a
+    # different run than the one that happened.
+    chain = {
+        "execution_package_hash": ep.package_hash,
+        "dispatch_receipt_hash": dispatch.receipt_hash,
+        "attempts_bound": all(a.dispatch_receipt_hash == dispatch.receipt_hash
+                              and a.execution_package_hash == ep.package_hash
+                              for a in attempts),
+        "attempt_targets": sorted({a.target_id for a in attempts}),
+        "pinned_target_id": dispatch.selected_target_id,
+        "run_target_id": target_id,
+        "receipt_target_matches_pin": dispatch.selected_target_id == target_id,
+        "attempts_on_the_pinned_target": all(a.target_id == dispatch.selected_target_id
+                                             for a in attempts),
+    }
+    chain["ok"] = bool(chain["attempts_bound"]
+                       and chain["receipt_target_matches_pin"]
+                       and chain["attempts_on_the_pinned_target"])
+    write_json(run_dir / "dispatch_chain.json", chain)
+    if not chain["ok"]:
+        write_json(run_dir / "result.json", {
+            "run_id": run_id, "result": "CHAIN_BROKEN", "model_calls":
+            len(dispatcher.calls), "package_sealed": False,
+            "reason": "an attempt does not bind the dispatch receipt that "
+                      "authorised it, so no package was sealed"})
+        print(f"{run_id}: CHAIN_BROKEN — refusing to seal evidence")
+        return 0
 
     package = seal_evidence_package(
         evidence_package_id=f"evpkg-{run_id}", execution_package=ep,

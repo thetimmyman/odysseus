@@ -43,6 +43,7 @@ selected target, a receipt, or the policy revision after sealing invalidates it.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from dataclasses import dataclass
@@ -167,8 +168,9 @@ def _utc_now() -> str:
 
 
 def _canonical(payload: object) -> bytes:
+    """PS-638's canonical form, byte-for-byte (see dispatch_routing._canonical)."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                      default=str).encode("utf-8")
+                      ensure_ascii=False, default=str).encode("utf-8")
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -281,7 +283,8 @@ def receipt_store_from_env() -> Dict[str, Any]:
 def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *,
                              ttl_s: int = 86400,
                              now: Optional[datetime] = None,
-                             receipt_overrides: Optional[Mapping[str, Any]] = None
+                             receipt_overrides: Optional[Mapping[str, Any]] = None,
+                             network_classes: Optional[Mapping[str, str]] = None
                              ) -> TargetEstate:
     """Project DB rows + candidate dicts into PS-605 profiles and receipts.
 
@@ -295,7 +298,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
     receipt is used instead and keeps whatever provenance it claims.
     """
     from core.database import ModelEndpoint, RoutingModelProfile
-    from src.routing_engine import _endpoint_is_local
+    from src.routing_engine import endpoint_is_local
 
     overrides = dict(receipt_overrides or {})
     if receipt_overrides is None:
@@ -324,7 +327,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
             continue
 
         base_url = str(getattr(endpoint, "base_url", "") or "")
-        locality = (LOCALITY_LOCAL if _endpoint_is_local(base_url)
+        locality = (LOCALITY_LOCAL if endpoint_is_local(base_url)
                     else LOCALITY_HOSTED)
         roles = frozenset(_json_list(row.roles))
         supports_tools = getattr(endpoint, "supports_tools", None) is True
@@ -341,8 +344,13 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
             endpoint_url=base_url,
             # Silence is not a grant: supports_tools NULL/False grants no tools.
             tools=frozenset({"write_file"}) if supports_tools else frozenset(),
-            network_policy=("local-network" if locality == LOCALITY_LOCAL
-                            else "hosted-egress"),
+            # A registry that already names the network class (PS-632's
+            # ``NETWORK_TAILNET``) wins: the packet, the profile and the receipt must
+            # agree on one string, and inventing a second spelling here is how a
+            # constraint silently stops matching.
+            network_policy=(dict(network_classes or {}).get(row.id)
+                            or ("local-network" if locality == LOCALITY_LOCAL
+                                else "hosted-egress")),
             budget_class=_budget_class(row), cost_rank=_cost_rank(row),
             inference=bool(roles & INFERENCE_ROLE_NAMES)))
         kept.append(candidate)
@@ -375,10 +383,10 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
 
 def _sensitivity_local_only(task: Any) -> bool:
     """True when the task's sensitivity ranks above the policy's remote ceiling."""
-    from src.routing_engine import _SENSITIVITY_RANK, _remote_ceiling_rank
+    from src.routing_engine import sensitivity_requires_local_only
 
-    sensitivity = getattr(task, "data_sensitivity", None) or "internal"
-    return _SENSITIVITY_RANK.get(sensitivity, 1) > _remote_ceiling_rank()
+    return sensitivity_requires_local_only(
+        getattr(task, "data_sensitivity", None))
 
 
 def execution_package_hash(task: Any) -> str:
@@ -404,7 +412,9 @@ def route_request_from_task(task: Any, *, role: str,
                             network_policy: str = "",
                             preferred_profile_ids: Sequence[str] = (),
                             max_cost_rank: Optional[int] = None,
-                            packet_id: str = "") -> RoutingRequest:
+                            packet_id: str = "",
+                            execution_package_hash_: str = "",
+                            run_id: str = "") -> RoutingRequest:
     """Build the PS-605 request from a RoutingTask row (its OWN fields, not args).
 
     ``local_only`` comes from the task's ``data_sensitivity`` and the policy's
@@ -424,7 +434,12 @@ def route_request_from_task(task: Any, *, role: str,
     return RoutingRequest(
         domain=str(domain or "general_swe"), role=role,
         packet_id=packet_id or str(getattr(task, "id", "") or ""),
-        execution_package_hash=execution_package_hash(task),
+        run_id=run_id,
+        # A caller that already sealed a PS-638 ExecutionPackage passes ITS hash:
+        # the receipt must bind the package that will actually carry it, not a
+        # digest re-derived from task columns.
+        execution_package_hash=(execution_package_hash_
+                                or execution_package_hash(task)),
         capabilities=tuple(capabilities), exactness=exactness,
         sensitivity=str(getattr(task, "data_sensitivity", None) or "internal"),
         local_only=_sensitivity_local_only(task),
@@ -502,17 +517,18 @@ def role_for_task(task: Any, estate: "TargetEstate",
                   available_roles: Sequence[str] = ()) -> str:
     """The role the run is routed as: the task's FIRST supported preference.
 
-    Uses the harness's own ROLE_BY_TASK preference list and the estate's declared
-    roles, so the request asks for what the task MEANS rather than for what happens
+    Uses the routing layer's public role-preference contract
+    (``routing_engine.roles_for_task_type``) and the estate's declared roles, so the
+    request asks for what the task MEANS rather than for what happens
     to be available — the difference matters when nothing supports it, which is a
     refusal rather than a downgrade.
     """
-    from src.routing_engine import ROLE_BY_TASK, _DEFAULT_ROLES
+    from src.routing_engine import roles_for_task_type
 
     declared: set = set(available_roles)
     for profile in estate.profiles:
         declared |= set(profile.roles)
-    preferences = ROLE_BY_TASK.get(getattr(task, "task_type", ""), _DEFAULT_ROLES)
+    preferences = roles_for_task_type(getattr(task, "task_type", ""))
     for role in preferences:
         if role in declared:
             return role
@@ -528,7 +544,11 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
                      network_policy: str = "",
                      preferred_profile_ids: Sequence[str] = (),
                      max_cost_rank: Optional[int] = None,
+                     execution_package_hash_: str = "",
+                     run_id: str = "",
+                     packet_id: str = "",
                      receipt_overrides: Optional[Mapping[str, Any]] = None,
+                     network_classes: Optional[Mapping[str, str]] = None,
                      ttl_s: int = 86400,
                      policy: Any = None,
                      resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
@@ -542,7 +562,8 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
     """
     snapshot = policy or policy_snapshot()
     estate = profiles_from_candidates(
-        db, candidates, ttl_s=ttl_s, now=now, receipt_overrides=receipt_overrides)
+        db, candidates, ttl_s=ttl_s, now=now, receipt_overrides=receipt_overrides,
+        network_classes=network_classes)
     if not estate.profiles:
         raise DispatchBoundaryError(
             f"{BOUNDARY_REFUSED_NO_PROFILES}: no candidate resolved to an enabled "
@@ -554,7 +575,42 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
         task, role=resolved_role, domain=domain, capabilities=capabilities,
         exactness=exactness, required_tools=required_tools,
         network_policy=network_policy, preferred_profile_ids=preferred_profile_ids,
-        max_cost_rank=max_cost_rank)
+        max_cost_rank=max_cost_rank, execution_package_hash_=execution_package_hash_,
+        run_id=run_id, packet_id=packet_id)
+    # One selection path: the DB-backed resolver binds through the same function a
+    # registry-backed caller uses, so there is exactly one place selection happens.
+    return resolve_from_estate(estate, request, network_classes=network_classes,
+                               policy=snapshot, resources=resources, now=now,
+                               decision_id=decision_id)
+
+
+def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
+                        network_classes: Optional[Mapping[str, str]] = None,
+                        policy: Any = None,
+                        resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
+                        now: Optional[datetime] = None,
+                        decision_id: str = "") -> BoundDispatch:
+    """Bind an already-built estate + request to a decision: no DB, no task row.
+
+    The DB-backed :func:`resolve_dispatch` is one caller of this; a caller whose
+    estate comes from somewhere else (PS-632's measured fleet, a fixture, a replay)
+    uses this directly rather than fabricating a task row to satisfy the other.
+    """
+    snapshot = policy or policy_snapshot()
+    if not estate.profiles:
+        raise DispatchBoundaryError(
+            f"{BOUNDARY_REFUSED_NO_PROFILES}: the estate has no profiles to decide "
+            f"over (skipped: {[dict(s) for s in estate.skipped]})")
+    if network_classes:
+        classes = dict(network_classes)
+        estate = TargetEstate(
+            profiles=tuple(
+                dataclasses.replace(
+                    profile, network_policy=classes.get(profile.profile_id)
+                    or profile.network_policy)
+                for profile in estate.profiles),
+            receipts=estate.receipts, skipped=estate.skipped,
+            candidates=estate.candidates)
     decision = select_target(
         request, profiles=estate.profiles, receipts=estate.receipts,
         policy=snapshot, resources=resources, now=now, decision_id=decision_id)
@@ -571,7 +627,7 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
     endpoint's LOCALITY contradicts the pinned locality (a local pin resolving to a
     remote URL is precisely the failure this exists to stop).
     """
-    from src.routing_engine import _endpoint_is_local
+    from src.routing_engine import endpoint_is_local
 
     pin = bound.pin_for(profile_id)
     if pin is None:
@@ -585,7 +641,7 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
             PIN_MODEL_MISMATCH,
             f"resolved model {model!r} is not the pinned model {pinned_model!r}",
             decision_id=bound.decision.decision_id)
-    resolved_local = _endpoint_is_local(chat_url)
+    resolved_local = endpoint_is_local(chat_url)
     if resolved_local != (pin.get("locality") == LOCALITY_LOCAL):
         raise DispatchPinViolation(
             PIN_LOCALITY_MISMATCH,

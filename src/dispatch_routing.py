@@ -62,6 +62,10 @@ CAP_NO_TOOL_DECLINE = "no_tool_decline"
 CAP_MULTI_ROUND = "multi_round_tool_continuation"
 CAP_CONTEXT_INTEGRITY = "context_integrity"
 CAP_CANCELLATION = "cancellation"
+#: The name PS-632's registry uses for a streamed runtime. Deliberately the SAME
+#: string, so a packet requirement, a capability receipt and a profile all say
+#: "streaming" instead of three near-synonyms that stop matching each other.
+CAP_STREAMING = "streaming"
 CAP_EXACT_REFERENCE_SEMANTICS = "exact_reference_semantics"
 CAP_DETERMINISTIC_VERIFICATION = "deterministic_verification"
 #: PS-623's catalog vocabulary, kept as the hosted/subscription role names so the
@@ -73,7 +77,7 @@ CAP_BULK_LOCAL = "bulk_local"
 KNOWN_CAPABILITIES: FrozenSet[str] = frozenset({
     CAP_TEXT_GENERATION, CAP_REASONING_FRAMING, CAP_SINGLE_TOOL_CALL,
     CAP_PARALLEL_TOOL_CALLS, CAP_STREAMED_TOOL_CALLS, CAP_NO_TOOL_DECLINE,
-    CAP_MULTI_ROUND, CAP_CONTEXT_INTEGRITY, CAP_CANCELLATION,
+    CAP_MULTI_ROUND, CAP_CONTEXT_INTEGRITY, CAP_CANCELLATION, CAP_STREAMING,
     CAP_EXACT_REFERENCE_SEMANTICS, CAP_DETERMINISTIC_VERIFICATION,
     CAP_INTEGRATION_STRONG, CAP_IMPLEMENTATION_FAST, CAP_BULK_LOCAL,
 })
@@ -185,8 +189,15 @@ FALLBACK_RULE = (
 
 
 def _canonical(payload: object) -> bytes:
+    """PS-638's canonical form, byte-for-byte, because receipt hashes must agree.
+
+    ``ensure_ascii=False`` is not cosmetic: PS-638's ``_canonical`` uses it, and a
+    receipt hash computed over an escaped payload would differ from the hash PS-638
+    stamps on the same fields. The cross-lineage contract test asserts the equality
+    rather than trusting this comment.
+    """
     return json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                      default=str).encode("utf-8")
+                      ensure_ascii=False, default=str).encode("utf-8")
 
 
 def _sha256_hex(data: bytes) -> str:

@@ -148,6 +148,26 @@ def _remote_ceiling_rank() -> int:
     return _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK["confidential"])
 
 
+# ------------------------------------------------------- public contract (PS-605) ---
+# dispatch_boundary (PS-605) and the registry seam consume these three functions
+# rather than the private helpers below them. They are the SAME rules, named once in
+# public: a second implementation of "is this endpoint local?" is how a locality
+# constraint silently stops matching between the router and the dispatcher.
+def endpoint_is_local(url: Optional[str]) -> bool:
+    """True when an endpoint URL is loopback/private/LAN — i.e. not remote egress."""
+    return _endpoint_is_local(url)
+
+
+def sensitivity_requires_local_only(sensitivity: Optional[str]) -> bool:
+    """True when a data-sensitivity class ranks above the policy's remote ceiling."""
+    return _SENSITIVITY_RANK.get(str(sensitivity or "internal"), 1) > _remote_ceiling_rank()
+
+
+def roles_for_task_type(task_type: Optional[str]) -> List[str]:
+    """The preference-ordered roles a task type asks for (harness vocabulary)."""
+    return list(ROLE_BY_TASK.get(str(task_type or ""), _DEFAULT_ROLES))
+
+
 def route_task(db, task, bundle: dict) -> dict:
     """Return the ranked candidate chain for `task`, filtered by its
     allow_free/paid/premium flags and the Section 9 data-sensitivity hard
