@@ -69,7 +69,30 @@ lands, `make_dispatch_receipt(**decision.to_ps638_receipt_kwargs())` is the
 integration, and `decision.attempt_binding()["dispatch_receipt_hash"]` is what an
 `AttemptReceipt` records to bind itself to this decision.
 
-## Deliberately NOT in this slice
+## Consumption: who obeys the decision (added after the first slice)
+
+The selector is not a sidecar. `src/dispatch_boundary.py` is the seam that makes the
+production dispatcher consume it, and `docs/PS605-DISPATCH-PROOF.md` carries the live
+evidence. Four rules, in one place:
+
+1. `execute_candidates` resolves the decision BEFORE the run manifest and iterates
+   `bound.execution_order(candidates)` — a candidate the decision refused is never
+   offered to the loop, so no point after the decision can choose a refused target.
+2. `verify_invocation` runs after `resolve_endpoint_by_id` and BEFORE
+   `llm_call_with_usage`: a resolved model or endpoint that contradicts the pin is a
+   typed `policy_refused` skip, never a provider error and never a network call.
+3. A refusal (`RoutingRefused` / `DispatchBoundaryError`) stops the run with zero
+   model calls and writes `dispatch_refusal.json` with per-candidate reasons.
+4. `dispatch_receipt.json` records the decision, the PS-638 receipt fields, one
+   attempt binding per attempt (each carrying `dispatch_receipt_hash`) and every
+   invocation performed — the artifact `validate_dispatch_evidence` re-derives.
+
+Receipts arrive with a `provenance`: `measured` (PS-632, or the explicit
+`PS605_RECEIPT_STORE` seam until it lands), `detected` (an endpoint fact the system
+probed), or `declared` (what the row says about itself). Unknown is never a
+capability, and what declaration cannot evidence, a request may still require — which
+refuses rather than proceeding.
+
 
 Cockpit/UI, landing, retry policy, budgets as accounting, the ledger, the evidence
 package, verification, and anything about acceptance. PS-605 owns SELECTION; PS-635

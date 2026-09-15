@@ -95,6 +95,16 @@ ROLE_VERIFIER = "deterministic_verifier"
 ROLE_GOVERNANCE_CI = "governance_ci"
 ROLE_PLANNER = "planner"
 ROLE_SCOUT = "read_only_analyst"
+#: The routing harness's own role names (RoutingModelProfile.roles + ROLE_BY_TASK).
+#: Included so the two layers share one vocabulary instead of translating between
+#: two, which is how a role quietly stops matching the capability set it implies.
+ROLE_REVIEWER = "reviewer"
+ROLE_DEBUGGER = "debugger"
+ROLE_ESCALATION = "escalation"
+#: The bare names the routing harness uses for the two roles that differ from the
+#: canonical spelling (ROLE_BY_TASK / RoutingModelProfile.roles).
+ROLE_IMPLEMENTER_ROUTER = "implementer"
+ROLE_SCOUT_ROUTER = "scout"
 
 #: What a role requires when the request does not name its own capabilities. A
 #: role is a shorthand for a capability set, never a substitute for one.
@@ -103,11 +113,18 @@ ROLE_CAPABILITIES: Mapping[str, Tuple[str, ...]] = {
                        CAP_EXACT_REFERENCE_SEMANTICS),
     ROLE_REPAIR: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL,
                   CAP_EXACT_REFERENCE_SEMANTICS),
+    ROLE_DEBUGGER: (CAP_TEXT_GENERATION, CAP_EXACT_REFERENCE_SEMANTICS),
     ROLE_VERIFIER: (CAP_DETERMINISTIC_VERIFICATION,),
     ROLE_GOVERNANCE_CI: (CAP_DETERMINISTIC_VERIFICATION,),
+    ROLE_REVIEWER: (CAP_TEXT_GENERATION, CAP_EXACT_REFERENCE_SEMANTICS),
     ROLE_PLANNER: (CAP_TEXT_GENERATION, CAP_REASONING_FRAMING,
                    CAP_EXACT_REFERENCE_SEMANTICS),
     ROLE_SCOUT: (CAP_TEXT_GENERATION, CAP_EXACT_REFERENCE_SEMANTICS),
+    ROLE_ESCALATION: (CAP_TEXT_GENERATION, CAP_REASONING_FRAMING,
+                      CAP_EXACT_REFERENCE_SEMANTICS),
+    ROLE_IMPLEMENTER_ROUTER: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL,
+                              CAP_EXACT_REFERENCE_SEMANTICS),
+    ROLE_SCOUT_ROUTER: (CAP_TEXT_GENERATION, CAP_EXACT_REFERENCE_SEMANTICS),
 }
 
 # ------------------------------------------------------- locality/exactness ---
@@ -285,6 +302,17 @@ def ps638_receipt_hash(kwargs: Mapping[str, Any]) -> str:
 
 
 # ------------------------------------------------------- capability receipt ---
+#: HOW a receipt's capabilities became known. The strength of the claim is part of
+#: the evidence, so it is recorded rather than assumed: a "declared" capability is
+#: what a profile row says about itself, "detected" is a fact the system probed
+#: about the endpoint, and "measured" is PS-632's per-profile measurement.
+PROVENANCE_MEASURED = "measured"
+PROVENANCE_DETECTED = "detected"
+PROVENANCE_DECLARED = "declared"
+KNOWN_PROVENANCE = frozenset({PROVENANCE_MEASURED, PROVENANCE_DETECTED,
+                              PROVENANCE_DECLARED})
+
+
 @dataclass(frozen=True)
 class CapabilityReceipt:
     """A MEASURED capability record for one exact profile (PS-632 owns producing
@@ -309,6 +337,7 @@ class CapabilityReceipt:
     model_digest: str = ""
     host: str = ""
     notes: str = ""
+    provenance: str = PROVENANCE_DECLARED
     schema_version: int = SCHEMA_VERSION
     receipt_hash: str = field(default="")
 
@@ -321,6 +350,10 @@ class CapabilityReceipt:
             raise DispatchRoutingError(
                 f"unknown exactness {self.exactness!r}; known: "
                 f"{sorted(KNOWN_EXACTNESS)}")
+        if self.provenance not in KNOWN_PROVENANCE:
+            raise DispatchRoutingError(
+                f"unknown receipt provenance {self.provenance!r}; known: "
+                f"{sorted(KNOWN_PROVENANCE)}")
         if not isinstance(self.ttl_s, int) or self.ttl_s < 0:
             raise DispatchRoutingError("ttl_s must be a non-negative int")
         if _parse_ts(self.observed_at) is None:
@@ -357,6 +390,7 @@ class CapabilityReceipt:
             "observed_at": self.observed_at, "ttl_s": self.ttl_s,
             "healthy": self.healthy, "runtime_version": self.runtime_version,
             "model_digest": self.model_digest, "host": self.host, "notes": self.notes,
+            "provenance": self.provenance,
         }
 
     def to_dict(self) -> dict:
@@ -714,11 +748,17 @@ def _assess(profile: ExecutionTargetProfile,
         return fate(False, REFUSED_NOT_INFERENCE_TARGET,
                     f"profile {profile.target_id} is not an inference target")
 
-    # 4. exactness: an approximation profile cannot satisfy exact intent.
+    # 4. exactness: an approximation profile — declared, or MEASURED as
+    #    approximate in the receipt — cannot satisfy exact/reference intent.
     if request.exactness == EXACTNESS_EXACT and profile.exactness != EXACTNESS_EXACT:
         return fate(False, REFUSED_EXACTNESS,
                     "an approximate profile cannot satisfy an exact/"
                     "reference-intent request")
+    if (request.exactness == EXACTNESS_EXACT and receipt is not None
+            and receipt.exactness != EXACTNESS_EXACT):
+        return fate(False, REFUSED_EXACTNESS,
+                    "the receipt evidences an approximate profile, which cannot "
+                    "satisfy an exact/reference-intent request")
 
     # 5. role.
     if not profile.supports_role(request.role):
