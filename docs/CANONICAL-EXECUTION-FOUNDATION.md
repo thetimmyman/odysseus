@@ -31,10 +31,12 @@ non-authoritative projection of a resolved PS-632 receipt to apply policy and
 select a target. The legacy selector view is translation/test data only and is
 never loaded from a store or treated as qualification.
 
-Execution profile identity answers what would run and excludes observation time.
+Execution profile identity answers what would run and excludes qualification
+observations: configured pool/served limits and runtime options are configuration;
+engine-demonstrated, semantic-verified, and measured-safe context are observations.
 Receipt content identity additionally binds what was measured, the qualification
-reference, freshness, and probe results. Configured, served, demonstrated,
-semantic-verified, and measured-safe context remain separate fields.
+reference, freshness, and probe results. A new qualification observation therefore
+changes the receipt hash without changing the unchanged execution profile ID.
 
 Store ownership is explicit: PS-632 owns target capability receipts; PS-640 owns
 provider capacity/entitlement receipts; PS-638 owns execution/evidence receipts;

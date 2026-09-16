@@ -455,9 +455,12 @@ class ExecutionTargetProfile:
     host: str = ""
     runtime_kind: str = ""
     runtime_version: str = ""
+    runtime_commit: str = ""
+    runtime_image_digest: str = ""
     model: str = ""
     model_digest: str = ""
     backend: str = ""
+    backend_version: str = ""
     locality: str = LOCALITY_LOCAL
     exactness: str = EXACTNESS_EXACT
     roles: FrozenSet[str] = frozenset()
@@ -468,6 +471,10 @@ class ExecutionTargetProfile:
     inference: bool = True
     endpoint_url: str = ""
     endpoint_type: str = ""
+    runtime_options: Mapping[str, Any] = field(default_factory=dict)
+    execution_options: Mapping[str, Any] = field(default_factory=dict)
+    configured_context: int = 0
+    configured_served_context: int = 0
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -507,14 +514,20 @@ class ExecutionTargetProfile:
             "schema_version": self.schema_version, "target_id": self.target_id,
             "profile_id": self.profile_id, "provider": self.provider,
             "host": self.host, "runtime_kind": self.runtime_kind,
-            "runtime_version": self.runtime_version, "model": self.model,
+            "runtime_version": self.runtime_version, "runtime_commit": self.runtime_commit,
+            "runtime_image_digest": self.runtime_image_digest, "model": self.model,
             "model_digest": self.model_digest, "backend": self.backend,
+            "backend_version": self.backend_version,
             "locality": self.locality, "exactness": self.exactness,
             "roles": sorted(self.roles), "tools": sorted(self.tools),
             "network_policy": self.network_policy,
             "budget_class": self.budget_class, "cost_rank": self.cost_rank,
             "inference": self.inference, "endpoint_url": self.endpoint_url,
             "endpoint_type": self.endpoint_type,
+            "runtime_options": dict(self.runtime_options),
+            "execution_options": dict(self.execution_options),
+            "configured_context": self.configured_context,
+            "configured_served_context": self.configured_served_context,
         }
 
     def to_dict(self) -> dict:

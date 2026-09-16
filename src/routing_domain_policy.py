@@ -44,6 +44,7 @@ DEV_DOMAINS: FrozenSet[str] = frozenset({
 
 # Mirrors routing_engine's Section 9 hard filter ordering.
 _SENSITIVITY_RANK = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3, "secret": 4}
+KNOWN_SENSITIVITIES = frozenset(_SENSITIVITY_RANK)
 _DEFAULT_CEILING = "confidential"
 
 _PRIVATE_HOST_RE = re.compile(
@@ -228,7 +229,11 @@ def evaluate_route(
     if pol.allowed_providers is not None and p not in pol.allowed_providers:
         return _decide(False, "provider-not-allowed", f"{p} is not on the domain allow-list")
 
-    if _SENSITIVITY_RANK.get(sensitivity, 1) > _ceiling_rank() and not local:
+    if sensitivity not in KNOWN_SENSITIVITIES:
+        return _decide(False, "sensitivity-unknown",
+                       f"unsupported sensitivity classification: {sensitivity!r}")
+
+    if _SENSITIVITY_RANK[sensitivity] > _ceiling_rank() and not local:
         return _decide(False, "sensitivity-ceiling", f"{sensitivity} data requires local execution")
 
     if pol.local_only and not local:

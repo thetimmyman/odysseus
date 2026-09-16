@@ -65,16 +65,22 @@ class FleetRoutingError(RuntimeError):
     """A registry record (or packet requirement) that cannot become routing input."""
 
 
-def _legacy_view_from_receipt(receipt: TargetCapabilityReceipt, profile: Any) -> Any:
+def _legacy_view_from_receipt(receipt: TargetCapabilityReceipt, profile: Any,
+                              *, now: Optional[datetime.datetime] = None) -> Any:
     """Project canonical PS-632 evidence into PS-605's non-authoritative view."""
+    mapped = set()
+    for name in receipt.capabilities.measured:
+        mapped.update(CAPABILITY_MAP.get(name, (name,)))
     return dr.make_legacy_capability_view(
-        receipt_id=receipt.receipt_hash, profile_id=receipt.profile_id,
+        receipt_id=(receipt.receipt_hash or
+                    f"ps632:{receipt.profile_id}:{receipt.observed_at}"),
+        profile_id=receipt.profile_id,
         target_id=profile.target_id,
-        capabilities=frozenset(receipt.capabilities.measured),
+        capabilities=frozenset(mapped),
         exactness=dr.EXACTNESS_EXACT, observed_at=receipt.observed_at,
         ttl_s=int(receipt.ttl_s),
-        healthy=(receipt.qualification_state() == "valid"
-                 and receipt.health_state() == "live"),
+        healthy=(receipt.qualification_state(now=now) == "valid"
+                 and receipt.health_state(now=now) == "live"),
         runtime_version=receipt.runtime.version, model_digest=receipt.model.digest,
         host=receipt.host.ssh_host or receipt.host_id,
         notes="PS-632 canonical receipt projection",
@@ -300,6 +306,7 @@ def resolve_fleet_dispatch(records: Sequence[LocalTargetCapability], *,
                            preferred_target_id: str = "",
                            policy: Any = None,
                            ttl_s: int = DEFAULT_RECEIPT_TTL_S,
+                           capability_store: Any = None,
                            now: Optional[datetime.datetime] = None,
                            decision_id: str = "") -> Tuple[Any, FleetRoutingInputs]:
     """Ask PS-605 to choose. Returns (BoundDispatch, the inputs it chose from).
@@ -309,6 +316,9 @@ def resolve_fleet_dispatch(records: Sequence[LocalTargetCapability], *,
     not — with the fallback rule and the reason code in the receipt. A preference
     that cannot be satisfied never silently becomes a weaker standard.
     """
+    if capability_store is None:
+        raise FleetRoutingError(
+            "canonical PS-632 capability store is required for dispatch")
     inputs = routing_inputs(records, ttl_s=ttl_s, now=now)
     if not inputs.profiles:
         raise FleetRoutingError(
@@ -323,7 +333,8 @@ def resolve_fleet_dispatch(records: Sequence[LocalTargetCapability], *,
     bound = dbd.resolve_from_estate(
         dbd.TargetEstate(profiles=inputs.profiles, receipts=inputs.receipts,
                          skipped=inputs.skipped),
-        request, network_classes=inputs.network_classes, policy=policy, now=now,
+        request, capability_store=capability_store,
+        network_classes=inputs.network_classes, policy=policy, now=now,
         decision_id=decision_id)
     return bound, inputs
 
@@ -340,6 +351,7 @@ class PersistedRoutingInputs:
     network_classes: Mapping[str, str] = field(default_factory=dict)
     skipped: Tuple[Mapping[str, str], ...] = ()
     bound_receipts: Mapping[str, str] = field(default_factory=dict)
+    capability_store: Any = None
 
     def target_ids(self) -> Tuple[str, ...]:
         return tuple(p.target_id for p in self.profiles)
@@ -371,6 +383,8 @@ def sync_receipts_from_records(store, records: Sequence[LocalTargetCapability], 
         receipt = receipt_from_capability(
             record,
             configured_context=int(facts.get("configured_context") or 0),
+            configured_served_context=int(
+                facts.get("configured_served_context") or 0),
             safe_working_context=int(facts.get("safe_working_context") or 0),
             safe_context_source=str(facts.get("safe_context_source") or ""),
             engine_demonstrated_context=int(facts.get("engine_demonstrated_context") or 0),
@@ -472,8 +486,16 @@ def persisted_routing_inputs(store, *, now=None,
             host=receipt.host.ssh_host or spec.ssh_host,
             runtime_kind=receipt.runtime.runtime_kind,
             runtime_version=receipt.runtime.version,
+            runtime_commit=receipt.runtime.commit,
+            runtime_image_digest=receipt.runtime.image_digest,
             model=receipt.model.model_id, model_digest=receipt.model.digest,
+            backend=receipt.runtime.backend,
+            backend_version=receipt.runtime.backend_version,
             locality=dr.LOCALITY_LOCAL, endpoint_url=spec.endpoint or "",
+            endpoint_type=receipt.runtime.endpoint_type,
+            runtime_options=receipt.context.options,
+            configured_context=receipt.context.configured_context,
+            configured_served_context=receipt.context.configured_served_context,
             roles=frozenset(roles),
             tools=frozenset({"write_file"}) if CAP_NATIVE_TOOLS in set(
                 receipt.capabilities.measured) else frozenset(),
@@ -496,7 +518,8 @@ def persisted_routing_inputs(store, *, now=None,
 
     return PersistedRoutingInputs(
         profiles=tuple(profiles), receipts=tuple(receipts),
-        network_classes=network_classes, skipped=tuple(skipped), bound_receipts=bound)
+        network_classes=network_classes, skipped=tuple(skipped), bound_receipts=bound,
+        capability_store=store)
 
 
 def resolve_persisted_dispatch(inputs: PersistedRoutingInputs, *,
@@ -526,5 +549,6 @@ def resolve_persisted_dispatch(inputs: PersistedRoutingInputs, *,
     return dbd.resolve_from_estate(
         dbd.TargetEstate(profiles=inputs.profiles, receipts=inputs.receipts,
                          skipped=inputs.skipped),
-        request, network_classes=inputs.network_classes, policy=policy, now=now,
+        request, capability_store=inputs.capability_store,
+        network_classes=inputs.network_classes, policy=policy, now=now,
         decision_id=decision_id)

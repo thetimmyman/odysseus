@@ -177,8 +177,13 @@ class TargetCapabilityStore:
         qualification was REPLACED (and by what) instead of merely observing that
         the newest line changed.
         """
+        history = self.entries()
+        existing = self.current(receipt.profile_id) if history else None
+        if existing is not None and existing.receipt_hash != receipt.receipt_hash and not supersedes:
+            raise CapabilityStoreError(
+                "a new receipt for an existing profile must explicitly supersede "
+                "the current receipt")
         if supersedes:
-            history = self.entries()
             predecessor = next((r for r in history
                                  if r.receipt_hash == str(supersedes)), None)
             if predecessor is None:
@@ -208,6 +213,12 @@ class TargetCapabilityStore:
             os.fsync(handle.fileno())
 
         index = self._read_index()
+        if existing is not None and existing.receipt_hash != receipt.receipt_hash:
+            # Only an explicit, validated supersession may advance authority.
+            # This guard also protects stores created by older implementations.
+            if not supersedes or existing.receipt_hash != str(supersedes):
+                raise CapabilityStoreError(
+                    "refusing to advance current authority without supersession")
         entry: Dict[str, Any] = {
             "receipt_hash": receipt.receipt_hash, "profile_id": receipt.profile_id,
             "host_id": receipt.host_id, "observed_at": receipt.observed_at,

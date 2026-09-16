@@ -197,18 +197,18 @@ def test_material_identity_drift_invalidates_prior_qualification():
 def test_a_profile_id_changes_when_any_material_input_changes():
     base = execution_profile_id(host_id="local-rtx4500", runtime_kind="ollama",
                                 backend="cuda", model_alias="qwen3.8:27b",
-                                quantization="Q4_K_XL", safe_working_context=32768,
-                                model_digest=DIGEST)
+                                quantization="Q4_K_XL", model_digest=DIGEST,
+                                configured_context=32768)
     assert base == execution_profile_id(
         host_id="local-rtx4500", runtime_kind="ollama", backend="cuda",
         model_alias="qwen3.8:27b", quantization="Q4_K_XL",
-        safe_working_context=32768, model_digest=DIGEST)
+        model_digest=DIGEST, configured_context=32768)
     base_kwargs = dict(host_id="local-rtx4500", runtime_kind="ollama",
                        backend="cuda", model_alias="qwen3.8:27b",
-                       quantization="Q4_K_XL", safe_working_context=32768,
-                       model_digest=DIGEST)
+                       quantization="Q4_K_XL", model_digest=DIGEST,
+                       configured_context=32768)
     for changed in ({"backend": "vulkan"}, {"quantization": "Q8_0"},
-                    {"safe_working_context": 131072},
+                    {"configured_context": 131072},
                     {"model_digest": "0" * 64}, {"runtime_kind": "llama.cpp"}):
         assert execution_profile_id(**{**base_kwargs, **changed}) != base
 
@@ -216,11 +216,13 @@ def test_a_profile_id_changes_when_any_material_input_changes():
 def test_profile_id_binds_endpoint_and_execution_configuration():
     fields = dict(host_id="h", runtime_kind="llama.cpp", backend="vulkan",
                   model_alias="model", quantization="IQ4_XS",
-                  safe_working_context=32768, model_digest=DIGEST,
+                  model_digest=DIGEST,
                   provider="halobox", endpoint_type="openai_compatible",
                   endpoint_url="http://127.0.0.1:8731/v1",
-                  configured_context=262144, served_context=65536,
-                  runtime_options={"parallel": 4, "flash_attention": True})
+                  configured_context=262144, configured_served_context=65536,
+                  runtime_commit="abc123", runtime_image_digest="sha256:image",
+                  backend_version="1.2", runtime_options={"parallel": 4,
+                  "flash_attention": True})
     base = execution_profile_id(**fields)
     assert execution_profile_id(**{**fields, "endpoint_url": "http://127.0.0.1:8732/v1"}) != base
     assert execution_profile_id(**{**fields, "endpoint_url": "http://localhost:8731/v1"}) != base
@@ -228,6 +230,10 @@ def test_profile_id_binds_endpoint_and_execution_configuration():
     assert execution_profile_id(**{**fields, "endpoint_url": "http://127.0.0.1:8731/api"}) != base
     assert execution_profile_id(**{**fields, "runtime_options": {"parallel": 1}}) != base
     assert execution_profile_id(**{**fields, "execution_options": {"mtp": True}}) != base
+    assert execution_profile_id(**{**fields, "runtime_commit": "def456"}) != base
+    assert execution_profile_id(**{**fields, "runtime_image_digest": "sha256:other"}) != base
+    assert execution_profile_id(**{**fields, "backend_version": "2.0"}) != base
+    assert execution_profile_id(**{**fields, "configured_served_context": 32768}) != base
 
 
 def test_receipt_identity_binds_endpoint_context_and_capability_evidence():
@@ -242,8 +248,16 @@ def test_receipt_identity_binds_endpoint_context_and_capability_evidence():
         **{**base.to_dict(), "capabilities": {
             **base.capabilities.to_dict(), "measured": ["streaming"]}})
     assert changed_runtime.profile_id != base.profile_id
-    assert changed_context.profile_id != base.profile_id
+    assert changed_context.profile_id == base.profile_id
     assert changed_caps.receipt_hash != base.receipt_hash
+
+
+def test_requalification_observations_do_not_change_execution_profile_id():
+    first = receipt(observed_at=NOW.isoformat())
+    second = receipt(observed_at=(NOW + datetime.timedelta(minutes=1)).isoformat(),
+                     safe=16384)
+    assert second.profile_id == first.profile_id
+    assert second.receipt_hash != first.receipt_hash
 
 
 # ================================================================ the store ===
@@ -303,6 +317,17 @@ def test_supersession_chain_is_single_current_and_rejects_invalid_links(tmp_path
     with pytest.raises(CapabilityStoreError, match="stale"):
         s.append(receipt(observed_at="2020-01-01T00:00:00+00:00"),
                  supersedes=s.current(third.profile_id).receipt_hash)
+
+
+def test_historical_append_cannot_rewind_current_authority(tmp_path):
+    s = store(tmp_path)
+    first = receipt()
+    s.append(first)
+    current = receipt(notes="current")
+    s.append(current, supersedes=first.receipt_hash)
+    with pytest.raises(CapabilityStoreError, match="explicitly supersede"):
+        s.append(receipt(observed_at=(NOW + datetime.timedelta(hours=2)).isoformat()))
+    assert s.current(first.profile_id).notes == "current"
 
 
 def test_a_corrupt_line_fails_closed(tmp_path):
@@ -544,7 +569,7 @@ def test_pre_refinement_receipt_round_trips_without_rehashing_history():
 def test_refined_context_fields_round_trip():
     raw = receipt(safe=32768, configured=262144).to_dict()
     raw["context"] = ContextProfile(
-        configured_context=262144, served_context=65536,
+        configured_context=262144, configured_served_context=65536,
         safe_working_context=32768,
         safe_context_source="engine-demonstrated; semantic-verified",
         engine_demonstrated_context=32768,

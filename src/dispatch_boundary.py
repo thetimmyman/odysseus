@@ -124,6 +124,7 @@ PIN_MODEL_MISMATCH = "pin_model_mismatch"
 PIN_LOCALITY_MISMATCH = "pin_locality_mismatch"
 PIN_PROFILE_MISMATCH = "pin_profile_mismatch"
 PIN_ENDPOINT_MISMATCH = "pin_endpoint_mismatch"
+PIN_RUNTIME_MISMATCH = "pin_runtime_identity_mismatch"
 INVOCATION_REFUSED_BEFORE_DISPATCH = "invocation_refused_before_dispatch"
 EVIDENCE_HASH_MISMATCH = "evidence_hash_mismatch"
 EVIDENCE_DECISION_MISMATCH = "decision_receipt_hash_mismatch"
@@ -264,8 +265,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
                              now: Optional[datetime] = None,
                              receipt_overrides: Optional[Mapping[str, Any]] = None,
                              network_classes: Optional[Mapping[str, str]] = None,
-                             capability_store: Any = None,
-                             legacy_fixture: bool = False
+                             capability_store: Any = None
                              ) -> TargetEstate:
     """Project DB rows + candidate dicts into PS-605 profiles and receipts.
 
@@ -274,8 +274,8 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
     would make the decision's candidate list disagree with the estate it decided on.
 
     Production callers must provide ``capability_store``. Database rows are only
-    discovery. ``legacy_fixture`` exists solely for the old hermetic PS-605 tests
-    and is rejected by production composition; it never creates a PS-632 receipt.
+    discovery. There is deliberately no fixture escape hatch here: tests must
+    create canonical PS-632 receipts in a test store.
     """
     from core.database import ModelEndpoint, RoutingModelProfile
     from src.routing_engine import endpoint_is_local
@@ -329,61 +329,58 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
             budget_class=_budget_class(row), cost_rank=_cost_rank(row),
             inference=bool(roles & INFERENCE_ROLE_NAMES))
 
-        override = overrides.get(row.id)
-        if capability_store is not None:
-            try:
-                canonical = capability_store.current(row.id)
-            except Exception as exc:
-                skipped.append({"profile_id": profile_id,
-                                "reason": f"capability_store_untrusted:{exc}"})
-                continue
-            if canonical is None:
-                skipped.append({"profile_id": profile_id,
-                                "reason": "unqualified_candidate"})
-                continue
-            if canonical.profile_id != row.id:
-                skipped.append({"profile_id": profile_id,
-                                "reason": "canonical_profile_mismatch"})
-                continue
-            if canonical.runtime.endpoint_url != base_url:
-                skipped.append({"profile_id": profile_id,
-                                "reason": "canonical_endpoint_mismatch"})
-                continue
-            from src.local_target_routing import _legacy_view_from_receipt
-            profiles.append(profile)
-            receipts.append(_legacy_view_from_receipt(canonical, profile))
-            kept.append(candidate)
-            continue
-        if not legacy_fixture:
+        if capability_store is None:
             skipped.append({"profile_id": profile_id,
                             "reason": "unqualified_candidate"})
             continue
-        # Test-only compatibility view. It is deliberately not loadable from a
-        # file/store and cannot stand in for a canonical PS-632 receipt.
-        if override is not None:
-            profiles.append(profile)
-            kept.append(candidate)
-            receipts.append(override)
+        if row.id in overrides:
+            skipped.append({"profile_id": profile_id,
+                            "reason": "legacy capability override is not a PS-632 receipt"})
             continue
-        capabilities = set(DECLARABLE_CAPABILITIES)
-        provenance = PROVENANCE_DECLARED
-        if supports_tools:
-            capabilities |= {CAP_SINGLE_TOOL_CALL}
-            provenance = PROVENANCE_DETECTED
-        observed = getattr(row, "created_at", None) or now
-        if isinstance(observed, datetime):
-            observed_at = (observed if observed.tzinfo else
-                           observed.replace(tzinfo=timezone.utc)).isoformat()
-        else:
-            observed_at = str(observed)
+        try:
+            canonical = capability_store.current(row.id)
+        except Exception as exc:
+            skipped.append({"profile_id": profile_id,
+                            "reason": f"capability_store_untrusted:{exc}"})
+            continue
+        if canonical is None:
+            skipped.append({"profile_id": profile_id,
+                            "reason": "unqualified_candidate"})
+            continue
+        if canonical.profile_id != row.id:
+            skipped.append({"profile_id": profile_id,
+                            "reason": "canonical_profile_mismatch"})
+            continue
+        if canonical.runtime.endpoint_url != base_url:
+            skipped.append({"profile_id": profile_id,
+                            "reason": "canonical_endpoint_mismatch"})
+            continue
+        if canonical.qualification_state(now=now) != "valid":
+            skipped.append({"profile_id": profile_id,
+                            "reason": "unqualified_candidate"})
+            continue
+        from src.local_target_routing import _legacy_view_from_receipt
+        # The qualified receipt, not the mutable discovery row, supplies the
+        # exact execution identity pinned into the decision.
+        profile = dataclasses.replace(
+            profile,
+            provider=canonical.runtime.provider or profile.provider,
+            runtime_kind=canonical.runtime.runtime_kind or profile.runtime_kind,
+            runtime_version=canonical.runtime.version,
+            runtime_commit=canonical.runtime.commit,
+            runtime_image_digest=canonical.runtime.image_digest,
+            model=canonical.model.model_id or profile.model,
+            model_digest=canonical.model.digest,
+            backend=canonical.runtime.backend,
+            backend_version=canonical.runtime.backend_version,
+            endpoint_url=canonical.runtime.endpoint_url,
+            endpoint_type=canonical.runtime.endpoint_type,
+            runtime_options=canonical.context.options,
+            configured_context=canonical.context.configured_context,
+            configured_served_context=canonical.context.configured_served_context)
         profiles.append(profile)
+        receipts.append(_legacy_view_from_receipt(canonical, profile, now=now))
         kept.append(candidate)
-        receipts.append(make_legacy_capability_view(
-            receipt_id=f"{provenance}:{row.id}", profile_id=row.id,
-            target_id=target_id, capabilities=frozenset(capabilities),
-            exactness=EXACTNESS_EXACT, observed_at=observed_at, ttl_s=int(ttl_s),
-            host=_host_of(base_url), notes=f"provenance={provenance}",
-            provenance=provenance))
 
     return TargetEstate(profiles=tuple(profiles), receipts=tuple(receipts),
                         skipped=tuple(skipped), candidates=tuple(kept))
@@ -502,9 +499,19 @@ class BoundDispatch:
                     "target_id": profile.target_id, "profile_id": profile.profile_id,
                     "provider": profile.provider, "host": profile.host,
                     "model": profile.model, "runtime_kind": profile.runtime_kind,
+                    "runtime_version": profile.runtime_version,
+                    "runtime_commit": profile.runtime_commit,
+                    "runtime_image_digest": profile.runtime_image_digest,
+                    "model_digest": profile.model_digest,
+                    "backend": profile.backend,
+                    "backend_version": profile.backend_version,
                     "locality": profile.locality, "endpoint_url": profile.endpoint_url,
                     "endpoint_type": profile.endpoint_type,
                     "endpoint_identity": _endpoint_identity(profile),
+                    "runtime_options": dict(profile.runtime_options),
+                    "execution_options": dict(profile.execution_options),
+                    "configured_context": profile.configured_context,
+                    "configured_served_context": profile.configured_served_context,
                     "selected": (assessment.profile_id
                                  == self.decision.selected_profile.profile_id),
                 }
@@ -563,7 +570,6 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
                      policy: Any = None,
                      resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
                      capability_store: Any = None,
-                     legacy_fixture: bool = False,
                      now: Optional[datetime] = None,
                      decision_id: str = "") -> BoundDispatch:
     """Resolve the routing decision the dispatcher must obey. Raises on refusal.
@@ -575,8 +581,7 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
     snapshot = policy or policy_snapshot()
     estate = profiles_from_candidates(
         db, candidates, ttl_s=ttl_s, now=now, receipt_overrides=receipt_overrides,
-        network_classes=network_classes, capability_store=capability_store,
-        legacy_fixture=legacy_fixture)
+        network_classes=network_classes, capability_store=capability_store)
     if not estate.profiles:
         raise DispatchBoundaryError(
             f"{BOUNDARY_REFUSED_NO_PROFILES}: no candidate resolved to an enabled "
@@ -592,12 +597,14 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
         run_id=run_id, packet_id=packet_id)
     # One selection path: the DB-backed resolver binds through the same function a
     # registry-backed caller uses, so there is exactly one place selection happens.
-    return resolve_from_estate(estate, request, network_classes=network_classes,
+    return resolve_from_estate(estate, request, capability_store=capability_store,
+                               network_classes=network_classes,
                                policy=snapshot, resources=resources, now=now,
                                decision_id=decision_id)
 
 
 def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
+                        capability_store: Any = None,
                         network_classes: Optional[Mapping[str, str]] = None,
                         policy: Any = None,
                         resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
@@ -609,6 +616,25 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
     estate comes from somewhere else (PS-632's measured fleet, a fixture, a replay)
     uses this directly rather than fabricating a task row to satisfy the other.
     """
+    if capability_store is None:
+        raise DispatchBoundaryError(
+            "canonical capability store is required; an estate projection or "
+            "legacy capability view cannot authorize dispatch")
+    from src.local_target_routing import _legacy_view_from_receipt
+    canonical_receipts = []
+    for profile in estate.profiles:
+        try:
+            canonical = capability_store.current(profile.profile_id)
+        except Exception as exc:
+            raise DispatchBoundaryError(f"canonical capability store unusable: {exc}")
+        if canonical is None or canonical.profile_id != profile.profile_id:
+            raise DispatchBoundaryError(
+                f"unqualified candidate {profile.profile_id!r}: no current PS-632 receipt")
+        if canonical.qualification_state(now=now) != "valid":
+            raise DispatchBoundaryError(
+                f"unqualified candidate {profile.profile_id!r}: receipt is not valid")
+        canonical_receipts.append(_legacy_view_from_receipt(canonical, profile, now=now))
+    estate = dataclasses.replace(estate, receipts=tuple(canonical_receipts))
     snapshot = policy or policy_snapshot()
     if not estate.profiles:
         raise DispatchBoundaryError(
@@ -631,8 +657,31 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                          policy=snapshot)
 
 
-def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
-                      chat_url: str) -> Mapping[str, Any]:
+@dataclass(frozen=True)
+class InvocationIdentity:
+    """Facts observed by the adapter immediately before making a call."""
+
+    profile_id: str
+    provider: str
+    runtime_kind: str
+    runtime_version: str
+    runtime_commit: str
+    runtime_image_digest: str
+    backend: str
+    backend_version: str
+    model: str
+    model_digest: str
+    chat_url: str
+    endpoint_type: str
+    locality: str
+    runtime_options: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    execution_options: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    configured_context: int = 0
+    configured_served_context: int = 0
+
+
+def verify_invocation(bound: BoundDispatch, *,
+                      invocation: InvocationIdentity) -> Mapping[str, Any]:
     """Refuse an invocation that does not match the decision. Call BEFORE dispatch.
 
     Three ways to fail, each with its own code: the profile is not in the decision's
@@ -643,6 +692,7 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
     from src.endpoint_identity import canonical_endpoint_identity, EndpointIdentityError
     from src.routing_engine import endpoint_is_local
 
+    profile_id = invocation.profile_id
     pin = bound.pin_for(profile_id)
     if pin is None:
         raise DispatchPinViolation(
@@ -650,12 +700,12 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
             f"profile {profile_id!r} is not in the decision's eligible set",
             decision_id=bound.decision.decision_id)
     pinned_model = str(pin.get("model") or "")
-    if pinned_model and str(model or "") != pinned_model:
+    if pinned_model and invocation.model != pinned_model:
         raise DispatchPinViolation(
             PIN_MODEL_MISMATCH,
-            f"resolved model {model!r} is not the pinned model {pinned_model!r}",
+            f"resolved model {invocation.model!r} is not the pinned model {pinned_model!r}",
             decision_id=bound.decision.decision_id)
-    resolved_local = endpoint_is_local(chat_url)
+    resolved_local = endpoint_is_local(invocation.chat_url)
     if resolved_local != (pin.get("locality") == LOCALITY_LOCAL):
         raise DispatchPinViolation(
             PIN_LOCALITY_MISMATCH,
@@ -666,7 +716,7 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
     expected_endpoint = str(pin.get("endpoint_identity") or "")
     try:
         actual_endpoint = canonical_endpoint_identity(
-            chat_url, str(pin.get("endpoint_type") or ""))
+            invocation.chat_url, invocation.endpoint_type)
     except EndpointIdentityError as exc:
         raise DispatchPinViolation(
             PIN_ENDPOINT_MISMATCH, str(exc),
@@ -676,6 +726,31 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
             PIN_ENDPOINT_MISMATCH,
             f"resolved endpoint {actual_endpoint!r} is not the pinned endpoint",
             decision_id=bound.decision.decision_id)
+    checks = {
+        "provider": invocation.provider,
+        "runtime_kind": invocation.runtime_kind,
+        "runtime_version": invocation.runtime_version,
+        "runtime_commit": invocation.runtime_commit,
+        "runtime_image_digest": invocation.runtime_image_digest,
+        "backend": invocation.backend,
+        "backend_version": invocation.backend_version,
+        "model_digest": invocation.model_digest,
+        "endpoint_type": invocation.endpoint_type,
+        "locality": invocation.locality,
+        "runtime_options": dict(invocation.runtime_options),
+        "execution_options": dict(invocation.execution_options),
+        "configured_context": invocation.configured_context,
+        "configured_served_context": invocation.configured_served_context,
+    }
+    for name, actual in checks.items():
+        expected = pin.get(name)
+        if expected in (None, "", {}, 0) and actual in (None, "", {}, 0):
+            continue
+        if expected != actual:
+            raise DispatchPinViolation(
+                PIN_RUNTIME_MISMATCH,
+                f"invocation {name} {actual!r} is not the pinned value {expected!r}",
+                decision_id=bound.decision.decision_id)
     return pin
 
 

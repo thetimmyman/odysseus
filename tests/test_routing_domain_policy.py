@@ -41,6 +41,13 @@ def test_dev_domain_respects_sensitivity_ceiling():
     assert d.rule == "sensitivity-ceiling"
 
 
+def test_unknown_sensitivity_fails_closed():
+    d = rdp.evaluate_route(domain="general_swe", provider="openrouter",
+                           sensitivity="internall")
+    assert d.allowed is False
+    assert d.rule == "sensitivity-unknown"
+
+
 def test_local_endpoint_url_counts_as_local():
     d = rdp.evaluate_route(domain="finance", provider="unknownhost", endpoint_url="http://127.0.0.1:9000/v1")
     assert d.allowed is True

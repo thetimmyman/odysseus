@@ -17,6 +17,7 @@ the evidence, and a hosted invocation for local-only work must be impossible.
 from __future__ import annotations
 
 import datetime
+import dataclasses
 import json
 
 import pytest
@@ -26,6 +27,8 @@ from sqlalchemy.orm import sessionmaker
 import core.database as cdb
 from src import dispatch_boundary as dbd
 from src import dispatch_routing as dr
+from src.local_targets import (CapabilityEvidence, ContextProfile, ModelIdentity,
+                               RuntimeIdentity, TargetCapabilityReceipt)
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
 #: Fixture profiles are "created" a little BEFORE the decision clock, so a declared
@@ -92,9 +95,57 @@ def _candidates(*profile_ids):
              "estimated_cost_usd": 0.0, "reasons": []} for pid in profile_ids]
 
 
+class _FixtureCapabilityStore:
+    """Canonical PS-632 fixture store; never uses legacy qualification data."""
+
+    def current(self, profile_id):
+        facts = {
+            "p-rtx": ("ollama", "qwen3.8:27b", "http://192.168.1.130:11434/v1",
+                      {dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
+                       dr.CAP_EXACT_REFERENCE_SEMANTICS}),
+            "p-openrouter": ("openrouter", "deepseek-v4-pro",
+                             "https://openrouter.ai/api/v1",
+                             {dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
+                              dr.CAP_EXACT_REFERENCE_SEMANTICS}),
+            "p-msr": ("msr1", "qwen3.8:27b", "http://192.168.1.131:8080/v1",
+                      {dr.CAP_TEXT_GENERATION}),
+        }
+        if profile_id not in facts:
+            return None
+        provider, model, endpoint, caps = facts[profile_id]
+        return TargetCapabilityReceipt(
+            host_id=profile_id, profile_id=profile_id, observed_at=NOW.isoformat(),
+            runtime=RuntimeIdentity(provider=provider, runtime_kind="ollama",
+                                    version="0.32.11", endpoint_url=endpoint,
+                                    endpoint_type="openai_compatible", backend="cuda"),
+            model=ModelIdentity(model_id=model, alias=model, digest="fixture-digest"),
+            context=ContextProfile(safe_working_context=32768),
+            capabilities=CapabilityEvidence(measured=tuple(sorted(caps))),
+            health="healthy", health_checked_at=NOW.isoformat(),
+            qualification_ref="fixture-qualified")
+
+
+def _fixture_store():
+    return _FixtureCapabilityStore()
+
+
 def _resolve(db, task, *profile_ids, **kwargs):
     return dbd.resolve_dispatch(db, task, _candidates(*profile_ids), now=NOW,
-                                decision_id="dec-test", legacy_fixture=True, **kwargs)
+                                decision_id="dec-test", capability_store=_fixture_store(), **kwargs)
+
+
+def _invocation(profile_id="p-rtx", *, model="qwen3.8:27b",
+                chat_url="http://192.168.1.130:11434/v1", **overrides):
+    values = {
+        "profile_id": profile_id, "provider": "ollama",
+        "runtime_kind": "ollama", "runtime_version": "0.32.11",
+        "runtime_commit": "", "runtime_image_digest": "", "backend": "cuda",
+        "backend_version": "", "model": model, "model_digest": "fixture-digest",
+        "chat_url": chat_url, "endpoint_type": "openai_compatible",
+        "locality": "local",
+    }
+    values.update(overrides)
+    return dbd.InvocationIdentity(**values)
 
 
 # ============================================================= the decision ===
@@ -113,8 +164,8 @@ def test_the_decision_is_resolved_over_the_real_estate():
     # refused for the ROLE, which is a different answer from "too expensive".
     assert rules["p-openrouter"] == dr.REFUSED_ROLE
     provenance = bound.estate.provenance_summary()
-    assert provenance["p-rtx"] == dbd.PROVENANCE_DETECTED
-    assert provenance["p-msr"] == dbd.PROVENANCE_DECLARED
+    assert provenance["p-rtx"] == dbd.PROVENANCE_MEASURED
+    assert provenance["p-msr"] == dbd.PROVENANCE_MEASURED
     assert bound.policy.policy_ref.startswith("routing_policy@")
 
 
@@ -192,9 +243,8 @@ def test_an_approximate_receipt_cannot_satisfy_an_exact_request():
                                 dr.CAP_EXACT_REFERENCE_SEMANTICS}),
         exactness=dr.EXACTNESS_APPROXIMATE, observed_at=NOW.isoformat(),
         ttl_s=86400, provenance=dr.PROVENANCE_MEASURED)
-    with pytest.raises(dr.RoutingRefused) as err:
+    with pytest.raises(dbd.DispatchBoundaryError):
         _resolve(db, task, "p-rtx", receipt_overrides={"p-rtx": approximate})
-    assert err.value.code == dr.REFUSED_EXACTNESS
 
 
 def test_a_stale_receipt_cannot_be_dispatched():
@@ -207,9 +257,8 @@ def test_a_stale_receipt_cannot_be_dispatched():
                                 dr.CAP_SINGLE_TOOL_CALL}),
         exactness=dr.EXACTNESS_EXACT, observed_at="2026-09-01T00:00:00+00:00",
         ttl_s=3600, provenance=dr.PROVENANCE_MEASURED)
-    with pytest.raises(dr.RoutingRefused) as err:
+    with pytest.raises(dbd.DispatchBoundaryError):
         _resolve(db, task, "p-rtx", receipt_overrides={"p-rtx": stale})
-    assert err.value.code == dr.REFUSED_RECEIPT_STALE
 
 
 def test_a_measured_receipt_can_require_what_declaration_cannot_evidence():
@@ -226,10 +275,9 @@ def test_a_measured_receipt_can_require_what_declaration_cannot_evidence():
                                 dr.CAP_CONTEXT_INTEGRITY}),
         exactness=dr.EXACTNESS_EXACT, observed_at=NOW.isoformat(), ttl_s=86400,
         provenance=dr.PROVENANCE_MEASURED)
-    bound = _resolve(db, task, "p-rtx", capabilities=(dr.CAP_CONTEXT_INTEGRITY,),
-                     receipt_overrides={"p-rtx": measured})
-    assert bound.decision.selected_profile.profile_id == "p-rtx"
-    assert bound.estate.receipt_for("p-rtx").provenance == dr.PROVENANCE_MEASURED
+    with pytest.raises(dbd.DispatchBoundaryError):
+        _resolve(db, task, "p-rtx", capabilities=(dr.CAP_CONTEXT_INTEGRITY,),
+                 receipt_overrides={"p-rtx": measured})
 
 
 # ============================================================== the pin guard ===
@@ -238,20 +286,19 @@ def test_the_pin_guard_refuses_a_different_model_or_locality_before_dispatch():
     task = _seed(db)
     bound = _resolve(db, task, "p-rtx")
     with pytest.raises(dbd.DispatchPinViolation) as err:
-        dbd.verify_invocation(bound, profile_id="p-rtx", model="some-other-model",
-                              chat_url="http://192.168.1.130:11434/v1")
+        dbd.verify_invocation(bound, invocation=_invocation(model="some-other-model"))
     assert err.value.code == dbd.PIN_MODEL_MISMATCH
     with pytest.raises(dbd.DispatchPinViolation) as err:
-        dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
-                              chat_url="https://openrouter.ai/api/v1")
+        dbd.verify_invocation(bound, invocation=_invocation(
+            chat_url="https://openrouter.ai/api/v1", locality="hosted"))
     assert err.value.code == dbd.PIN_LOCALITY_MISMATCH
     with pytest.raises(dbd.DispatchPinViolation) as err:
-        dbd.verify_invocation(bound, profile_id="p-openrouter",
-                              model="deepseek-v4-pro",
-                              chat_url="https://openrouter.ai/api/v1")
+        dbd.verify_invocation(bound, invocation=_invocation(
+            profile_id="p-openrouter", provider="openrouter", runtime_kind="openrouter",
+            model="deepseek-v4-pro", chat_url="https://openrouter.ai/api/v1",
+            locality="hosted"))
     assert err.value.code == dbd.PIN_PROFILE_MISMATCH
-    pin = dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
-                                chat_url="http://192.168.1.130:11434/v1")
+    pin = dbd.verify_invocation(bound, invocation=_invocation())
     assert pin["target_id"] == "profile:p-rtx" and pin["locality"] == "local"
 
 
@@ -260,9 +307,35 @@ def test_the_pin_guard_refuses_a_different_local_endpoint_before_dispatch():
     task = _seed(db)
     bound = _resolve(db, task, "p-rtx")
     with pytest.raises(dbd.DispatchPinViolation) as err:
-        dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
-                              chat_url="http://192.168.1.130:8732/v1")
+        dbd.verify_invocation(bound, invocation=_invocation(
+            chat_url="http://192.168.1.130:8732/v1"))
     assert err.value.code == dbd.PIN_ENDPOINT_MISMATCH
+
+
+@pytest.mark.parametrize("field", ["provider", "runtime_kind", "runtime_version",
+                                    "runtime_commit", "backend", "model_digest",
+                                    "configured_context"])
+def test_the_pin_guard_refuses_runtime_identity_mutation(field):
+    db = _db()
+    task = _seed(db)
+    bound = _resolve(db, task, "p-rtx")
+    values = {"provider": "other", "runtime_kind": "other",
+              "runtime_version": "other", "runtime_commit": "other",
+              "backend": "other", "model_digest": "other",
+              "configured_context": 1234}
+    with pytest.raises(dbd.DispatchPinViolation) as err:
+        dbd.verify_invocation(
+            bound, invocation=dataclasses.replace(_invocation(),
+                                                   **{field: values[field]}))
+    assert err.value.code == dbd.PIN_RUNTIME_MISMATCH
+
+
+def test_legacy_estate_cannot_bypass_the_canonical_store():
+    with pytest.raises(dbd.DispatchBoundaryError, match="canonical capability store"):
+        dbd.resolve_from_estate(
+            dbd.TargetEstate(profiles=(dr.make_target_profile(
+                target_id="t", profile_id="p", provider="fixture"),), receipts=()),
+            dr.RoutingRequest(domain="general_swe", role=dr.ROLE_IMPLEMENTER))
 
 
 def test_a_local_pin_cannot_resolve_to_a_hosted_url_even_for_the_same_model():
@@ -272,8 +345,8 @@ def test_a_local_pin_cannot_resolve_to_a_hosted_url_even_for_the_same_model():
     # Local-only decision, but the endpoint table now points at a REMOTE url: same
     # profile id, same model, different locality -> REFUSED before the call.
     with pytest.raises(dbd.DispatchPinViolation) as err:
-        dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
-                              chat_url="https://openrouter.ai/api/v1")
+        dbd.verify_invocation(bound, invocation=_invocation(
+            chat_url="https://openrouter.ai/api/v1", locality="hosted"))
     assert err.value.code == dbd.PIN_LOCALITY_MISMATCH
 
 

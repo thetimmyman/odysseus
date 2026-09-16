@@ -461,6 +461,9 @@ class ContextProfile:
     """
 
     configured_context: int = 0
+    #: Effective per-request limit when it is a deterministic configuration fact.
+    #: ``served_context`` is an observation and is never used for profile ID.
+    configured_served_context: int = 0
     served_context: int = 0
     safe_working_context: int = 0
     safe_context_source: str = ""
@@ -470,6 +473,7 @@ class ContextProfile:
 
     def to_dict(self) -> dict:
         out = {"configured_context": self.configured_context,
+               "configured_served_context": self.configured_served_context,
                "served_context": self.served_context,
                "safe_working_context": self.safe_working_context,
                "safe_context_source": self.safe_context_source,
@@ -1067,7 +1071,7 @@ class TargetCapabilityReceipt:
                 "quantization", "auxiliary_artifacts", "declared_context",
                 "declared_capabilities")},
             "context": {k: self.context.to_dict()[k] for k in (
-                "configured_context", "served_context", "options")},
+                "configured_context", "configured_served_context", "options")},
             "host": {k: self.host.to_dict()[k] for k in (
                 "host_id", "ssh_host", "cpu_arch", "gpu", "kernel",
                 "boot_cmdline_digest", "firmware", "mesa", "rocm", "libhsakmt")},
@@ -1217,13 +1221,14 @@ def make_target_capability_receipt(**kwargs: Any) -> TargetCapabilityReceipt:
             runtime_kind=runtime.runtime_kind, backend=runtime.backend,
             model_alias=(model.alias or model.model_id),
             quantization=model.quantization,
-            safe_working_context=int(context.safe_working_context or 0),
             model_digest=model.digest,
-            runtime_version=runtime.version, provider=runtime.provider,
+            runtime_version=runtime.version, runtime_commit=runtime.commit,
+            runtime_image_digest=runtime.image_digest, provider=runtime.provider,
+            backend_version=runtime.backend_version,
             endpoint_url=runtime.endpoint_url, endpoint_type=runtime.endpoint_type,
             runtime_options=context.options,
             configured_context=context.configured_context,
-            served_context=context.served_context)
+            configured_served_context=context.configured_served_context)
     provisional = TargetCapabilityReceipt(**payload)
     return TargetCapabilityReceipt(
         **{**payload, "receipt_hash": _digest_of(provisional.core())})
@@ -1240,30 +1245,33 @@ def target_capability_receipt_hash_is_valid(payload: Mapping[str, Any]) -> bool:
 
 def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
                          model_alias: str, quantization: str,
-                         safe_working_context: int, model_digest: str,
-                         runtime_version: str = "", provider: str = "",
+                         model_digest: str, runtime_version: str = "",
+                         runtime_commit: str = "", runtime_image_digest: str = "",
+                         provider: str = "", backend_version: str = "",
                          endpoint_url: str = "", endpoint_type: str = "",
                          runtime_options: Optional[Mapping[str, Any]] = None,
                          configured_context: int = 0,
-                         served_context: int = 0,
+                         configured_served_context: int = 0,
                          execution_options: Optional[Mapping[str, Any]] = None) -> str:
-    """One exact profile's identity: a change to any input is a DIFFERENT profile.
+    """Identity of execution CONFIGURATION, excluding qualification observations.
 
-    The digest and the context are in the id on purpose. Re-tagging a different
-    artifact under the same alias, or widening the context, produces a new profile
-    id — which is how a previous qualification stops applying instead of being
-    quietly inherited.
+    Safe/demonstrated/semantic context and observation timestamps belong to the
+    PS-632 receipt, not this identity. Runtime build identifiers are included when
+    exposed; empty values are deterministic UNKNOWN.
     """
     config = {
         "provider": str(provider or "").strip(),
         "runtime_kind": str(runtime_kind or "").strip(),
         "runtime_version": str(runtime_version or "").strip(),
+        "runtime_commit": str(runtime_commit or "").strip(),
+        "runtime_image_digest": str(runtime_image_digest or "").strip(),
         "backend": str(backend or "").strip(),
+        "backend_version": str(backend_version or "").strip(),
         "endpoint": canonical_endpoint_identity(endpoint_url, endpoint_type)
         if endpoint_url else "",
         "runtime_options": dict(runtime_options or {}),
         "configured_context": int(configured_context or 0),
-        "served_context": int(served_context or 0),
+        "configured_served_context": int(configured_served_context or 0),
         "execution_options": dict(execution_options or {}),
     }
     config_digest = _digest_of(config)[:12]
@@ -1273,7 +1281,7 @@ def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
         str(runtime_version).strip() or "version-unknown",
         str(model_alias).strip() or "model",
         str(quantization).strip() or "quant-unknown",
-        f"ctx{int(safe_working_context or 0)}",
+        f"ctx{int(configured_context or 0)}",
         (str(model_digest).strip() or "digest-unknown")[:12],
         f"cfg{config_digest}",
     ])
@@ -1282,6 +1290,7 @@ def receipt_from_capability(
     record: LocalTargetCapability,
     *,
     configured_context: int = 0,
+    configured_served_context: int = 0,
     safe_working_context: int = 0,
     safe_context_source: str = "",
     engine_demonstrated_context: int = 0,
@@ -1328,17 +1337,20 @@ def receipt_from_capability(
     profile_id = execution_profile_id(
         host_id=spec.target_id, runtime_kind=(spec.runtime_kind or "ollama"),
         backend=backend, model_alias=(record.model_id or spec.model),
-        quantization=record.quantization, safe_working_context=safe,
+        quantization=record.quantization,
         model_digest=digest, runtime_version=record.runtime_version,
+        runtime_commit=runtime_commit, runtime_image_digest=runtime_image_digest,
         provider=(spec.runtime_kind or "ollama"), endpoint_url=spec.endpoint,
-        endpoint_type=spec.transport, runtime_options=record.runtime_options,
+        endpoint_type=spec.transport, backend_version=str(
+            (host_baseline or {}).get("backend_version") or ""),
+        runtime_options=record.runtime_options,
         configured_context=configured_context,
-        served_context=int(record.served_context or 0))
+        configured_served_context=0)
 
     return make_target_capability_receipt(
         host_id=spec.target_id, profile_id=profile_id,
         observed_at=observed_at or record.last_probe,
-        runtime=RuntimeIdentity(
+            runtime=RuntimeIdentity(
             runtime_kind=(spec.runtime_kind or "ollama"),
             provider=(spec.runtime_kind or "ollama"), endpoint_type=spec.transport,
             endpoint_url=spec.endpoint, repository=runtime_repository,
@@ -1356,6 +1368,7 @@ def receipt_from_capability(
             declared_capabilities=declared),
         context=ContextProfile(
             configured_context=int(configured_context or 0),
+            configured_served_context=int(configured_served_context or 0),
             served_context=int(record.served_context or 0),
             safe_working_context=safe, safe_context_source=safe_context_source,
             engine_demonstrated_context=int(engine_demonstrated_context or 0),
