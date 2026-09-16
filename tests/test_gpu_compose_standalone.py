@@ -145,3 +145,165 @@ def test_amd_odysseus_adds_only_overlay(base):
 
     # No NVIDIA-only keys leaked in.
     assert "deploy" not in svc
+
+
+# --- Negative controls: the guards above must fail on unauthorized drift ------
+
+"""
+The equivalence tests are only worth having if they actually catch a silent
+divergence. Each case here mutates one standalone file *in memory* with a change
+that is NOT part of the matching GPU overlay and asserts the invariant breaks.
+"""
+
+def _assert_detects(mutate, standalone_path, overlay_path):
+    """Assert base + overlay != standalone after applying `mutate` to the standalone."""
+    base_doc = _load(BASE)
+    overlay = _load(overlay_path)
+    standalone = _load(standalone_path)
+    mutate(standalone)
+    assert standalone != _merge_overlay_into_base(base_doc, overlay), (
+        "the equality guard failed to detect this unauthorized standalone mutation"
+    )
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_added_env_var_is_detected(standalone_path, overlay_path):
+    def mutate(doc):
+        doc["services"][SERVICE]["environment"].append("UNRELATED_DRIFT_VAR=1")
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_removed_base_env_var_is_detected(standalone_path, overlay_path):
+    """Regression guard for the actual PS-drift defect: base gained env vars that
+    were never mirrored into the standalone copies."""
+
+    def mutate(doc):
+        doc["services"][SERVICE]["environment"].remove(
+            "ODYSSEUS_EXECUTION_RUNTIME=${ODYSSEUS_EXECUTION_RUNTIME:-native}"
+        )
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_reordered_env_list_is_detected(standalone_path, overlay_path):
+    """Ordering is load-bearing: the merge appends the overlay tail, so reordering
+    is caught rather than papered over by set comparison."""
+
+    def mutate(doc):
+        env = doc["services"][SERVICE]["environment"]
+        env[0], env[1] = env[1], env[0]
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_image_change_is_detected(standalone_path, overlay_path):
+    def mutate(doc):
+        doc["services"][SERVICE]["image"] = "example.invalid/odysseus:tampered"
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_volume_change_is_detected(standalone_path, overlay_path):
+    def mutate(doc):
+        doc["services"][SERVICE]["volumes"].append("/tmp:/etc:z")
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_port_change_is_detected(standalone_path, overlay_path):
+    def mutate(doc):
+        doc["services"][SERVICE]["ports"].append("0.0.0.0:9999:7000")
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_sidecar_service_drift_is_detected(standalone_path, overlay_path):
+    """The overlays touch ``odysseus`` only — a non-odysseus service edit must fail.
+
+    Drift here would break both the whole-file equality and the dedicated
+    ``test_non_odysseus_services_match_base`` guard; check both.
+    """
+
+    def mutate(doc):
+        doc["services"]["chromadb"]["restart"] = "never"
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+    # Also caught by the dedicated sidecar guard, not just whole-file equality.
+    standalone = _load(standalone_path)
+    mutate(standalone)
+    assert standalone["services"]["chromadb"] != _load(BASE)["services"]["chromadb"]
+
+
+@pytest.mark.parametrize(
+    "standalone_path,overlay_path",
+    [(NVIDIA_STANDALONE, NVIDIA_OVERLAY), (AMD_STANDALONE, AMD_OVERLAY)],
+)
+def test_top_level_volume_drift_is_detected(standalone_path, overlay_path):
+    def mutate(doc):
+        doc["volumes"]["unrelated-extra"] = None
+
+    _assert_detects(mutate, standalone_path, overlay_path)
+
+
+@pytest.mark.parametrize(
+    "standalone_path,other_overlay",
+    [(NVIDIA_STANDALONE, AMD_OVERLAY), (AMD_STANDALONE, NVIDIA_OVERLAY)],
+)
+def test_cross_platform_overlay_is_detected(standalone_path, other_overlay):
+    """An nvidia standalone must not satisfy an amd overlay (and vice versa)."""
+    base_doc = _load(BASE)
+    standalone = _load(standalone_path)
+    assert standalone != _merge_overlay_into_base(base_doc, _load(other_overlay))
+
+
+# --- Positive control: a legitimate future base addition keeps the invariant --
+
+
+def test_legitimate_base_env_addition_keeps_invariant_holding():
+    """A base-only addition stays legal *provided* it is mirrored into both
+    standalones, which is exactly what the repair restored. This documents the
+    contract direction: base + overlay is authoritative, standalone follows.
+    """
+    base_doc = _load(BASE)
+    added = "ODYSSEUS_FUTURE_KNOB=${ODYSSEUS_FUTURE_KNOB:-1}"
+    base_doc["services"][SERVICE]["environment"].append(added)
+    for standalone_path, overlay_path in (
+        (NVIDIA_STANDALONE, NVIDIA_OVERLAY),
+        (AMD_STANDALONE, AMD_OVERLAY),
+    ):
+        mirrored = _load(standalone_path)
+        # Overlay additions sit at the tail; a base var goes before them.
+        env = mirrored["services"][SERVICE]["environment"]
+        ov_env = _load(overlay_path)["services"][SERVICE].get("environment", [])
+        env.insert(len(env) - len(ov_env), added)
+        assert mirrored == _merge_overlay_into_base(base_doc, _load(overlay_path))
+
+
