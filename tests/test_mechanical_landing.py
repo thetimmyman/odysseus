@@ -125,12 +125,13 @@ def make_real_run(root, *, out_of_scope=False, candidate_value="B"):
     return package_payload, source_a, source_b, plan, verification
 
 
-def acceptance_for(package, source):
+def acceptance_for(package, source, *, tree_sha="", diff=True):
     return make_semantic_acceptance(
         acceptance_id="accept-1", reviewer_id="reviewer-1",
         evidence_package_hash=package["evidence_package_hash"],
         candidate_source_digest=source.snapshot_digest, candidate_head_sha=source.head_sha,
-        candidate_diff_digest=source.tracked_diff_digest,
+        candidate_tree_sha=tree_sha,
+        candidate_diff_digest=source.tracked_diff_digest if diff else "",
         observed_at="2026-09-16T00:00:02+00:00", accepted_at="2026-09-16T00:00:03+00:00")
 
 
@@ -143,6 +144,27 @@ def test_real_candidate_producing_path_uses_verified_output_B(repo):
         package, acceptance_for(package, source_b), current_source=source_b.to_dict(),
         policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
     assert result.eligible
+
+
+@pytest.mark.parametrize("tree_sha,diff", [("", True), ("tree-T", False), ("tree-T", True)])
+def test_all_canonical_source_bindings_reach_preflight(repo, tree_sha, diff):
+    package, _, source_b, _, _ = make_real_run(repo)
+    result = evaluate_landing_eligibility(
+        package, acceptance_for(package, source_b, tree_sha=tree_sha, diff=diff),
+        current_source=source_b.to_dict(),
+        policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+    assert result.eligible
+
+
+def test_tree_identity_is_reserved_for_equivalence(repo):
+    package, _, source_b, _, _ = make_real_run(repo)
+    acceptance = acceptance_for(package, source_b, tree_sha="tree-T", diff=False)
+    assert prove_landed_equivalence(
+        acceptance, {"head_sha": "squashed", "tree_sha": "tree-T"},
+        LandingStrategy.SQUASH).equivalent
+    assert not prove_landed_equivalence(
+        acceptance, {"head_sha": "squashed", "tree_sha": "tree-other"},
+        LandingStrategy.SQUASH).equivalent
 
 
 def test_acceptance_of_input_A_is_not_acceptance_of_verified_B(repo):
@@ -161,6 +183,21 @@ def test_current_C_after_acceptance_B_refuses(repo):
         policy=LandingPolicy((LandingStrategy.SQUASH,), ()))
     assert LandingRefusalCode.EVIDENCE_STALE.value in result.codes
     assert LandingRefusalCode.CANDIDATE_CHANGED.value in result.codes
+
+
+def test_current_source_integrity_is_canonical_and_fail_closed(repo):
+    package, _, source_b, _, _ = make_real_run(repo)
+    acceptance = acceptance_for(package, source_b)
+    mutated = dict(source_b.to_dict(), tracked_diff_digest="tampered")
+    fabricated = {"snapshot_digest": source_b.snapshot_digest,
+                  "head_sha": source_b.head_sha,
+                  "tracked_diff_digest": source_b.tracked_diff_digest}
+    fabricated_with_tree = dict(fabricated, tree_sha="tree-T")
+    for current in (mutated, fabricated, fabricated_with_tree):
+        result = evaluate_landing_eligibility(
+            package, acceptance, current_source=current,
+            policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+        assert LandingRefusalCode.EVIDENCE_INVALID.value in result.codes
 
 
 def test_real_out_of_scope_attempt_refuses(repo):

@@ -18,6 +18,7 @@ from src.evidence_package import (
     SOURCE_SNAPSHOT_DIGEST_INVALID, WRITE_OUTSIDE_AUTHORIZED_SCOPE,
     validate_evidence_package,
 )
+from src.source_snapshot import snapshot_digest_is_valid
 
 
 class LandingRefusalCode(str, Enum):
@@ -140,10 +141,13 @@ def _verified_candidate_digest(evidence_package: Mapping[str, Any]) -> str | Non
 
 
 def _candidate_matches(source: Mapping[str, Any], acceptance: SemanticAcceptance) -> bool:
+    """Match only fields owned by canonical SourceSnapshotIdentity.
+
+    ``candidate_tree_sha`` is repository landing material, not a field of the
+    PS-638 snapshot. It is intentionally checked only by equivalence proof.
+    """
     return (source.get("snapshot_digest") == acceptance.candidate_source_digest
             and source.get("head_sha") == acceptance.candidate_head_sha
-            and (not acceptance.candidate_tree_sha or
-                 source.get("tree_sha") == acceptance.candidate_tree_sha)
             and (not acceptance.candidate_diff_digest or
                  source.get("tracked_diff_digest") == acceptance.candidate_diff_digest))
 
@@ -176,6 +180,14 @@ def _governance_ok(record: Any, candidate_digest: str, check_id: str) -> bool:
             and recompute_outcome(payload) == "PASS")
 
 
+def _canonical_source_is_valid(source: Mapping[str, Any]) -> bool:
+    """Treat every malformed source payload as invalid, including schema errors."""
+    try:
+        return snapshot_digest_is_valid(dict(source))
+    except (TypeError, ValueError, KeyError):
+        return False
+
+
 def evaluate_landing_eligibility(
     evidence_package: Mapping[str, Any], acceptance: SemanticAcceptance | None, *,
     current_source: Mapping[str, Any], governance: Sequence[Any] = (),
@@ -185,6 +197,10 @@ def evaluate_landing_eligibility(
 ) -> LandingEligibility:
     """Pure deterministic evaluation; no merge, Jira, or deployment side effect."""
     failures: list[LandingRefused] = []
+    if not _canonical_source_is_valid(current_source):
+        failures.append(LandingRefused(
+            LandingRefusalCode.EVIDENCE_INVALID,
+            "current_source is not a valid canonical SourceSnapshotIdentity"))
     validation = validate_evidence_package(evidence_package, current_source=current_source)
     if not validation.ok:
         failures.extend(_validation_failures(validation))
