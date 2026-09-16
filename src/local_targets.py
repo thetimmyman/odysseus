@@ -1252,7 +1252,7 @@ def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
                          runtime_options: Optional[Mapping[str, Any]] = None,
                          configured_context: int = 0,
                          configured_served_context: int = 0,
-                         execution_options: Optional[Mapping[str, Any]] = None) -> str:
+                         ) -> str:
     """Identity of execution CONFIGURATION, excluding qualification observations.
 
     Safe/demonstrated/semantic context and observation timestamps belong to the
@@ -1272,7 +1272,6 @@ def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
         "runtime_options": dict(runtime_options or {}),
         "configured_context": int(configured_context or 0),
         "configured_served_context": int(configured_served_context or 0),
-        "execution_options": dict(execution_options or {}),
     }
     config_digest = _digest_of(config)[:12]
     return ":".join([

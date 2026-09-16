@@ -472,6 +472,8 @@ class ExecutionTargetProfile:
     endpoint_url: str = ""
     endpoint_type: str = ""
     runtime_options: Mapping[str, Any] = field(default_factory=dict)
+    #: Request-scoped generation settings are not target authority. They remain
+    #: available only for a future PS-641 request/decision composition seam.
     execution_options: Mapping[str, Any] = field(default_factory=dict)
     configured_context: int = 0
     configured_served_context: int = 0
@@ -525,7 +527,6 @@ class ExecutionTargetProfile:
             "inference": self.inference, "endpoint_url": self.endpoint_url,
             "endpoint_type": self.endpoint_type,
             "runtime_options": dict(self.runtime_options),
-            "execution_options": dict(self.execution_options),
             "configured_context": self.configured_context,
             "configured_served_context": self.configured_served_context,
         }

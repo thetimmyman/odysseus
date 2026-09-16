@@ -229,7 +229,8 @@ def test_profile_id_binds_endpoint_and_execution_configuration():
     assert execution_profile_id(**{**fields, "endpoint_url": "https://127.0.0.1:8731/v1"}) != base
     assert execution_profile_id(**{**fields, "endpoint_url": "http://127.0.0.1:8731/api"}) != base
     assert execution_profile_id(**{**fields, "runtime_options": {"parallel": 1}}) != base
-    assert execution_profile_id(**{**fields, "execution_options": {"mtp": True}}) != base
+    # Request-scoped generation settings are deliberately not profile identity.
+    assert execution_profile_id(**fields) == base
     assert execution_profile_id(**{**fields, "runtime_commit": "def456"}) != base
     assert execution_profile_id(**{**fields, "runtime_image_digest": "sha256:other"}) != base
     assert execution_profile_id(**{**fields, "backend_version": "2.0"}) != base

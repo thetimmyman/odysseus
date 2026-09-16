@@ -216,7 +216,7 @@ _PROFILE_EXECUTION_FIELDS = (
     "provider", "runtime_kind", "runtime_version", "runtime_commit",
     "runtime_image_digest", "model", "model_digest", "backend",
     "backend_version", "endpoint_url", "endpoint_type", "runtime_options",
-    "execution_options", "configured_context", "configured_served_context",
+    "configured_context", "configured_served_context",
     "locality",
 )
 
@@ -224,7 +224,7 @@ _PROFILE_EXECUTION_FIELDS = (
 def _profile_execution_material(profile: Any) -> dict:
     return {
         name: (dict(getattr(profile, name))
-               if name in ("runtime_options", "execution_options")
+               if name == "runtime_options"
                else getattr(profile, name))
         for name in _PROFILE_EXECUTION_FIELDS
     }
@@ -537,7 +537,6 @@ class BoundDispatch:
                     "endpoint_type": profile.endpoint_type,
                     "endpoint_identity": _endpoint_identity(profile),
                     "runtime_options": dict(profile.runtime_options),
-                    "execution_options": dict(profile.execution_options),
                     "configured_context": profile.configured_context,
                     "configured_served_context": profile.configured_served_context,
                     "selected": (assessment.profile_id
@@ -652,6 +651,10 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
     canonical_receipts = []
     canonical_profiles = []
     for profile in estate.profiles:
+        if dict(getattr(profile, "execution_options", {}) or {}):
+            raise DispatchBoundaryError(
+                "invocation_options_unbound: execution_options must come from "
+                "an authorized request/decision, not an estate profile")
         try:
             canonical = capability_store.current(profile.profile_id)
         except Exception as exc:
@@ -775,10 +778,14 @@ def verify_invocation(bound: BoundDispatch, *,
         "endpoint_type": invocation.endpoint_type,
         "locality": invocation.locality,
         "runtime_options": dict(invocation.runtime_options),
-        "execution_options": dict(invocation.execution_options),
         "configured_context": invocation.configured_context,
         "configured_served_context": invocation.configured_served_context,
     }
+    if dict(invocation.execution_options or {}):
+        raise DispatchPinViolation(
+            PIN_RUNTIME_MISMATCH,
+            "invocation execution_options have no canonical request authority",
+            decision_id=bound.decision.decision_id)
     for name, actual in checks.items():
         expected = pin.get(name)
         if expected in (None, "", {}, 0) and actual in (None, "", {}, 0):

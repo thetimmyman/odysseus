@@ -34,6 +34,9 @@ never loaded from a store or treated as qualification.
 Execution profile identity answers what would run and excludes qualification
 observations: configured pool/served limits and runtime options are configuration;
 engine-demonstrated, semantic-verified, and measured-safe context are observations.
+`runtime_options` are stable target configuration; `execution_options` such as
+temperature and top-p are invocation-scoped and currently refuse until an
+authorized request/decision composition seam exists.
 Receipt content identity additionally binds what was measured, the qualification
 reference, freshness, and probe results. A new qualification observation therefore
 changes the receipt hash without changing the unchanged execution profile ID.

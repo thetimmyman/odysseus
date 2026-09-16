@@ -370,6 +370,20 @@ def test_profile_id_cannot_bear_foreign_execution_configuration(field, value):
             policy=bound.policy, now=NOW, decision_id="mutated")
 
 
+def test_profile_execution_options_cannot_smuggle_invocation_settings():
+    db = _db()
+    task = _seed(db)
+    bound = _resolve(db, task, "p-rtx")
+    mutated = dataclasses.replace(
+        bound.estate.profiles[0],
+        execution_options={"temperature": 0.7, "top_p": 0.5})
+    with pytest.raises(dbd.DispatchBoundaryError, match="invocation_options_unbound"):
+        dbd.resolve_from_estate(
+            dataclasses.replace(bound.estate, profiles=(mutated,)),
+            bound.request, capability_store=_fixture_store(),
+            policy=bound.policy, now=NOW, decision_id="invocation-options")
+
+
 def test_a_local_pin_cannot_resolve_to_a_hosted_url_even_for_the_same_model():
     db = _db()
     task = _seed(db, sensitivity="restricted")
