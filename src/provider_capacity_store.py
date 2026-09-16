@@ -13,7 +13,7 @@ from typing import Dict, Iterable, Mapping, Tuple
 from src.provider_capacity import (
     CapacityError, CapacityState, EvidenceProvenance, ProviderCapacityReceipt,
     _sha256, capacity_receipt_from_dict, capacity_receipt_hash_is_valid,
-    make_capacity_receipt,
+    make_capacity_receipt, validated_current_receipts,
 )
 
 
@@ -72,7 +72,7 @@ class ProviderCapacityStore:
                 raise CapacityStoreError("current index exists without receipt history")
             return None
         index = self._read_index(required=True)
-        entries = self.entries()
+        entries = self._entries_for_index(index)
         active = self._authoritative_current(entries, index)
         return active.get(pool_id)
 
@@ -158,39 +158,58 @@ class ProviderCapacityStore:
     def _authoritative_current(self, entries: Iterable[ProviderCapacityReceipt],
                                index: Mapping[str, Mapping[str, str]]) -> Dict[str, ProviderCapacityReceipt]:
         entries = tuple(entries)
-        by_hash = {r.receipt_hash: r for r in entries}
-        if len(by_hash) != len(entries):
-            raise CapacityStoreError("duplicate receipt hash in history")
+        by_hash = {}
+        counts = {}
         for receipt in entries:
-            if receipt.supersedes:
-                target = by_hash.get(receipt.supersedes)
-                if target is None:
-                    raise CapacityStoreError("supersession target is missing")
-                if target.pool_id != receipt.pool_id:
-                    raise CapacityStoreError("cross-pool supersession in history")
-                if target.receipt_hash == receipt.receipt_hash:
-                    raise CapacityStoreError("self-supersession in history")
-                if target.invalidation_reason and not receipt.invalidation_reason:
-                    raise CapacityStoreError("invalidated receipt cannot be superseded")
-        superseded = {r.supersedes for r in entries if r.supersedes}
+            counts[receipt.receipt_hash] = counts.get(receipt.receipt_hash, 0) + 1
+            by_hash[receipt.receipt_hash] = receipt
         active = {}
-        for receipt in entries:
-            if receipt.receipt_hash in superseded or receipt.invalidation_reason:
-                if receipt.invalidation_reason and receipt.state != CapacityState.UNAVAILABLE:
-                    raise CapacityStoreError("invalidated receipt has inconsistent state")
-                continue
-            if receipt.pool_id in active:
-                raise CapacityStoreError(f"conflicting current receipts for {receipt.pool_id}")
-            active[receipt.pool_id] = receipt
-        if set(index) != set(active):
-            raise CapacityStoreError("current index does not exactly cover active pools")
         for pool_id, item in index.items():
             if not isinstance(item, Mapping) or item.get("pool_id") != pool_id:
                 raise CapacityStoreError("current index pool identity mismatch")
-            wanted = str(item.get("receipt_hash") or "")
-            if wanted not in by_hash or active[pool_id].receipt_hash != wanted:
+            wanted = item.get("receipt_hash")
+            if not isinstance(wanted, str) or not wanted or wanted not in by_hash or counts[wanted] != 1:
                 raise CapacityStoreError("current index does not point to authoritative receipt")
+            receipt = by_hash[wanted]
+            if receipt.pool_id != pool_id or receipt.invalidation_reason:
+                raise CapacityStoreError("current index does not point to usable receipt")
+            chain = []
+            seen = set()
+            cursor = receipt
+            while True:
+                if cursor.receipt_hash in seen:
+                    raise CapacityStoreError("cycle in supersession history")
+                seen.add(cursor.receipt_hash)
+                chain.append(cursor)
+                if not cursor.supersedes:
+                    break
+                target = by_hash.get(cursor.supersedes)
+                if target is None:
+                    raise CapacityStoreError("supersession target is missing")
+                cursor = target
+            validated = validated_current_receipts(chain)
+            if len(validated) != 1 or validated[0].receipt_hash != wanted:
+                raise CapacityStoreError("current index does not point to authoritative receipt")
+            active[pool_id] = receipt
         return active
+
+    def _entries_for_index(self, index: Mapping[str, Mapping[str, str]]) -> Tuple[ProviderCapacityReceipt, ...]:
+        """Read valid rows for indexed resolution; trailing orphan rows are not authority."""
+        if not os.path.exists(self.receipts_path):
+            return ()
+        out = []
+        with open(self.receipts_path, encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line, object_pairs_hook=_json_no_duplicate_pairs)
+                    if not isinstance(payload, dict) or not capacity_receipt_hash_is_valid(payload):
+                        continue
+                    out.append(capacity_receipt_from_dict(payload))
+                except (ValueError, KeyError, TypeError, json.JSONDecodeError, CapacityError):
+                    continue
+        return tuple(out)
 
     @contextmanager
     def _mutation_lock(self):
