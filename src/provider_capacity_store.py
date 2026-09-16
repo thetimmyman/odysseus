@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
+from contextlib import contextmanager
+import fcntl
 from dataclasses import replace
 from typing import Dict, Iterable, Mapping, Tuple
 
@@ -18,6 +21,10 @@ class CapacityStoreError(RuntimeError):
     """The persisted capacity authority cannot be trusted."""
 
 
+class CapacityStoreBusyError(CapacityStoreError):
+    """The single-writer authority lock could not be acquired."""
+
+
 def _json_no_duplicate_pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -30,10 +37,12 @@ def _json_no_duplicate_pairs(pairs):
 class ProviderCapacityStore:
     """Append-only history plus an authoritative, validated current index."""
 
-    def __init__(self, directory: str):
+    def __init__(self, directory: str, *, lock_timeout_seconds: float = 5.0):
         self.directory = os.path.abspath(directory)
         self.receipts_path = os.path.join(self.directory, "receipts.jsonl")
         self.index_path = os.path.join(self.directory, "current.json")
+        self.lock_path = os.path.join(self.directory, "capacity.lock")
+        self.lock_timeout_seconds = lock_timeout_seconds
 
     def entries(self) -> Tuple[ProviderCapacityReceipt, ...]:
         if not os.path.exists(self.receipts_path):
@@ -59,6 +68,8 @@ class ProviderCapacityStore:
 
     def current(self, pool_id: str) -> ProviderCapacityReceipt | None:
         if not os.path.exists(self.receipts_path):
+            if os.path.exists(self.index_path):
+                raise CapacityStoreError("current index exists without receipt history")
             return None
         index = self._read_index(required=True)
         entries = self.entries()
@@ -66,8 +77,12 @@ class ProviderCapacityStore:
         return active.get(pool_id)
 
     def append(self, receipt: ProviderCapacityReceipt, *, supersedes: str = "") -> ProviderCapacityReceipt:
+        with self._mutation_lock():
+            return self._append_locked(receipt, supersedes=supersedes)
+
+    def _append_locked(self, receipt: ProviderCapacityReceipt, *, supersedes: str = "") -> ProviderCapacityReceipt:
         existing = self.entries() if os.path.exists(self.receipts_path) else ()
-        index = self._read_index(required=True) if existing else {}
+        index = self._read_index(required=True) if existing else self._read_index(required=False)
         if any(r.receipt_hash == receipt.receipt_hash for r in existing):
             raise CapacityStoreError("duplicate receipt hash")
         active = self._authoritative_current(existing, index) if existing else {}
@@ -77,6 +92,8 @@ class ProviderCapacityStore:
                 raise CapacityStoreError("supersedes references a missing receipt")
             if prior.pool_id != receipt.pool_id:
                 raise CapacityStoreError("cross-pool supersession is forbidden")
+            if prior.invalidation_reason:
+                raise CapacityStoreError("an invalidated receipt cannot be superseded")
             if prior.receipt_hash == receipt.receipt_hash:
                 raise CapacityStoreError("self-supersession is forbidden")
             if active.get(receipt.pool_id) is None or active[receipt.pool_id].receipt_hash != prior.receipt_hash:
@@ -97,28 +114,37 @@ class ProviderCapacityStore:
         return receipt
 
     def invalidate(self, receipt_hash: str, reason: str,
-                   provenance: EvidenceProvenance) -> ProviderCapacityReceipt:
+                   provenance: EvidenceProvenance, *, pool_id: str | None = None) -> ProviderCapacityReceipt:
         """Append a pool-scoped invalidation record without deleting history."""
-        entries = self.entries()
-        target = next((r for r in entries if r.receipt_hash == receipt_hash), None)
-        if target is None:
-            raise CapacityStoreError("cannot invalidate a missing receipt")
-        if not reason.strip():
-            raise CapacityStoreError("invalidation reason must be non-empty")
-        current = self.current(target.pool_id)
-        if current is None or current.receipt_hash != receipt_hash:
-            raise CapacityStoreError("only the authoritative current receipt may be invalidated")
-        invalidated = make_capacity_receipt(
-            **{**target.core(), "state": CapacityState.UNAVAILABLE,
-               "state_provenance": provenance,
-               "invalidation_reason": reason,
-               "observed_at": provenance.observed_at,
-               "ttl_seconds": provenance.ttl_seconds,
-               "evidence_source": provenance.source,
-               "evidence_reference": provenance.reference,
-               "collector_id": provenance.collector_id,
-               "supersedes": ""})
-        return self.append(invalidated, supersedes=receipt_hash)
+        with self._mutation_lock():
+            entries = self.entries()
+            target = next((r for r in entries if r.receipt_hash == receipt_hash), None)
+            if target is None:
+                raise CapacityStoreError("cannot invalidate a missing receipt")
+            if pool_id is not None and target.pool_id != pool_id:
+                raise CapacityStoreError("cross-pool invalidation is forbidden")
+            if not isinstance(reason, str) or not reason.strip():
+                raise CapacityStoreError("invalidation reason must be non-empty")
+            index = self._read_index(required=True)
+            active = self._authoritative_current(entries, index)
+            current = active.get(target.pool_id)
+            if current is None or current.receipt_hash != receipt_hash:
+                raise CapacityStoreError("only the authoritative current receipt may be invalidated")
+            invalidated = make_capacity_receipt(
+                **{**target.core(), "state": CapacityState.UNAVAILABLE,
+                   "state_provenance": provenance,
+                   "invalidation_reason": reason,
+                   "observed_at": provenance.observed_at,
+                   "ttl_seconds": provenance.ttl_seconds,
+                   "evidence_source": provenance.source,
+                   "evidence_reference": provenance.reference,
+                   "collector_id": provenance.collector_id,
+                   "supersedes": receipt_hash})
+            self._append_line(invalidated)
+            next_index = dict(index)
+            next_index.pop(target.pool_id, None)
+            self._write_index(next_index)
+            return invalidated
 
     def verify(self) -> bool:
         try:
@@ -135,10 +161,23 @@ class ProviderCapacityStore:
         by_hash = {r.receipt_hash: r for r in entries}
         if len(by_hash) != len(entries):
             raise CapacityStoreError("duplicate receipt hash in history")
+        for receipt in entries:
+            if receipt.supersedes:
+                target = by_hash.get(receipt.supersedes)
+                if target is None:
+                    raise CapacityStoreError("supersession target is missing")
+                if target.pool_id != receipt.pool_id:
+                    raise CapacityStoreError("cross-pool supersession in history")
+                if target.receipt_hash == receipt.receipt_hash:
+                    raise CapacityStoreError("self-supersession in history")
+                if target.invalidation_reason and not receipt.invalidation_reason:
+                    raise CapacityStoreError("invalidated receipt cannot be superseded")
         superseded = {r.supersedes for r in entries if r.supersedes}
         active = {}
         for receipt in entries:
-            if receipt.receipt_hash in superseded:
+            if receipt.receipt_hash in superseded or receipt.invalidation_reason:
+                if receipt.invalidation_reason and receipt.state != CapacityState.UNAVAILABLE:
+                    raise CapacityStoreError("invalidated receipt has inconsistent state")
                 continue
             if receipt.pool_id in active:
                 raise CapacityStoreError(f"conflicting current receipts for {receipt.pool_id}")
@@ -151,9 +190,28 @@ class ProviderCapacityStore:
             wanted = str(item.get("receipt_hash") or "")
             if wanted not in by_hash or active[pool_id].receipt_hash != wanted:
                 raise CapacityStoreError("current index does not point to authoritative receipt")
-            if active[pool_id].invalidation_reason and active[pool_id].state != CapacityState.UNAVAILABLE:
-                raise CapacityStoreError("invalidated receipt has inconsistent state")
         return active
+
+    @contextmanager
+    def _mutation_lock(self):
+        os.makedirs(self.directory, exist_ok=True)
+        handle = open(self.lock_path, "a+", encoding="utf-8")
+        deadline = time.monotonic() + self.lock_timeout_seconds
+        try:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise CapacityStoreBusyError("capacity store writer lock is busy")
+                    time.sleep(0.01)
+            yield
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
     def _read_index(self, *, required: bool) -> Dict[str, dict]:
         if not os.path.exists(self.index_path):
@@ -187,6 +245,11 @@ class ProviderCapacityStore:
             os.fsync(handle.fileno())
             handle.close()
             os.replace(handle.name, self.index_path)
+            directory_fd = os.open(self.directory, os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except BaseException:
             handle.close()
             if os.path.exists(handle.name):
