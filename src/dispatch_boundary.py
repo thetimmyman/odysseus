@@ -209,7 +209,50 @@ def _endpoint_identity(profile: Any) -> str:
     return canonical_endpoint_identity(
         getattr(profile, "endpoint_url", ""),
         getattr(profile, "endpoint_type", "")) if getattr(
-            profile, "endpoint_url", "") else ""
+        profile, "endpoint_url", "") else ""
+
+
+_PROFILE_EXECUTION_FIELDS = (
+    "provider", "runtime_kind", "runtime_version", "runtime_commit",
+    "runtime_image_digest", "model", "model_digest", "backend",
+    "backend_version", "endpoint_url", "endpoint_type", "runtime_options",
+    "execution_options", "configured_context", "configured_served_context",
+    "locality",
+)
+
+
+def _profile_execution_material(profile: Any) -> dict:
+    return {
+        name: (dict(getattr(profile, name))
+               if name in ("runtime_options", "execution_options")
+               else getattr(profile, name))
+        for name in _PROFILE_EXECUTION_FIELDS
+    }
+
+
+def _canonical_profile_from_receipt(profile: Any, receipt: Any) -> Any:
+    """Rebuild the execution portion of a profile from PS-632 evidence."""
+    from src.local_targets import PRIVACY_LOCAL_ONLY
+
+    locality = (LOCALITY_LOCAL if receipt.locality == PRIVACY_LOCAL_ONLY
+                else receipt.locality)
+    return dataclasses.replace(
+        profile,
+        provider=receipt.runtime.provider,
+        runtime_kind=receipt.runtime.runtime_kind,
+        runtime_version=receipt.runtime.version,
+        runtime_commit=receipt.runtime.commit,
+        runtime_image_digest=receipt.runtime.image_digest,
+        model=receipt.model.model_id,
+        model_digest=receipt.model.digest,
+        backend=receipt.runtime.backend,
+        backend_version=receipt.runtime.backend_version,
+        endpoint_url=receipt.runtime.endpoint_url,
+        endpoint_type=receipt.runtime.endpoint_type,
+        runtime_options=receipt.context.options,
+        configured_context=receipt.context.configured_context,
+        configured_served_context=receipt.context.configured_served_context,
+        locality=locality)
 
 
 # ------------------------------------------------------------ the estate ---
@@ -362,22 +405,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
         from src.local_target_routing import _legacy_view_from_receipt
         # The qualified receipt, not the mutable discovery row, supplies the
         # exact execution identity pinned into the decision.
-        profile = dataclasses.replace(
-            profile,
-            provider=canonical.runtime.provider or profile.provider,
-            runtime_kind=canonical.runtime.runtime_kind or profile.runtime_kind,
-            runtime_version=canonical.runtime.version,
-            runtime_commit=canonical.runtime.commit,
-            runtime_image_digest=canonical.runtime.image_digest,
-            model=canonical.model.model_id or profile.model,
-            model_digest=canonical.model.digest,
-            backend=canonical.runtime.backend,
-            backend_version=canonical.runtime.backend_version,
-            endpoint_url=canonical.runtime.endpoint_url,
-            endpoint_type=canonical.runtime.endpoint_type,
-            runtime_options=canonical.context.options,
-            configured_context=canonical.context.configured_context,
-            configured_served_context=canonical.context.configured_served_context)
+        profile = _canonical_profile_from_receipt(profile, canonical)
         profiles.append(profile)
         receipts.append(_legacy_view_from_receipt(canonical, profile, now=now))
         kept.append(candidate)
@@ -622,6 +650,7 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
             "legacy capability view cannot authorize dispatch")
     from src.local_target_routing import _legacy_view_from_receipt
     canonical_receipts = []
+    canonical_profiles = []
     for profile in estate.profiles:
         try:
             canonical = capability_store.current(profile.profile_id)
@@ -633,8 +662,16 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
         if canonical.qualification_state(now=now) != "valid":
             raise DispatchBoundaryError(
                 f"unqualified candidate {profile.profile_id!r}: receipt is not valid")
-        canonical_receipts.append(_legacy_view_from_receipt(canonical, profile, now=now))
-    estate = dataclasses.replace(estate, receipts=tuple(canonical_receipts))
+        canonical_profile = _canonical_profile_from_receipt(profile, canonical)
+        if (_profile_execution_material(profile)
+                != _profile_execution_material(canonical_profile)):
+            raise DispatchBoundaryError(
+                f"profile_receipt_identity_mismatch for {profile.profile_id!r}")
+        canonical_profiles.append(canonical_profile)
+        canonical_receipts.append(
+            _legacy_view_from_receipt(canonical, canonical_profile, now=now))
+    estate = dataclasses.replace(estate, profiles=tuple(canonical_profiles),
+                                receipts=tuple(canonical_receipts))
     snapshot = policy or policy_snapshot()
     if not estate.profiles:
         raise DispatchBoundaryError(

@@ -338,6 +338,38 @@ def test_legacy_estate_cannot_bypass_the_canonical_store():
             dr.RoutingRequest(domain="general_swe", role=dr.ROLE_IMPLEMENTER))
 
 
+def test_canonical_receipt_projection_remains_dispatchable():
+    db = _db()
+    task = _seed(db)
+    bound = _resolve(db, task, "p-rtx")
+    rebuilt = dbd.resolve_from_estate(
+        bound.estate, bound.request, capability_store=_fixture_store(),
+        policy=bound.policy, now=NOW, decision_id="rebuilt")
+    assert rebuilt.decision.selected_profile.profile_id == "p-rtx"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model", "foreign-model"), ("model_digest", "foreign-digest"),
+    ("provider", "foreign-provider"), ("runtime_kind", "foreign-runtime"),
+    ("backend", "foreign-backend"),
+    ("endpoint_url", "http://192.168.1.130:9999/v1"),
+    ("runtime_options", {"foreign": True}),
+    ("configured_context", 1234), ("locality", "hosted"),
+])
+def test_profile_id_cannot_bear_foreign_execution_configuration(field, value):
+    db = _db()
+    task = _seed(db)
+    bound = _resolve(db, task, "p-rtx")
+    mutated = dataclasses.replace(
+        bound.estate.profiles[0], **{field: value})
+    estate = dataclasses.replace(bound.estate, profiles=(mutated,))
+    with pytest.raises(dbd.DispatchBoundaryError,
+                       match="profile_receipt_identity_mismatch"):
+        dbd.resolve_from_estate(
+            estate, bound.request, capability_store=_fixture_store(),
+            policy=bound.policy, now=NOW, decision_id="mutated")
+
+
 def test_a_local_pin_cannot_resolve_to_a_hosted_url_even_for_the_same_model():
     db = _db()
     task = _seed(db, sensitivity="restricted")
