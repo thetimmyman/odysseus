@@ -162,7 +162,10 @@ class G1eBoundedCacheCase(Case):
     """
 
     name = "g1e-bounded-cache"
-    base_sha = "654b36fc"
+    # The PS-579 frozen corpus pairs all three arms on the exact source base
+    # sealed in the preregistration.  654b36fc is the older PS-638 harness base
+    # where this artifact did not yet exist.
+    base_sha = "1e362f10"
     artifact = "src/bounded_cache.py"
     # The hidden verifier lives OUTSIDE tests/ so the repo suite is unaffected.
     # (The first live run of this case pointed at tests/ and escalated on pytest
