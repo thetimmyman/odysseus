@@ -61,6 +61,18 @@ def _canonical(payload: object) -> bytes:
                       ensure_ascii=False, default=str).encode("utf-8")
 
 
+def _normalize_authority(value: Mapping[str, Any]) -> dict:
+    """Canonical form of an optional ``authority`` block.
+
+    A content-addressed contract cannot let the same fact hash two different
+    ways, so a sub-field a caller left out and the same sub-field explicitly set
+    to ``None`` must be indistinguishable at hash time: both are dropped here.
+    This is normalization, not validation — no key is required, no value is
+    checked, any mapping the caller passes is otherwise accepted as-is.
+    """
+    return {k: v for k, v in dict(value).items() if v is not None}
+
+
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -160,6 +172,14 @@ class DispatchDecisionReceipt:
     populate more richly — candidates, capability receipts, policy revision — are
     present and may be empty, so a later real policy decision can fill them
     without a schema migration and without any old receipt changing meaning.
+
+    ``authority`` (PS-638 DR-01+DR-09, added 2026-09-16) is an optional,
+    unvalidated record of who/what asked and on whose credential — it RECORDS
+    AND AUDITS; it is not enforced authorization and must never be described as
+    an access-control or security boundary. When omitted (``None``), it is left
+    out of ``core()`` entirely, so every receipt sealed before this field
+    existed keeps hashing exactly as it always did. When present, its (already
+    null-normalized) contents are part of the hash like any other field.
     """
 
     receipt_id: str
@@ -186,6 +206,7 @@ class DispatchDecisionReceipt:
     network_policy: str = ""
     decided_at: str = ""
     schema_version: int = DISPATCH_RECEIPT_SCHEMA_VERSION
+    authority: Optional[Mapping[str, Any]] = None
     receipt_hash: str = field(default="")
 
     def __post_init__(self) -> None:
@@ -211,7 +232,7 @@ class DispatchDecisionReceipt:
                 "not consult policy, and saying otherwise misattributes the choice")
 
     def core(self) -> dict:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "receipt_id": self.receipt_id,
             "execution_package_hash": self.execution_package_hash,
@@ -237,6 +258,12 @@ class DispatchDecisionReceipt:
             "reason": self.reason,
             "decided_at": self.decided_at,
         }
+        # Additive, DR-01+DR-09: omitted when absent so every receipt sealed
+        # before this field existed hashes exactly as before; included and
+        # hash-bound when present. Records/audits — not enforced authorization.
+        if self.authority is not None:
+            payload["authority"] = _normalize_authority(self.authority)
+        return payload
 
     def to_dict(self) -> dict:
         payload = self.core()

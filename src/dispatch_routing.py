@@ -268,11 +268,16 @@ PS638_RECEIPT_FIELDS: Tuple[str, ...] = (
     "candidates_considered", "capability_receipt_refs", "selected_runtime_kind",
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope",
-    "network_policy", "decided_at", "schema_version",
+    "network_policy", "decided_at", "authority", "schema_version",
 )
 #: The fields PS-638's ``core()`` covers, in ITS order. The receipt hash is
 #: sha256 over the canonical JSON of exactly these, with tuple-valued fields
 #: serialized as lists (PS-638's own loose ends: it does that in ``core()``).
+#: ``authority`` (PS-638 DR-01+DR-09, added 2026-09-16) is the one field here
+#: that is NOT unconditionally included: ``ps638_receipt_core`` below omits it
+#: entirely when absent, so a receipt sealed before this field existed hashes
+#: exactly as it always did. It records/audits; it is not enforced
+#: authorization.
 PS638_RECEIPT_CORE_FIELDS: Tuple[str, ...] = (
     "schema_version", "receipt_id", "execution_package_hash", "run_id",
     "packet_id", "requested_role", "requested_capabilities", "policy_ref",
@@ -280,13 +285,27 @@ PS638_RECEIPT_CORE_FIELDS: Tuple[str, ...] = (
     "selected_host", "selected_model", "selected_runtime_kind",
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope",
-    "network_policy", "decided_by", "reason", "decided_at",
+    "network_policy", "decided_by", "reason", "decided_at", "authority",
 )
 _PS638_LIST_FIELDS: Tuple[str, ...] = (
     "requested_capabilities", "candidates_considered", "capability_receipt_refs",
     "granted_tools", "granted_write_scope", "granted_read_scope",
 )
+#: Fields that, like ``authority``, are omitted from the hashed core entirely
+#: when absent rather than serialized as ``null`` — so introducing them never
+#: changes the hash of a receipt that predates them.
+_PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = ("authority",)
 DECIDED_BY_POLICY = "ps605_policy"
+
+
+def _normalize_authority(value: Mapping[str, Any]) -> dict:
+    """Canonical form of an optional ``authority`` block (mirrors PS-638's own).
+
+    A sub-field a caller omits and the same sub-field explicitly set to
+    ``None`` must hash identically, so both are dropped here. Normalization
+    only — no key is required, no value is checked.
+    """
+    return {k: v for k, v in dict(value).items() if v is not None}
 
 
 def ps638_receipt_core(kwargs: Mapping[str, Any]) -> dict:
@@ -299,6 +318,10 @@ def ps638_receipt_core(kwargs: Mapping[str, Any]) -> dict:
     core: dict = {}
     for name in PS638_RECEIPT_CORE_FIELDS:
         value = kwargs.get(name)
+        if name in _PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS:
+            if value is not None:
+                core[name] = _normalize_authority(value)
+            continue
         if name in _PS638_LIST_FIELDS:
             core[name] = [dict(v) if isinstance(v, Mapping) else v
                           for v in (value or ())]
@@ -871,6 +894,12 @@ class DispatchDecision:
     budget/resource facts that materially affected selection — are carried on the
     SELECTED candidate's entry in ``candidates_considered``, so a sealed package
     built from this receipt still contains them.
+
+    ``authority`` (PS-638 DR-01+DR-09, added 2026-09-16) mirrors the same
+    optional field on ``DispatchDecisionReceipt``: it RECORDS AND AUDITS who/
+    what asked and on whose credential, is never validated or enforced here,
+    and is omitted from ``to_ps638_receipt_kwargs()``'s hash input when absent
+    so ``receipt_hash`` is unchanged for every decision that predates it.
     """
 
     decision_id: str
@@ -892,6 +921,7 @@ class DispatchDecision:
     network_policy: str = ""
     observed_at: str = ""
     schema_version: int = SCHEMA_VERSION
+    authority: Optional[Mapping[str, Any]] = None
     receipt_hash: str = field(default="")
 
     def pin(self) -> dict:
@@ -985,6 +1015,7 @@ class DispatchDecision:
             "granted_read_scope": tuple(self.granted_read_scope),
             "network_policy": self.network_policy,
             "decided_at": self.observed_at,
+            "authority": self.authority,
             "schema_version": PS638_RECEIPT_SCHEMA_VERSION_EXPECTED,
         }
 
