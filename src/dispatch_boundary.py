@@ -83,7 +83,8 @@ from src.dispatch_routing import (
     DispatchRoutingError,
     RoutingRefused,
     RoutingRequest,
-    make_capability_receipt,
+    LegacyCapabilityView,
+    make_legacy_capability_view,
     make_target_profile,
     policy_snapshot,
     ps638_receipt_hash,
@@ -122,6 +123,7 @@ PIN_TARGET_MISMATCH = "pin_target_mismatch"
 PIN_MODEL_MISMATCH = "pin_model_mismatch"
 PIN_LOCALITY_MISMATCH = "pin_locality_mismatch"
 PIN_PROFILE_MISMATCH = "pin_profile_mismatch"
+PIN_ENDPOINT_MISMATCH = "pin_endpoint_mismatch"
 INVOCATION_REFUSED_BEFORE_DISPATCH = "invocation_refused_before_dispatch"
 EVIDENCE_HASH_MISMATCH = "evidence_hash_mismatch"
 EVIDENCE_DECISION_MISMATCH = "decision_receipt_hash_mismatch"
@@ -200,6 +202,15 @@ def _host_of(url: str) -> str:
     return urlparse(str(url or "")).hostname or ""
 
 
+def _endpoint_identity(profile: Any) -> str:
+    from src.endpoint_identity import canonical_endpoint_identity
+
+    return canonical_endpoint_identity(
+        getattr(profile, "endpoint_url", ""),
+        getattr(profile, "endpoint_type", "")) if getattr(
+            profile, "endpoint_url", "") else ""
+
+
 # ------------------------------------------------------------ the estate ---
 @dataclass(frozen=True)
 class TargetEstate:
@@ -248,43 +259,13 @@ def _cost_rank(row: Any) -> int:
     return 1
 
 
-#: Environment variable naming a JSON file of MEASURED capability receipts, keyed by
-#: profile id. PS-632 owns producing and hosting these; until its registry lands,
-#: this is the seam a real measured receipt travels through, and it is explicit
-#: (an env var, not a hidden default path) so the provenance of a receipt is never
-#: ambiguous.
-RECEIPT_STORE_ENV = "PS605_RECEIPT_STORE"
-
-
-def load_receipt_store(path: str) -> Dict[str, Any]:
-    """Load a measured-receipt store: ``{profile_id: receipt kwargs}``."""
-    if not path or not os.path.exists(path):
-        return {}
-    with open(path, encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, Mapping):
-        raise DispatchBoundaryError(
-            f"receipt store {path!r} must map profile ids to receipt fields")
-    store: Dict[str, Any] = {}
-    for profile_id, fields in payload.items():
-        if not isinstance(fields, Mapping):
-            continue
-        kwargs = dict(fields)
-        kwargs.setdefault("profile_id", profile_id)
-        kwargs["capabilities"] = frozenset(kwargs.get("capabilities") or ())
-        store[profile_id] = make_capability_receipt(**kwargs)
-    return store
-
-
-def receipt_store_from_env() -> Dict[str, Any]:
-    return load_receipt_store(os.environ.get(RECEIPT_STORE_ENV, ""))
-
-
 def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *,
                              ttl_s: int = 86400,
                              now: Optional[datetime] = None,
                              receipt_overrides: Optional[Mapping[str, Any]] = None,
-                             network_classes: Optional[Mapping[str, str]] = None
+                             network_classes: Optional[Mapping[str, str]] = None,
+                             capability_store: Any = None,
+                             legacy_fixture: bool = False
                              ) -> TargetEstate:
     """Project DB rows + candidate dicts into PS-605 profiles and receipts.
 
@@ -292,21 +273,14 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
     is SKIPPED and recorded — it cannot be a candidate, and silently dropping it
     would make the decision's candidate list disagree with the estate it decided on.
 
-    Receipts are DECLARED (what the row says about itself) or DETECTED
-    (``supports_tools`` was actually probed for that endpoint). ``receipt_overrides``
-    lets a caller supply a MEASURED receipt for a profile (PS-632's registry); that
-    receipt is used instead and keeps whatever provenance it claims.
+    Production callers must provide ``capability_store``. Database rows are only
+    discovery. ``legacy_fixture`` exists solely for the old hermetic PS-605 tests
+    and is rejected by production composition; it never creates a PS-632 receipt.
     """
     from core.database import ModelEndpoint, RoutingModelProfile
     from src.routing_engine import endpoint_is_local
 
     overrides = dict(receipt_overrides or {})
-    if receipt_overrides is None:
-        # No explicit overrides: consult the measured-receipt store (PS-632's
-        # registry, or the explicit env-var seam until it lands). A store that
-        # cannot be read yields no MEASURED receipts, which means claimed-only
-        # provenance — never a silently stronger claim.
-        overrides = receipt_store_from_env()
     profiles: List[Any] = []
     receipts: List[Any] = []
     skipped: List[Dict[str, str]] = []
@@ -332,7 +306,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
         roles = frozenset(_json_list(row.roles))
         supports_tools = getattr(endpoint, "supports_tools", None) is True
         target_id = f"profile:{row.id}"
-        profiles.append(make_target_profile(
+        profile = make_target_profile(
             target_id=target_id, profile_id=row.id,
             provider=str(getattr(endpoint, "name", "") or "endpoint").strip().lower()
             .replace(" ", "-"),
@@ -342,6 +316,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
             # The URL matters: the domain layer decides locality from the endpoint
             # AND the provider, so omitting it silently marks every target remote.
             endpoint_url=base_url,
+            endpoint_type=str(getattr(endpoint, "endpoint_kind", "") or ""),
             # Silence is not a grant: supports_tools NULL/False grants no tools.
             tools=frozenset({"write_file"}) if supports_tools else frozenset(),
             # A registry that already names the network class (PS-632's
@@ -352,11 +327,42 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
                             or ("local-network" if locality == LOCALITY_LOCAL
                                 else "hosted-egress")),
             budget_class=_budget_class(row), cost_rank=_cost_rank(row),
-            inference=bool(roles & INFERENCE_ROLE_NAMES)))
-        kept.append(candidate)
+            inference=bool(roles & INFERENCE_ROLE_NAMES))
 
         override = overrides.get(row.id)
+        if capability_store is not None:
+            try:
+                canonical = capability_store.current(row.id)
+            except Exception as exc:
+                skipped.append({"profile_id": profile_id,
+                                "reason": f"capability_store_untrusted:{exc}"})
+                continue
+            if canonical is None:
+                skipped.append({"profile_id": profile_id,
+                                "reason": "unqualified_candidate"})
+                continue
+            if canonical.profile_id != row.id:
+                skipped.append({"profile_id": profile_id,
+                                "reason": "canonical_profile_mismatch"})
+                continue
+            if canonical.runtime.endpoint_url != base_url:
+                skipped.append({"profile_id": profile_id,
+                                "reason": "canonical_endpoint_mismatch"})
+                continue
+            from src.local_target_routing import _legacy_view_from_receipt
+            profiles.append(profile)
+            receipts.append(_legacy_view_from_receipt(canonical, profile))
+            kept.append(candidate)
+            continue
+        if not legacy_fixture:
+            skipped.append({"profile_id": profile_id,
+                            "reason": "unqualified_candidate"})
+            continue
+        # Test-only compatibility view. It is deliberately not loadable from a
+        # file/store and cannot stand in for a canonical PS-632 receipt.
         if override is not None:
+            profiles.append(profile)
+            kept.append(candidate)
             receipts.append(override)
             continue
         capabilities = set(DECLARABLE_CAPABILITIES)
@@ -370,7 +376,9 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
                            observed.replace(tzinfo=timezone.utc)).isoformat()
         else:
             observed_at = str(observed)
-        receipts.append(make_capability_receipt(
+        profiles.append(profile)
+        kept.append(candidate)
+        receipts.append(make_legacy_capability_view(
             receipt_id=f"{provenance}:{row.id}", profile_id=row.id,
             target_id=target_id, capabilities=frozenset(capabilities),
             exactness=EXACTNESS_EXACT, observed_at=observed_at, ttl_s=int(ttl_s),
@@ -494,7 +502,9 @@ class BoundDispatch:
                     "target_id": profile.target_id, "profile_id": profile.profile_id,
                     "provider": profile.provider, "host": profile.host,
                     "model": profile.model, "runtime_kind": profile.runtime_kind,
-                    "locality": profile.locality,
+                    "locality": profile.locality, "endpoint_url": profile.endpoint_url,
+                    "endpoint_type": profile.endpoint_type,
+                    "endpoint_identity": _endpoint_identity(profile),
                     "selected": (assessment.profile_id
                                  == self.decision.selected_profile.profile_id),
                 }
@@ -552,6 +562,8 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
                      ttl_s: int = 86400,
                      policy: Any = None,
                      resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
+                     capability_store: Any = None,
+                     legacy_fixture: bool = False,
                      now: Optional[datetime] = None,
                      decision_id: str = "") -> BoundDispatch:
     """Resolve the routing decision the dispatcher must obey. Raises on refusal.
@@ -563,7 +575,8 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
     snapshot = policy or policy_snapshot()
     estate = profiles_from_candidates(
         db, candidates, ttl_s=ttl_s, now=now, receipt_overrides=receipt_overrides,
-        network_classes=network_classes)
+        network_classes=network_classes, capability_store=capability_store,
+        legacy_fixture=legacy_fixture)
     if not estate.profiles:
         raise DispatchBoundaryError(
             f"{BOUNDARY_REFUSED_NO_PROFILES}: no candidate resolved to an enabled "
@@ -627,6 +640,7 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
     endpoint's LOCALITY contradicts the pinned locality (a local pin resolving to a
     remote URL is precisely the failure this exists to stop).
     """
+    from src.endpoint_identity import canonical_endpoint_identity, EndpointIdentityError
     from src.routing_engine import endpoint_is_local
 
     pin = bound.pin_for(profile_id)
@@ -648,6 +662,19 @@ def verify_invocation(bound: BoundDispatch, *, profile_id: str, model: str,
             "resolved endpoint locality "
             f"({'local' if resolved_local else 'hosted'}) contradicts the pinned "
             f"locality {pin.get('locality')!r}",
+            decision_id=bound.decision.decision_id)
+    expected_endpoint = str(pin.get("endpoint_identity") or "")
+    try:
+        actual_endpoint = canonical_endpoint_identity(
+            chat_url, str(pin.get("endpoint_type") or ""))
+    except EndpointIdentityError as exc:
+        raise DispatchPinViolation(
+            PIN_ENDPOINT_MISMATCH, str(exc),
+            decision_id=bound.decision.decision_id) from exc
+    if expected_endpoint and actual_endpoint != expected_endpoint:
+        raise DispatchPinViolation(
+            PIN_ENDPOINT_MISMATCH,
+            f"resolved endpoint {actual_endpoint!r} is not the pinned endpoint",
             decision_id=bound.decision.decision_id)
     return pin
 
@@ -825,10 +852,10 @@ def _receipt_hash_of(recorded: Mapping[str, Any]) -> str:
     capabilities (or freshness, or health) without re-sealing breaks the link
     between the receipt and the hash the decision cited.
     """
-    from src.dispatch_routing import make_capability_receipt
+    from src.dispatch_routing import make_legacy_capability_view
 
     try:
-        return make_capability_receipt(
+        return make_legacy_capability_view(
             receipt_id=str(recorded.get("receipt_id") or ""),
             profile_id=str(recorded.get("profile_id") or ""),
             target_id=str(recorded.get("target_id") or ""),

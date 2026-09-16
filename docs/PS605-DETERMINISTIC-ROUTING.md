@@ -8,7 +8,7 @@ whose receipt form is PS-638's `DispatchDecisionReceipt` field-for-field.
 ```
 ExecutionPackage -> requested domain/role/capabilities        (RoutingRequest)
   -> deterministic policy  (src.routing_domain_policy: privacy, allow/deny, ceiling)
-  -> fresh qualified candidates (ExecutionTargetProfile + CapabilityReceipt)
+  -> fresh qualified candidates (ExecutionTargetProfile + PS-632 receipt view)
   -> privacy / locality / inference / role / receipt / capability / exactness /
      tool / network / budget / resource filters  (13 ordered rules, ONE path)
   -> deterministically SELECTED target

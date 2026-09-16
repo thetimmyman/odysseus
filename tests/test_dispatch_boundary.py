@@ -94,7 +94,7 @@ def _candidates(*profile_ids):
 
 def _resolve(db, task, *profile_ids, **kwargs):
     return dbd.resolve_dispatch(db, task, _candidates(*profile_ids), now=NOW,
-                                decision_id="dec-test", **kwargs)
+                                decision_id="dec-test", legacy_fixture=True, **kwargs)
 
 
 # ============================================================= the decision ===
@@ -116,6 +116,14 @@ def test_the_decision_is_resolved_over_the_real_estate():
     assert provenance["p-rtx"] == dbd.PROVENANCE_DETECTED
     assert provenance["p-msr"] == dbd.PROVENANCE_DECLARED
     assert bound.policy.policy_ref.startswith("routing_policy@")
+
+
+def test_database_candidate_without_canonical_ps632_receipt_is_not_routable():
+    db = _db()
+    task = _seed(db)
+    with pytest.raises(dbd.DispatchBoundaryError, match="unqualified"):
+        dbd.resolve_dispatch(db, task, _candidates("p-rtx"), now=NOW,
+                             decision_id="dec-no-receipt")
 
 
 def test_only_the_decisions_eligible_candidates_are_offered_to_the_dispatcher():
@@ -178,7 +186,7 @@ def test_a_missing_or_disabled_candidate_is_recorded_not_silently_dropped():
 def test_an_approximate_receipt_cannot_satisfy_an_exact_request():
     db = _db()
     task = _seed(db)
-    approximate = dr.make_capability_receipt(
+    approximate = dr.make_legacy_capability_view(
         receipt_id="approx:p-rtx", profile_id="p-rtx", target_id="profile:p-rtx",
         capabilities=frozenset({dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
                                 dr.CAP_EXACT_REFERENCE_SEMANTICS}),
@@ -192,7 +200,7 @@ def test_an_approximate_receipt_cannot_satisfy_an_exact_request():
 def test_a_stale_receipt_cannot_be_dispatched():
     db = _db()
     task = _seed(db)
-    stale = dr.make_capability_receipt(
+    stale = dr.make_legacy_capability_view(
         receipt_id="measured:p-rtx", profile_id="p-rtx", target_id="profile:p-rtx",
         capabilities=frozenset({dr.CAP_TEXT_GENERATION,
                                 dr.CAP_EXACT_REFERENCE_SEMANTICS,
@@ -211,7 +219,7 @@ def test_a_measured_receipt_can_require_what_declaration_cannot_evidence():
     with pytest.raises(dr.RoutingRefused) as err:
         _resolve(db, task, "p-rtx", capabilities=(dr.CAP_CONTEXT_INTEGRITY,))
     assert err.value.code == dr.REFUSED_CAPABILITY_MISSING
-    measured = dr.make_capability_receipt(
+    measured = dr.make_legacy_capability_view(
         receipt_id="measured:p-rtx", profile_id="p-rtx", target_id="profile:p-rtx",
         capabilities=frozenset({dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
                                 dr.CAP_EXACT_REFERENCE_SEMANTICS,
@@ -243,8 +251,18 @@ def test_the_pin_guard_refuses_a_different_model_or_locality_before_dispatch():
                               chat_url="https://openrouter.ai/api/v1")
     assert err.value.code == dbd.PIN_PROFILE_MISMATCH
     pin = dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
-                                chat_url="http://192.168.1.34:11434/v1")
+                                chat_url="http://192.168.1.130:11434/v1")
     assert pin["target_id"] == "profile:p-rtx" and pin["locality"] == "local"
+
+
+def test_the_pin_guard_refuses_a_different_local_endpoint_before_dispatch():
+    db = _db()
+    task = _seed(db)
+    bound = _resolve(db, task, "p-rtx")
+    with pytest.raises(dbd.DispatchPinViolation) as err:
+        dbd.verify_invocation(bound, profile_id="p-rtx", model="qwen3.8:27b",
+                              chat_url="http://192.168.1.130:8732/v1")
+    assert err.value.code == dbd.PIN_ENDPOINT_MISMATCH
 
 
 def test_a_local_pin_cannot_resolve_to_a_hosted_url_even_for_the_same_model():

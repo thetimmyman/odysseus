@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from src.local_targets import (
@@ -177,6 +178,23 @@ class TargetCapabilityStore:
         the newest line changed.
         """
         if supersedes:
+            history = self.entries()
+            predecessor = next((r for r in history
+                                 if r.receipt_hash == str(supersedes)), None)
+            if predecessor is None:
+                raise CapabilityStoreError(
+                    f"supersedes references missing receipt {supersedes}")
+            if predecessor.profile_id != receipt.profile_id:
+                raise CapabilityStoreError(
+                    "a receipt may supersede only a receipt for the same profile")
+            current = self.current(receipt.profile_id)
+            if current is None or current.receipt_hash != predecessor.receipt_hash:
+                raise CapabilityStoreError(
+                    "supersedes must reference the profile's current receipt")
+            if not receipt.invalidation_reason and receipt.qualification_state(
+                    now=datetime.now(timezone.utc)) != "valid":
+                raise CapabilityStoreError(
+                    "a stale or invalid superseding receipt is not routable")
             receipt = make_target_capability_receipt(
                 **{**receipt.to_dict(), "supersedes": supersedes})
         os.makedirs(self.directory, exist_ok=True)

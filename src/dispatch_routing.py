@@ -325,9 +325,8 @@ KNOWN_PROVENANCE = frozenset({PROVENANCE_MEASURED, PROVENANCE_DETECTED,
 
 
 @dataclass(frozen=True)
-class CapabilityReceipt:
-    """A MEASURED capability record for one exact profile (PS-632 owns producing
-    these; PS-605 only consumes them).
+class LegacyCapabilityView:
+    """Non-authoritative PS-605 view of canonical PS-632 evidence.
 
     A receipt is what makes eligibility measurable rather than assumed: it names
     the profile it was measured against, what was actually measured, when, how
@@ -417,11 +416,11 @@ class CapabilityReceipt:
         return payload
 
 
-def make_capability_receipt(**kwargs: Any) -> CapabilityReceipt:
-    """Validate then seal a capability receipt (fail closed on unknown fields)."""
+def make_legacy_capability_view(**kwargs: Any) -> LegacyCapabilityView:
+    """Build a selector view; this is never a qualification or store authority."""
     from dataclasses import fields as _fields
 
-    known = {f.name for f in _fields(CapabilityReceipt)}
+    known = {f.name for f in _fields(LegacyCapabilityView)}
     unknown = set(kwargs) - known
     if unknown:
         raise DispatchRoutingError(
@@ -429,8 +428,8 @@ def make_capability_receipt(**kwargs: Any) -> CapabilityReceipt:
     payload = dict(kwargs)
     payload.pop("receipt_hash", None)
     payload["capabilities"] = frozenset(payload.get("capabilities") or ())
-    provisional = CapabilityReceipt(**payload)
-    return CapabilityReceipt(receipt_hash=_sha256_hex(_canonical(provisional.core())),
+    provisional = LegacyCapabilityView(**payload)
+    return LegacyCapabilityView(receipt_hash=_sha256_hex(_canonical(provisional.core())),
                              **payload)
 
 
@@ -468,6 +467,7 @@ class ExecutionTargetProfile:
     cost_rank: int = 0
     inference: bool = True
     endpoint_url: str = ""
+    endpoint_type: str = ""
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -513,7 +513,8 @@ class ExecutionTargetProfile:
             "roles": sorted(self.roles), "tools": sorted(self.tools),
             "network_policy": self.network_policy,
             "budget_class": self.budget_class, "cost_rank": self.cost_rank,
-            "inference": self.inference,
+            "inference": self.inference, "endpoint_url": self.endpoint_url,
+            "endpoint_type": self.endpoint_type,
         }
 
     def to_dict(self) -> dict:
@@ -715,7 +716,7 @@ class CandidateAssessment:
 
 
 def _assess(profile: ExecutionTargetProfile,
-            receipt: Optional[CapabilityReceipt],
+            receipt: Optional[LegacyCapabilityView],
             request: RoutingRequest, *, domain_policy: Any = None,
             policy_local_only: bool = False,
             resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
@@ -861,7 +862,7 @@ class DispatchDecision:
     decision_id: str
     request: RoutingRequest
     selected_profile: ExecutionTargetProfile
-    selected_receipt: Optional[CapabilityReceipt]
+    selected_receipt: Optional[LegacyCapabilityView]
     policy: PolicySnapshot
     candidates: Tuple[CandidateAssessment, ...] = ()
     reason_code: str = ""
@@ -893,7 +894,8 @@ class DispatchDecision:
             "runtime_kind": profile.runtime_kind,
             "runtime_version": profile.runtime_version, "model": profile.model,
             "model_digest": profile.model_digest, "backend": profile.backend,
-            "locality": profile.locality, "exactness": profile.exactness,
+            "locality": profile.locality, "endpoint_url": profile.endpoint_url,
+            "endpoint_type": profile.endpoint_type, "exactness": profile.exactness,
             "granted_tools": list(self.granted_tools),
             "granted_write_scope": list(self.granted_write_scope),
             "granted_read_scope": list(self.granted_read_scope),

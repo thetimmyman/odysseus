@@ -74,6 +74,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from src.endpoint_identity import canonical_endpoint_identity
+
 # --------------------------------------------------------------- constants ---
 
 #: Stable target IDs. These are the identity strings that appear in RunState /
@@ -1050,18 +1052,38 @@ class TargetCapabilityReceipt:
         host baseline all change what a qualified result MEANS. Timing, health and
         load do not: they are re-measured every heartbeat and never carried.
         """
+        return self.execution_profile_material()
+
+    def execution_profile_material(self) -> dict:
+        """Stable execution identity, excluding observation timestamps/results."""
         return {
             "host_id": self.host_id,
             "runtime": {k: self.runtime.to_dict()[k] for k in (
-                "runtime_kind", "repository", "version", "commit", "image_digest",
-                "backend", "backend_version")},
+                "runtime_kind", "provider", "endpoint_type", "endpoint_url",
+                "repository", "version", "commit", "image_digest", "backend",
+                "backend_version")},
             "model": {k: self.model.to_dict()[k] for k in (
-                "model_id", "digest", "quantization", "auxiliary_artifacts")},
+                "model_id", "alias", "family", "digest", "size_bytes",
+                "quantization", "auxiliary_artifacts", "declared_context",
+                "declared_capabilities")},
             "context": {k: self.context.to_dict()[k] for k in (
-                "configured_context", "safe_working_context")},
+                "configured_context", "served_context", "options")},
             "host": {k: self.host.to_dict()[k] for k in (
-                "kernel", "boot_cmdline_digest", "firmware", "mesa", "rocm",
-                "libhsakmt")},
+                "host_id", "ssh_host", "cpu_arch", "gpu", "kernel",
+                "boot_cmdline_digest", "firmware", "mesa", "rocm", "libhsakmt")},
+        }
+
+    def qualification_material(self) -> dict:
+        """Measured qualification facts, separate from profile identity."""
+        return {
+            "capabilities": self.capabilities.to_dict(),
+            "context": {k: self.context.to_dict().get(k) for k in (
+                "engine_demonstrated_context", "semantic_verified_context",
+                "safe_working_context", "safe_context_source")},
+            "limits": self.limits.to_dict(),
+            "qualification_ref": self.qualification_ref,
+            "observed_at": self.observed_at,
+            "ttl_s": int(self.ttl_s),
         }
 
     def identity_digest(self) -> str:
@@ -1197,7 +1219,11 @@ def make_target_capability_receipt(**kwargs: Any) -> TargetCapabilityReceipt:
             quantization=model.quantization,
             safe_working_context=int(context.safe_working_context or 0),
             model_digest=model.digest,
-            runtime_version=runtime.version)
+            runtime_version=runtime.version, provider=runtime.provider,
+            endpoint_url=runtime.endpoint_url, endpoint_type=runtime.endpoint_type,
+            runtime_options=context.options,
+            configured_context=context.configured_context,
+            served_context=context.served_context)
     provisional = TargetCapabilityReceipt(**payload)
     return TargetCapabilityReceipt(
         **{**payload, "receipt_hash": _digest_of(provisional.core())})
@@ -1215,7 +1241,12 @@ def target_capability_receipt_hash_is_valid(payload: Mapping[str, Any]) -> bool:
 def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
                          model_alias: str, quantization: str,
                          safe_working_context: int, model_digest: str,
-                         runtime_version: str = "") -> str:
+                         runtime_version: str = "", provider: str = "",
+                         endpoint_url: str = "", endpoint_type: str = "",
+                         runtime_options: Optional[Mapping[str, Any]] = None,
+                         configured_context: int = 0,
+                         served_context: int = 0,
+                         execution_options: Optional[Mapping[str, Any]] = None) -> str:
     """One exact profile's identity: a change to any input is a DIFFERENT profile.
 
     The digest and the context are in the id on purpose. Re-tagging a different
@@ -1223,6 +1254,19 @@ def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
     id — which is how a previous qualification stops applying instead of being
     quietly inherited.
     """
+    config = {
+        "provider": str(provider or "").strip(),
+        "runtime_kind": str(runtime_kind or "").strip(),
+        "runtime_version": str(runtime_version or "").strip(),
+        "backend": str(backend or "").strip(),
+        "endpoint": canonical_endpoint_identity(endpoint_url, endpoint_type)
+        if endpoint_url else "",
+        "runtime_options": dict(runtime_options or {}),
+        "configured_context": int(configured_context or 0),
+        "served_context": int(served_context or 0),
+        "execution_options": dict(execution_options or {}),
+    }
+    config_digest = _digest_of(config)[:12]
     return ":".join([
         str(host_id).strip() or "unknown-host",
         f"{str(runtime_kind).strip() or 'runtime'}-{str(backend).strip() or 'backend'}",
@@ -1231,6 +1275,7 @@ def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
         str(quantization).strip() or "quant-unknown",
         f"ctx{int(safe_working_context or 0)}",
         (str(model_digest).strip() or "digest-unknown")[:12],
+        f"cfg{config_digest}",
     ])
 
 def receipt_from_capability(
@@ -1284,7 +1329,11 @@ def receipt_from_capability(
         host_id=spec.target_id, runtime_kind=(spec.runtime_kind or "ollama"),
         backend=backend, model_alias=(record.model_id or spec.model),
         quantization=record.quantization, safe_working_context=safe,
-        model_digest=digest, runtime_version=record.runtime_version)
+        model_digest=digest, runtime_version=record.runtime_version,
+        provider=(spec.runtime_kind or "ollama"), endpoint_url=spec.endpoint,
+        endpoint_type=spec.transport, runtime_options=record.runtime_options,
+        configured_context=configured_context,
+        served_context=int(record.served_context or 0))
 
     return make_target_capability_receipt(
         host_id=spec.target_id, profile_id=profile_id,

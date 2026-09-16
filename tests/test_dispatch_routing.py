@@ -40,6 +40,7 @@ def profile(**overrides) -> dr.ExecutionTargetProfile:
         "target_id": "local-rtx4500", "profile_id": PROFILE_ID, "provider": "ollama",
         "host": "minipc", "runtime_kind": "ollama", "runtime_version": "0.32.11",
         "model": "qwen3.8:27b", "model_digest": "d94d9646", "backend": "cuda",
+        "endpoint_url": "http://127.0.0.1:11434/v1",
         "locality": dr.LOCALITY_LOCAL,
         "roles": frozenset({dr.ROLE_IMPLEMENTER, dr.ROLE_REPAIR}),
         "tools": frozenset({"write_file"}), "network_policy": "tailnet-loopback",
@@ -49,7 +50,7 @@ def profile(**overrides) -> dr.ExecutionTargetProfile:
     return dr.make_target_profile(**fields)
 
 
-def receipt(**overrides) -> dr.CapabilityReceipt:
+def receipt(**overrides) -> dr.LegacyCapabilityView:
     fields = {
         "receipt_id": "cap-rtx-1", "profile_id": PROFILE_ID,
         "target_id": "local-rtx4500", "capabilities": IMPLEMENTER_CAPS,
@@ -58,7 +59,7 @@ def receipt(**overrides) -> dr.CapabilityReceipt:
         "runtime_version": "0.32.11", "model_digest": "d94d9646",
     }
     fields.update(overrides)
-    return dr.make_capability_receipt(**fields)
+    return dr.make_legacy_capability_view(**fields)
 
 
 def request(**overrides) -> dr.RoutingRequest:
@@ -219,7 +220,8 @@ def test_sensitive_local_only_work_fails_closed_to_hosted():
     """finance is a local-only domain: a hosted-only estate is a REFUSAL."""
     hosted = profile(target_id="openrouter-v4pro", profile_id="or-v4pro",
                      provider="openrouter", host="api.openrouter.ai",
-                     locality=dr.LOCALITY_HOSTED, budget_class="standard")
+                     locality=dr.LOCALITY_HOSTED, budget_class="standard",
+                     endpoint_url="https://openrouter.ai/api/v1")
     with pytest.raises(dr.RoutingRefused) as err:
         select(request(domain="finance", budget_class=""),
                profiles=[hosted],
@@ -423,11 +425,11 @@ def test_malformed_inputs_are_rejected_at_construction():
         dr.make_target_profile(target_id="t", profile_id="p", provider="ollama",
                                surprise=True)
     with pytest.raises(dr.DispatchRoutingError):
-        dr.make_capability_receipt(receipt_id="r", profile_id="p", target_id="t",
+        dr.make_legacy_capability_view(receipt_id="r", profile_id="p", target_id="t",
                                    observed_at="2026-09-15T11:00:00+00:00",
                                    capabilities=frozenset({"clairvoyance"}))
     with pytest.raises(dr.DispatchRoutingError):
-        dr.make_capability_receipt(receipt_id="r", profile_id="p", target_id="t",
+        dr.make_legacy_capability_view(receipt_id="r", profile_id="p", target_id="t",
                                    observed_at="  ", ttl_s=10)
     with pytest.raises(dr.DispatchRoutingError):
         dr.RoutingRefused("not_a_code", "boom")

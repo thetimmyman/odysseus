@@ -42,7 +42,7 @@ from src import dispatch_routing as dr
 from src.local_targets import (
     CAP_NATIVE_TOOLS, CAP_READONLY_ANALYSIS, CAP_STREAMING, HEALTH_HEALTHY,
     KNOWN_CAPABILITIES, NETWORK_TAILNET, PRIVACY_LOCAL_ONLY, ROLE_INFERENCE,
-    LocalTargetCapability, receipt_from_capability)
+    LocalTargetCapability, TargetCapabilityReceipt, receipt_from_capability)
 
 #: Registry requirement name -> the PS-605 capabilities it proves. Total for the
 #: registry's known names; anything else refuses (see ``requirement_capabilities``).
@@ -63,6 +63,23 @@ DEFAULT_RECEIPT_TTL_S = 3600
 
 class FleetRoutingError(RuntimeError):
     """A registry record (or packet requirement) that cannot become routing input."""
+
+
+def _legacy_view_from_receipt(receipt: TargetCapabilityReceipt, profile: Any) -> Any:
+    """Project canonical PS-632 evidence into PS-605's non-authoritative view."""
+    return dr.make_legacy_capability_view(
+        receipt_id=receipt.receipt_hash, profile_id=receipt.profile_id,
+        target_id=profile.target_id,
+        capabilities=frozenset(receipt.capabilities.measured),
+        exactness=dr.EXACTNESS_EXACT, observed_at=receipt.observed_at,
+        ttl_s=int(receipt.ttl_s),
+        healthy=(receipt.qualification_state() == "valid"
+                 and receipt.health_state() == "live"),
+        runtime_version=receipt.runtime.version, model_digest=receipt.model.digest,
+        host=receipt.host.ssh_host or receipt.host_id,
+        notes="PS-632 canonical receipt projection",
+        provenance=dr.PROVENANCE_MEASURED,
+        source_receipt_hash=receipt.receipt_hash)
 
 
 @dataclass(frozen=True)
@@ -230,7 +247,7 @@ def routing_inputs(records: Sequence[LocalTargetCapability], *,
             # the registry's read-only capability is proof of exactly that.
             inference=bool({dr.CAP_TEXT_GENERATION} & capabilities),
             cost_rank=0, budget_class="local"))
-        receipts.append(dr.make_capability_receipt(
+        receipts.append(dr.make_legacy_capability_view(
             receipt_id=f"measured:{target_id}:{record.last_probe}",
             profile_id=target_id, target_id=target_id,
             capabilities=frozenset(capabilities), exactness=dr.EXACTNESS_EXACT,
@@ -462,7 +479,7 @@ def persisted_routing_inputs(store, *, now=None,
                 receipt.capabilities.measured) else frozenset(),
             network_policy=receipt.network_class,
             inference=True, cost_rank=0, budget_class="local"))
-        receipts.append(dr.make_capability_receipt(
+        receipts.append(dr.make_legacy_capability_view(
             receipt_id=receipt.receipt_hash, profile_id=receipt.profile_id,
             target_id=host_id, capabilities=frozenset(mapped),
             exactness=dr.EXACTNESS_EXACT, observed_at=receipt.observed_at,

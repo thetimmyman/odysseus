@@ -76,7 +76,7 @@ def record(raw=None, *, spec_=None, probed_at=""):
 
 def receipt(*, raw=None, spec_=None, safe=32768, configured=32768,
             observed_at="", ttl_s=DEFAULT_QUALIFICATION_TTL_S,
-            health_ttl_s=DEFAULT_HEALTH_TTL_S, probed_at=""):
+            health_ttl_s=DEFAULT_HEALTH_TTL_S, probed_at="", notes=""):
     return receipt_from_capability(
         record(raw, spec_=spec_, probed_at=probed_at),
         configured_context=configured, safe_working_context=safe,
@@ -84,7 +84,7 @@ def receipt(*, raw=None, spec_=None, safe=32768, configured=32768,
         ttl_s=ttl_s, health_ttl_s=health_ttl_s,
         observed_at=observed_at or NOW.isoformat(),
         roles=(spec_ or spec()).roles,
-        qualification_ref=(spec_ or spec()).qualification_ref)
+        qualification_ref=(spec_ or spec()).qualification_ref, notes=notes)
 
 
 def store(tmp_path) -> TargetCapabilityStore:
@@ -213,12 +213,45 @@ def test_a_profile_id_changes_when_any_material_input_changes():
         assert execution_profile_id(**{**base_kwargs, **changed}) != base
 
 
+def test_profile_id_binds_endpoint_and_execution_configuration():
+    fields = dict(host_id="h", runtime_kind="llama.cpp", backend="vulkan",
+                  model_alias="model", quantization="IQ4_XS",
+                  safe_working_context=32768, model_digest=DIGEST,
+                  provider="halobox", endpoint_type="openai_compatible",
+                  endpoint_url="http://127.0.0.1:8731/v1",
+                  configured_context=262144, served_context=65536,
+                  runtime_options={"parallel": 4, "flash_attention": True})
+    base = execution_profile_id(**fields)
+    assert execution_profile_id(**{**fields, "endpoint_url": "http://127.0.0.1:8732/v1"}) != base
+    assert execution_profile_id(**{**fields, "endpoint_url": "http://localhost:8731/v1"}) != base
+    assert execution_profile_id(**{**fields, "endpoint_url": "https://127.0.0.1:8731/v1"}) != base
+    assert execution_profile_id(**{**fields, "endpoint_url": "http://127.0.0.1:8731/api"}) != base
+    assert execution_profile_id(**{**fields, "runtime_options": {"parallel": 1}}) != base
+    assert execution_profile_id(**{**fields, "execution_options": {"mtp": True}}) != base
+
+
+def test_receipt_identity_binds_endpoint_context_and_capability_evidence():
+    base = receipt()
+    changed_runtime = make_target_capability_receipt(
+        **{**base.to_dict(), "runtime": {**base.runtime.to_dict(),
+           "endpoint_url": "http://127.0.0.1:8732"}})
+    changed_context = make_target_capability_receipt(
+        **{**base.to_dict(), "context": {**base.context.to_dict(),
+           "served_context": 65536}})
+    changed_caps = make_target_capability_receipt(
+        **{**base.to_dict(), "capabilities": {
+            **base.capabilities.to_dict(), "measured": ["streaming"]}})
+    assert changed_runtime.profile_id != base.profile_id
+    assert changed_context.profile_id != base.profile_id
+    assert changed_caps.receipt_hash != base.receipt_hash
+
+
 # ================================================================ the store ===
 def test_the_store_appends_and_keeps_history(tmp_path):
     s = store(tmp_path)
     first = receipt()
     s.append(first)
-    second = receipt(raw={**RAW, "model": {**RAW["model"], "digest": "aa" * 32}})
+    second = receipt(notes="second qualification")
     s.append(second, supersedes=first.receipt_hash)
     entries = s.entries()
     # Both receipts are kept, oldest first; the superseding one carries its own
@@ -229,7 +262,7 @@ def test_the_store_appends_and_keeps_history(tmp_path):
     assert current.receipt_hash != first.receipt_hash
     assert current.receipt_hash == entries[1].receipt_hash
     assert current.supersedes == first.receipt_hash
-    assert current.model.digest == "aa" * 32
+    assert current.notes == "second qualification"
     assert s.verify()["ok"] is True
 
 
@@ -244,6 +277,32 @@ def test_the_current_receipt_is_deterministic_and_recorded_in_the_index(tmp_path
     index = json.loads((tmp_path / "target_capabilities" / "current.json").read_text())
     assert index[current.profile_id]["receipt_hash"] == current.receipt_hash
     assert index[current.profile_id]["previous_receipt_hash"] == first.receipt_hash
+
+
+def test_supersession_chain_is_single_current_and_rejects_invalid_links(tmp_path):
+    s = store(tmp_path)
+    first = receipt()
+    s.append(first)
+    second = receipt(notes="second qualification")
+    s.append(second, supersedes=first.receipt_hash)
+    third = receipt(notes="third qualification")
+    second_hash = s.current(first.profile_id).receipt_hash
+    s.append(third, supersedes=second_hash)
+    current = s.current(third.profile_id)
+    assert current.notes == "third qualification"
+    assert current.receipt_hash != second_hash
+    assert len(s.entries()) == 3
+    with pytest.raises(CapabilityStoreError):
+        s.append(receipt(), supersedes=third.receipt_hash)
+    other = receipt(spec_=spec("local-other"))
+    s.append(other)
+    with pytest.raises(CapabilityStoreError, match="same profile"):
+        s.append(receipt(), supersedes=other.receipt_hash)
+    with pytest.raises(CapabilityStoreError, match="missing receipt"):
+        s.append(receipt(), supersedes="f" * 64)
+    with pytest.raises(CapabilityStoreError, match="stale"):
+        s.append(receipt(observed_at="2020-01-01T00:00:00+00:00"),
+                 supersedes=s.current(third.profile_id).receipt_hash)
 
 
 def test_a_corrupt_line_fails_closed(tmp_path):
