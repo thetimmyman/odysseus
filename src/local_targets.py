@@ -562,13 +562,20 @@ class ContextProfile:
     options: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {"configured_context": self.configured_context,
-                "served_context": self.served_context,
-                "safe_working_context": self.safe_working_context,
-                "safe_context_source": self.safe_context_source,
-                "engine_demonstrated_context": self.engine_demonstrated_context,
-                "semantic_verified_context": self.semantic_verified_context,
-                "options": dict(self.options)}
+        # The two refinement windows are OPTIONAL: they are emitted only when
+        # set, so receipts written before these fields existed round-trip to the
+        # same canonical bytes and the same hash (PS-632 reconciliation
+        # 2026-09-16: a schema extension must not silently re-hash history).
+        out = {"configured_context": self.configured_context,
+               "served_context": self.served_context,
+               "safe_working_context": self.safe_working_context,
+               "safe_context_source": self.safe_context_source,
+               "options": dict(self.options)}
+        if self.engine_demonstrated_context:
+            out["engine_demonstrated_context"] = self.engine_demonstrated_context
+        if self.semantic_verified_context:
+            out["semantic_verified_context"] = self.semantic_verified_context
+        return out
 
 
 @dataclass(frozen=True)
@@ -1725,6 +1732,8 @@ def make_target_capability_receipt(**kwargs: Any) -> TargetCapabilityReceipt:
             model_digest=model.digest,
             runtime_version=runtime.version)
     provisional = TargetCapabilityReceipt(**payload)
+    # Writer-side adjustments legitimately re-stamp; the LOAD side (entries) is
+    # where stored hashes must not diverge from rebuilt content (see the store).
     return TargetCapabilityReceipt(
         **{**payload, "receipt_hash": _digest_of(provisional.core())})
 

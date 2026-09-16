@@ -24,6 +24,7 @@ import pytest
 from src import dispatch_routing as dr
 from src import local_target_routing as ltr
 from src.local_targets import (
+    ContextProfile,
     DEFAULT_HEALTH_TTL_S, DEFAULT_QUALIFICATION_TTL_S, HEALTH_HEALTHY,
     HEALTH_UNREACHABLE, INVALIDATED_EXPIRED, INVALIDATED_FUTURE,
     INVALIDATED_IDENTITY_DRIFT, INVALIDATED_SAFE_CONTEXT_UNMEASURED,
@@ -483,3 +484,59 @@ def test_the_persisted_path_reads_only_and_selects_nothing(tmp_path):
     assert list(s.entries()) == []
 
 
+
+
+# == PS-632 reconciliation 2026-09-16: schema extension must not re-hash history ==
+def test_a_pre_refinement_receipt_round_trips_to_the_same_hash():
+    """Receipts written before engine/semantic_verified existed must rebuild to
+    the SAME hash after the schema gained the two optional context windows."""
+    old = receipt(safe=32768, configured=262144)
+    line = old.to_dict()
+    assert "engine_demonstrated_context" not in line["context"]
+    assert "semantic_verified_context" not in line["context"]
+    rebuilt = make_target_capability_receipt(**line)
+    assert rebuilt.receipt_hash == old.receipt_hash
+    assert rebuilt.context.engine_demonstrated_context == 0
+    assert rebuilt.context.semantic_verified_context == 0
+
+
+def test_refined_context_fields_round_trip_when_set():
+    refined = dc_replace(
+        receipt(safe=32768, configured=262144),
+        context=ContextProfile(
+            configured_context=262144, served_context=65536,
+            safe_working_context=32768,
+            safe_context_source="engine-demonstrated 32768; semantic-verified 19760",
+            engine_demonstrated_context=32768, semantic_verified_context=19760,
+            options={"parallel": 4}))
+    line = refined.to_dict()
+    assert line["context"]["engine_demonstrated_context"] == 32768
+    assert line["context"]["semantic_verified_context"] == 19760
+    emptied = line["context"].pop("safe_context_source")
+    line["context"]["safe_context_source"] = emptied
+    rebuilt = make_target_capability_receipt(**line)
+    assert rebuilt.context.engine_demonstrated_context == 32768
+    assert rebuilt.context.semantic_verified_context == 19760
+    # and the rebuilt receipt re-serializes to the same stamp: a stable round-trip
+    assert make_target_capability_receipt(**rebuilt.to_dict()).receipt_hash \
+        == rebuilt.receipt_hash
+
+
+def test_the_store_fails_closed_when_rebuilt_content_diverges_from_its_stored_hash(
+tmp_path, monkeypatch):
+    """The loader must catch the schema-drift divergence class found live."""
+    greeting = store(tmp_path)
+    s = greeting
+    s.append(receipt())
+    lines = [l for l in open(s.receipts_path).read().splitlines() if l.strip()]
+    assert len(lines) == 1
+    stored = json.loads(lines[0])
+    assert "engine_demonstrated_context" not in stored["context"]
+    original = ContextProfile.to_dict
+    def always_emitted(self):
+        out = dict(original(self))
+        out["engine_demonstrated_context"] = self.engine_demonstrated_context or 0
+        return out
+    monkeypatch.setattr(ContextProfile, "to_dict", always_emitted)
+    with pytest.raises(CapabilityStoreError, match="does not round-trip"):
+        s.entries()

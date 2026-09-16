@@ -89,10 +89,22 @@ class TargetCapabilityStore:
                         f"{self.receipts_path}:{number} receipt_hash does not cover "
                         "its own content")
                 try:
-                    receipts.append(make_target_capability_receipt(**dict(payload)))
+                    receipt = make_target_capability_receipt(**dict(payload))
                 except (TypeError, ValueError, KeyError) as exc:
                     raise CapabilityStoreError(
                         f"{self.receipts_path}:{number} is not a valid receipt: {exc}")
+                # The raw-payload check above validates the line against the
+                # serialization rules of TODAY; this one compares the rebuilt
+                # object's own stamp, so schema drift or canonicalization drift
+                # can never present an object whose hash differs from what is
+                # on disk (found 2026-09-16 when an optional context field
+                # extension silently diverged from stored receipts).
+                if receipt.receipt_hash != str(payload.get("receipt_hash") or ""):
+                    raise CapabilityStoreError(
+                        f"{self.receipts_path}:{number} does not round-trip: stored "
+                        f"{str(payload.get('receipt_hash'))[:16]} but rebuilt "
+                        f"{receipt.receipt_hash[:16]}")
+                receipts.append(receipt)
         return tuple(receipts)
 
     def entries_for_host(self, host_id: str) -> Tuple[TargetCapabilityReceipt, ...]:
