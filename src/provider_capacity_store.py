@@ -85,7 +85,6 @@ class ProviderCapacityStore:
         index = self._read_index(required=True) if existing else self._read_index(required=False)
         if any(r.receipt_hash == receipt.receipt_hash for r in existing):
             raise CapacityStoreError("duplicate receipt hash")
-        active = self._authoritative_current(existing, index) if existing else {}
         if supersedes:
             prior = next((r for r in existing if r.receipt_hash == supersedes), None)
             if prior is None:
@@ -96,9 +95,23 @@ class ProviderCapacityStore:
                 raise CapacityStoreError("an invalidated receipt cannot be superseded")
             if prior.receipt_hash == receipt.receipt_hash:
                 raise CapacityStoreError("self-supersession is forbidden")
-            if active.get(receipt.pool_id) is None or active[receipt.pool_id].receipt_hash != prior.receipt_hash:
+            if receipt.pool_id not in index:
                 raise CapacityStoreError("only the authoritative current receipt may be superseded")
-        elif receipt.pool_id in active:
+            chain = self._indexed_chain(existing, index, receipt.pool_id)
+            successors = self._uncommitted_successors(existing, chain, receipt.pool_id)
+            if successors:
+                # Durable history holds a successor the committed index does not
+                # represent (interrupted commit). Authority is ambiguous; the only
+                # valid supersession target is the durable leaf — the explicit
+                # administrative recovery move that commits that history.
+                leaf = self._successor_leaf(existing, chain, receipt.pool_id)
+                if supersedes != leaf.receipt_hash:
+                    raise CapacityStoreError(
+                        "ambiguous authority: recovery must supersede the durable successor "
+                        f"{leaf.receipt_hash[:12]} to commit the interrupted history")
+            elif supersedes != chain[0].receipt_hash:
+                raise CapacityStoreError("only the authoritative current receipt may be superseded")
+        elif receipt.pool_id in index:
             raise CapacityStoreError("replacement receipt must name supersedes")
         if receipt.supersedes and receipt.supersedes != supersedes:
             raise CapacityStoreError("receipt supersedes field does not match append request")
@@ -155,43 +168,136 @@ class ProviderCapacityStore:
         except (CapacityStoreError, CapacityError, ValueError, KeyError, TypeError):
             return False
 
-    def _authoritative_current(self, entries: Iterable[ProviderCapacityReceipt],
-                               index: Mapping[str, Mapping[str, str]]) -> Dict[str, ProviderCapacityReceipt]:
+    def _indexed_chain(self, entries: Iterable[ProviderCapacityReceipt],
+                       index: Mapping[str, Mapping[str, str]], pool_id: str
+                       ) -> tuple[ProviderCapacityReceipt, ...]:
+        """The committed supersession chain (head -> ... -> root) the index claims."""
         entries = tuple(entries)
         by_hash = {}
         counts = {}
         for receipt in entries:
             counts[receipt.receipt_hash] = counts.get(receipt.receipt_hash, 0) + 1
             by_hash[receipt.receipt_hash] = receipt
-        active = {}
-        for pool_id, item in index.items():
-            if not isinstance(item, Mapping) or item.get("pool_id") != pool_id:
-                raise CapacityStoreError("current index pool identity mismatch")
-            wanted = item.get("receipt_hash")
-            if not isinstance(wanted, str) or not wanted or wanted not in by_hash or counts[wanted] != 1:
-                raise CapacityStoreError("current index does not point to authoritative receipt")
-            receipt = by_hash[wanted]
-            if receipt.pool_id != pool_id or receipt.invalidation_reason:
-                raise CapacityStoreError("current index does not point to usable receipt")
-            chain = []
-            seen = set()
-            cursor = receipt
-            while True:
-                if cursor.receipt_hash in seen:
-                    raise CapacityStoreError("cycle in supersession history")
-                seen.add(cursor.receipt_hash)
-                chain.append(cursor)
-                if not cursor.supersedes:
-                    break
-                target = by_hash.get(cursor.supersedes)
-                if target is None:
-                    raise CapacityStoreError("supersession target is missing")
-                cursor = target
-            validated = validated_current_receipts(chain)
-            if len(validated) != 1 or validated[0].receipt_hash != wanted:
-                raise CapacityStoreError("current index does not point to authoritative receipt")
-            active[pool_id] = receipt
+        item = index.get(pool_id)
+        if not isinstance(item, Mapping) or item.get("pool_id") != pool_id:
+            raise CapacityStoreError("current index pool identity mismatch")
+        wanted = item.get("receipt_hash")
+        if not isinstance(wanted, str) or not wanted or wanted not in by_hash or counts[wanted] != 1:
+            raise CapacityStoreError("current index does not point to authoritative receipt")
+        receipt = by_hash[wanted]
+        if receipt.pool_id != pool_id or receipt.invalidation_reason:
+            raise CapacityStoreError("current index does not point to usable receipt")
+        chain: list[ProviderCapacityReceipt] = []
+        seen: set[str] = set()
+        cursor = receipt
+        while True:
+            if cursor.receipt_hash in seen:
+                raise CapacityStoreError("cycle in supersession history")
+            seen.add(cursor.receipt_hash)
+            chain.append(cursor)
+            if not cursor.supersedes:
+                break
+            target = by_hash.get(cursor.supersedes)
+            if target is None:
+                raise CapacityStoreError("supersession target is missing")
+            cursor = target
+        validated = validated_current_receipts(chain)
+        if len(validated) != 1 or validated[0].receipt_hash != wanted:
+            raise CapacityStoreError("current index does not point to authoritative receipt")
+        return tuple(chain)
+
+    def _uncommitted_successors(self, entries: Iterable[ProviderCapacityReceipt],
+                                chain: Iterable[ProviderCapacityReceipt], pool_id: str
+                                ) -> tuple[ProviderCapacityReceipt, ...]:
+        """Durable same-pool successors claiming to supersede the committed chain.
+
+        These are rows the committed current index does not represent; their mere
+        existence makes the pool's authority ambiguous unless an explicit recovery
+        commits them."""
+        chain_hashes = {r.receipt_hash for r in chain}
+        return tuple(
+            r for r in entries
+            if r.pool_id == pool_id and r.receipt_hash not in chain_hashes
+            and r.supersedes in chain_hashes
+        )
+
+    def _successor_leaf(self, entries: Iterable[ProviderCapacityReceipt],
+                        chain: Iterable[ProviderCapacityReceipt], pool_id: str
+                        ) -> ProviderCapacityReceipt:
+        """The unique durable successor-maximal receipt stemming from the chain.
+
+        Raises fail-closed when multiple competing uncommitted leaves exist (an
+        externally tampered history) rather than silently choosing one."""
+        chain_hashes = {r.receipt_hash for r in chain}
+        by_hash = {r.receipt_hash: r for r in entries if r.pool_id == pool_id}
+        children: dict[str, list[str]] = {}
+        for receipt in by_hash.values():
+            if receipt.supersedes in by_hash:
+                children.setdefault(receipt.supersedes, []).append(receipt.receipt_hash)
+        reachable: set[str] = set()
+        seen: set[str] = set()
+        stack = list(chain_hashes & set(by_hash))
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            for child in children.get(current, ()):
+                if child not in seen and child not in chain_hashes:
+                    reachable.add(child)
+                    stack.append(child)
+        leaves = [by_hash[h] for h in reachable if h not in children]
+        if len(leaves) != 1:
+            raise CapacityStoreError(
+                "ambiguous authority has competing uncommitted successors")
+        return leaves[0]
+
+    def _authoritative_current(self, entries: Iterable[ProviderCapacityReceipt],
+                               index: Mapping[str, Mapping[str, str]]) -> dict[str, ProviderCapacityReceipt]:
+        """Single authority-resolution primitive (fail closed on ambiguity).
+
+        The committed index is authority. If durable history contains a valid
+        successor of any member of the indexed chain that the index does not
+        represent, authority is ambiguous: no receipt is exposed as current and
+        the caller must fail closed until an explicit recovery commits the history."""
+        entries = tuple(entries)
+        active: dict[str, ProviderCapacityReceipt] = {}
+        for pool_id in index:
+            chain = self._indexed_chain(entries, index, pool_id)
+            if self._uncommitted_successors(entries, chain, pool_id):
+                raise CapacityStoreError(
+                    "ambiguous authority: durable history contains an uncommitted "
+                    f"successor superseding the indexed receipt for {pool_id}")
+            active[pool_id] = chain[0]
         return active
+
+    def authoritative_current_receipts(self) -> tuple[ProviderCapacityReceipt, ...]:
+        """Canonical read seam: the authoritative receipt set for registry use.
+
+        Returns every receipt belonging to a committed supersession chain, so a
+        consumer (``CapacityRegistry``) can validate each chain's ancestry. Heads
+        alone are not sufficient: a head still carries ``supersedes``.
+
+        Raises CapacityStoreError when the index is missing/corrupt or when durable
+        history contains an uncommitted successor (ambiguous authority). Orphan rows
+        that do not supersede the indexed chain never invalidate the result."""
+        if not os.path.exists(self.receipts_path):
+            if os.path.exists(self.index_path):
+                raise CapacityStoreError("current index exists without receipt history")
+            return ()
+        index = self._read_index(required=True)
+        entries = self._entries_for_index(index)
+        active = self._authoritative_current(entries, index)
+        chains = {pool_id: self._indexed_chain(entries, index, pool_id) for pool_id in index}
+        authoritative: list[ProviderCapacityReceipt] = []
+        seen: set[str] = set()
+        for pool_id in sorted(chains):
+            assert active[pool_id].receipt_hash == chains[pool_id][0].receipt_hash
+            for receipt in chains[pool_id]:
+                if receipt.receipt_hash not in seen:
+                    seen.add(receipt.receipt_hash)
+                    authoritative.append(receipt)
+        return tuple(authoritative)
 
     def _entries_for_index(self, index: Mapping[str, Mapping[str, str]]) -> Tuple[ProviderCapacityReceipt, ...]:
         """Read valid rows for indexed resolution; trailing orphan rows are not authority."""
