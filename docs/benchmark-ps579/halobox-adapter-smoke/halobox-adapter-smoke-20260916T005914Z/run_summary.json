@@ -1,0 +1,57 @@
+{
+  "kind": "HALOBOX_ADAPTER_SMOKE_TEST",
+  "run_id": "halobox-adapter-smoke-20260916T005914Z",
+  "corpus_cell": false,
+  "corpus_note": "adapter smoke only: not a PS-579 benchmark cell and excluded from every corpus aggregate",
+  "target_id": "local-framework-halobox",
+  "profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+  "receipt_hash": "40d4b593b97304ea7fc27853f18127bd9f846887428963a441f1a032b6ee024a",
+  "capability_receipt_refs": [
+    "40d4b593b97304ea7fc27853f18127bd9f846887428963a441f1a032b6ee024a"
+  ],
+  "decided_by": "ps605_policy",
+  "policy_ref": "routing_policy@1.2+sha256:4df270ad9543772d",
+  "endpoint": "http://127.0.0.1:8731",
+  "runtime_kind": "llama-server",
+  "runtime_version": "b1-29e091e",
+  "model": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+  "model_digest": "8bc229db96a6e574467bf02f5fe17966cd2b41fb2604ce4d701175d3f2ea5fb8",
+  "chain": {
+    "execution_package_hash": "b621de7e0fe70875fa00b41dc72d5c382870aa66e3642c62d0388dd9b62dc9f4",
+    "dispatch_receipt_hash": "960b3d7e09e8a5c35cdf681f5cf9b2a830a4220d6cda26ff8b42a2c699b45f97",
+    "capability_receipt_refs": [
+      "40d4b593b97304ea7fc27853f18127bd9f846887428963a441f1a032b6ee024a"
+    ],
+    "stored_receipt_hash": "40d4b593b97304ea7fc27853f18127bd9f846887428963a441f1a032b6ee024a",
+    "selected_profile_id": "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+    "receipt_ref_matches_store": true,
+    "attempt_binds_dispatch": true,
+    "ok": true
+  },
+  "smoke_check": {
+    "transport_ok": true,
+    "runtime_error": "",
+    "tool_calls": 1,
+    "writes_executed": [
+      "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260916T005914Z/artifacts/smoke_nonce.txt"
+    ],
+    "policy_error": "",
+    "nonce_file": "docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260916T005914Z/artifacts/smoke_nonce.txt",
+    "nonce_expected": "HBX-6472569A07C8",
+    "nonce_file_content": "HBX-6472569A07C8",
+    "nonce_written_through_tool": true,
+    "prompt_tokens": 589,
+    "completion_tokens": 111,
+    "chunks": 82,
+    "ttft_s": 7.134,
+    "num_ctx_requested": 32768,
+    "num_ctx_served": 65536
+  },
+  "execution_package_hash": "b621de7e0fe70875fa00b41dc72d5c382870aa66e3642c62d0388dd9b62dc9f4",
+  "attempt_receipt_hash": "13250bff334709c002710fa3888eab02abc8f083fdbb5c99def7ca3af9d3d71d",
+  "verification_receipt_hash": "5827cdf2346fce75aab8ebf33e33416006cdb5513fe15b973b1124efeb5a36a9",
+  "evidence_package_hash": "7952c95396bad6be8e8dde35f1aa9fabcf3cfd5821601239f433cde2592a1010",
+  "validator_ok": true,
+  "validator_codes": [],
+  "wall_clock_s": 7.359
+}

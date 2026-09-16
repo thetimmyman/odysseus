@@ -1,0 +1,41 @@
+{
+  "store": "/home/tdefreest/scratch/ps632-store",
+  "store_audit": {
+    "ok": false,
+    "receipts": 62,
+    "profiles": [
+      "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx262144:8bc229db96a6",
+      "local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6",
+      "local-framework-halobox:llama-server-vulkan:version-unknown:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:quant-unknown:ctx32768:digest-unkno",
+      "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx131072:d94d964641c7",
+      "local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7"
+    ],
+    "problems": [
+      "index 'local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx262144:8bc229db96a6' -> ac1fd117efc39be9ce7f8969495d2cd91eafc5b0d41004914100fca330a75f5b is missing from the ledger",
+      "index 'local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6' -> 6d75afc19e3b09eb8c7d72aac6dc5cfb02ab1028e8efb3baf506e851cc23d1d8 is missing from the ledger",
+      "index 'local-framework-halobox:llama-server-vulkan:version-unknown:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:quant-unknown:ctx32768:digest-unkno' -> 77b7ca738536e9bbea1f9c3649bb0e80bb6b2d3a5df875c8ef7c9e37dd37134c is missing from the ledger",
+      "index 'local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx131072:d94d964641c7' -> ca763a252941f6cd1d33bba7ff2faf68b226487a20102ddc634e8e6ee8032d3d is missing from the ledger",
+      "index 'local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx32768:d94d964641c7' -> bad2e249330fd8c28bce3d50585ccecc95d98e9f959c85e7a25aeab8afe047a0 is missing from the ledger"
+    ]
+  },
+  "bound_receipts": {},
+  "candidates": [],
+  "skipped": [
+    {
+      "target_id": "local-rtx4500",
+      "reason": "capability store unusable: index points at ca763a252941f6cd1d33bba7ff2faf68b226487a20102ddc634e8e6ee8032d3d for 'local-rtx4500:ollama-cuda:0.32.11:qwen3.8:27b:unknown:ctx131072:d94d964641c7', which is not in /home/tdefreest/scratch/ps632-store/receipts.jsonl"
+    },
+    {
+      "target_id": "local-msr1",
+      "reason": "registry does not give this host the inference role (roles=['deterministic_verifier', 'governance_ci', 'arm64_ci'])"
+    },
+    {
+      "target_id": "local-framework",
+      "reason": "unqualified: no independently qualified profile for this host (research/Phase-0 metadata is not qualification)"
+    },
+    {
+      "target_id": "local-framework-halobox",
+      "reason": "capability store unusable: index points at 6d75afc19e3b09eb8c7d72aac6dc5cfb02ab1028e8efb3baf506e851cc23d1d8 for 'local-framework-halobox:llama-server-vulkan:b1-29e091e:Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:IQ4_XS:ctx32768:8bc229db96a6', which is not in /home/tdefreest/scratch/ps632-store/receipts.jsonl"
+    }
+  ]
+}

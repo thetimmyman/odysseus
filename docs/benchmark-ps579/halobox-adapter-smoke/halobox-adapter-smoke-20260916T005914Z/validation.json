@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "issues": [],
+  "requirement_states": [
+    {
+      "requirement_id": "deterministic_verification",
+      "state": "SATISFIED",
+      "receipt_id": "5827cdf2346fce75aab8ebf33e33416006cdb5513fe15b973b1124efeb5a36a9",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "source_binding",
+      "state": "SATISFIED",
+      "receipt_id": "5827cdf2346fce75aab8ebf33e33416006cdb5513fe15b973b1124efeb5a36a9",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "negative_control",
+      "state": "SATISFIED",
+      "receipt_id": "5827cdf2346fce75aab8ebf33e33416006cdb5513fe15b973b1124efeb5a36a9",
+      "detail": "PASS by HARNESS_HIDDEN"
+    },
+    {
+      "requirement_id": "context_delivery",
+      "state": "SATISFIED",
+      "receipt_id": "5827cdf2346fce75aab8ebf33e33416006cdb5513fe15b973b1124efeb5a36a9",
+      "detail": "PASS by HARNESS_HIDDEN"
+    }
+  ]
+}

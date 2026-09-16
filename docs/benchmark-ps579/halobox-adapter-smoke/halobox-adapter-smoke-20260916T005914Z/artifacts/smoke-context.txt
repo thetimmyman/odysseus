@@ -1,0 +1,11 @@
+OBJECTIVE: Adapter smoke only: write one file containing the exact nonce given in the request. No corpus task.
+WRITE_SCOPE: docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260916T005914Z/artifacts/smoke_nonce.txt
+INTERFACE: nonce | required | str -- the exact nonce to write
+CONTRACT: Call write_file once with path 'docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260916T005914Z/artifacts/smoke_nonce.txt' and content exactly the nonce from the user message.
+ACCEPTANCE: the file exists and holds exactly the nonce
+NEGATIVE_CONTROL: prose, or a tool call that wrote nothing, must FAIL
+STOP_IF: any transport error
+
+Write the file 'docs/benchmark-ps579/halobox-adapter-smoke/halobox-adapter-smoke-20260916T005914Z/artifacts/smoke_nonce.txt' using the write_file tool. Its content must be exactly:
+HBX-6472569A07C8
+Nothing else.
