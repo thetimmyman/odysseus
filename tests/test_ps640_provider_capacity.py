@@ -302,25 +302,133 @@ def test_indexed_authority_survives_unindexed_orphan_row(tmp_path):
     assert len(CapacityRegistry((store.current(first.pool_id),)).eligible_capacity_for("qwen3.8:27b", now=AT_NOW)) == 1
 
 
-def test_indexed_authority_survives_orphan_supersession_row(tmp_path):
+def test_crash_window_uncommitted_successor_fails_closed(tmp_path):
+    """A current; B supersedes A but the index was never advanced (interrupted
+    commit). Authority is ambiguous and every read surface must refuse.
+    """
     store = ProviderCapacityStore(str(tmp_path))
     first = store.append(receipt())
-    orphan = receipt(observed_at="2026-09-15T12:03:00+00:00")
-    core = {**orphan.core(), "supersedes": first.receipt_hash}
-    store._append_line(replace(orphan, supersedes=first.receipt_hash, receipt_hash=_sha256(core)))
-    assert store.current(first.pool_id).receipt_hash == first.receipt_hash
+    successor = receipt(observed_at="2026-09-15T12:03:00+00:00")
+    core = {**successor.core(), "supersedes": first.receipt_hash}
+    store._append_line(replace(successor, supersedes=first.receipt_hash,
+                               receipt_hash=_sha256(core)))
+    with pytest.raises(CapacityStoreError):
+        store.current(first.pool_id)
+    with pytest.raises(CapacityStoreError):
+        store.authoritative_current_receipts()
+    assert store.verify() is False
+    # history(bytes) retains both rows; nothing is auto-promoted.
     assert len(store.history(first.pool_id)) == 2
 
 
-def test_corrupt_orphan_is_not_authority_but_strict_history_reports_it(tmp_path):
+def test_crash_window_registry_exposes_no_eligible_capacity(tmp_path):
+    """The same ambiguous state must not yield capacity through CapacityRegistry.
+
+    The registry is fed only the store's canonical authority seam; that seam
+    refuses the ambiguous state, so no eligible capacity fact is reachable."""
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    successor = receipt(observed_at="2026-09-15T12:03:00+00:00")
+    core = {**successor.core(), "supersedes": first.receipt_hash}
+    store._append_line(replace(successor, supersedes=first.receipt_hash,
+                               receipt_hash=_sha256(core)))
+    with pytest.raises(CapacityStoreError):
+        CapacityRegistry(store.authoritative_current_receipts())
+
+
+def test_explicit_recovery_commits_orphan_successor(tmp_path):
+    """Admin recovery supersedes the durable leaf, committing the interrupted
+    history and restoring a single authoritative current. Recovery is explicit:
+    nothing auto-promotes the orphan."""
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    successor = receipt(observed_at="2026-09-15T12:03:00+00:00")
+    core = {**successor.core(), "supersedes": first.receipt_hash}
+    durable = replace(successor, supersedes=first.receipt_hash,
+                      receipt_hash=_sha256(core))
+    store._append_line(durable)
+    with pytest.raises(CapacityStoreError):
+        store.current(first.pool_id)
+    # Trying to supersede the stale indexed head is refused: it would leave the
+    # durable successor uncommitted and still ambiguous.
+    with pytest.raises(CapacityStoreError):
+        store.append(receipt(observed_at="2026-09-15T12:20:00+00:00"),
+                              supersedes=first.receipt_hash)
+    # Explicit recovery: supersede the durable leaf with a fresh receipt.
+    recovered = store.append(receipt(observed_at="2026-09-15T12:30:00+00:00"),
+                             supersedes=durable.receipt_hash)
+    assert store.current(first.pool_id).receipt_hash == recovered.receipt_hash
+    assert store.verify()
+    assert len(store.history(first.pool_id)) == 3
+    eligible = CapacityRegistry(
+        store.authoritative_current_receipts()).eligible_capacity_for(
+        "qwen3.8:27b", now=AT_NOW)
+    assert [r.receipt_hash for r in eligible] == [recovered.receipt_hash]
+
+
+def test_two_generation_chain_index_rewound_fails_closed(tmp_path):
+    """A->B->C durable; index still points at A -> fail closed."""
+    store = ProviderCapacityStore(str(tmp_path))
+    a = store.append(receipt())
+    b = receipt(observed_at="2026-09-15T12:01:00+00:00")
+    b = replace(b, supersedes=a.receipt_hash,
+                receipt_hash=_sha256({**b.core(), "supersedes": a.receipt_hash}))
+    store._append_line(b)
+    c = receipt(observed_at="2026-09-15T12:02:00+00:00")
+    c = replace(c, supersedes=b.receipt_hash,
+                receipt_hash=_sha256({**c.core(), "supersedes": b.receipt_hash}))
+    store._append_line(c)
+    with pytest.raises(CapacityStoreError):
+        store.current(a.pool_id)
+    assert store.verify() is False
+    with pytest.raises(CapacityStoreError):
+        store.append(receipt(observed_at="2026-09-15T12:40:00+00:00"),
+                             supersedes=a.receipt_hash)
+
+
+def test_three_generation_chain_mid_index_fails_closed(tmp_path):
+    """A->B->C durable; index commits B but C is an uncommitted successor
+    -> fail closed (C claims to supersede a committed chain member)."""
+    store = ProviderCapacityStore(str(tmp_path))
+    a = store.append(receipt())
+    b = store.append(receipt(observed_at="2026-09-15T12:01:00+00:00"),
+                     supersedes=a.receipt_hash)
+    c = receipt(observed_at="2026-09-15T12:02:00+00:00")
+    c = replace(c, supersedes=b.receipt_hash,
+                receipt_hash=_sha256({**c.core(), "supersedes": b.receipt_hash}))
+    store._append_line(c)
+    with pytest.raises(CapacityStoreError):
+        store.current(a.pool_id)
+    assert store.verify() is False
+
+
+def test_plain_orphan_does_not_invalidate_indexed_authority(tmp_path):
+    """A valid orphan that does NOT supersede the indexed authority must not
+    become authority and must not invalidate the index solely by existing."""
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    orphan = receipt(observed_at="2026-09-15T12:03:00+00:00")
+    store._append_line(orphan)
+    assert store.current(first.pool_id).receipt_hash == first.receipt_hash
+    assert store.verify()
+    eligible = CapacityRegistry(
+        store.authoritative_current_receipts()).eligible_capacity_for(
+        "qwen3.8:27b", now=AT_NOW)
+    assert [r.receipt_hash for r in eligible] == [first.receipt_hash]
+
+
+def test_corrupt_trailing_successor_candidate_is_not_promoted(tmp_path):
+    """A corrupt trailing row that would have been a successor must stay a
+    corrupt history row: it is neither promoted nor does it create ambiguity,
+    and the strict historical reader still reports it."""
     store = ProviderCapacityStore(str(tmp_path))
     first = store.append(receipt())
     with open(store.receipts_path, "a", encoding="utf-8") as handle:
-        handle.write("{\"corrupt\":\n")
+        handle.write("{\"receipt_hash\": \"abc\"\n")
     assert store.current(first.pool_id).receipt_hash == first.receipt_hash
+    assert store.verify() is False    # strict integrity reader flags the corruption
     with pytest.raises(CapacityStoreError):
         store.history(first.pool_id)
-
 
 def test_strict_enum_and_numeric_validation():
     with pytest.raises(CapacityError): receipt(entitlement="bogus")
