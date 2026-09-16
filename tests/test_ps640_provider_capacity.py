@@ -1,0 +1,249 @@
+from datetime import datetime, timezone, timedelta
+import json
+import os
+
+import pytest
+
+from src.provider_capacity import *
+from src.provider_capacity_store import CapacityStoreError, ProviderCapacityStore
+
+
+NOW = "2026-09-15T12:00:00+00:00"
+AT_NOW = datetime.fromisoformat(NOW)
+
+
+def prov(source="fixture", ref="fixture-1", ttl=3600, observed=NOW):
+    return EvidenceProvenance(source, ref, "test-collector", observed, ttl)
+
+
+def receipt(**overrides):
+    data = dict(provider="local", pool_id="local:rtx4500", account_identity="host:minipc",
+                authorization_class="local_endpoint", entitlement=Entitlement.LOCAL,
+                exposed_models=("qwen3.8:27b",), observed_at=NOW, ttl_seconds=300,
+                collector_id="test-collector", evidence_source="fixture", evidence_reference="local-1",
+                state=CapacityState.AVAILABLE,
+                state_provenance=prov(), entitlement_provenance=prov(), zdr_provenance=prov(), quotas=(),
+                price=PriceObservation(CostClass.LOCAL_ZERO_MARGINAL_DOLLARS,
+                                       published_list_rate=0, estimated_marginal_cost=0,
+                                       actual_billed_cost=UNKNOWN, pricing_source=PricingSource.OPERATOR_OVERRIDE,
+                                       pricing_version="fixture-v1", provenance=prov(ttl=86400)),
+                concurrency_limit=4, concurrency_remaining=4, zdr_supported=True)
+    data.update(overrides)
+    return make_capacity_receipt(**data)
+
+
+def test_three_shaped_fixtures_are_independent_and_typed():
+    local = receipt()
+    subscription = receipt(provider="clinepass", pool_id="clinepass:subscription:primary",
+                           account_identity="subscription:primary", authorization_class="oauth_cli",
+                           entitlement=Entitlement.THIRD_PARTY_HARNESS,
+                           quotas=(QuotaDimension("five_hour", "requests", 100, 73, "2026-09-15T16:00:00+00:00", prov()),),
+                           price=PriceObservation(CostClass.SUBSCRIPTION_SUNK_COST,
+                               actual_billed_cost=UNKNOWN, pricing_source=PricingSource.SUBSCRIPTION_CONTRACT,
+                               pricing_version="contract-2026-09", provenance=prov(ttl=86400)))
+    metered = receipt(provider="openrouter", pool_id="openrouter:api:primary",
+                      account_identity="api-account:primary", authorization_class="api_key",
+                      entitlement=Entitlement.API,
+                      quotas=(QuotaDimension("monthly", "USD", 20, 18.5, UNKNOWN, prov()),
+                              QuotaDimension("requests", "requests", UNKNOWN, UNKNOWN, UNKNOWN, prov())),
+                      price=PriceObservation(CostClass.METERED, published_list_rate=0.14,
+                              estimated_marginal_cost=0.14, actual_billed_cost=UNKNOWN,
+                              pricing_source=PricingSource.PRICING_PAGE_SNAPSHOT,
+                              pricing_version="snapshot-2026-09-01", provenance=prov(ttl=86400)))
+    assert local.structurally_autonomous_eligible(now=AT_NOW)
+    assert subscription.structurally_autonomous_eligible(now=AT_NOW)
+    assert metered.structurally_autonomous_eligible(now=AT_NOW)
+    assert len({local.pool_id, subscription.pool_id, metered.pool_id}) == 3
+    assert local.price.actual_billed_cost == UNKNOWN
+
+
+def test_unknown_entitlement_and_expiry_fail_closed():
+    assert not receipt(entitlement=Entitlement.UNKNOWN).structurally_autonomous_eligible(now=AT_NOW)
+    assert not receipt(entitlement=Entitlement.INTERACTIVE_NATIVE).structurally_autonomous_eligible(now=AT_NOW)
+    assert not receipt(observed_at="2026-09-15T11:00:00+00:00", ttl_seconds=1).structurally_autonomous_eligible(now=AT_NOW)
+
+
+def test_unknown_quota_is_not_zero_or_unlimited():
+    q = QuotaDimension("daily", "tokens", provenance=prov())
+    assert q.remaining == UNKNOWN
+    assert q.to_dict()["remaining"] == {"status": "unknown"}
+
+
+def test_invalid_negative_and_reset_evidence_rejected():
+    with pytest.raises(CapacityError): QuotaDimension("daily", "requests", remaining=-1)
+    with pytest.raises(CapacityError): QuotaDimension("daily", "requests", reset_at="not-a-date")
+    with pytest.raises(CapacityError): QuotaDimension("daily", "requests", reset_at="2026-09-15T11:59:00+00:00", provenance=prov())
+
+
+def test_local_zero_cost_still_fails_when_concurrency_exhausted():
+    assert not receipt(concurrency_remaining=0).is_operationally_available(now=AT_NOW)
+
+
+def test_zdr_unknown_does_not_satisfy_policy_fact_requirement():
+    assert receipt(zdr_supported=UNKNOWN).is_operationally_available(now=AT_NOW)
+    assert receipt(zdr_supported=False).is_operationally_available(now=AT_NOW)
+
+
+def test_stale_price_is_not_eligible():
+    stale = PriceObservation(CostClass.METERED, published_list_rate=1,
+                             pricing_source=PricingSource.PROVIDER_API,
+                             pricing_version="old", provenance=prov(observed="2026-09-14T12:00:00+00:00", ttl=60))
+    assert not receipt(price=stale).is_operationally_available(now=AT_NOW)
+
+
+def test_known_price_requires_freshness_provenance_and_version():
+    with pytest.raises(CapacityError):
+        PriceObservation(CostClass.METERED, published_list_rate=1,
+                         pricing_source=PricingSource.PROVIDER_API)
+
+
+def test_round_trip_hash_integrity_and_append_only_supersession(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    first = receipt(); store.append(first)
+    second = receipt(observed_at="2026-09-15T12:01:00+00:00")
+    store.append(second, supersedes=first.receipt_hash)
+    assert len(store.entries()) == 2
+    current = store.current(first.pool_id)
+    assert current.receipt_hash != second.receipt_hash
+    assert current.supersedes == first.receipt_hash
+    assert capacity_receipt_from_dict(current.to_dict()).receipt_hash == current.receipt_hash
+    assert store.verify()
+    payload = first.to_dict(); payload["state"] = "exhausted"
+    with open(store.receipts_path, "w", encoding="utf-8") as handle:
+        handle.write(__import__("json").dumps(payload) + "\n")
+    with pytest.raises(Exception): store.entries()
+
+
+def test_registry_is_facts_only_and_keeps_separate_same_model_pools():
+    a = receipt(pool_id="provider-a:pool")
+    b = receipt(provider="provider-b", pool_id="provider-b:pool")
+    candidates = CapacityRegistry((b, a)).eligible_capacity_for("qwen3.8:27b", now=AT_NOW)
+    assert [r.pool_id for r in candidates] == ["provider-a:pool", "provider-b:pool"]
+    assert not hasattr(CapacityRegistry, "choose_best_model")
+    assert candidates[0].ref.startswith("capacity:")
+
+
+def test_identity_aliases_are_rejected_instead_of_hashing_as_new_pools():
+    with pytest.raises(CapacityError):
+        receipt(pool_id=" local:rtx4500")
+    with pytest.raises(CapacityError):
+        receipt(account_identity="host:minipc ")
+    with pytest.raises(CapacityError):
+        receipt(provider="provider name")
+
+
+@pytest.mark.parametrize("field", ["state_provenance", "entitlement_provenance", "zdr_provenance"])
+def test_each_dynamic_receipt_fact_has_independent_freshness(field):
+    stale = prov(observed="2026-09-15T11:00:00+00:00", ttl=1)
+    assert not receipt(**{field: stale}).is_operationally_available(now=AT_NOW)
+
+
+def test_stale_quota_fact_cannot_drive_availability():
+    stale = QuotaDimension("daily", "requests", 100, 90,
+                           "2026-09-16T00:00:00+00:00",
+                           prov(observed="2026-09-15T11:00:00+00:00", ttl=1))
+    assert not receipt(quotas=(stale,)).is_operationally_available(now=AT_NOW)
+
+
+@pytest.mark.parametrize("name,unit", [
+    ("rolling", "requests"), ("five_hour", "tokens"), ("daily", "credits"),
+    ("weekly", "USD"), ("monthly", "requests"), ("concurrency", "requests"),
+    ("rate", "requests"),
+])
+def test_arbitrary_quota_dimensions_remain_optional(name, unit):
+    q = QuotaDimension(name, unit, 10, 5, UNKNOWN, prov())
+    assert q.remaining == 5
+
+
+def test_quota_rejects_negative_limit_over_limit_remaining_and_booleans():
+    with pytest.raises(CapacityError): QuotaDimension("x", "requests", -1, UNKNOWN, provenance=prov())
+    with pytest.raises(CapacityError): QuotaDimension("x", "requests", 1, 2, provenance=prov())
+    with pytest.raises(CapacityError): QuotaDimension("x", "requests", True, UNKNOWN, provenance=prov())
+    with pytest.raises(CapacityError): QuotaDimension("x", "requests", 1, False, provenance=prov())
+
+
+def test_known_estimate_and_actual_billing_require_provenance_and_actual_source():
+    with pytest.raises(CapacityError): PriceObservation(CostClass.METERED, estimated_marginal_cost=1)
+    with pytest.raises(CapacityError):
+        PriceObservation(CostClass.METERED, actual_billed_cost=1, pricing_source=PricingSource.OPERATOR_OVERRIDE,
+                         pricing_version="v1", provenance=prov())
+
+
+def test_zdr_is_a_fact_not_a_policy_argument():
+    assert receipt(zdr_supported=UNKNOWN).is_operationally_available(now=AT_NOW)
+    with pytest.raises(TypeError):
+        CapacityRegistry((receipt(),)).eligible_capacity_for("qwen3.8:27b", now=AT_NOW, require_zdr=True)
+
+
+def test_superseded_history_is_retained_but_registry_uses_only_current(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    second = store.append(receipt(observed_at="2026-09-15T12:01:00+00:00"), supersedes=first.receipt_hash)
+    assert len(store.history(first.pool_id)) == 2
+    assert store.current(first.pool_id).receipt_hash == second.receipt_hash
+    assert len(CapacityRegistry(store.history()).eligible_capacity_for("qwen3.8:27b", now=AT_NOW)) == 1
+
+
+def test_supersession_requires_current_same_pool_existing_target(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    other = receipt(pool_id="other:pool")
+    with pytest.raises(CapacityStoreError): store.append(other, supersedes=first.receipt_hash)
+    with pytest.raises(CapacityStoreError): store.append(receipt(observed_at="2026-09-15T12:01:00+00:00"), supersedes="missing")
+    second = store.append(receipt(observed_at="2026-09-15T12:01:00+00:00"), supersedes=first.receipt_hash)
+    with pytest.raises(CapacityStoreError): store.append(receipt(observed_at="2026-09-15T12:02:00+00:00"), supersedes=first.receipt_hash)
+    with pytest.raises(CapacityStoreError): store.append(second, supersedes=second.receipt_hash)
+
+
+def test_missing_or_corrupt_current_index_fails_closed(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    saved = store.append(receipt())
+    os.unlink(store.index_path)
+    with pytest.raises(CapacityStoreError): store.current(saved.pool_id)
+
+
+def test_index_hash_and_pool_mismatch_fail_closed(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    saved = store.append(receipt())
+    with open(store.index_path, "w", encoding="utf-8") as handle:
+        json.dump({"wrong:pool": {"pool_id": "wrong:pool", "receipt_hash": saved.receipt_hash}}, handle)
+    with pytest.raises(CapacityStoreError): store.current(saved.pool_id)
+    with open(store.index_path, "w", encoding="utf-8") as handle:
+        json.dump({saved.pool_id: {"pool_id": saved.pool_id, "receipt_hash": "missing"}}, handle)
+    with pytest.raises(CapacityStoreError): store.current(saved.pool_id)
+
+
+def test_torn_index_and_conflicting_active_history_fail_closed(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    first = receipt()
+    second = receipt(provider="other", pool_id="other:pool")
+    store._append_line(first)
+    store._append_line(second)
+    with open(store.index_path, "w", encoding="utf-8") as handle:
+        handle.write("{\"local:rtx4500\":")
+    with pytest.raises(CapacityStoreError): store.current(first.pool_id)
+    with open(store.index_path, "w", encoding="utf-8") as handle:
+        json.dump({first.pool_id: {"pool_id": first.pool_id, "receipt_hash": first.receipt_hash},
+                   second.pool_id: {"pool_id": second.pool_id, "receipt_hash": second.receipt_hash}}, handle)
+    # The next assertion uses two current pools, so it is valid; now create an
+    # actual same-pool conflict in history and require refusal.
+    conflicting = receipt(observed_at="2026-09-15T12:01:00+00:00")
+    store._append_line(conflicting)
+    with pytest.raises(CapacityStoreError): store.current(first.pool_id)
+
+
+def test_invalidation_is_append_only_and_not_eligible(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    saved = store.append(receipt())
+    invalidated = store.invalidate(saved.receipt_hash, "operator revoked", prov(ref="invalidate-1"))
+    assert len(store.history(saved.pool_id)) == 2
+    assert store.current(saved.pool_id).receipt_hash == invalidated.receipt_hash
+    assert not store.current(saved.pool_id).is_operationally_available(now=AT_NOW)
+
+
+def test_capacity_and_capability_are_independent_contract_inputs():
+    def dispatch_ready(capability_qualified, capacity):
+        return capability_qualified and capacity.structurally_autonomous_eligible(now=AT_NOW)
+    assert not dispatch_ready(True, receipt(state=CapacityState.EXHAUSTED))
+    assert not dispatch_ready(False, receipt())
+    assert not dispatch_ready(True, receipt(entitlement=Entitlement.UNKNOWN))
