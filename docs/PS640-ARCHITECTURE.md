@@ -43,6 +43,20 @@ state: a missing, torn or contradictory index fails closed instead of deriving
 authority from history. Replacement receipts must supersede the current receipt
 for the same pool. Historical superseded and invalidated records remain
 queryable through explicit history access but are excluded from current facts.
+Invalidating a current receipt appends an invalidation event and removes that
+pool from `current.json`; it is a historical tombstone, never a usable current
+receipt. Mutations use a file lock for the complete append-and-index
+transaction. A writer that cannot acquire the lock fails with
+`CapacityStoreBusyError`; an unindexed JSONL append after a crash is never
+auto-promoted.
+
+`has_usable_capacity_facts()` is deliberately a structural facts check. It is
+not PS-605 permission, privacy legality, provider preference, or dispatch
+selection. Identity classes are case-sensitive and are validated without
+lowercasing. Numeric quota, concurrency and monetary values are finite typed
+numbers; counts are integral. Actual billed cost requires billing-grade
+provenance such as a billing endpoint, invoice, usage ledger, or explicit
+external billing evidence.
 
 ## PS-645 boundary
 

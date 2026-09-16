@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from enum import Enum
@@ -28,6 +29,16 @@ class Entitlement(str, Enum):
     THIRD_PARTY_HARNESS = "third_party_harness"
     API = "api"
     LOCAL = "local"
+    UNKNOWN = "unknown"
+
+
+class AuthorizationClass(str, Enum):
+    """The authenticated interface class observed for a pool."""
+
+    LOCAL_ENDPOINT = "local_endpoint"
+    OAUTH_CLI = "oauth_cli"
+    API_KEY = "api_key"
+    AGENT_SDK = "agent_sdk"
     UNKNOWN = "unknown"
 
 
@@ -53,6 +64,10 @@ class PricingSource(str, Enum):
     SUBSCRIPTION_CONTRACT = "subscription_contract_config"
     OPERATOR_OVERRIDE = "operator_override"
     GENERATED_RATE_TABLE = "generated_rate_table"
+    PROVIDER_BILLING_ENDPOINT = "provider_billing_endpoint"
+    PROVIDER_INVOICE = "provider_invoice"
+    PROVIDER_USAGE_LEDGER = "provider_usage_ledger"
+    EXTERNAL_BILLING_EVIDENCE = "external_billing_evidence"
 
 
 class EvidenceStatus(str, Enum):
@@ -80,6 +95,20 @@ EvidenceValue = Union[int, float, str, bool, UnknownValue]
 
 def _is_unknown(value: Any) -> bool:
     return isinstance(value, UnknownValue)
+
+
+def _require_enum(value: Any, enum_type: type[Enum], field_name: str) -> None:
+    if not isinstance(value, enum_type):
+        raise CapacityError(f"{field_name} must be an explicit {enum_type.__name__}")
+
+
+def _require_number(value: Any, field_name: str, *, integral: bool = False) -> None:
+    if _is_unknown(value):
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise CapacityError(f"{field_name} must be a finite number or UNKNOWN")
+    if integral and isinstance(value, float) and not value.is_integer():
+        raise CapacityError(f"{field_name} must be an integer count")
 
 
 def _encode(value: Any) -> Any:
@@ -183,12 +212,11 @@ class QuotaDimension:
             raise CapacityError("quota name and unit are required")
         for field_name in ("limit", "remaining"):
             value = getattr(self, field_name)
-            if isinstance(value, bool):
-                raise CapacityError(f"quota {self.name}.{field_name} cannot be boolean")
-            if isinstance(value, (int, float)) and value < 0:
+            _require_number(value, f"quota {self.name}.{field_name}",
+                            integral=self.unit.lower() in {"requests", "tokens", "concurrency"})
+            if not _is_unknown(value) and value < 0:
                 raise CapacityError(f"quota {self.name} has negative {field_name}")
-        if (isinstance(self.limit, (int, float)) and
-                isinstance(self.remaining, (int, float)) and
+        if (not _is_unknown(self.limit) and not _is_unknown(self.remaining) and
                 self.remaining > self.limit):
             raise CapacityError(f"quota {self.name}.remaining exceeds limit")
         if self.provenance is None:
@@ -220,16 +248,22 @@ class PriceObservation:
     pricing_version: str = ""
 
     def __post_init__(self) -> None:
+        _require_enum(self.cost_class, CostClass, "cost_class")
+        if self.pricing_source is not None:
+            _require_enum(self.pricing_source, PricingSource, "pricing_source")
         for name in ("published_list_rate", "estimated_marginal_cost", "actual_billed_cost"):
             value = getattr(self, name)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
+            _require_number(value, name)
+            if not _is_unknown(value) and value < 0:
                 raise CapacityError(f"{name} cannot be negative")
         known_values = any(not _is_unknown(getattr(self, name)) for name in
                            ("published_list_rate", "estimated_marginal_cost", "actual_billed_cost"))
         if known_values and (self.pricing_source is None or not self.pricing_version or self.provenance is None):
             raise CapacityError("known pricing requires source, version and provenance")
-        if not _is_unknown(self.actual_billed_cost) and self.pricing_source != PricingSource.PROVIDER_API:
-            raise CapacityError("actual billed cost requires provider billing evidence")
+        billing_sources = {PricingSource.PROVIDER_BILLING_ENDPOINT, PricingSource.PROVIDER_INVOICE,
+                           PricingSource.PROVIDER_USAGE_LEDGER, PricingSource.EXTERNAL_BILLING_EVIDENCE}
+        if not _is_unknown(self.actual_billed_cost) and self.pricing_source not in billing_sources:
+            raise CapacityError("actual billed cost requires billing-grade evidence")
 
     def is_fresh(self, now: Optional[datetime] = None) -> bool:
         return self.provenance is not None and self.provenance.is_fresh(now)
@@ -249,7 +283,7 @@ class ProviderCapacityReceipt:
     provider: str
     pool_id: str
     account_identity: str
-    authorization_class: str
+    authorization_class: AuthorizationClass
     entitlement: Entitlement
     exposed_models: Tuple[str, ...]
     observed_at: str
@@ -276,8 +310,16 @@ class ProviderCapacityReceipt:
     def __post_init__(self) -> None:
         if self.schema_version != CAPACITY_SCHEMA_VERSION:
             raise CapacityError("unsupported capacity receipt schema")
+        object.__setattr__(self, "exposed_models", tuple(self.exposed_models))
+        object.__setattr__(self, "quotas", tuple(self.quotas))
         for name in ("provider", "pool_id", "account_identity", "authorization_class"):
-            canonical_identity(getattr(self, name), name)
+            value = getattr(self, name)
+            if name == "authorization_class":
+                _require_enum(value, AuthorizationClass, name)
+            else:
+                canonical_identity(value, name)
+        _require_enum(self.entitlement, Entitlement, "entitlement")
+        _require_enum(self.state, CapacityState, "state")
         for name in ("collector_id", "evidence_source", "evidence_reference"):
             if not str(getattr(self, name) or "").strip():
                 raise CapacityError(f"{name} must be non-empty")
@@ -292,10 +334,16 @@ class ProviderCapacityReceipt:
             raise CapacityError("cooldown requires a known quota reset")
         for value_name in ("concurrency_limit", "concurrency_remaining"):
             value = getattr(self, value_name)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
+            _require_number(value, value_name, integral=True)
+            if not _is_unknown(value) and value < 0:
                 raise CapacityError(f"{value_name} cannot be negative")
-        if isinstance(self.concurrency_limit, int) and isinstance(self.concurrency_remaining, int) and self.concurrency_remaining > self.concurrency_limit:
+        if (not _is_unknown(self.concurrency_limit) and not _is_unknown(self.concurrency_remaining)
+                and self.concurrency_remaining > self.concurrency_limit):
             raise CapacityError("concurrency_remaining cannot exceed concurrency_limit")
+        for name in ("zdr_supported", "zdr_required_by_pool"):
+            value = getattr(self, name)
+            if not _is_unknown(value) and not isinstance(value, bool):
+                raise CapacityError(f"{name} must be boolean or UNKNOWN")
         if not self.receipt_hash:
             raise CapacityError("receipt must be sealed with receipt_hash")
         if self.receipt_hash != _sha256(self.core()):
@@ -360,8 +408,8 @@ class ProviderCapacityReceipt:
             return False
         return True
 
-    def structurally_autonomous_eligible(self, *, now: Optional[datetime] = None) -> bool:
-        """Only structural facts: UNKNOWN or interactive-only entitlement is not usable."""
+    def has_usable_capacity_facts(self, *, now: Optional[datetime] = None) -> bool:
+        """Facts-only usability; PS-605 still decides policy permission."""
         return (self.is_operationally_available(now=now) and
                 self.entitlement not in (Entitlement.UNKNOWN, Entitlement.INTERACTIVE_NATIVE))
 
@@ -413,6 +461,7 @@ def capacity_receipt_from_dict(payload: Mapping[str, Any]) -> ProviderCapacityRe
         raise CapacityError("capacity receipt hash mismatch")
     data["entitlement"] = Entitlement(data["entitlement"])
     data["state"] = CapacityState(data["state"])
+    data["authorization_class"] = AuthorizationClass(data["authorization_class"])
     data["exposed_models"] = tuple(data["exposed_models"])
     for name in ("concurrency_limit", "concurrency_remaining", "zdr_supported", "zdr_required_by_pool"):
         data[name] = _unknown_or_value(data.get(name, {"status": "unknown"}))
@@ -470,5 +519,5 @@ class CapacityRegistry:
                               ) -> Tuple[ProviderCapacityReceipt, ...]:
         """Return all structurally available pools; PS-605 applies policy facts."""
         return tuple(sorted((r for r in self._receipts if target in r.exposed_models and
-                             r.structurally_autonomous_eligible(now=now)),
+                             r.has_usable_capacity_facts(now=now)),
                             key=lambda r: (r.provider, r.pool_id, r.receipt_hash)))
