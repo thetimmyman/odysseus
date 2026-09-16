@@ -36,7 +36,7 @@ Two structural decisions, both from the module docstring:
 - **Dispatch provenance does not pretend to be routing policy.** PS-605 owns
   routing. A receipt must say `explicit_pin` and carry no `policy_ref` until
   production policy is wired; a receipt claiming `ps605_policy` with no policy
-  revision is refused (`execution_package.py:204-211`).
+  revision is refused (`execution_package.py:225-232`).
 
 ## 2. Source identity — why a SHA is not enough
 
@@ -202,7 +202,7 @@ package's `docs/PS641-PRODUCTION-COMPOSITION.md` (§B.6, below).
 > "Store ownership is explicit: PS-632 owns target capability receipts; PS-640
 > owns provider capacity/entitlement receipts; PS-638 owns execution/evidence
 > receipts; PS-605 owns routing decisions; PS-641 owns production composition
-> within one authorized invocation."
+> within one already-authorized invocation."
 
 (The final clause is this package's DR-16 amendment to line 46 — see
 `docs/PS641-PRODUCTION-COMPOSITION.md` for the full boundary.)
@@ -252,9 +252,24 @@ absent (`None`) → omitted from `core()` and the hash entirely, so every
 receipt/decision sealed before this field existed hashes exactly as it always
 did (proven against a fixture frozen from the landed baseline,
 `7afd55bad7034d789c98be4ee6e9ebcfcc97cdba` — not merely against a same-run
-rebuild). Present → hash-bound like any other field, with sub-field key order
-and explicit-null-vs-omitted normalized to the same canonical form
-(`_normalize_authority`).
+rebuild, and proven again at the `seal_dispatch_evidence` payload level per
+review round 2 F-1: the field is omitted from `to_ps638_receipt_kwargs()`'s
+own returned dict, not merely from the hashed core, since that dict is
+separately content-addressed as `seal.evidence_hash`). Present → hash-bound
+like any other field, with sub-field key order and explicit-null-vs-omitted
+normalized to the same canonical form (`_normalize_authority`).
+
+**`authority={}` is distinct from absent.** `_normalize_authority` drops
+`None`-valued *sub-fields* inside an authority mapping that is already
+present, so a sub-field a caller omits and the same sub-field explicitly set
+to `None` hash identically. It does **not** treat an explicitly empty mapping
+(`authority={}`) as equivalent to `authority=None`: the former is present
+(hash-bound, appears in `core()` as `{}`) and the latter is absent (omitted
+from `core()` and the kwargs dict entirely). This is a deliberate,
+narrower rule than the sub-field one — "the caller said something, even if
+that something was empty" is a different fact from "the caller said
+nothing" — and is asserted directly by
+`tests/test_ps638_authority_hash_stability.py::test_authority_is_never_read_to_permit_or_deny_anything`.
 
 `policy_ref` and all 13 PS-605 ordered filters are untouched.
 
@@ -316,10 +331,12 @@ See `docs/PS641-PRODUCTION-COMPOSITION.md` (this package, new) and §11 above
 for the `CANONICAL-EXECUTION-FOUNDATION.md:46` amendment. Summarized here only
 to keep this document's boundary section complete: PS-641 owns composition
 *within one already-authorized invocation*; it does not own policy/selection
-(PS-605), the evidence envelope (PS-638), the bounded dispatch-verify-repair
-loop and its retry budget (PS-635/DR-10's invalidation rule), or durable
-cross-run intent/leases/fencing/continuation/scheduling, whose owner is
-UNASSIGNED pending the PS-635 ownership ruling.
+(PS-605), the evidence envelope (PS-638), a bounded dispatch-verify-repair
+loop and retry budget currently implemented in PS-635's lane (measurement, not
+an ownership grant), or durable cross-run intent/leases/fencing/continuation/
+scheduling. **The retry/replan ownership word itself remains UNASSIGNED**
+pending the operator's D3 bounding decision — this document does not assign
+it to PS-635 or to any other lane.
 
 ### 13.7 DR-10 (referenced, not a Package B deliverable) — the D3 invariant
 

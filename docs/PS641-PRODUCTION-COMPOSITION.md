@@ -64,23 +64,39 @@ description of the current estate would be false; it is written here, and
 must be implemented, as a requirement on the PS-605 x PS-635/PS-641
 integration.
 
-Satisfying it is cheap and does not move retry policy into PS-605: a
-re-dispatch may reuse the standing decision only when, at re-dispatch time,
-its capability receipts are still within TTL, the policy revision is
-unchanged, and the resolved endpoint identity still matches the pin — a
-freshness/identity check against an existing decision, never a re-run of
-policy evaluation and never a new selection call per attempt. Otherwise:
-re-select, or fail closed.
+**DR-10 (proposed, not yet ruled).** `PS635_OWNERSHIP_FINDINGS.md` §5.2
+proposes that satisfying the invariant is cheap and would not move retry
+policy into PS-605: a re-dispatch could reuse the standing decision only when,
+at re-dispatch time, its capability receipts are still within TTL, the policy
+revision is unchanged, and the resolved endpoint identity still matches the
+pin — a freshness/identity check against an existing decision, never a re-run
+of policy evaluation and never a new selection call per attempt; otherwise,
+re-select or fail closed. **This is DR-10's proposed satisfaction rule, not a
+ruled requirement** — DR-10 remains `DESIGN_NOW` / `IMPLEMENT_LATER`
+(`CONTRACT_DELTA_REGISTER.md`), it visibly relaxes the verbatim invariant
+above (which requires a new selection on "every re-dispatch"), and this
+document's own prerequisite #5 (above) states the operator's bounding
+decision "is what remains." No implementation may rely on this paragraph
+until DR-10 is ruled.
 
 ## The measured PS-641 clause: no attempt loop, no retry authority
 
 PS-641 may **not** implement an attempt loop, a retry budget, a no-progress
 rule, or a re-dispatch path. Where a composed invocation fails, PS-641 returns
 a typed failure to its caller; the decision to attempt again is made outside
-PS-641, under the D3 invariant above. The bounded dispatch-verify-repair loop
-and its retry budget belong to PS-635 and are already implemented
-(`src/local_worker_loop.py:306-568`) — PS-641 does not acquire that authority
-by growing its own copy of it.
+PS-641, under the D3 invariant above.
+
+**This is a measurement, not an ownership assignment.** A bounded
+dispatch-verify-repair loop and a retry budget are implemented TODAY in
+PS-635's lane (`work/ps-635-loop-demo`, `src/local_worker_loop.py:306-568` on
+that branch; `PS635_OWNERSHIP_FINDINGS.md` §2.3). **The ownership word for
+retry/replan authority remains UNASSIGNED** — not PS-605, not PS-635, not
+PS-650, not a durable-action layer — pending the operator's D3 bounding
+decision (`OPERATOR_RULINGS.md` D3; `CONTRACT_DELTA_REGISTER.md` item 8: "that
+argument is withdrawn"). PS-641 does not acquire retry/replan authority by
+growing its own copy of the loop that PS-635 happens to implement today; that
+is a statement about what PS-641 must not do, not a statement about who owns
+the authority PS-641 is refusing to acquire.
 
 ## No named durable-action layer as the referent
 

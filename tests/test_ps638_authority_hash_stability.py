@@ -23,6 +23,20 @@ falsification, per PACKAGES.md B.1 and OPERATOR_RULINGS.md Q-N4:
       and a receipt built, serialized, and reconstructed compares equal to the
       original.
 
+**Review round 2 (2026-09-16), finding F-1:** the claim must hold at every
+boundary that separately content-addresses a receipt, not only at
+`receipt_hash` / `ps638_receipt_core()`. `DispatchDecision.to_ps638_receipt_kwargs()`'s
+own returned dict is written verbatim into `seal_dispatch_evidence()`'s
+`"decision_receipt"` payload (`src/dispatch_boundary.py`) and separately
+hashed as `seal.evidence_hash` — an unconditional `"authority": None` entry in
+that dict would leave `ps638_receipt_core()` untouched while still moving
+`seal.evidence_hash` for every authority-free dispatch. The `test_b_seal_*`
+cases below pin that hash against a fixture captured from a clean checkout of
+the landed baseline using the same real dispatch-sealing helpers
+(`tests/test_dispatch_boundary.py`), and `test_b_negative_control_*` exercise
+the real serializers via monkeypatch rather than asserting on a locally
+mutated dict literal (review F-7).
+
 Mandatory qualifier carried by every assertion here (D7 / CHECKPOINT §2): the
 `authority` block RECORDS AND AUDITS. Nothing in this file exercises or
 implies runtime enforcement, and none of it treats a recorded principal as an
@@ -162,18 +176,130 @@ def test_b_absent_authority_hashes_identically_for_dispatch_decision():
     assert "authority" not in dr.ps638_receipt_core(kwargs)
 
 
-def test_b_this_test_actually_fails_without_the_fix():
+def test_b_negative_control_actually_exercises_the_receipt_serializer(monkeypatch):
     """Falsification of the falsification: prove (b) is not vacuously true.
 
-    If a defective implementation always stamped ``authority: None`` (or any
-    other constant marker) into the hashed core instead of omitting the key
-    entirely, this simulates that defect directly against the frozen fixture
-    and shows it WOULD be caught -- so test_b_* above is not a test that
-    trivially passes regardless of correctness.
+    Review round 2, F-7: the v1 form of this test compared two locally-mutated
+    dict LITERALS (``{**core, "authority": None} != core``), which is true of
+    ANY dict regardless of what the real implementation does -- it never called
+    ``DispatchDecisionReceipt.core()`` at all. This is the reviewer's NC-(b),
+    made real: monkeypatch the ACTUAL ``core()`` method so an absent
+    ``authority`` is (incorrectly) serialized as an explicit ``null``, and
+    assert that a receipt built through the real, still-otherwise-correct
+    constructor now diverges from the frozen fixture. This is what test_b_*
+    above would have to catch if this exact regression were ever reintroduced.
     """
-    defective_core = dict(RECEIPT_FIXTURE["core"])
-    defective_core["authority"] = None  # the bug this suite exists to catch
-    assert defective_core != RECEIPT_FIXTURE["core"]
+    from src import execution_package as ep
+
+    original_core = ep.DispatchDecisionReceipt.core
+
+    def defective_core(self):
+        payload = original_core(self)
+        if self.authority is None:
+            payload["authority"] = None  # the bug this suite exists to catch
+        return payload
+
+    monkeypatch.setattr(ep.DispatchDecisionReceipt, "core", defective_core)
+    defective_receipt = make_dispatch_receipt(**RECEIPT_FIXTURE["kwargs"])
+    assert defective_receipt.core() != RECEIPT_FIXTURE["core"]
+    assert defective_receipt.receipt_hash != RECEIPT_FIXTURE["receipt_hash"]
+
+
+def test_b_negative_control_actually_exercises_the_decision_serializer(monkeypatch):
+    """Same falsification-of-the-falsification, for DispatchDecision's path."""
+    original = dr.ps638_receipt_core
+
+    def defective(kwargs):
+        core = original(kwargs)
+        if kwargs.get("authority") is None:
+            core["authority"] = None  # the bug this suite exists to catch
+        return core
+
+    monkeypatch.setattr(dr, "ps638_receipt_core", defective)
+    kwargs = dict(DECISION_FIXTURE["receipt_kwargs"])
+    defective_hash = dr.ps638_receipt_hash(kwargs)
+    assert defective_hash != DECISION_FIXTURE["receipt_hash"]
+
+
+def test_b_absent_authority_is_omitted_from_the_kwargs_dict_itself():
+    """F-1 (review round 2, material): the seal-level regression.
+
+    Omitting ``authority`` from ``ps638_receipt_core``'s HASH INPUT is not
+    enough. ``to_ps638_receipt_kwargs()``'s own returned dict is written
+    verbatim into ``seal_dispatch_evidence``'s "decision_receipt" payload
+    (src/dispatch_boundary.py) and THAT payload is separately hashed as
+    ``seal.evidence_hash``. An unconditional ``"authority": None`` entry in
+    the kwargs dict would leave ``ps638_receipt_core`` unaffected (it never
+    sees the key) while still changing ``seal.evidence_hash`` for every
+    authority-free dispatch -- exactly the class of defect the review caught
+    and the original version of this file could not see, because every
+    assertion here targeted ``receipt_hash`` / ``ps638_receipt_core`` and none
+    targeted the kwargs dict or the sealed payload.
+    """
+    decision = _select()
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert "authority" not in kwargs
+    with_authority = dataclasses.replace(decision, authority={"grant_id": "g1"})
+    assert "authority" in with_authority.to_ps638_receipt_kwargs()
+
+
+def test_b_seal_evidence_hash_is_stable_for_an_authority_free_dispatch():
+    """The actual regression this review round exists to close.
+
+    Seals a real dispatch (the repo's own tests/test_dispatch_boundary.py
+    ``_db``/``_seed``/``_resolve``/``_sealed`` helpers, unmodified) with no
+    ``authority`` set anywhere, and asserts ``seal.evidence_hash`` is
+    byte-identical to a fixture captured from a CLEAN checkout of the landed
+    baseline (7afd55bad7034d789c98be4ee6e9ebcfcc97cdba) using those same
+    helpers -- not a same-run rebuild.
+    """
+    import test_dispatch_boundary as tdb
+    from src import dispatch_boundary as dbd
+
+    fixture = _load("ps638_seal_evidence_pre_authority.json")
+    assert fixture["captured_from_sha"] == "7afd55bad7034d789c98be4ee6e9ebcfcc97cdba"
+
+    db = tdb._db()
+    task = tdb._seed(db)
+    bound = tdb._resolve(db, task, "p-rtx", "p-openrouter", "p-msr")
+    attempt = dbd.attempt_for(bound, attempt=1, profile_id="p-rtx", run_id="run-1")
+    payload = tdb._sealed(bound, attempts=(attempt,), invocations=(
+        {"target_id": "profile:p-rtx", "locality": "local"},))
+
+    assert "authority" not in payload["decision_receipt"]
+    assert payload["decision"]["receipt_hash"] == fixture["decision_receipt_hash"]
+    assert payload["seal"]["evidence_hash"] == fixture["seal_evidence_hash"]
+
+
+def test_b_seal_evidence_hash_changes_when_authority_is_present():
+    """Positive control at the seal level, mirroring test_a_* above.
+
+    Without this, `` test_b_seal_evidence_hash_is_stable...`` above could pass
+    vacuously if `authority` were (incorrectly) excluded from the seal
+    entirely, the same "unbound, forgeable evidence" failure mode F1's
+    top-level docstring already calls out for `receipt_hash`.
+    """
+    import test_dispatch_boundary as tdb
+    from src import dispatch_boundary as dbd
+
+    db = tdb._db()
+    task = tdb._seed(db)
+    bound = tdb._resolve(db, task, "p-rtx", "p-openrouter", "p-msr")
+    attempt = dbd.attempt_for(bound, attempt=1, profile_id="p-rtx", run_id="run-1")
+    payload_without = tdb._sealed(bound, attempts=(attempt,), invocations=(
+        {"target_id": "profile:p-rtx", "locality": "local"},))
+
+    bound_with_authority = dataclasses.replace(
+        bound, decision=dataclasses.replace(
+            bound.decision, authority={"grant_id": "g1"}))
+    attempt2 = dbd.attempt_for(bound_with_authority, attempt=1, profile_id="p-rtx",
+                               run_id="run-1")
+    payload_with = tdb._sealed(bound_with_authority, attempts=(attempt2,),
+                               invocations=({"target_id": "profile:p-rtx",
+                                             "locality": "local"},))
+
+    assert payload_with["decision_receipt"]["authority"] == {"grant_id": "g1"}
+    assert payload_with["seal"]["evidence_hash"] != payload_without["seal"]["evidence_hash"]
 
 
 # ============================================== (c) ROUND-TRIP / DETERMINISM ===

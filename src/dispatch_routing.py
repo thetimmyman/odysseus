@@ -991,7 +991,7 @@ class DispatchDecision:
                          "exactness": self.selected_profile.exactness}
             considered.append(entry)
         profile = self.selected_profile
-        return {
+        kwargs = {
             "receipt_id": f"dispatch-{self.decision_id}",
             "execution_package_hash": self.request.execution_package_hash,
             "run_id": self.request.run_id,
@@ -1015,9 +1015,19 @@ class DispatchDecision:
             "granted_read_scope": tuple(self.granted_read_scope),
             "network_policy": self.network_policy,
             "decided_at": self.observed_at,
-            "authority": self.authority,
             "schema_version": PS638_RECEIPT_SCHEMA_VERSION_EXPECTED,
         }
+        # Additive, DR-01+DR-09 (review fix F-1, 2026-09-16): the key itself
+        # must be OMITTED when authority is absent, not merely excluded from
+        # ps638_receipt_core()'s hash input. This dict is also written verbatim
+        # into seal_dispatch_evidence()'s "decision_receipt" payload
+        # (src/dispatch_boundary.py) and hashed there as seal.evidence_hash --
+        # an unconditional `"authority": None` entry would change THAT hash for
+        # every authority-free dispatch, exactly the regression F1 did not
+        # originally cover.
+        if self.authority is not None:
+            kwargs["authority"] = self.authority
+        return kwargs
 
     def core(self) -> dict:
         return {
