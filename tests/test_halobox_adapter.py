@@ -242,7 +242,10 @@ def raw_observation(*, digest=None, tool_calls=1, streaming=True,
                   "digest": digest if digest is not None else "c" * 64,
                   "size": 93682584224,
                   "details": {"family": "", "quantization_level": "IQ4_XS",
-                              "context_length": served},
+                              # declared_context = the MODEL's native window
+                              # (n_ctx_train, 262144); the per-slot served
+                              # window (65536) is the ps entry below.
+                              "context_length": 262144},
                   "capabilities": ["completion"]},
         "ps": {"models": [{"name": lt.HALOBOX_MODEL_ALIAS,
                             "context_length": served}]},
@@ -264,8 +267,15 @@ def halobox_record(**kwargs):
 def halobox_receipt(**kwargs):
     return lt.receipt_from_capability(
         halobox_record(**kwargs), configured_context=262144,
-        safe_working_context=262144,
-        safe_context_source="PS-624 sealed qualification (llama-bench ladder + agent-semantic suite)",
+        # PS-632 reconciliation 2026-09-16: the routing bound is the
+        # ENGINE-DEMONSTRATED window (llama-bench depth ladder, throughput
+        # only); the deepest sealed SEMANTIC verification is 19760 tokens.
+        safe_working_context=32768,
+        engine_demonstrated_context=32768, semantic_verified_context=19760,
+        safe_context_source=("PS-624 sealed qualification: engine-demonstrated "
+                             "at 32768 (llama-bench depths 0/4K/16K/32K, no "
+                             "semantic assertion); semantic context-integrity "
+                             "verified to 19760 tokens (long-context marker)"),
         backend="vulkan", runtime_repository="halo-box/llama.cpp",
         runtime_commit=lt.HALOBOX_RUNTIME_COMMIT,
         observed_at="2026-09-15T19:00:00+00:00",
@@ -285,7 +295,9 @@ def test_a_measured_llama_observation_becomes_a_proven_receipt():
     assert receipt.context.configured_context == 262144
     # Per REQUEST: the sealed launch splits 262144 across --parallel 4 slots.
     assert receipt.context.served_context == 65536
-    assert receipt.context.safe_working_context == 262144
+    assert receipt.context.safe_working_context == 32768
+    assert receipt.context.engine_demonstrated_context == 32768
+    assert receipt.context.semantic_verified_context == 19760
     assert receipt.qualification_ref == lt.HALOBOX_QUALIFICATION_REF
     assert receipt.capabilities.tool_semantics == lt.TOOLS_PROVEN
     assert lt.CAP_NATIVE_TOOLS in receipt.capabilities.measured
@@ -322,7 +334,7 @@ def test_the_profile_id_carries_the_runtime_backend_and_artifact_identity():
     assert "llama-server" in profile
     assert "vulkan" in profile
     assert "IQ4_XS" in profile
-    assert "262144" in profile
+    assert "ctx32768" in profile
 
 
 def test_a_declared_only_tool_claim_is_never_counted_as_measured():
@@ -345,7 +357,7 @@ def test_material_drift_produces_a_different_profile_and_identity(change):
 def test_a_changed_runtime_commit_breaks_identity_even_when_the_version_matches():
     base = halobox_receipt()
     other = lt.receipt_from_capability(
-        halobox_record(), configured_context=262144, safe_working_context=262144,
+        halobox_record(), configured_context=262144, safe_working_context=32768,
         safe_context_source="x", backend="vulkan", runtime_repository="halo-box/llama.cpp",
         runtime_commit="0" * 40, observed_at="2026-09-15T19:00:00+00:00",
         roles=halobox_spec().roles, qualification_ref=lt.HALOBOX_QUALIFICATION_REF)
@@ -356,7 +368,7 @@ def test_a_changed_runtime_commit_breaks_identity_even_when_the_version_matches(
 def test_a_changed_backend_changes_both_profile_and_identity():
     base = halobox_receipt()
     rocm = lt.receipt_from_capability(
-        halobox_record(), configured_context=262144, safe_working_context=262144,
+        halobox_record(), configured_context=262144, safe_working_context=32768,
         safe_context_source="x", backend="hip", runtime_repository="halo-box/llama.cpp",
         runtime_commit=lt.HALOBOX_RUNTIME_COMMIT,
         observed_at="2026-09-15T19:00:00+00:00", roles=halobox_spec().roles,
@@ -381,7 +393,7 @@ def store_receipt(receipt, tmp_path):
 
 
 HALOBOX_FACTS = {HALOBOX: {
-    "configured_context": 262144, "safe_working_context": 262144,
+    "configured_context": 262144, "safe_working_context": 32768,
     "safe_context_source": "PS-624 sealed qualification", "backend": "vulkan",
     "runtime_repository": "halo-box/llama.cpp",
     "runtime_commit": lt.HALOBOX_RUNTIME_COMMIT, "ttl_s": 7 * 24 * 3600}}
@@ -416,7 +428,7 @@ def test_the_generic_framework_host_is_still_skipped_as_unqualified(tmp_path):
             "capabilities": []}}, probed_at="2026-09-15T19:00:00+00:00")
     store = store_with([generic_record],
                        {lt.TARGET_FRAMEWORK: {"configured_context": 262144,
-                                              "safe_working_context": 262144,
+                                              "safe_working_context": 32768,
                                               "backend": "rocm"}}, tmp_path)
     inputs = persisted_routing_inputs(store)
     assert [p for p in inputs.profiles if p.target_id == lt.TARGET_FRAMEWORK] == []
@@ -434,7 +446,7 @@ def test_a_missing_receipt_is_a_typed_skip_not_a_candidate(tmp_path):
 
 def test_a_stale_halobox_receipt_is_skipped_rather_than_dispatched(tmp_path):
     old = lt.receipt_from_capability(
-        halobox_record(), configured_context=262144, safe_working_context=262144,
+        halobox_record(), configured_context=262144, safe_working_context=32768,
         safe_context_source="x", backend="vulkan", runtime_repository="halo-box/llama.cpp",
         runtime_commit=lt.HALOBOX_RUNTIME_COMMIT,
         observed_at="2026-09-01T00:00:00+00:00", roles=halobox_spec().roles,
@@ -457,7 +469,7 @@ def test_a_runtime_serving_the_wrong_per_slot_window_is_refused(tmp_path):
     """
     smaller = lt.receipt_from_capability(
         halobox_record(served=262144), configured_context=262144,
-        safe_working_context=262144, safe_context_source="x", backend="vulkan",
+        safe_working_context=32768, safe_context_source="x", backend="vulkan",
         runtime_repository="halo-box/llama.cpp",
         runtime_commit=lt.HALOBOX_RUNTIME_COMMIT, observed_at=OBSERVED,
         roles=halobox_spec().roles, qualification_ref=lt.HALOBOX_QUALIFICATION_REF)
@@ -624,5 +636,8 @@ def test_the_dispatch_pin_binds_the_exact_endpoint_not_just_its_locality():
     assert "\"endpoint\"" in source
     verify_source = inspect.getsource(dbd.verify_invocation)
     assert "PIN_ENDPOINT_MISMATCH" in verify_source
-    assert verify_source.index("PIN_ENDPOINT_MISMATCH") < verify_source.index(
-        "resolved_local")
+    # Locality is the coarser signal and is reported FIRST; the exact-endpoint check
+    # follows it, so a hosted URL still fails as a locality violation and only a
+    # same-locality-but-different-endpoint fails as an endpoint violation.
+    assert verify_source.index("resolved_local") < verify_source.index(
+        "PIN_ENDPOINT_MISMATCH")

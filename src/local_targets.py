@@ -466,6 +466,9 @@ INVALIDATED_IDENTITY_DRIFT = "material_identity_changed"
 INVALIDATED_UNHEALTHY = "health_not_healthy"
 INVALIDATED_SUPERSEDED = "superseded_by_newer_receipt"
 INVALIDATED_SAFE_CONTEXT_UNMEASURED = "safe_working_context_unmeasured"
+#: The pool/configured context was recorded as if it were a measured per-request
+#: bound (PS-632 reconciliation 2026-09-16: the HaloBox ctx262144 siblings).
+INVALIDATED_SAFE_CONTEXT_POOL_MISLABELED = "measured_safe_context_is_the_shared_pool_not_a_served_window"
 
 
 def _canonical_bytes(payload: object) -> bytes:
@@ -531,17 +534,31 @@ class ModelIdentity:
 
 @dataclass(frozen=True)
 class ContextProfile:
-    """Configured vs served vs empirically safe context — three different numbers.
+    """Configured vs served vs demonstrated vs verified context — distinct numbers.
 
     The declared 262144 a model advertises is not a context anyone has run; the
     served window is what the runtime actually hands out; the safe working context
-    is the largest one a measurement passed. Only the last is a capability.
+    is the largest one a measurement passed. Only that one routes. Two finer
+    distinctions keep an engine demonstration from being read as a semantic
+    verification: a throughput benchmark may pass at a depth no semantic probe
+    ever ran, and the deepest VERIFIED context is the smaller of the two when
+    that is so. PS-632 reconciliation 2026-09-16 (HaloBox): measured-safe 32768
+    is ENGINE-DEMONSTRATED (llama-bench depth ladder, throughput only); the
+    deepest sealed semantic/context-integrity evidence is 19760 tokens. Neither
+    number may erase the other.
     """
 
     configured_context: int = 0
     served_context: int = 0
     safe_working_context: int = 0
     safe_context_source: str = ""
+    #: Deepest context the execution engine demonstrably processed (e.g. a
+    #: llama-bench depth ladder with rc=0). Throughput evidence, NOT a semantic
+    #: integrity claim.
+    engine_demonstrated_context: int = 0
+    #: Deepest context a semantic/context-integrity probe (recall, exact-marker,
+    #: multi-round) actually verified. May be smaller than the engine bound.
+    semantic_verified_context: int = 0
     options: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -549,6 +566,8 @@ class ContextProfile:
                 "served_context": self.served_context,
                 "safe_working_context": self.safe_working_context,
                 "safe_context_source": self.safe_context_source,
+                "engine_demonstrated_context": self.engine_demonstrated_context,
+                "semantic_verified_context": self.semantic_verified_context,
                 "options": dict(self.options)}
 
 
@@ -1140,7 +1159,16 @@ class LlamaServerInspector:
             "digest": artifact["digest"],
             "size": int(artifact["total_bytes"] or 0),
             "details": {"family": "", "quantization_level": quantisation,
-                        "context_length": n_ctx or None,
+                        # declared_context contractually means the MODEL's own
+                        # maximum window. /v1/models meta n_ctx is the PER-SLOT
+                        # served window (262144 pool / 4 slots = 65536); the
+                        # native window is n_ctx_train. Recording the slot window
+                        # here made "declared" mean two different things
+                        # (PS-632 reconciliation 2026-09-16).
+                        "context_length": (
+                            int(meta["n_ctx_train"])
+                            if int(meta.get("n_ctx_train") or 0) > 0
+                            else (n_ctx or None)),
                         "model_path": model_path},
             "capabilities": ["completion"],
         }
@@ -1737,6 +1765,8 @@ def receipt_from_capability(
     configured_context: int = 0,
     safe_working_context: int = 0,
     safe_context_source: str = "",
+    engine_demonstrated_context: int = 0,
+    semantic_verified_context: int = 0,
     backend: str = "",
     host_baseline: Optional[Mapping[str, Any]] = None,
     runtime_repository: str = "",
@@ -1805,6 +1835,8 @@ def receipt_from_capability(
             configured_context=int(configured_context or 0),
             served_context=int(record.served_context or 0),
             safe_working_context=safe, safe_context_source=safe_context_source,
+            engine_demonstrated_context=int(engine_demonstrated_context or 0),
+            semantic_verified_context=int(semantic_verified_context or 0),
             options=dict(record.runtime_options or {})),
         host=HostBaseline(
             host_id=spec.target_id, label=spec.label, ssh_host=spec.ssh_host,

@@ -128,3 +128,28 @@ profile"), and the store now holds
 profile `bad2e249330fd8c2...` and is NOT rewritten. Any future normalized comparison
 would therefore be a DIFFERENT RTX profile identity, which must be declared as a
 profile difference rather than folded into the historical numbers.
+
+## CORRECTION 2026-09-16 — identity facts reconciled against the sealed chronology
+
+Two statements above are wrong and are corrected here (kept visible, not erased):
+
+1. **Served context.** This document once said HaloBox ran *"configured = served 262144"*.
+   The sealed `halobox-control/launch.sh` starts `llama-server -c 262144 --parallel 4`, and the
+   sealed `halobox-control/server.log` records the measured result of that launch:
+   `n_slots = 4, n_ctx_slot = 65536`. Corrected semantics:
+   `configured_pool_context = 262144`, `served_per_request_context = 65536`, and the
+   engine-demonstrated depth ceiling is 32768 (llama-bench depth ladder, throughput only —
+   no semantic assertion), while the deepest sealed *semantic/context-integrity* evidence is
+   a 19760-token prompt (`semantic/07-long-context.json`). No sealed request ever exercised
+   65536 or 262144. PS-632 `measured_safe_context` (= 32768) is therefore an
+   ENGINE-DEMONSTRATED routing bound, not a semantic one; the receipt now carries
+   `engine_demonstrated_context` and `semantic_verified_context` as separate fields.
+2. **`-ngl`.** This document once said the HaloBox control ran with `ngl 999`.
+   The sealed chronology shows the qualified `llama-server` was launched by `launch.sh` with
+   **`-ngl all`** (launch.sh mtime 07:33:46; `launch.started` 07:34:02; `health.ready.json`
+   07:34:19; `stop.finished` 07:37:54). `999` appears only in **llama-bench** invocations
+   (`vendor-bench.command` 07:38:45, `run-depths.sh` 07:44:36 — both after the server stop);
+   `vendor-bench.invalid-ngl.raw` records llama-bench *rejecting* `-ngl all`, and
+   `FINAL-DISPOSITION.md`'s "earlier invalid invocation using -ngl all" refers to that
+   llama-bench attempt, not to the server. For llama-server, `all` and 999 both offload all
+   layers; the recorded identity is the executed one: `all`.

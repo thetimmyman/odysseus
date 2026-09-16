@@ -102,6 +102,8 @@ def cmd_discover(args) -> int:
         "configured_context": args.configured_context,
         "safe_working_context": args.safe_context,
         "safe_context_source": args.safe_context_source,
+        "engine_demonstrated_context": args.engine_demonstrated_context,
+        "semantic_verified_context": args.semantic_verified_context,
         "backend": args.backend,
         "runtime_repository": args.runtime_repository,
         "runtime_commit": args.runtime_commit,
@@ -211,6 +213,11 @@ def main() -> int:
                           help="the empirically safe working context, MEASURED")
     discover.add_argument("--safe-context-source", default="",
                           help="how that safe context was established")
+    discover.add_argument("--engine-demonstrated-context", type=int, default=0,
+                          help="deepest context the engine demonstrably processed "
+                               "(e.g. llama-bench depth); NOT a semantic claim")
+    discover.add_argument("--semantic-verified-context", type=int, default=0,
+                          help="deepest context a semantic/integrity probe verified")
     discover.add_argument("--backend", default="")
     discover.add_argument("--runtime-repository", default="")
     discover.add_argument("--runtime-commit", default="")

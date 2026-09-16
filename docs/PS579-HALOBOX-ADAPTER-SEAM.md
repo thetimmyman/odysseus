@@ -73,3 +73,20 @@ locality before any request; the client's endpoint comes from the spec only.
 No generic Framework routing; no Halogen; no HaloBox tuning; no host kernel/GTT/
 IOMMU changes; no PS-624 re-qualification; no G0/G1/G2 change; no RTX policy
 change; no PS-579 corpus run; no PS-578.
+
+## CORRECTION 2026-09-16 — identity facts reconciled against the sealed chronology
+
+This document once described the HaloBox control as running with **`ngl 999`**. The sealed
+`halobox-control/launch.sh` (07:33:46) that started the qualified server records
+**`-ngl all`**, with `launch.started`/`health.ready.json`/`server.log`/`stop.finished` all
+inside that window; `999` is the **llama-bench-only** flag (`vendor-bench.command`,
+`run-depths.sh`, both after the server stop; `vendor-bench.invalid-ngl.raw` shows llama-bench
+rejects `all`). `FINAL-DISPOSITION.md`'s prose copied the bench value into the server
+summary. Functional semantics coincide (both offload every layer); the recorded identity is
+the executed one: `all`.
+
+Likewise, ContextProfile in PS-632 now separates `configured_pool_context` (262144),
+`served_per_request_context` (65536, measured by the sealed `server.log`: `n_slots = 4,
+n_ctx_slot = 65536`), `engine_demonstrated_context` (32768, llama-bench ladder, throughput
+only) and `semantic_verified_context` (19760, deepest sealed semantic probe). The routing
+bound `measured_safe_context = 32768` is engine-demonstrated, not semantically verified.
