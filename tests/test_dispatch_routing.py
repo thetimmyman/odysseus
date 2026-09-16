@@ -441,7 +441,3 @@ def test_the_refusal_is_serializable_and_names_every_candidate():
     assert payload["run_id"] == "run-1" and payload["packet_id"] == "P-1"
     assert payload["candidates"][0]["rule"] == dr.REFUSED_BUDGET
     assert payload["candidates"][0]["eligible"] is False
-
-
-
-

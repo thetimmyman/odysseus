@@ -414,6 +414,3 @@ def snapshot_digest_is_valid(payload: dict) -> bool:
             payload["snapshot_digest"]
     except SourceSnapshotError:
         return False
-
-
-

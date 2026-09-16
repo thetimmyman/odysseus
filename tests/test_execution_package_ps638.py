@@ -327,6 +327,3 @@ def test_a_package_requires_a_run_id(source, plan):
     with pytest.raises(ExecutionPackageError):
         build_execution_package(PACKET, source=source, verification=plan,
                                 run_id="")
-
-
-

@@ -117,4 +117,3 @@ identity mutation, expiry, future-dated, missing receipt, corrupt receipt, measu
 capability removed, declared-only vs measured requirement, MS-R1 inference, and a
 receipt that is not the one bound into the evidence).
 `tests/test_ps605_ps632_seam.py` — the translation layer and the harness guards.
-

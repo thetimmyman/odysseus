@@ -536,7 +536,3 @@ def classify_against_baseline(receipt: VerificationReceipt) -> str:
             receipt.failure_fingerprint.strip() and receipt.failure_fingerprint:
         return BASELINE_SAME
     return BASELINE_CHANGED
-
-
-
-

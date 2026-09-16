@@ -369,6 +369,3 @@ def unsatisfied_mandatory(
                      req.requirement_id,
                      RequirementState(req.requirement_id, STATE_UNRESOLVED)).state
                  in gap)
-
-
-

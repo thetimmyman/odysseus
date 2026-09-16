@@ -1009,11 +1009,3 @@ def write_dispatch_evidence(path: str, payload: Mapping[str, Any]) -> str:
         json.dump(payload, handle, indent=2, sort_keys=True, default=str)
         handle.write("\n")
     return path
-
-
-
-
-
-
-
-

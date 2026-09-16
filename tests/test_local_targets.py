@@ -593,4 +593,3 @@ def test_probe_fleet_attaches_harness_timings_by_target_id():
     assert by_id[lt.TARGET_RTX_4500].decode_tok_s == 37.1
     assert by_id[lt.TARGET_RTX_4500].cold_load_s == 53.2
     assert by_id[lt.TARGET_MSR1].decode_tok_s is None
-

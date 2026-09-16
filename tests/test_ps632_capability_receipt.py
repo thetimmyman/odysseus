@@ -511,4 +511,3 @@ def test_store_fails_closed_when_reconstruction_diverges(tmp_path, monkeypatch):
     monkeypatch.setattr(ContextProfile, "to_dict", always_emit)
     with pytest.raises(CapabilityStoreError, match="does not round-trip"):
         s.entries()
-

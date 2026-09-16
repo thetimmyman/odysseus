@@ -544,7 +544,3 @@ def build_execution_package(
         "verification": verification,
     }
     return _seal(ExecutionPackage, core, "package_hash")
-
-
-
-

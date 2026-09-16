@@ -370,5 +370,3 @@ def test_the_recorder_proves_a_local_only_dispatch_made_no_hosted_call():
     recorder.record(target_id="profile:p-openrouter", locality="hosted", model="m")
     with pytest.raises(dbd.DispatchBoundaryError):
         recorder.assert_no_hosted()
-
-

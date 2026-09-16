@@ -232,4 +232,3 @@ def test_an_unknown_state_cannot_be_constructed():
 
     with pytest.raises(EvidenceContractError):
         RequirementState("x", "PROBABLY_FINE")
-

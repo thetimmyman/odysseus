@@ -1178,15 +1178,3 @@ def select_target(request: RoutingRequest, *,
     payload["receipt_hash"] = ps638_receipt_hash(
         provisional.to_ps638_receipt_kwargs())
     return DispatchDecision(**payload)
-
-
-
-
-
-
-
-
-
-
-
-

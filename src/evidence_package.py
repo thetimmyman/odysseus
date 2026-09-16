@@ -938,11 +938,3 @@ def validate_evidence_package(
 
     return ValidationResult(ok=not issues, issues=tuple(issues),
                             requirement_states=states)
-
-
-
-
-
-
-
-

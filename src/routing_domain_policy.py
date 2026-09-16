@@ -266,5 +266,3 @@ def select_route(
         reason=f"none of {list(candidates or [])} permitted by domain policy",
         denied=denials,
     )
-
-

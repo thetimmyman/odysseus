@@ -645,8 +645,3 @@ def test_the_validator_returns_a_named_reason_not_a_bare_false(repo):
     assert result.codes
     assert all(isinstance(code, str) and code for code in result.codes)
     assert "REJECTED:" in result.explain()
-
-
-
-
-

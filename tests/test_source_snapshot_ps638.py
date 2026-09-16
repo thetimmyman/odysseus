@@ -212,4 +212,3 @@ def test_a_missing_path_is_refused(tmp_path):
 def test_empty_worktree_argument_is_refused():
     with pytest.raises(SourceSnapshotError):
         take_source_snapshot("")
-
