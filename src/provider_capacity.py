@@ -474,6 +474,49 @@ def capacity_receipt_from_dict(payload: Mapping[str, Any]) -> ProviderCapacityRe
     return ProviderCapacityReceipt(**data)
 
 
+def validated_current_receipts(receipts: Iterable[ProviderCapacityReceipt]) -> Tuple[ProviderCapacityReceipt, ...]:
+    """Validate a complete in-memory history before exposing current facts."""
+    entries = tuple(receipts)
+    by_hash = {receipt.receipt_hash: receipt for receipt in entries}
+    if len(by_hash) != len(entries):
+        raise CapacityError("duplicate receipt hash in history")
+    children: dict[str, list[ProviderCapacityReceipt]] = {}
+    for receipt in entries:
+        if not receipt.supersedes:
+            continue
+        target = by_hash.get(receipt.supersedes)
+        if target is None:
+            raise CapacityError("supersession target is missing")
+        if target.pool_id != receipt.pool_id:
+            raise CapacityError("cross-pool supersession in history")
+        if target.receipt_hash == receipt.receipt_hash:
+            raise CapacityError("self-supersession in history")
+        if target.invalidation_reason and not receipt.invalidation_reason:
+            raise CapacityError("invalidated receipt cannot be superseded")
+        if _parse_time(target.observed_at, "supersession target observed_at") > _parse_time(receipt.observed_at, "receipt observed_at"):
+            raise CapacityError("supersession target must not be newer than receipt")
+        children.setdefault(target.receipt_hash, []).append(receipt)
+    if any(len(records) > 1 for records in children.values()):
+        raise CapacityError("a receipt has multiple supersession successors")
+    for receipt in entries:
+        seen: set[str] = set()
+        cursor = receipt
+        while cursor.supersedes:
+            if cursor.receipt_hash in seen:
+                raise CapacityError("cycle in supersession history")
+            seen.add(cursor.receipt_hash)
+            cursor = by_hash[cursor.supersedes]
+    superseded = set(children)
+    current = tuple(receipt for receipt in entries
+                    if receipt.receipt_hash not in superseded and not receipt.invalidation_reason)
+    pools: dict[str, ProviderCapacityReceipt] = {}
+    for receipt in current:
+        if receipt.pool_id in pools:
+            raise CapacityError(f"conflicting current receipts for {receipt.pool_id}")
+        pools[receipt.pool_id] = receipt
+    return tuple(pools.values())
+
+
 def _provenance_from_dict(data: Optional[Mapping[str, Any]]) -> Optional[EvidenceProvenance]:
     if not data:
         return None
@@ -501,15 +544,7 @@ class CapacityRegistry:
     """Read-only capacity facts interface; it never chooses a winner."""
 
     def __init__(self, receipts: Iterable[ProviderCapacityReceipt] = ()) -> None:
-        all_receipts = tuple(receipts)
-        superseded = {r.supersedes for r in all_receipts if r.supersedes}
-        current = tuple(r for r in all_receipts if r.receipt_hash not in superseded)
-        pools = {}
-        for receipt in current:
-            if receipt.pool_id in pools:
-                raise CapacityError(f"conflicting current receipts for {receipt.pool_id}")
-            pools[receipt.pool_id] = receipt
-        self._receipts = tuple(pools.values())
+        self._receipts = validated_current_receipts(receipts)
 
     def capacity_snapshot(self, pool_id: str) -> Optional[ProviderCapacityReceipt]:
         candidates = [r for r in self._receipts if r.pool_id == pool_id]

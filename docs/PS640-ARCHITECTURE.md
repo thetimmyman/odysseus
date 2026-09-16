@@ -49,6 +49,16 @@ receipt. Mutations use a file lock for the complete append-and-index
 transaction. A writer that cannot acquire the lock fails with
 `CapacityStoreBusyError`; an unindexed JSONL append after a crash is never
 auto-promoted.
+When an index is valid, runtime resolves only the indexed receipt and the
+predecessor chain needed to validate it; valid or corrupt trailing JSONL rows
+are unindexed orphan history and cannot replace that authority. The strict
+historical reader still reports corrupt rows, and promoting an orphan requires
+an explicit recovery/admin operation that writes a new authoritative index.
+
+Any complete in-memory history passed to `CapacityRegistry` is validated before
+exposure. Missing, cross-pool, cyclic, temporally invalid, or competing
+supersession links fail closed; a self-validating receipt is not by itself
+proof of authoritative current state.
 
 `has_usable_capacity_facts()` is deliberately a structural facts check. It is
 not PS-605 permission, privacy legality, provider preference, or dispatch

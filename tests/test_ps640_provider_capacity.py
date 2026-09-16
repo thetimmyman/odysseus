@@ -3,10 +3,12 @@ import json
 import multiprocessing
 import os
 import fcntl
+from dataclasses import replace
 
 import pytest
 
 from src.provider_capacity import *
+from src.provider_capacity import _sha256
 from src.provider_capacity_store import CapacityStoreBusyError, CapacityStoreError, ProviderCapacityStore
 
 
@@ -231,11 +233,11 @@ def test_torn_index_and_conflicting_active_history_fail_closed(tmp_path):
     with open(store.index_path, "w", encoding="utf-8") as handle:
         json.dump({first.pool_id: {"pool_id": first.pool_id, "receipt_hash": first.receipt_hash},
                    second.pool_id: {"pool_id": second.pool_id, "receipt_hash": second.receipt_hash}}, handle)
-    # The next assertion uses two current pools, so it is valid; now create an
-    # actual same-pool conflict in history and require refusal.
+    # The unindexed same-pool row is an orphan and cannot replace the indexed
+    # authority.
     conflicting = receipt(observed_at="2026-09-15T12:01:00+00:00")
     store._append_line(conflicting)
-    with pytest.raises(CapacityStoreError): store.current(first.pool_id)
+    assert store.current(first.pool_id).receipt_hash == first.receipt_hash
 
 
 def test_invalidation_is_append_only_and_not_eligible(tmp_path):
@@ -290,6 +292,36 @@ def test_concurrent_same_pool_writers_have_one_authoritative_winner(tmp_path):
     assert store.verify()
 
 
+def test_indexed_authority_survives_unindexed_orphan_row(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    orphan = receipt(observed_at="2026-09-15T12:03:00+00:00")
+    store._append_line(orphan)
+    assert store.current(first.pool_id).receipt_hash == first.receipt_hash
+    assert len(store.history(first.pool_id)) == 2
+    assert len(CapacityRegistry((store.current(first.pool_id),)).eligible_capacity_for("qwen3.8:27b", now=AT_NOW)) == 1
+
+
+def test_indexed_authority_survives_orphan_supersession_row(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    orphan = receipt(observed_at="2026-09-15T12:03:00+00:00")
+    core = {**orphan.core(), "supersedes": first.receipt_hash}
+    store._append_line(replace(orphan, supersedes=first.receipt_hash, receipt_hash=_sha256(core)))
+    assert store.current(first.pool_id).receipt_hash == first.receipt_hash
+    assert len(store.history(first.pool_id)) == 2
+
+
+def test_corrupt_orphan_is_not_authority_but_strict_history_reports_it(tmp_path):
+    store = ProviderCapacityStore(str(tmp_path))
+    first = store.append(receipt())
+    with open(store.receipts_path, "a", encoding="utf-8") as handle:
+        handle.write("{\"corrupt\":\n")
+    assert store.current(first.pool_id).receipt_hash == first.receipt_hash
+    with pytest.raises(CapacityStoreError):
+        store.history(first.pool_id)
+
+
 def test_strict_enum_and_numeric_validation():
     with pytest.raises(CapacityError): receipt(entitlement="bogus")
     with pytest.raises(CapacityError): receipt(state="banana")
@@ -301,6 +333,26 @@ def test_strict_enum_and_numeric_validation():
     with pytest.raises(CapacityError): receipt(concurrency_remaining="0")
     with pytest.raises(CapacityError): receipt(concurrency_remaining=float("inf"))
     with pytest.raises(CapacityError): receipt(zdr_supported="yes")
+
+
+def test_registry_rejects_missing_supersession_target():
+    original = receipt()
+    core = {**original.core(), "supersedes": "f" * 64}
+    malformed = replace(original, supersedes="f" * 64, receipt_hash=_sha256(core))
+    with pytest.raises(CapacityError):
+        CapacityRegistry((malformed,))
+
+
+def test_registry_rejects_noncurrent_supersession_successor():
+    first = receipt()
+    second = receipt(observed_at="2026-09-15T12:01:00+00:00")
+    second = replace(second, supersedes=first.receipt_hash,
+                     receipt_hash=_sha256({**second.core(), "supersedes": first.receipt_hash}))
+    third = receipt(observed_at="2026-09-15T12:02:00+00:00")
+    third = replace(third, supersedes=first.receipt_hash,
+                    receipt_hash=_sha256({**third.core(), "supersedes": first.receipt_hash}))
+    with pytest.raises(CapacityError):
+        CapacityRegistry((first, second, third))
 
 
 def test_actual_billing_requires_billing_grade_source():
