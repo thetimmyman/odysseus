@@ -332,16 +332,28 @@ for the `CANONICAL-EXECUTION-FOUNDATION.md:46` amendment. Summarized here only
 to keep this document's boundary section complete: PS-641 owns composition
 *within one already-authorized invocation*; it does not own policy/selection
 (PS-605), the evidence envelope (PS-638), a bounded dispatch-verify-repair
-loop and retry budget currently implemented in PS-635's lane (measurement, not
-an ownership grant), or durable cross-run intent/leases/fencing/continuation/
-scheduling. **The retry/replan ownership word itself remains UNASSIGNED**
-pending the operator's D3 bounding decision — this document does not assign
-it to PS-635 or to any other lane.
+loop and retry budget implemented in PS-635's lane (**mechanics, not
+authority** — a measurement, not an ownership grant), or durable cross-run
+intent/leases/fencing/continuation/scheduling (DR-21 / PS-650).
 
-### 13.7 DR-10 (referenced, not a Package B deliverable) — the D3 invariant
+**Ownership boundary RULED (`OPERATOR_RULINGS.md` D9, 2026-09-17):** PS-605
+legality+selection; PS-635 bounded loop + retry budget (mechanics, not
+authority); PS-638 canonical evidence/receipts; PS-641 composition and
+revalidation within an authorized invocation; DR-21/PS-650 durable intent,
+leases, fencing, continuation, scheduling, idempotency, reconciliation.
+**The phrase "replan authority" itself remains UNASSIGNED** — that specific
+word is distinct from the now-ruled boundary above; this document does not
+assign it to PS-635 or to any other lane.
 
-Carried here only because `docs/PS641-PRODUCTION-COMPOSITION.md` quotes it
-verbatim as a requirement PS-641 must respect. DR-10 itself remains
-`DESIGN_NOW` / `IMPLEMENT_LATER` — no Package B file changes its disposition.
-See that document for the full text and the measured gap
+### 13.7 DR-10 — the D3 invariant, ruled as a required integration invariant
+
+Carried here because `docs/PS641-PRODUCTION-COMPOSITION.md` quotes it
+verbatim as a requirement PS-641 must respect. **DR-10 is RULED
+(`OPERATOR_RULINGS.md` D9, 2026-09-17): `ACCEPT_DELTA_NOW` / `IMPLEMENT_NOW`
+in `CONTRACT_DELTA_REGISTER.md`** — a required integration invariant,
+currently UNSATISFIED. Semantics: normally revalidate the standing dispatch
+decision cheaply (freshness/TTL, policy revision, target identity, effect
+envelope); invoke a fresh PS-605 selection only when one of those checks
+finds the standing decision invalidated. See
+`docs/PS641-PRODUCTION-COMPOSITION.md` for the full text and the measured gap
 (`PS635_OWNERSHIP_FINDINGS.md` §4-§5).

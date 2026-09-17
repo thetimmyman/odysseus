@@ -16,9 +16,14 @@ this document satisfies on its own:
 2. accepted deltas applied (Package B — this document is part of that);
 3. PS-640 `9762dd32` integrated onto that lineage (Package C);
 4. PS-640 integration independently reviewed (Package C's review gate);
-5. D3 retry/replan language bounded after the PS-635 inspection — the
-   inspection is done (`PS635_OWNERSHIP_FINDINGS.md`); the operator's bounding
-   decision is what remains.
+5. D3 retry/replan language bounded after the PS-635 inspection —
+   **RULED (`OPERATOR_RULINGS.md` D9, 2026-09-17)**: the PS-635 ownership
+   boundary is settled (see "Ownership boundary (RULED, D9)" below). What
+   remains is not further ownership deliberation but the bounded DR-10
+   revalidation integration itself, tracked ahead of PS-641 implementation;
+   this document's design/implementation package may be **prepared in
+   parallel** with that integration but must compose the revalidated loop
+   once it lands, not reimplement retries.
 
 ## PS-641 OWNS (verbatim from the ruling)
 
@@ -64,20 +69,23 @@ description of the current estate would be false; it is written here, and
 must be implemented, as a requirement on the PS-605 x PS-635/PS-641
 integration.
 
-**DR-10 (proposed, not yet ruled).** `PS635_OWNERSHIP_FINDINGS.md` §5.2
-proposes that satisfying the invariant is cheap and would not move retry
-policy into PS-605: a re-dispatch could reuse the standing decision only when,
-at re-dispatch time, its capability receipts are still within TTL, the policy
-revision is unchanged, and the resolved endpoint identity still matches the
-pin — a freshness/identity check against an existing decision, never a re-run
-of policy evaluation and never a new selection call per attempt; otherwise,
-re-select or fail closed. **This is DR-10's proposed satisfaction rule, not a
-ruled requirement** — DR-10 remains `DESIGN_NOW` / `IMPLEMENT_LATER`
-(`CONTRACT_DELTA_REGISTER.md`), it visibly relaxes the verbatim invariant
-above (which requires a new selection on "every re-dispatch"), and this
-document's own prerequisite #5 (above) states the operator's bounding
-decision "is what remains." No implementation may rely on this paragraph
-until DR-10 is ruled.
+**DR-10 (RULED, `OPERATOR_RULINGS.md` D9, 2026-09-17).** DR-10 is now
+`ACCEPT_DELTA_NOW` / `IMPLEMENT_NOW` in `CONTRACT_DELTA_REGISTER.md`: a
+**required integration invariant, currently UNSATISFIED**. Satisfying it is
+cheap and does not move retry policy into PS-605: a re-dispatch may reuse the
+standing decision only when, at re-dispatch time, its capability receipts are
+still within TTL, the policy revision is unchanged, and the resolved endpoint
+identity still matches the pin — a freshness/identity check against an
+existing decision, never a re-run of policy evaluation and never a new
+selection call per attempt; otherwise, a fresh PS-605 selection is required,
+or the attempt fails closed. This is the accepted satisfaction semantics for
+the verbatim invariant above ("every re-dispatch requires a new PS-605
+selection"): the *normal* path is cheap revalidation against the standing
+decision; a **fresh PS-605 selection is invoked only when revalidation finds
+the standing decision invalidated**. This is not documentation of existing
+behaviour — the gap measured above is real and open — it is the accepted
+rule the bounded DR-10 integration ticket (ahead of PS-641 implementation)
+must satisfy.
 
 ## The measured PS-641 clause: no attempt loop, no retry authority
 
@@ -89,14 +97,51 @@ PS-641, under the D3 invariant above.
 **This is a measurement, not an ownership assignment.** A bounded
 dispatch-verify-repair loop and a retry budget are implemented TODAY in
 PS-635's lane (`work/ps-635-loop-demo`, `src/local_worker_loop.py:306-568` on
-that branch; `PS635_OWNERSHIP_FINDINGS.md` §2.3). **The ownership word for
-retry/replan authority remains UNASSIGNED** — not PS-605, not PS-635, not
-PS-650, not a durable-action layer — pending the operator's D3 bounding
-decision (`OPERATOR_RULINGS.md` D3; `CONTRACT_DELTA_REGISTER.md` item 8: "that
-argument is withdrawn"). PS-641 does not acquire retry/replan authority by
-growing its own copy of the loop that PS-635 happens to implement today; that
-is a statement about what PS-641 must not do, not a statement about who owns
-the authority PS-641 is refusing to acquire.
+that branch; `PS635_OWNERSHIP_FINDINGS.md` §2.3). PS-641 does not acquire
+retry/replan authority by growing its own copy of the loop that PS-635
+happens to implement today; that is a statement about what PS-641 must not
+do.
+
+## Ownership boundary (RULED, `OPERATOR_RULINGS.md` D9, 2026-09-17)
+
+The boundary is no longer open. It is ruled as follows:
+
+- PS-605: legality + selection.
+- PS-635: bounded dispatch→verify→repair loop + retry budget (**mechanics,
+  not authority**).
+- PS-638: canonical evidence/receipts.
+- PS-641: composition and revalidation within an authorized invocation.
+- DR-21 / PS-650: durable intent, leases, fencing, continuation, scheduling,
+  idempotency, reconciliation.
+
+The retry budget PS-635 enforces is mechanics, not authority: it bounds how
+many re-dispatches are attempted; the DR-10 revalidation rule above governs
+whether each of those re-dispatches may reuse the standing pin or must
+trigger a fresh PS-605 selection. **The phrase "replan authority" itself
+remains unassigned** — not PS-605, not PS-635, not PS-650, not a
+durable-action layer — that word is distinct from the now-ruled boundary
+above and from DR-10's now-ruled revalidation semantics.
+
+Two related findings, preserved per D9:
+
+- **`ExecutionLedger` is a journal, not an authority.** PS-635's
+  append-only, hash-chained ledger (`src/execution_ledger.py:180-240`) is the
+  loop's own record of its attempts and verifications; it may feed PS-638
+  receipts, but it is not a second evidence authority and not the canonical
+  ledger a future durable-action contract will define. It should be
+  renamed/conceptualized as the PS-635 loop's journal before DR-21 lands, so
+  "which ledger is canonical" never arises (`CONTRACT_DELTA_REGISTER.md`
+  DR-25).
+- **`PlannerPolicy` must be derived from, and checked against, dispatch/
+  capability artifacts — never independently authored.** `PlannerPolicy`
+  (`src/replanner.py:601-612`) is not a second policy authority today, but it
+  is currently a hand-declared restatement of the granted envelope
+  (`acc0ebda:scripts/ps635-live/live_run.py:841-844`) rather than a value
+  derived from the PS-605 `DispatchDecision` or the PS-632 capability
+  receipt. Reconstructing the envelope by hand is duplication that becomes
+  accidental authority if any future code reads it to decide legality; at
+  PS-641 composition time it must instead be derived from those artifacts and
+  asserted equal to the pinned envelope (`CONTRACT_DELTA_REGISTER.md` DR-26).
 
 ## No named durable-action layer as the referent
 
@@ -109,14 +154,12 @@ behaviour UNKNOWN"; that is upgraded here to **DECLARED-only, behaviour
 ABSENT**.
 
 So: durable cross-run intent, leases, effect fencing, continuation and
-scheduling are **durable cross-run authority — owner not yet assigned; these
-mechanisms exist nowhere in the estate today.** This is deliberate — even the
-*naming* of a durable-action contract waits on the PS-635 ownership inspection
-(`OPERATOR_RULINGS.md` CHECKPOINT §6: "Do NOT implement DR-21"), so this
-document does not cite DR-21 or any other named layer as the referent for
-these concerns. (Open question **Q-N2** asks whether "owner not yet assigned"
-is acceptable as a permanent wording; if a placeholder name is preferred
-later, this is the one clause in this document that changes.)
+scheduling belong to **DR-21 / PS-650** per the ruled boundary above; these
+mechanisms exist nowhere in the estate today. DR-21 itself remains
+unimplemented and unnamed as a contract (`OPERATOR_RULINGS.md` CHECKPOINT
+§6: "Do NOT implement DR-21"), so this document does not cite it as a built
+layer — only as the ruled owner of concerns that do not yet have an
+implementation.
 
 ## Amendment to `docs/CANONICAL-EXECUTION-FOUNDATION.md:46`
 
