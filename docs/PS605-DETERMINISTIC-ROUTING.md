@@ -90,3 +90,16 @@ Cockpit/UI, landing, retry policy, budgets as accounting, the ledger, the eviden
 package, verification, and anything about acceptance. PS-605 owns SELECTION; PS-635
 owns the loop and PS-638 owns the envelope. Capability receipts are CONSUMED here,
 never produced (that is PS-632).
+
+**Ownership boundary RULED (`OPERATOR_RULINGS.md` D9, 2026-09-17):** PS-605
+legality+selection; PS-635 bounded dispatch→verify→repair loop + retry budget
+(mechanics, not authority); PS-638 canonical evidence/receipts; PS-641
+composition and revalidation within an authorized invocation; DR-21/PS-650
+durable intent, leases, fencing, continuation, scheduling, idempotency,
+reconciliation. **DR-10** (`CONTRACT_DELTA_REGISTER.md`, `ACCEPT_DELTA_NOW` /
+`IMPLEMENT_NOW`) is a **required integration invariant, currently
+UNSATISFIED** at this seam: normally revalidate the standing dispatch decision
+cheaply (freshness/TTL, policy revision, target identity, effect envelope);
+invoke a fresh PS-605 selection only when one of those checks finds the
+standing decision invalidated. See `docs/PS641-PRODUCTION-COMPOSITION.md` for
+the full text and the measured gap.
