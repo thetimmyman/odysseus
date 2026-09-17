@@ -22,7 +22,11 @@ fallback and it does not decide privacy legality.
 ## Canonical distinction
 
 `catalog availability` != `capability qualification` != `capacity observation`
-!= `entitlement observation` != `routing legality` != `dispatch`.
+!= `entitlement observation` != `routing legality` != `dispatch` != `capacity
+reservation`.
+
+`ProviderCapacityReceipt` is an observation, never a reservation. Reservation
+is a separate, fenced, expiring claim owned by the durable-action layer.
 
 `TargetCapabilityReceipt`, `ProviderCapacityReceipt`, and
 `DispatchDecisionReceipt` are separate artifacts. A production target needs
@@ -67,6 +71,16 @@ lowercasing. Numeric quota, concurrency and monetary values are finite typed
 numbers; counts are integral. Actual billed cost requires billing-grade
 provenance such as a billing endpoint, invoice, usage ledger, or explicit
 external billing evidence.
+
+## Reserved terminology (DESIGN_NOW, not implemented)
+
+`account_owner_principal` and `credential_ref` are reserved field names on
+`ProviderCapacityReceipt` for a later contract revision, once DR-01's
+`Principal` / `CredentialReference` authority value types exist. Both would be
+`UNKNOWN`-capable, reusing the existing `{status: "unknown"}` serialization
+above. This section reserves the names only: no runtime field, no schema
+change, and no store change is made by this package. Implementation is
+authorized only once the referenced authority value types exist.
 
 ## PS-645 boundary
 
