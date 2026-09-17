@@ -148,6 +148,24 @@ def _remote_ceiling_rank() -> int:
     return _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK["confidential"])
 
 
+# ------------------------------------------------------- public contract (PS-605) ---
+# dispatch_boundary and the registry seam consume these functions rather than
+# private helpers, so locality and sensitivity rules have one shared vocabulary.
+def endpoint_is_local(url: Optional[str]) -> bool:
+    """True when an endpoint URL is loopback/private/LAN."""
+    return _endpoint_is_local(url)
+
+
+def sensitivity_requires_local_only(sensitivity: Optional[str]) -> bool:
+    """True when sensitivity exceeds the configured remote ceiling."""
+    return _SENSITIVITY_RANK.get(str(sensitivity or "internal"), 1) > _remote_ceiling_rank()
+
+
+def roles_for_task_type(task_type: Optional[str]) -> List[str]:
+    """Preference-ordered roles for the task vocabulary."""
+    return list(ROLE_BY_TASK.get(str(task_type or ""), _DEFAULT_ROLES))
+
+
 def route_task(db, task, bundle: dict) -> dict:
     """Return the ranked candidate chain for `task`, filtered by its
     allow_free/paid/premium flags and the Section 9 data-sensitivity hard
