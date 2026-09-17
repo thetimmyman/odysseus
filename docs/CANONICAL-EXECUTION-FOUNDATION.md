@@ -43,4 +43,7 @@ changes the receipt hash without changing the unchanged execution profile ID.
 
 Store ownership is explicit: PS-632 owns target capability receipts; PS-640 owns
 provider capacity/entitlement receipts; PS-638 owns execution/evidence receipts;
-PS-605 owns routing decisions; PS-641 owns production composition.
+PS-605 owns routing decisions; PS-641 owns production composition within one
+already-authorized invocation — see `docs/PS641-PRODUCTION-COMPOSITION.md`
+(DR-16, 2026-09-16) for the full OWNS/DOES-NOT-OWN boundary and the retained
+D3 re-dispatch/re-selection invariant.

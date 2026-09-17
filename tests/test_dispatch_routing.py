@@ -129,12 +129,33 @@ def test_the_receipt_carries_everything_the_ticket_requires():
 
 
 def test_the_receipt_field_set_is_the_ps638_contract():
-    """The mapping is a CONTRACT, asserted rather than discovered later."""
+    """The mapping is a CONTRACT, asserted rather than discovered later.
+
+    ``authority`` (PS-638 DR-01+DR-09) is the one field in
+    ``PS638_RECEIPT_FIELDS`` that is OPTIONAL in the kwargs a decision without
+    one actually emits: an authority-free decision must omit the key itself,
+    not merely set it to ``None`` (review fix F-1, 2026-09-16) -- an
+    unconditional ``None`` entry would change ``seal_dispatch_evidence``'s
+    ``evidence_hash`` for every authority-free dispatch. So the contract here
+    is a subset relation for the optional field, and an exact-set match for
+    every field that is not optional.
+    """
     kwargs = select().to_ps638_receipt_kwargs()
-    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS)
+    assert set(kwargs) <= set(dr.PS638_RECEIPT_FIELDS)
+    required_fields = set(dr.PS638_RECEIPT_FIELDS) - {"authority"}
+    assert required_fields <= set(kwargs)
+    assert "authority" not in kwargs  # this decision was built with none
     assert dr.PS638_RECEIPT_FIELDS[-1] == "schema_version"
     assert kwargs["schema_version"] == 1
     assert dr.PS638_RECEIPT_CORE_FIELDS[0] == "schema_version"
+
+
+def test_the_receipt_field_set_includes_authority_when_present():
+    """The optional field appears in the kwargs exactly when it is set."""
+    decision = dataclasses.replace(select(), authority={"grant_id": "g1"})
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS)
+    assert kwargs["authority"] == {"grant_id": "g1"}
 
 
 def test_the_receipt_hash_is_the_hash_ps638_would_compute():

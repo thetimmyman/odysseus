@@ -58,9 +58,24 @@ rule, reason, receipt identity, receipt freshness and TTL, cost rank and prefere
 rank; `capability_receipt_refs` (content hashes); the selected target/host/model/
 runtime kind+version/model digest/backend; granted tools and scopes and network
 policy; `decided_by = ps605_policy`; a deterministic `reason` beginning with the
-reason code; and `decided_at`. The decision-level facts PS-638 has no field for
-(fallback rule, fallback_used, budget and resource facts) ride on the SELECTED
-candidate's entry, so a sealed package still contains them.
+reason code; `decided_at`; and an optional `authority` block (PS-638 DR-01+DR-09,
+added 2026-09-16). The decision-level facts PS-638 has no field for (fallback
+rule, fallback_used, budget and resource facts) ride on the SELECTED candidate's
+entry, so a sealed package still contains them.
+
+**`authority` (optional, additive, PS-638 DR-01+DR-09).** A mapping recording
+who/what asked and on whose credential — `requesting_principal`,
+`delegating_principal`, `acting_principal`, `delegation_chain`, `credential_ref`,
+`action`, `resource`, `grant_id`, `grant_expires_at`, `consent_id`,
+`authority_schema_version`. It **records and audits; it does not enforce
+authorization** — no code path reads it to permit or deny anything, its content is
+never validated, and it must never be described as an access-control or security
+boundary. When absent (the default, `None`), it is omitted from `core()` entirely,
+so every decision/receipt sealed before this field existed keeps hashing exactly
+as it always did (proven by `tests/test_ps638_authority_hash_stability.py`'s F1
+falsification, including a negative control against a fixture frozen from the
+landed baseline). When present, its contents are part of `receipt_hash` like any
+other field. `policy_ref` and all 13 ordered filters are unaffected.
 
 `receipt_hash` is computed with PS-638's own rule (sha256 over its `core()` fields,
 in its order) by `ps638_receipt_hash()`, and `PS638_RECEIPT_FIELDS` /

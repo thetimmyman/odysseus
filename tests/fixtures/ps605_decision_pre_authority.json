@@ -1,0 +1,142 @@
+{
+  "captured_from_sha": "7afd55bad7034d789c98be4ee6e9ebcfcc97cdba",
+  "decision_id": "dec-fixture-2",
+  "note": "Captured from thetimmyman/odysseus origin/main @ 7afd55bad7034d789c98be4ee6e9ebcfcc97cdba, BEFORE the PS-664 / DR-01+DR-09 optional 'authority' field existed on DispatchDecision. tests/test_ps638_authority_hash_stability.py's negative control re-runs select_target with the SAME deterministic inputs under the amended contract (authority omitted) and asserts receipt_hash / ps638_receipt_core(kwargs) are byte-identical to this frozen fixture.",
+  "ps638_receipt_core": {
+    "candidates_considered": [
+      {
+        "budget_class": "dev",
+        "budget_facts": {
+          "candidates_considered": 1,
+          "eligible_candidates": 1,
+          "max_cost_rank": 2,
+          "request_budget_class": "dev",
+          "selected_budget_class": "dev",
+          "selected_cost_rank": 0
+        },
+        "capability_receipt_freshness_s": 3600,
+        "capability_receipt_hash": "37849b867afd55911f641e1ced689c86448def85f4982fe3a31cf3ee3ad61b81",
+        "capability_receipt_id": "cap-rtx-1",
+        "capability_receipt_observed_at": "2026-09-15T11:00:00+00:00",
+        "capability_receipt_ttl_s": 86400,
+        "cost_rank": 0,
+        "eligible": true,
+        "exactness": "exact_reference_intent",
+        "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+        "fallback_used": false,
+        "locality": "local",
+        "preference_rank": 0,
+        "profile_id": "rtx4500-ollama-qwen38-27b",
+        "provider": "ollama",
+        "reason": "all filters passed",
+        "reason_code": "selected_deterministic_candidate",
+        "resource_facts": {},
+        "rule": "eligible",
+        "selected": true,
+        "target_id": "local-rtx4500"
+      }
+    ],
+    "capability_receipt_refs": [
+      "37849b867afd55911f641e1ced689c86448def85f4982fe3a31cf3ee3ad61b81"
+    ],
+    "decided_at": "2026-09-15T12:00:00+00:00",
+    "decided_by": "ps605_policy",
+    "execution_package_hash": "pkg-hash-fixture-2",
+    "granted_read_scope": [],
+    "granted_tools": [
+      "write_file"
+    ],
+    "granted_write_scope": [
+      "src/thing.py"
+    ],
+    "network_policy": "tailnet-loopback",
+    "packet_id": "P-fixture-2",
+    "policy_ref": "routing_policy@1.2+sha256:6a01c47ad87f5e44",
+    "reason": "selected_deterministic_candidate: no profile preference was expressed; the deterministic order decided",
+    "receipt_id": "dispatch-dec-fixture-2",
+    "requested_capabilities": [
+      "text_generation",
+      "single_tool_call",
+      "exact_reference_semantics"
+    ],
+    "requested_role": "local_implementer",
+    "run_id": "run-fixture-2",
+    "schema_version": 1,
+    "selected_backend": "cuda",
+    "selected_host": "minipc",
+    "selected_model": "qwen3.8:27b",
+    "selected_model_digest": "d94d9646",
+    "selected_runtime_kind": "ollama",
+    "selected_runtime_version": "0.32.11",
+    "selected_target_id": "local-rtx4500"
+  },
+  "receipt_hash": "6932740ee89908b5adbc35f57eae8b3cb3710038bf93ee7bc70693de48850de2",
+  "receipt_kwargs": {
+    "candidates_considered": [
+      {
+        "budget_class": "dev",
+        "budget_facts": {
+          "candidates_considered": 1,
+          "eligible_candidates": 1,
+          "max_cost_rank": 2,
+          "request_budget_class": "dev",
+          "selected_budget_class": "dev",
+          "selected_cost_rank": 0
+        },
+        "capability_receipt_freshness_s": 3600,
+        "capability_receipt_hash": "37849b867afd55911f641e1ced689c86448def85f4982fe3a31cf3ee3ad61b81",
+        "capability_receipt_id": "cap-rtx-1",
+        "capability_receipt_observed_at": "2026-09-15T11:00:00+00:00",
+        "capability_receipt_ttl_s": 86400,
+        "cost_rank": 0,
+        "eligible": true,
+        "exactness": "exact_reference_intent",
+        "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+        "fallback_used": false,
+        "locality": "local",
+        "preference_rank": 0,
+        "profile_id": "rtx4500-ollama-qwen38-27b",
+        "provider": "ollama",
+        "reason": "all filters passed",
+        "reason_code": "selected_deterministic_candidate",
+        "resource_facts": {},
+        "rule": "eligible",
+        "selected": true,
+        "target_id": "local-rtx4500"
+      }
+    ],
+    "capability_receipt_refs": [
+      "37849b867afd55911f641e1ced689c86448def85f4982fe3a31cf3ee3ad61b81"
+    ],
+    "decided_at": "2026-09-15T12:00:00+00:00",
+    "decided_by": "ps605_policy",
+    "execution_package_hash": "pkg-hash-fixture-2",
+    "granted_read_scope": [],
+    "granted_tools": [
+      "write_file"
+    ],
+    "granted_write_scope": [
+      "src/thing.py"
+    ],
+    "network_policy": "tailnet-loopback",
+    "packet_id": "P-fixture-2",
+    "policy_ref": "routing_policy@1.2+sha256:6a01c47ad87f5e44",
+    "reason": "selected_deterministic_candidate: no profile preference was expressed; the deterministic order decided",
+    "receipt_id": "dispatch-dec-fixture-2",
+    "requested_capabilities": [
+      "text_generation",
+      "single_tool_call",
+      "exact_reference_semantics"
+    ],
+    "requested_role": "local_implementer",
+    "run_id": "run-fixture-2",
+    "schema_version": 1,
+    "selected_backend": "cuda",
+    "selected_host": "minipc",
+    "selected_model": "qwen3.8:27b",
+    "selected_model_digest": "d94d9646",
+    "selected_runtime_kind": "ollama",
+    "selected_runtime_version": "0.32.11",
+    "selected_target_id": "local-rtx4500"
+  }
+}
