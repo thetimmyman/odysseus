@@ -4,9 +4,7 @@ spec's Section 6 (role map + scoreModelForTask). Scored against
 bundle; historical performance comes from routing_scoring.historical_score()
 (single source of truth -- don't reimplement that aggregate here)."""
 import json
-import re
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
 from src.routing_budget import DEFAULT_MAX_OUTPUT_TOKENS, estimate_cost_usd
 from src.routing_scoring import historical_score
@@ -18,16 +16,14 @@ from src.routing_scoring import historical_score
 # slightly different TaskType enum (known_bug_reproduction/ci_failure_triage/
 # etc.) for the same concept; this is the one reconciliation to the single
 # enum actually stored in the DB.
-ROLE_BY_TASK: Dict[str, List[str]] = {
-    "bug_debug": ["debugger", "scout"],
-    "ci_triage": ["debugger", "scout"],
-    "feature_plan": ["planner", "reviewer"],
-    "feature_review": ["reviewer"],
-    "implementation": ["implementer", "debugger"],
-    "release_readiness": ["debugger", "scout"],
-    "diff_review": ["reviewer"],
-}
-_DEFAULT_ROLES = ["scout"]
+# Stage A (TMOS M2-RETIRE-legacy-routing-harness): the PS-605 public contract — task->role
+# vocabulary, sensitivity ranks and endpoint locality — now lives in the routing-selector seam
+# (src/routing_locality.py). Imported, and re-exported under the same names, so Section-9
+# callers (routing_coordinator_decide, tests) keep resolving them from routing_engine until Stage B.
+from src.routing_locality import (  # noqa: F401  (re-exports)
+    ROLE_BY_TASK, _DEFAULT_ROLES, _SENSITIVITY_RANK, _PRIVATE_HOST_RE, _endpoint_is_local,
+    _remote_ceiling_rank, endpoint_is_local, roles_for_task_type, sensitivity_requires_local_only,
+)
 
 # task_types that would produce a patch if patch extraction existed (Phase 3+
 # concern) -- used here only to weight implementer-role models higher, not
@@ -115,55 +111,12 @@ def score_model_for_task(profile, task, bundle: dict, hist_score: Optional[float
     }
 
 
-# Sensitivity rank order for the Section 9 hard filter. A task whose
-# data_sensitivity ranks ABOVE the policy's remoteSensitivityCeiling may only
-# route to endpoints on loopback/private networks.
-_SENSITIVITY_RANK = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3, "secret": 4}
-
-_PRIVATE_HOST_RE = re.compile(
-    r"^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal"
-    r"|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+"
-    r"|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+"
-    r"|[^.]+\.local|[^.]+\.internal|[^.]+)$"  # bare hostnames (no dots) = LAN
-)
+# (sensitivity ranks, the private-host regex, _endpoint_is_local and _remote_ceiling_rank moved to
+#  src/routing_locality.py — Stage A; see the import at the top of this file)
 
 
-def _endpoint_is_local(url: Optional[str]) -> bool:
-    """True when the endpoint host is loopback / RFC1918 / a bare LAN hostname.
-    Anything else (openrouter.ai, api.*, cloud hosts) counts as remote for the
-    data-sensitivity hard filter. A missing URL is NOT local — an unverifiable
-    destination must never receive restricted data (fail closed)."""
-    if not url:
-        return False
-    host = urlparse(url).hostname or ""
-    return bool(host) and bool(_PRIVATE_HOST_RE.match(host))
-
-
-def _remote_ceiling_rank() -> int:
-    try:
-        from src.routing_policy import load_policy
-        ceiling = load_policy().get("remoteSensitivityCeiling", "confidential")
-    except Exception:
-        ceiling = "confidential"
-    return _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK["confidential"])
-
-
-# ------------------------------------------------------- public contract (PS-605) ---
-# dispatch_boundary and the registry seam consume these functions rather than
-# private helpers, so locality and sensitivity rules have one shared vocabulary.
-def endpoint_is_local(url: Optional[str]) -> bool:
-    """True when an endpoint URL is loopback/private/LAN."""
-    return _endpoint_is_local(url)
-
-
-def sensitivity_requires_local_only(sensitivity: Optional[str]) -> bool:
-    """True when sensitivity exceeds the configured remote ceiling."""
-    return _SENSITIVITY_RANK.get(str(sensitivity or "internal"), 1) > _remote_ceiling_rank()
-
-
-def roles_for_task_type(task_type: Optional[str]) -> List[str]:
-    """Preference-ordered roles for the task vocabulary."""
-    return list(ROLE_BY_TASK.get(str(task_type or ""), _DEFAULT_ROLES))
+# public contract (PS-605): endpoint_is_local / sensitivity_requires_local_only / roles_for_task_type
+# are defined in src/routing_locality.py (routing-selector seam) and re-exported above.
 
 
 def route_task(db, task, bundle: dict) -> dict:
