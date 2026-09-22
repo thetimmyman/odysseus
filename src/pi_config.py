@@ -270,3 +270,31 @@ def ensure_pi_model_config(provider: str | None = None, model_id: str | None = N
         fh.write("\n")
     os.replace(tmp, path)
     return path
+
+
+def ensure_pi_provider_auth(provider: str, auth_entry: object, *, directory: str | None = None) -> str:
+    """Provision one provider credential into an explicitly isolated Pi dir."""
+    target = directory or agent_dir()
+    if not target:
+        raise ValueError(
+            "subscription credential provisioning requires an isolated "
+            "ODYSSEUS_PI_AGENT_DIR; refusing to write the operator ~/.pi/agent/auth.json"
+        )
+
+    path = os.path.join(target, "auth.json")
+    os.makedirs(target, exist_ok=True)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            auth = json.load(fh)
+        if not isinstance(auth, dict):
+            auth = {}
+    except (OSError, ValueError):
+        auth = {}
+
+    auth[provider] = auth_entry
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(auth, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+    return path
