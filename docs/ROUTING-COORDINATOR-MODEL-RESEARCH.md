@@ -223,3 +223,17 @@ Source: live `routing_tasks` + `coordinator_audit` on the framework prod DB (rea
 - The only miss (`risk`, non-gating metadata) is a lexicon tunable, not a reason for an LLM.
 - Conclusion: **deterministic-only is the viable, correct scope. A routing LLM is unwarranted — it
   would chase non-gating metadata fields that real traffic doesn't even exercise through the model path.**
+
+## 10. Risk-field resolution (2026-09-22)
+
+`risk` is NOT in the hard-gate list (gates = schema/policy/domain/approval/arbitration/uncertainty/
+failure/consistency). Its accuracy is non-gating metadata. The synthetic fixtures and real traffic
+disagree on risk semantics — fixtures use medium-as-default (9 medium / 9 low), while real traffic is
+overwhelmingly `low` (5/5). No static lexicon satisfies both.
+
+Decision: **default `risk=low`, raise only on unambiguous release/security signals.** Result: real-world
+risk 4/5 (one residual miss: "path traversal PoC" — a low-risk test task that the lexicon reads as
+high-risk because "path traversal" is genuinely ambiguous; acceptable for a non-gating field). The 27
+synthetic fixtures still `passedAllGates=True`. `risk` is left as best-effort `low`-default unless a
+real downstream consumer actually depends on it (open question: does any behavior key on `risk`? If not,
+it is correctly a low-effort metadata field).

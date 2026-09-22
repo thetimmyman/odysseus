@@ -71,9 +71,15 @@ VERIFMODE_SIGNALS: List[tuple] = [
 
 # keyword -> risk
 RISK_SIGNALS: List[tuple] = [
-    (("release", "signing", "vault", "unseal", "credential", "auth bypass", "secret"), "release_blocking"),
-    (("auth", "security", "credential", "production", "admin", "restricted"), "high"),
-    (("typo", "docs", "README", "document", "log message", "badge"), "low"),
+    # Mostly a non-gating metadata field; real traffic is overwhelmingly 'low'.
+    # Raise only on unambiguous danger (release/security), never on 'poc'/'restricted'
+    # which are low-risk in practice (sensitivity is a SEPARATE field).
+    (("sign off", "release readiness", "release_blocking", "v2", "ship",
+      "auth bypass", "signing key", "token-signing", "vault unseal", "master key"),
+     "release_blocking"),
+    (("auth ", "security", "production credential", "admin cookie",
+      "debug the vault", "path traversal", "credential rotation"),
+     "high"),
 ]
 
 # keyword -> backend override
@@ -129,10 +135,11 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
         # keyword lexicons above, and the policy gate below still forces local.
         sensitivity = "internal"
 
-    # --- taskType / verificationMode / risk ---
+    # --- risk: default LOW (routine work), raise only on danger signal ---
+    risk = _first_hit(RISK_SIGNALS, text, "low")
+
     task_type = _first_hit(TASKTYPE_SIGNALS, text, "implementation")
     ver_mode = _first_hit(VERIFMODE_SIGNALS, text, "analysis_only")
-    risk = _first_hit(RISK_SIGNALS, text, "medium")
 
     # --- backend + HARD policy gate ---
     if sensitivity in ("secret", "restricted"):
