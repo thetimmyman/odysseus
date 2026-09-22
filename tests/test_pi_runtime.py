@@ -94,6 +94,42 @@ async def wait_terminal(runtime, execution_id, timeout=25.0):
             return status
         await asyncio.sleep(0.1)
     return runtime.status(execution_id)
+
+
+def test_execution_record_persists_ps638_attempt_binding(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path))
+    binding = {
+        "run_id": "run-605",
+        "packet_id": "packet-638",
+        "attempt": 2,
+        "execution_package_hash": "package-hash",
+        "dispatch_receipt_hash": "receipt-hash",
+        "target_id": "target-1",
+        "host": "host-1",
+        "runtime_kind": "pi",
+    }
+
+    record = pe.create_execution(**binding)
+    persisted = pe.get_execution(record["execution_id"])
+
+    assert persisted is not None
+    for field, value in binding.items():
+        assert persisted[field] == value
+
+
+def test_execution_record_defaults_ps638_attempt_binding_to_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path))
+    record = pe.create_execution()
+    persisted = pe.get_execution(record["execution_id"])
+
+    assert persisted is not None
+    for field in (
+        "run_id", "packet_id", "attempt", "execution_package_hash",
+        "dispatch_receipt_hash", "target_id", "host", "runtime_kind",
+    ):
+        assert persisted[field] is None
+
+
 # --- Test A — Start --------------------------------------------------------
 async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-a")
