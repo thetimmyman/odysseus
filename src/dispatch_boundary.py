@@ -133,12 +133,14 @@ EVIDENCE_ATTEMPT_UNBOUND = "attempt_receipt_unbound"
 EVIDENCE_INVOCATION_OUTSIDE_DECISION = "invocation_outside_decision"
 EVIDENCE_HOSTED_FOR_LOCAL_ONLY = "hosted_invocation_for_local_only"
 EVIDENCE_RECEIPT_CHANGED = "capability_receipt_changed"
+EVIDENCE_CAPACITY_CHANGED = "capacity_receipt_changed"
 EVIDENCE_POLICY_CHANGED = "policy_revision_changed"
 EVIDENCE_PIN_CHANGED = "pin_changed_after_sealing"
 KNOWN_EVIDENCE_CODES = frozenset({
     EVIDENCE_HASH_MISMATCH, EVIDENCE_DECISION_MISMATCH, EVIDENCE_TARGET_MISMATCH,
     EVIDENCE_ATTEMPT_UNBOUND, EVIDENCE_INVOCATION_OUTSIDE_DECISION,
     EVIDENCE_HOSTED_FOR_LOCAL_ONLY, EVIDENCE_RECEIPT_CHANGED,
+    EVIDENCE_CAPACITY_CHANGED,
     EVIDENCE_POLICY_CHANGED, EVIDENCE_PIN_CHANGED,
 })
 
@@ -496,6 +498,7 @@ class BoundDispatch:
     estate: TargetEstate
     decision: Any
     policy: Any
+    capacity_receipts: Tuple[Any, ...] = ()
 
     def execution_order(self,
                         candidates: Sequence[Mapping[str, Any]]
@@ -693,12 +696,13 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                 for profile in estate.profiles),
             receipts=estate.receipts, skipped=estate.skipped,
             candidates=estate.candidates)
+    capacity = tuple(capacity_receipts or ())
     decision = select_target(
         request, profiles=estate.profiles, receipts=estate.receipts,
         policy=snapshot, resources=resources,
-        capacity_receipts=capacity_receipts or (), now=now, decision_id=decision_id)
+        capacity_receipts=capacity, now=now, decision_id=decision_id)
     return BoundDispatch(request=request, estate=estate, decision=decision,
-                         policy=snapshot)
+                         policy=snapshot, capacity_receipts=capacity)
 
 
 @dataclass(frozen=True)
@@ -951,6 +955,9 @@ def seal_dispatch_evidence(bound: BoundDispatch, *,
         "invocations": [dict(i) for i in invocations],
         "fixture": dict(fixture or {}),
     }
+    if bound.capacity_receipts:
+        payload["capacity_receipts"] = [
+            getattr(r, "to_dict", lambda: dict(r))() for r in bound.capacity_receipts]
     payload["seal"] = {
         "evidence_hash": _sha256_hex(_canonical(payload)),
         "policy_ref": bound.policy.policy_ref,
@@ -1009,6 +1016,7 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     invocation for local-only work.
     """
     codes: List[str] = []
+    from src import provider_capacity
     body = evidence_core(payload)
     seal = dict(payload.get("seal") or {})
     decision = dict(body.get("decision") or {})
@@ -1085,7 +1093,23 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
             break
 
 
-    # 7. the policy revision AND its content hash must still match the ref.
+    # 7. capacity receipts (PS-640) must still hash to their recorded content, and
+    #    every ref the decision cited must be present among the valid receipts.
+    valid_capacity_refs: set = set()
+    for recorded in (body.get("capacity_receipts") or ()):
+        if (not isinstance(recorded, dict)
+                or not provider_capacity.capacity_receipt_hash_is_valid(recorded)):
+            codes.append(EVIDENCE_CAPACITY_CHANGED)
+            continue
+        receipt_hash = str(recorded.get("receipt_hash") or "")
+        if receipt_hash:
+            valid_capacity_refs.add(f"capacity:{receipt_hash}")
+    for ref in (receipt.get("capacity_receipt_refs") or ()):
+        if str(ref) not in valid_capacity_refs:
+            codes.append(EVIDENCE_CAPACITY_CHANGED)
+            break
+
+    # 8. the policy revision AND its content hash must still match the ref.
     policy_ref = str(receipt.get("policy_ref") or "")
     if policy_ref != str(policy.get("policy_ref") or ""):
         codes.append(EVIDENCE_POLICY_CHANGED)
