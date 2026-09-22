@@ -24,6 +24,7 @@ import datetime
 import pytest
 
 from src import dispatch_routing as dr
+from src.execution_package import make_dispatch_receipt
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
 PROFILE_ID = "rtx4500-ollama-qwen38-27b"
@@ -81,6 +82,36 @@ def select(req=None, *, profiles=None, receipts=None, **kwargs):
 
 
 # ================================================================ the control ===
+def test_capacity_refusal_codes_and_hash_stable_optional_receipt_refs():
+    for code in (dr.REFUSED_CAPACITY_MISSING, dr.REFUSED_CAPACITY_STALE,
+                 dr.REFUSED_CAPACITY_UNUSABLE):
+        assert code in dr.KNOWN_REFUSALS
+    dr.RoutingRefused(dr.REFUSED_CAPACITY_MISSING, "reason")
+
+    decision = select()
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert "capacity_receipt_refs" not in kwargs
+    assert make_dispatch_receipt(**kwargs).receipt_hash == decision.receipt_hash
+
+    with_ref = dataclasses.replace(decision, capacity_receipt_refs=("cap-a",))
+    changed = dataclasses.replace(decision, capacity_receipt_refs=("cap-b",))
+    assert "capacity_receipt_refs" in with_ref.to_ps638_receipt_kwargs()
+    assert (make_dispatch_receipt(**with_ref.to_ps638_receipt_kwargs()).receipt_hash
+            != make_dispatch_receipt(**changed.to_ps638_receipt_kwargs()).receipt_hash)
+
+
+def test_ps638_receipt_hash_matches_for_capacity_refs():
+    """Non-empty capacity_receipt_refs must hash identically across both modules.
+
+    Regression: ps638_receipt_core routed every optional-omit field through
+    _normalize_authority, which crashes on a tuple of strings. The hash must be
+    computed with the list-normalization path and agree with PS-638's own core().
+    """
+    decision = dataclasses.replace(select(), capacity_receipt_refs=("capacity:deadbeef",))
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert dr.ps638_receipt_hash(kwargs) == make_dispatch_receipt(**kwargs).receipt_hash
+
+
 def test_the_positive_control_selects_and_receipts():
     decision = select(decision_id="dec-1")
     assert decision.selected_profile.profile_id == PROFILE_ID
@@ -142,7 +173,9 @@ def test_the_receipt_field_set_is_the_ps638_contract():
     """
     kwargs = select().to_ps638_receipt_kwargs()
     assert set(kwargs) <= set(dr.PS638_RECEIPT_FIELDS)
-    required_fields = set(dr.PS638_RECEIPT_FIELDS) - {"authority"}
+    required_fields = set(dr.PS638_RECEIPT_FIELDS) - {
+        "authority", "capacity_receipt_refs"
+    }
     assert required_fields <= set(kwargs)
     assert "authority" not in kwargs  # this decision was built with none
     assert dr.PS638_RECEIPT_FIELDS[-1] == "schema_version"
@@ -154,7 +187,7 @@ def test_the_receipt_field_set_includes_authority_when_present():
     """The optional field appears in the kwargs exactly when it is set."""
     decision = dataclasses.replace(select(), authority={"grant_id": "g1"})
     kwargs = decision.to_ps638_receipt_kwargs()
-    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS)
+    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS) - {"capacity_receipt_refs"}
     assert kwargs["authority"] == {"grant_id": "g1"}
 
 

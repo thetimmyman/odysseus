@@ -160,6 +160,9 @@ REFUSED_NETWORK = "network_policy_unsatisfied"
 REFUSED_BUDGET = "budget_class_exceeded"
 REFUSED_RESOURCE = "resource_unavailable"
 REFUSED_UNKNOWN_CAPABILITY = "unknown_capability"
+REFUSED_CAPACITY_MISSING = "capacity_receipt_missing"
+REFUSED_CAPACITY_STALE = "capacity_receipt_stale"
+REFUSED_CAPACITY_UNUSABLE = "capacity_receipt_unusable"
 
 KNOWN_REFUSALS: FrozenSet[str] = frozenset({
     REFUSED_NO_CANDIDATES, REFUSED_NO_ELIGIBLE_TARGET, REFUSED_PRIVACY_LOCAL_ONLY,
@@ -167,6 +170,7 @@ KNOWN_REFUSALS: FrozenSet[str] = frozenset({
     REFUSED_RECEIPT_STALE, REFUSED_RECEIPT_UNHEALTHY, REFUSED_CAPABILITY_MISSING,
     REFUSED_EXACTNESS, REFUSED_NOT_INFERENCE_TARGET, REFUSED_ROLE, REFUSED_TOOL,
     REFUSED_NETWORK, REFUSED_BUDGET, REFUSED_RESOURCE, REFUSED_UNKNOWN_CAPABILITY,
+    REFUSED_CAPACITY_MISSING, REFUSED_CAPACITY_STALE, REFUSED_CAPACITY_UNUSABLE,
 })
 
 #: Success reason codes: HOW the selected candidate was reached, which is what
@@ -267,8 +271,8 @@ PS638_RECEIPT_FIELDS: Tuple[str, ...] = (
     "reason", "requested_role", "requested_capabilities", "policy_ref",
     "candidates_considered", "capability_receipt_refs", "selected_runtime_kind",
     "selected_runtime_version", "selected_model_digest", "selected_backend",
-    "granted_tools", "granted_write_scope", "granted_read_scope",
-    "network_policy", "decided_at", "authority", "schema_version",
+    "granted_tools", "granted_write_scope", "granted_read_scope", "network_policy",
+    "decided_at", "authority", "capacity_receipt_refs", "schema_version",
 )
 #: The fields PS-638's ``core()`` covers, in ITS order. The receipt hash is
 #: sha256 over the canonical JSON of exactly these, with tuple-valued fields
@@ -286,15 +290,18 @@ PS638_RECEIPT_CORE_FIELDS: Tuple[str, ...] = (
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope",
     "network_policy", "decided_by", "reason", "decided_at", "authority",
+    "capacity_receipt_refs",
 )
 _PS638_LIST_FIELDS: Tuple[str, ...] = (
     "requested_capabilities", "candidates_considered", "capability_receipt_refs",
-    "granted_tools", "granted_write_scope", "granted_read_scope",
+    "capacity_receipt_refs", "granted_tools", "granted_write_scope", "granted_read_scope",
 )
 #: Fields that, like ``authority``, are omitted from the hashed core entirely
 #: when absent rather than serialized as ``null`` — so introducing them never
 #: changes the hash of a receipt that predates them.
-_PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = ("authority",)
+_PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = (
+    "authority", "capacity_receipt_refs",
+)
 DECIDED_BY_POLICY = "ps605_policy"
 
 
@@ -320,7 +327,13 @@ def ps638_receipt_core(kwargs: Mapping[str, Any]) -> dict:
         value = kwargs.get(name)
         if name in _PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS:
             if value is not None:
-                core[name] = _normalize_authority(value)
+                if name == "authority":
+                    core[name] = _normalize_authority(value)
+                elif name in _PS638_LIST_FIELDS:
+                    core[name] = [dict(v) if isinstance(v, Mapping) else v
+                                  for v in (value or ())]
+                else:
+                    core[name] = value
             continue
         if name in _PS638_LIST_FIELDS:
             core[name] = [dict(v) if isinstance(v, Mapping) else v
@@ -922,6 +935,7 @@ class DispatchDecision:
     observed_at: str = ""
     schema_version: int = SCHEMA_VERSION
     authority: Optional[Mapping[str, Any]] = None
+    capacity_receipt_refs: Tuple[str, ...] = ()
     receipt_hash: str = field(default="")
 
     def pin(self) -> dict:
@@ -1027,6 +1041,8 @@ class DispatchDecision:
         # originally cover.
         if self.authority is not None:
             kwargs["authority"] = self.authority
+        if self.capacity_receipt_refs:
+            kwargs["capacity_receipt_refs"] = self.capacity_receipt_refs
         return kwargs
 
     def core(self) -> dict:
