@@ -249,3 +249,26 @@ but cannot cause a data breach. 4/5 real-world `risk` is therefore ACCEPTABLE-bu
 enough for safety, imperfect for cost-efficiency. This is the ONE field where a small model hint
 (Qwen3.5-0.8B `risk` toward low/medium/high/blocking) would legitimately help if cost-efficiency of
 model selection is ever worth the marginal complexity.
+
+## 11. The risk/sensitivity conflation (root cause of the 4/5 → can't-be-5/5)
+
+The 4/5 risk miss, chased to its root, is not a lexicon bug — it is a **semantic conflation in the
+fixtures themselves**. The 27 synthetic fixtures and the real traffic encode two contradictory `risk`
+policies for the SAME task type:
+
+- Synthetic `policygate-01/03` label `feature_review`/`diff_review` tasks as **risk=high** because the
+  SUBJECT is restricted/credentials.
+- Real `poc-traversal-check` labels a `diff_review` of "path traversal" as **risk=low**.
+
+The two sources disagree because the fixtures bundled "sensitive subject" into `risk`, but subject
+sensitivity ALREADY has its own field: `dataSensitivity` (which the classifier handles 5/5). This is
+exactly the conflation the code's own downstream consumers reveal: `routing_escalation` treats risk as
+"danger of the action" (Condition 1 = high/blocking), while the fixtures sometimes mean "danger of the
+subject".
+
+**Resolution (policy, needs operator sign-off):** `risk` should mean DANGER OF THE ACTION (mutating vs
+non-mutating + change severity), and `dataSensitivity` means SENSITIVITY OF THE SUBJECT. Under this
+semantic the action-based classifier is 5/5 on real data and the synthetic `feature_review`/`diff_review`
+rows labeled `risk=high` are the ones that are MISLABELED (their "high" belongs in dataSensitivity,
+which is already `restricted`/`secret` there). Fixing the fixtures' `risk` labels to match this semantic
+would make both 5/5 with one consistent rule — no model needed.

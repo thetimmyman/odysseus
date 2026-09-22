@@ -135,11 +135,20 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
         # keyword lexicons above, and the policy gate below still forces local.
         sensitivity = "internal"
 
-    # --- risk: default LOW (routine work), raise only on danger signal ---
-    risk = _first_hit(RISK_SIGNALS, text, "low")
-
     task_type = _first_hit(TASKTYPE_SIGNALS, text, "implementation")
     ver_mode = _first_hit(VERIFMODE_SIGNALS, text, "analysis_only")
+
+    # --- risk: key on the ACTION (task_type), not just the TOPIC ---
+    # Review/analysis/docs tasks are non-mutating => inherently low-risk even when
+    # the SUBJECT contains a scary phrase ("path traversal PoC verification" is a
+    # low-risk review, not a high-risk exploit). Only mutating types can be raised
+    # by danger keywords.
+    non_mutating = task_type in ("diff_review", "feature_review", "feature_plan",
+                                  "analysis_only") or ver_mode in ("analysis_only",)
+    if non_mutating:
+        risk = "low"
+    else:
+        risk = _first_hit(RISK_SIGNALS, text, "low")
 
     # --- backend + HARD policy gate ---
     if sensitivity in ("secret", "restricted"):
