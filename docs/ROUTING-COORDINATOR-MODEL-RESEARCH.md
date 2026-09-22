@@ -233,7 +233,19 @@ overwhelmingly `low` (5/5). No static lexicon satisfies both.
 
 Decision: **default `risk=low`, raise only on unambiguous release/security signals.** Result: real-world
 risk 4/5 (one residual miss: "path traversal PoC" — a low-risk test task that the lexicon reads as
-high-risk because "path traversal" is genuinely ambiguous; acceptable for a non-gating field). The 27
-synthetic fixtures still `passedAllGates=True`. `risk` is left as best-effort `low`-default unless a
-real downstream consumer actually depends on it (open question: does any behavior key on `risk`? If not,
-it is correctly a low-effort metadata field).
+high-risk because "path traversal" is genuinely ambiguous). The 27 synthetic fixtures still
+`passedAllGates=True`.
+
+**CORRECTION (was "non-gating = metadata, stop optimizing" — WRONG).** `risk` IS acted on downstream:
+- `routing_engine.py`: `risk` shifts model-selection scoring ±30 (low+free +15; high/blocking +30
+  escalation, free −15). It changes WHICH model/profile is selected.
+- `routing_escalation.py`: `risk in (HIGH, RELEASE_BLOCKING)` is Condition 1 of the 5-condition premium
+  escalation gate. Mislabeling high→low delays escalation (recoverable via `cheaper_attempts_exhausted`),
+  mislabeling low→high prematurely opens Condition 1 (but conditions 2-5 — budget/approval/data-policy/
+  approval — still gate it).
+So `risk` matters for **cost/latency/model-choice efficiency**, NOT safety (safety = dataSensitivity +
+policy, already deterministic). A wrong `risk` wastes routing score / delays or mis-prioritizes escalation,
+but cannot cause a data breach. 4/5 real-world `risk` is therefore ACCEPTABLE-but-improvable: correct
+enough for safety, imperfect for cost-efficiency. This is the ONE field where a small model hint
+(Qwen3.5-0.8B `risk` toward low/medium/high/blocking) would legitimately help if cost-efficiency of
+model selection is ever worth the marginal complexity.
