@@ -25,6 +25,8 @@ import pytest
 
 from src import dispatch_routing as dr
 from src.execution_package import make_dispatch_receipt
+from src.provider_capacity import (AuthorizationClass, CapacityState, Entitlement,
+                                   make_capacity_receipt)
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
 PROFILE_ID = "rtx4500-ollama-qwen38-27b"
@@ -61,6 +63,21 @@ def receipt(**overrides) -> dr.LegacyCapabilityView:
     }
     fields.update(overrides)
     return dr.make_legacy_capability_view(**fields)
+
+
+def capacity_receipt(**overrides):
+    fields = {
+        "provider": "openrouter", "pool_id": "openrouter:subscription",
+        "account_identity": "subscription:primary",
+        "authorization_class": AuthorizationClass.AGENT_SDK,
+        "entitlement": Entitlement.AGENT_SDK,
+        "exposed_models": ("qwen3.8:27b",), "observed_at": NOW.isoformat(),
+        "ttl_seconds": 3600, "collector_id": "test-collector",
+        "evidence_source": "fixture", "evidence_reference": "capacity-1",
+        "state": CapacityState.AVAILABLE, "concurrency_remaining": 4,
+    }
+    fields.update(overrides)
+    return make_capacity_receipt(**fields)
 
 
 def request(**overrides) -> dr.RoutingRequest:
@@ -115,13 +132,71 @@ def test_ps638_receipt_hash_matches_for_capacity_refs():
 def test_the_positive_control_selects_and_receipts():
     decision = select(decision_id="dec-1")
     assert decision.selected_profile.profile_id == PROFILE_ID
+
+
+def hosted_profile():
+    return profile(target_id="hosted-target", profile_id="hosted-profile",
+                   provider="openrouter", host="api.openrouter.ai",
+                   locality=dr.LOCALITY_HOSTED,
+                   endpoint_url="https://openrouter.ai/api/v1")
+
+
+def hosted_select(capacity, **capacity_overrides):
+    target = hosted_profile()
+    cap = capacity(**capacity_overrides)
+    cap_receipt = receipt(profile_id=target.profile_id, target_id=target.target_id)
+    return select(profiles=[target], receipts=[cap_receipt],
+                  capacity_receipts=[cap], decision_id="hosted-decision")
+
+
+def test_hosted_capacity_gate_classifies_missing_stale_and_unusable():
+    target = hosted_profile()
+    cap_view = receipt(profile_id=target.profile_id, target_id=target.target_id)
+    for cap in (None, capacity_receipt(exposed_models=("other-model",)),
+                capacity_receipt(observed_at="2026-09-15T11:00:00+00:00", ttl_seconds=1),
+                capacity_receipt(state=CapacityState.EXHAUSTED)):
+        with pytest.raises(dr.RoutingRefused) as err:
+            select(profiles=[target], receipts=[cap_view],
+                   capacity_receipts=[] if cap is None else [cap])
+        expected = (dr.REFUSED_CAPACITY_MISSING if cap is None or
+                    cap.exposed_models == ("other-model",) else
+                    dr.REFUSED_CAPACITY_STALE if cap.ttl_seconds == 1 else
+                    dr.REFUSED_CAPACITY_UNUSABLE)
+        assert err.value.code == expected
+
+
+def test_hosted_interactive_entitlement_is_unusable():
+    with pytest.raises(dr.RoutingRefused) as err:
+        hosted_select(capacity_receipt, entitlement=Entitlement.INTERACTIVE_NATIVE)
+    assert err.value.code == dr.REFUSED_CAPACITY_UNUSABLE
+
+
+def test_hosted_capacity_refs_are_recorded_and_receipt_hash_matches():
+    cap = capacity_receipt()
+    decision = hosted_select(lambda **kw: cap)
+    assert decision.capacity_receipt_refs == (cap.ref,)
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert kwargs["capacity_receipt_refs"] == (cap.ref,)
+    assert make_dispatch_receipt(**kwargs).receipt_hash == decision.receipt_hash
+
+
+def test_capacity_receipt_order_does_not_change_decision_hash():
+    first = capacity_receipt(pool_id="pool-a", evidence_reference="capacity-a")
+    second = capacity_receipt(pool_id="pool-b", evidence_reference="capacity-b")
+    target = hosted_profile()
+    view = receipt(profile_id=target.profile_id, target_id=target.target_id)
+    a = select(profiles=[target], receipts=[view], capacity_receipts=[first, second],
+               decision_id="hosted-decision")
+    b = select(profiles=[target], receipts=[view], capacity_receipts=[second, first],
+               decision_id="hosted-decision")
+    assert a.decision_hash == b.decision_hash
     # No preference was expressed, so nothing was substituted: the deterministic
     # order decided. A preferred-order case is asserted separately.
-    assert decision.reason_code == dr.REASON_SELECTED_DETERMINISTIC
-    assert decision.fallback_used is False
-    assert decision.receipt_hash and len(decision.receipt_hash) == 64
-    assert decision.pin()["model"] == "qwen3.8:27b"
-    assert decision.pin()["granted_tools"] == ["write_file"]
+    assert a.reason_code == dr.REASON_SELECTED_DETERMINISTIC
+    assert a.fallback_used is False
+    assert a.receipt_hash and len(a.receipt_hash) == 64
+    assert a.pin()["model"] == "qwen3.8:27b"
+    assert a.pin()["granted_tools"] == ["write_file"]
 
 
 def test_the_receipt_carries_everything_the_ticket_requires():
@@ -417,7 +492,8 @@ def test_a_fallback_must_satisfy_the_same_policy_as_the_preferred_candidate():
     # hosted selection a fallback rather than the deterministic default.
     decision = select(request(preferred_profile_ids=(PROFILE_ID,)),
                       profiles=[profile(), hosted],
-                      receipts=[stale, hosted_receipt], decision_id="dec-fb")
+                      receipts=[stale, hosted_receipt],
+                      capacity_receipts=[capacity_receipt()], decision_id="dec-fb")
     assert decision.selected_profile.profile_id == "or-v4pro"
     assert decision.fallback_used is True
     assert decision.reason_code == dr.REASON_SELECTED_FALLBACK

@@ -597,6 +597,7 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
                      policy: Any = None,
                      resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
                      capability_store: Any = None,
+                     capacity_receipts: Optional[Sequence[Any]] = None,
                      now: Optional[datetime] = None,
                      decision_id: str = "") -> BoundDispatch:
     """Resolve the routing decision the dispatcher must obey. Raises on refusal.
@@ -626,7 +627,8 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
     # registry-backed caller uses, so there is exactly one place selection happens.
     return resolve_from_estate(estate, request, capability_store=capability_store,
                                network_classes=network_classes,
-                               policy=snapshot, resources=resources, now=now,
+                               policy=snapshot, resources=resources,
+                               capacity_receipts=capacity_receipts or (), now=now,
                                decision_id=decision_id)
 
 
@@ -635,6 +637,7 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                         network_classes: Optional[Mapping[str, str]] = None,
                         policy: Any = None,
                         resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
+                        capacity_receipts: Optional[Sequence[Any]] = None,
                         now: Optional[datetime] = None,
                         decision_id: str = "") -> BoundDispatch:
     """Bind an already-built estate + request to a decision: no DB, no task row.
@@ -692,7 +695,8 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
             candidates=estate.candidates)
     decision = select_target(
         request, profiles=estate.profiles, receipts=estate.receipts,
-        policy=snapshot, resources=resources, now=now, decision_id=decision_id)
+        policy=snapshot, resources=resources,
+        capacity_receipts=capacity_receipts or (), now=now, decision_id=decision_id)
     return BoundDispatch(request=request, estate=estate, decision=decision,
                          policy=snapshot)
 
