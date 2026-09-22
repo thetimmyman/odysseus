@@ -7,6 +7,22 @@ run is the LAST step, not the first.
 
 ## 0. The actual question (purpose, not just "compare models")
 
+**0.1 — A sharper reframe first (evidence from the fixture analysis): is this even an LLM task?**
+Every output field is a LOW-CARDINALITY ENUM over an already-semi-structured input, not open-ended
+generation. Field cardinalities (over the 27 fixtures): domain=5, taskType=9, risk=4,
+dataSensitivity=5 (public→secret), backend=3, verificationMode=6, approvalRequired=2 (boolean). The
+input is `{title, objective, type, repoPath, inputs.files[], inputs.logs[]/prompt}` — short strings
+packed with LEXICAL signals (`vault/unseal.py`, `auth/signing_key.py`, `billing/reconcile.py`,
+`tacticus`, `k3s/flannel`, `diff`, `release`).
+
+**Consequence: the decision is ~80–90% deterministic**, and the policy-gate field (`dataSensitivity`)
+is the field you *least* want an LLM owning (a sensitivity mislabel is a security event; a lexicon +
+"uncertain → treat as restricted → local-only" rule is strictly safer and cannot fail). The LLM's real
+role shrinks to **feature extraction / catching lexicon misses / resolving genuinely-ambiguous input**,
+not emitting the whole decision.
+
+---
+
 The two general-purpose providers are FIXED (qwen3.8 flash on Framework, qwen3.8 27b on RTX 4500)
 and they will be **busy on real work**. The benchmark therefore answers ONE question:
 
@@ -137,6 +153,41 @@ we ever want an ARM build of a serving model — NOT the Pi fleet.
   "current best" to beat — the stub + first pinned run becomes the baseline.
 - **Single card**: results on the 2080 Ti measure "what fits + what's correct there," not the
   RTX 4500/Framework ceiling; a model that does not fit at Q4 here is deferred, not failed.
+
+## 6.5 The three benchmark arms (the experiment this is actually designed to answer)
+
+Given §0.1 (the decision is ~80–90% deterministic), the benchmark compares THREE arms, not
+"model A vs model B":
+
+1. **Arm 0 — deterministic only (no LLM).** Rules + a lexicon on `title/objective/type/files`
+   feed a trivial classifier (logistic/GBM) for the enumerable fields; the policy gate is a hard
+   post-hoc rule; `uncertain` → conservative default (`restricted`→local, abstain). This is the
+   null-arm: if it clears the gates, NO model is needed for triage at all.
+2. **Arm 1 — rules + a micro-LLM for feature extraction only.** Qwen3.5-0.8B (or 2B) reads the
+   text and emits `{domain_hint, taskType_hint, sensitivity_hint}`; the deterministic classifier
+   still makes the FINAL enum decision + policy gate. The LLM never owns the decision.
+3. **Arm 2 — the LLM does the whole decision** (current plan): Qwen3.5-4B (or 9B) gbnf-constrained
+   to `CoordinatorDecision` directly.
+
+**Headline metric**: false-confidence rate (a confidently-wrong label, esp. on `dataSensitivity`),
+then gate-pass per tier. The question is not "which model is smartest", it's "which arm clears the
+gates at the lowest cost and lowest mislabel-on-sensitive risk".
+
+The cleanest conclusion for each ranking: (a) Arm 0 passes → drop the LLM entirely; (b) only Arm 1
+passes → the 0.8B feature-extractor is the sweet spot, final decisions stay deterministic; (c) only
+Arm 2 passes → an LLM genuinely owns the decision (the unlikely-but-honest case); (d) none pass
+zero-shot → the gate tier needs a fine-tune.
+
+### Table: which field belongs to which arm (from the fixture analysis)
+
+| field | dominant signal | owner |
+|---|---|---|
+| dataSensitivity (gate) | filename+lexicon (`vault/`, `auth/`, `billing/`, `signing_key`) | deterministic + hard rule |
+| backend | `tacticus`↔absis, `secret`↔local, else default | deterministic |
+| approvalRequired | rule on `release`/`security`/`release_blocking` | deterministic |
+| risk | lexicon (`auth bypass`, `signing key`) | deterministic (+LLM hint) |
+| domain / taskType | keyword + short-text semantics | LLM hint (+lexicon) |
+| verificationMode | `refactor`/`analy`/`security` keywords | deterministic |
 
 ## 7. Order of operations (research → protocol → benchmark)
 
