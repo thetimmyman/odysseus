@@ -197,3 +197,29 @@ zero-shot → the gate tier needs a fine-tune.
 4. One-per-tier live run, captured with full provenance (§5.1).
 5. Compare: zero-shot small vs big+confidence vs bare-gap, by tier, with false-confidence rate as
    the headline metric (not just accuracy).
+
+## 9. Real-world evidence (2026-09-22) — the decisive viability data
+
+Source: live `routing_tasks` + `coordinator_audit` on the framework prod DB (read-only), 5 real rows.
+
+**What production actually shows:**
+- Only **5 real routing tasks** have ever existed; all are smoke/PoC/gate-test origin.
+- Only **2 coordinator decisions** were ever made, and BOTH the real model calls produced empty output
+  (`parsed_ok=0`, `json_parse_error`, empty `raw_output`) and fell back to `deterministic`
+  (`fallback_path=deterministic`, `applied_fallback=1`). i.e. **the real model was never serving the
+  decision — the deterministic fallback was.**
+
+**Arm 0 on the 5 real (unseen) rows:**
+| field | correct | note |
+|---|---|---|
+| dataSensitivity | 5/5 | the security-critical field; incl. both `restricted` locality-gate rows |
+| backend | 5/5 | all local; the 2 `restricted` correctly forced `local_framework_coordinator_only` |
+| task_type | 3/5 | 2 `feature_review` rows guessed `implementation` |
+| risk | 0/5 | all real `low` misread as `medium` (lexicon tuned to synthetic fixtures) |
+
+**Verdict (viability, evidence-based):**
+- The SAFETY surface (sensitivity + backend) generalizes to real data at 5/5 — deterministic rules hold.
+- The real model path already fails and degrades to deterministic; it was never carrying the floor.
+- The only miss (`risk`, non-gating metadata) is a lexicon tunable, not a reason for an LLM.
+- Conclusion: **deterministic-only is the viable, correct scope. A routing LLM is unwarranted — it
+  would chase non-gating metadata fields that real traffic doesn't even exercise through the model path.**
