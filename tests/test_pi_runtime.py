@@ -153,6 +153,56 @@ async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     assert final["status"] == pe.STATUS_COMPLETED
 
 
+async def test_start_from_pin_persists_dispatch_binding(repo, worktree, pi_env):
+    configure(worktree, session_id="stub-session-pin")
+    runtime = PiRuntime()
+    pin = {
+        "provider": pc.DEFAULT_PI_PROVIDER,
+        "model": pc.DEFAULT_PI_MODEL_ID,
+        "runtime_kind": "pi",
+        "receipt_hash": "receipt-pin",
+        "target_id": "target-pin",
+        "host": "host-pin",
+    }
+
+    record = await runtime.start_from_pin(
+        pin,
+        task="Run from a dispatch pin.",
+        worktree=str(worktree),
+        attempt=2,
+        run_id="run-pin",
+        packet_id="packet-pin",
+        execution_package_hash="package-pin",
+    )
+
+    assert record["provider"] == pin["provider"]
+    assert record["model"] == pin["model"]
+    assert record["dispatch_receipt_hash"] == "receipt-pin"
+    assert record["target_id"] == "target-pin"
+    assert record["host"] == "host-pin"
+    assert record["runtime_kind"] == "pi"
+    assert record["attempt"] == 2
+
+
+async def test_start_from_pin_rejects_non_pi_without_spawning(repo, worktree, pi_env, monkeypatch):
+    configure(worktree, session_id="stub-session-non-pi")
+    runtime = PiRuntime()
+
+    async def no_spawn(*args, **kwargs):
+        raise AssertionError("non-Pi dispatch pin must not spawn Pi")
+
+    monkeypatch.setattr(runtime, "_spawn", no_spawn)
+    pin = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "runtime_kind": "openai_compatible",
+    }
+
+    with pytest.raises(ValueError, match="not a Pi target"):
+        await runtime.start_from_pin(pin, task="Must not run.", worktree=str(worktree))
+    assert not list((Path(pi_env) / "executions").glob("*.json"))
+
+
 # --- Test B — Identity -----------------------------------------------------
 async def test_b_execution_id_maps_to_pi_session_id(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-b")

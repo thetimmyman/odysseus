@@ -452,6 +452,14 @@ class PiRuntime:
         provider: Optional[str] = None,
         execution_id: Optional[str] = None,
         keep_alive: bool = False,
+        run_id: Optional[str] = None,
+        packet_id: Optional[str] = None,
+        attempt: Optional[int] = None,
+        execution_package_hash: Optional[str] = None,
+        dispatch_receipt_hash: Optional[str] = None,
+        target_id: Optional[str] = None,
+        host: Optional[str] = None,
+        runtime_kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Start a delegated Pi execution and return its Odysseus record.
 
@@ -491,6 +499,14 @@ class PiRuntime:
             jira_ticket=jira_ticket,
             constraints=constraints,
             execution_id=execution_id,
+            run_id=run_id,
+            packet_id=packet_id,
+            attempt=attempt,
+            execution_package_hash=execution_package_hash,
+            dispatch_receipt_hash=dispatch_receipt_hash,
+            target_id=target_id,
+            host=host,
+            runtime_kind=runtime_kind,
         )
         eid = record["execution_id"]
 
@@ -525,6 +541,55 @@ class PiRuntime:
         await self._request(handle, {"type": "prompt",
                                      "message": self._compose_prompt(task, constraints)})
         return pi_executions.get_execution(eid) or record
+
+    async def start_from_pin(
+        self,
+        pin: Dict[str, Any],
+        *,
+        task: str,
+        worktree: str,
+        attempt: int = 1,
+        run_id: str = "",
+        packet_id: str = "",
+        execution_package_hash: str = "",
+        repo_path: Optional[str] = None,
+        odysseus_run_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        jira_ticket: Optional[str] = None,
+        constraints: Optional[List[str]] = None,
+        execution_id: Optional[str] = None,
+        keep_alive: bool = False,
+    ) -> Dict[str, Any]:
+        """Start Pi only from a validated dispatch pin."""
+        provider = pin["provider"]
+        model = pin["model"]
+        runtime_kind = pin.get("runtime_kind") or ""
+        if runtime_kind not in ("", "pi", None):
+            raise ValueError(
+                "a Pi adapter must never execute a pin that is not a Pi target"
+            )
+        runtime_kind = "pi" if not runtime_kind else runtime_kind
+        return await self.start(
+            task=task,
+            worktree=worktree,
+            model=model,
+            provider=provider,
+            run_id=run_id,
+            packet_id=packet_id,
+            attempt=attempt,
+            execution_package_hash=execution_package_hash,
+            dispatch_receipt_hash=pin.get("receipt_hash"),
+            target_id=pin.get("target_id"),
+            host=pin.get("host"),
+            runtime_kind=runtime_kind,
+            repo_path=repo_path,
+            odysseus_run_id=odysseus_run_id,
+            task_id=task_id,
+            jira_ticket=jira_ticket,
+            constraints=constraints,
+            execution_id=execution_id,
+            keep_alive=keep_alive,
+        )
 
     @staticmethod
     def _compose_prompt(task: str, constraints: Optional[List[str]]) -> str:
