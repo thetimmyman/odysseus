@@ -60,26 +60,36 @@ must ABSTAIN and leave the gap visible rather than be filled.
 
 - **No off-the-shelf model is pre-trained for THIS 12-dimension routing + policy gate.** The
   "fine-tuned expert" must be *created* from our 27 labeled fixtures (they are the fine-tuning seed).
-- **Zero-shot candidates** (small instruction models) are the only thing measurable *today*:
-  Qwen 2.5 0.5B/1.5B, Gemma 3 1B/4B, SmolLM2 1.7B — weak on policy nuance, but a valid "current
-  zero-shot floor" to beat. (Phi-3-mini is 3.8B, not `≤2B`; treat as a small-generalist, not micro.)
+- **Zero-shot candidates** are the only thing measurable *today* (no fine-tuned tier-2 specialist
+  yet). The CURRENT Qwen family (Tim-provided, live-verified 2026-09-22) is the natural pick because
+  the fixed generalists are qwen3.8 — use the same-family small siblings for a clean escalation path.
 - **The deciding capability is JSON-schema/gbnf-constrained decoding**, not size. The harness
   already states: plain sampling on a small model misses `schema_validity ≥ 0.98`; the endpoint
   MUST constrain output to `CoordinatorDecision` (GBNF / `json_schema` response_format).
-- **The generalist arm is now FIXED and OUT OF SCOPE for selection** (Tim 2026-09-22):
+- **The generalist arm is FIXED and OUT OF SCOPE for selection** (Tim 2026-09-22):
   **qwen3.8 flash** (Framework, via halogen) and **qwen3.8 27b** (RTX 4500). These are the two
   fixed general-purpose providers. The benchmark no longer asks "which generalist" — it asks
   whether a **dedicated micro-classifier on the 2080 Ti (or CPU)** is worth its keep for triage.
 
-### Verified model facts (from out-ps605-model-matrix.md)
+### Verified candidate matrix (CURRENT models — live HF, 2026-09-22)
 
-- **Gemma 4 is REAL** (official Google DeepMind, 2026-04: E2B 2.3B / E4B 4.5B / 12B / 26B-A4B MoE /
-  31B dense; 128–256K context). There is NO "Gemma 3 8B": Gemma 3 = 1B/4B/12B/27B. Gemma 4's small
-  sizes are **E2B/E4B**, not "1B/4B".
-- **Strongest tier-1 instruction-following pick: Gemma 3 4B (IFEval 90.2%)**, and it fits fully on
-  the 2080 Ti even at BF16+mmproj (~8.0 GiB). Qwen2.5 0.5B/1.5B and Gemma 3 1B all fit at fp16/Q8.
-- **Every tier-1 micro candidate fits the 2080 Ti at fp16/Q8** (weights+KV+slack under ~10.5 GiB
-  usable) — so the micro-tier needs no GPU compromise at all, and ≤2B also runs acceptably on CPU.
+Fixed providers (Tim): **Qwen3.8-Flash-Next** (Framework/halogen) and **Qwen3.8-27B** (RTX 4500).
+
+Micro-tier candidates (small Qwen3.5 siblings — the natural companions to qwen3.8):
+
+| model | Q4_K_M | Q8_0 | fits 2080 Ti (11GB)? |
+|---|---|---|---|
+| Qwen3.5-0.8B | — | 0.83 GB | ✅ trivially (even CPU is fine) |
+| Qwen3.5-2B | 1.28 GB | 2.01 GB | ✅ trivially |
+| Qwen3.5-4B | 2.74 GB | 4.48 GB | ✅ comfortably |
+| Qwen3.5-9B (borderline generalist) | ~5–6 GB (est) | ~10 GB (est) | ✅ at Q4, tight at Q8 |
+
+(GGUF sources: `ggml-org/Qwen3.5-0.8B-GGUF`, `unsloth/Qwen3.5-{2B,4B}-GGUF` — official quants.)
+
+**Rule added (correcting a stale-catalog mistake): model candidates are selected from the live HF
+index at benchmark time, NEVER from the model's training-memory catalog.** Earlier versions of this
+doc named Qwen2.5/Gemma-3/Llama-3.1/Phi-3 — those are one-to-two generations stale. The corrected,
+current micro-tier is the Qwen3.5 0.8B/2B/4B family.
 
 **Candidate matrix** (to be filled by model research, with exact GGUF quant/context/offload):
 
