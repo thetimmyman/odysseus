@@ -81,7 +81,7 @@ def hosted_pool_id(auth_id: str) -> str:
     """Pools track the entitlement that owns the capacity -- the session
     whose subscription it is (the rate window, the spend cap, and the model
     list all belong to that session)."""
-    return "chatgpt-subscription:session:%s" % str(auth_id or "").strip()
+    return f"chatgpt-subscription:session:{str(auth_id or '').strip()}"
 
 
 def account_identity_for(owner: Any, auth_id: str) -> str:
@@ -91,7 +91,7 @@ def account_identity_for(owner: Any, auth_id: str) -> str:
     identity = str(owner or "").strip().lower()
     if identity:
         return identity
-    return "auth:%s" % str(auth_id or "").strip()
+    return f"auth:{str(auth_id or '').strip()}"
 
 
 def _is_true(value: Any) -> bool:
