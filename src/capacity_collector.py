@@ -30,7 +30,7 @@ import base64
 import datetime as _dt
 import json
 import os
-from typing import Any
+from typing import Any, TypeGuard
 
 from core.database import ProviderAuthSession, SessionLocal
 from src import chatgpt_subscription as cgs
@@ -101,7 +101,7 @@ def _is_true(value: Any) -> bool:
     return value is True
 
 
-def _is_number(value: Any) -> bool:
+def _is_number(value: Any) -> TypeGuard[int | float]:
     """A real provider number (int/float, never a bool) we may convert."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -194,7 +194,7 @@ def _reset_quota_fields(now_iso: str, rate_block: dict | None) -> tuple:
         ):
             try:
                 parsed = _dt.datetime.fromtimestamp(
-                    float(rate_block.get(key)), tz=_dt.timezone.utc
+                    float(raw), tz=_dt.timezone.utc
                 )
             except (OverflowError, OSError, ValueError):
                 parsed = None
