@@ -1,24 +1,39 @@
 """Authoritative append-only persistence for PS-640 capacity receipts."""
+
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
 import time
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
-import fcntl
 from dataclasses import replace
-from typing import Dict, Iterable, Mapping, Tuple
 
 from src.provider_capacity import (
-    CapacityError, CapacityState, EvidenceProvenance, ProviderCapacityReceipt,
-    _sha256, capacity_receipt_from_dict, capacity_receipt_hash_is_valid,
-    make_capacity_receipt, validated_current_receipts,
+    CapacityError,
+    CapacityState,
+    EvidenceProvenance,
+    ProviderCapacityReceipt,
+    _sha256,
+    capacity_receipt_from_dict,
+    capacity_receipt_hash_is_valid,
+    make_capacity_receipt,
+    validated_current_receipts,
 )
+from src.routing_workdir import data_root
 
 
 class CapacityStoreError(RuntimeError):
     """The persisted capacity authority cannot be trusted."""
+
+
+#: Default store location, mirroring the PS-632 target capability store.
+#: ``data/provider_capacity`` under the routing workdir; overridable by env so an
+#: operator (or a test) can point at a throwaway store.
+STORE_ENV = "PS640_CAPACITY_STORE"
+STORE_DIRNAME = "provider_capacity"
 
 
 class CapacityStoreBusyError(CapacityStoreError):
@@ -34,17 +49,22 @@ def _json_no_duplicate_pairs(pairs):
     return result
 
 
+def default_store_dir() -> str:
+    """PS-644 env-var override, mirroring ``target_capability_store``."""
+    return os.environ.get(STORE_ENV) or os.path.join(data_root(), STORE_DIRNAME)
+
+
 class ProviderCapacityStore:
     """Append-only history plus an authoritative, validated current index."""
 
-    def __init__(self, directory: str, *, lock_timeout_seconds: float = 5.0):
-        self.directory = os.path.abspath(directory)
+    def __init__(self, directory: str = "", *, lock_timeout_seconds: float = 5.0):
+        self.directory = os.path.abspath(directory or default_store_dir())
         self.receipts_path = os.path.join(self.directory, "receipts.jsonl")
         self.index_path = os.path.join(self.directory, "current.json")
         self.lock_path = os.path.join(self.directory, "capacity.lock")
         self.lock_timeout_seconds = lock_timeout_seconds
 
-    def entries(self) -> Tuple[ProviderCapacityReceipt, ...]:
+    def entries(self) -> tuple[ProviderCapacityReceipt, ...]:
         if not os.path.exists(self.receipts_path):
             return ()
         out = []
@@ -53,15 +73,27 @@ class ProviderCapacityStore:
                 if not line.strip():
                     continue
                 try:
-                    payload = json.loads(line, object_pairs_hook=_json_no_duplicate_pairs)
-                    if not isinstance(payload, dict) or not capacity_receipt_hash_is_valid(payload):
+                    payload = json.loads(
+                        line, object_pairs_hook=_json_no_duplicate_pairs
+                    )
+                    if not isinstance(
+                        payload, dict
+                    ) or not capacity_receipt_hash_is_valid(payload):
                         raise ValueError("receipt hash mismatch")
                     out.append(capacity_receipt_from_dict(payload))
-                except (ValueError, KeyError, TypeError, json.JSONDecodeError, CapacityError) as exc:
-                    raise CapacityStoreError(f"{self.receipts_path}:{number}: {exc}") from exc
+                except (
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    json.JSONDecodeError,
+                    CapacityError,
+                ) as exc:
+                    raise CapacityStoreError(
+                        f"{self.receipts_path}:{number}: {exc}"
+                    ) from exc
         return tuple(out)
 
-    def history(self, pool_id: str = "") -> Tuple[ProviderCapacityReceipt, ...]:
+    def history(self, pool_id: str = "") -> tuple[ProviderCapacityReceipt, ...]:
         """Explicit historical access; this never supplies runtime authority."""
         entries = self.entries()
         return tuple(r for r in entries if not pool_id or r.pool_id == pool_id)
@@ -76,13 +108,21 @@ class ProviderCapacityStore:
         active = self._authoritative_current(entries, index)
         return active.get(pool_id)
 
-    def append(self, receipt: ProviderCapacityReceipt, *, supersedes: str = "") -> ProviderCapacityReceipt:
+    def append(
+        self, receipt: ProviderCapacityReceipt, *, supersedes: str = ""
+    ) -> ProviderCapacityReceipt:
         with self._mutation_lock():
             return self._append_locked(receipt, supersedes=supersedes)
 
-    def _append_locked(self, receipt: ProviderCapacityReceipt, *, supersedes: str = "") -> ProviderCapacityReceipt:
+    def _append_locked(
+        self, receipt: ProviderCapacityReceipt, *, supersedes: str = ""
+    ) -> ProviderCapacityReceipt:
         existing = self.entries() if os.path.exists(self.receipts_path) else ()
-        index = self._read_index(required=True) if existing else self._read_index(required=False)
+        index = (
+            self._read_index(required=True)
+            if existing
+            else self._read_index(required=False)
+        )
         if any(r.receipt_hash == receipt.receipt_hash for r in existing):
             raise CapacityStoreError("duplicate receipt hash")
         if supersedes:
@@ -96,7 +136,9 @@ class ProviderCapacityStore:
             if prior.receipt_hash == receipt.receipt_hash:
                 raise CapacityStoreError("self-supersession is forbidden")
             if receipt.pool_id not in index:
-                raise CapacityStoreError("only the authoritative current receipt may be superseded")
+                raise CapacityStoreError(
+                    "only the authoritative current receipt may be superseded"
+                )
             chain = self._indexed_chain(existing, index, receipt.pool_id)
             successors = self._uncommitted_successors(existing, chain, receipt.pool_id)
             if successors:
@@ -108,26 +150,41 @@ class ProviderCapacityStore:
                 if supersedes != leaf.receipt_hash:
                     raise CapacityStoreError(
                         "ambiguous authority: recovery must supersede the durable successor "
-                        f"{leaf.receipt_hash[:12]} to commit the interrupted history")
+                        f"{leaf.receipt_hash[:12]} to commit the interrupted history"
+                    )
             elif supersedes != chain[0].receipt_hash:
-                raise CapacityStoreError("only the authoritative current receipt may be superseded")
+                raise CapacityStoreError(
+                    "only the authoritative current receipt may be superseded"
+                )
         elif receipt.pool_id in index:
             raise CapacityStoreError("replacement receipt must name supersedes")
         if receipt.supersedes and receipt.supersedes != supersedes:
-            raise CapacityStoreError("receipt supersedes field does not match append request")
+            raise CapacityStoreError(
+                "receipt supersedes field does not match append request"
+            )
         if supersedes:
             core = {**receipt.core(), "supersedes": supersedes}
-            receipt = replace(receipt, supersedes=supersedes, receipt_hash=_sha256(core))
+            receipt = replace(
+                receipt, supersedes=supersedes, receipt_hash=_sha256(core)
+            )
         self._append_line(receipt)
         index = dict(index)
-        index[receipt.pool_id] = {"pool_id": receipt.pool_id,
-                                  "receipt_hash": receipt.receipt_hash,
-                                  "observed_at": receipt.observed_at}
+        index[receipt.pool_id] = {
+            "pool_id": receipt.pool_id,
+            "receipt_hash": receipt.receipt_hash,
+            "observed_at": receipt.observed_at,
+        }
         self._write_index(index)
         return receipt
 
-    def invalidate(self, receipt_hash: str, reason: str,
-                   provenance: EvidenceProvenance, *, pool_id: str | None = None) -> ProviderCapacityReceipt:
+    def invalidate(
+        self,
+        receipt_hash: str,
+        reason: str,
+        provenance: EvidenceProvenance,
+        *,
+        pool_id: str | None = None,
+    ) -> ProviderCapacityReceipt:
         """Append a pool-scoped invalidation record without deleting history."""
         with self._mutation_lock():
             entries = self.entries()
@@ -142,17 +199,23 @@ class ProviderCapacityStore:
             active = self._authoritative_current(entries, index)
             current = active.get(target.pool_id)
             if current is None or current.receipt_hash != receipt_hash:
-                raise CapacityStoreError("only the authoritative current receipt may be invalidated")
+                raise CapacityStoreError(
+                    "only the authoritative current receipt may be invalidated"
+                )
             invalidated = make_capacity_receipt(
-                **{**target.core(), "state": CapacityState.UNAVAILABLE,
-                   "state_provenance": provenance,
-                   "invalidation_reason": reason,
-                   "observed_at": provenance.observed_at,
-                   "ttl_seconds": provenance.ttl_seconds,
-                   "evidence_source": provenance.source,
-                   "evidence_reference": provenance.reference,
-                   "collector_id": provenance.collector_id,
-                   "supersedes": receipt_hash})
+                **{
+                    **target.core(),
+                    "state": CapacityState.UNAVAILABLE,
+                    "state_provenance": provenance,
+                    "invalidation_reason": reason,
+                    "observed_at": provenance.observed_at,
+                    "ttl_seconds": provenance.ttl_seconds,
+                    "evidence_source": provenance.source,
+                    "evidence_reference": provenance.reference,
+                    "collector_id": provenance.collector_id,
+                    "supersedes": receipt_hash,
+                }
+            )
             self._append_line(invalidated)
             next_index = dict(index)
             next_index.pop(target.pool_id, None)
@@ -168,9 +231,12 @@ class ProviderCapacityStore:
         except (CapacityStoreError, CapacityError, ValueError, KeyError, TypeError):
             return False
 
-    def _indexed_chain(self, entries: Iterable[ProviderCapacityReceipt],
-                       index: Mapping[str, Mapping[str, str]], pool_id: str
-                       ) -> tuple[ProviderCapacityReceipt, ...]:
+    def _indexed_chain(
+        self,
+        entries: Iterable[ProviderCapacityReceipt],
+        index: Mapping[str, Mapping[str, str]],
+        pool_id: str,
+    ) -> tuple[ProviderCapacityReceipt, ...]:
         """The committed supersession chain (head -> ... -> root) the index claims."""
         entries = tuple(entries)
         by_hash = {}
@@ -182,8 +248,15 @@ class ProviderCapacityStore:
         if not isinstance(item, Mapping) or item.get("pool_id") != pool_id:
             raise CapacityStoreError("current index pool identity mismatch")
         wanted = item.get("receipt_hash")
-        if not isinstance(wanted, str) or not wanted or wanted not in by_hash or counts[wanted] != 1:
-            raise CapacityStoreError("current index does not point to authoritative receipt")
+        if (
+            not isinstance(wanted, str)
+            or not wanted
+            or wanted not in by_hash
+            or counts[wanted] != 1
+        ):
+            raise CapacityStoreError(
+                "current index does not point to authoritative receipt"
+            )
         receipt = by_hash[wanted]
         if receipt.pool_id != pool_id or receipt.invalidation_reason:
             raise CapacityStoreError("current index does not point to usable receipt")
@@ -203,12 +276,17 @@ class ProviderCapacityStore:
             cursor = target
         validated = validated_current_receipts(chain)
         if len(validated) != 1 or validated[0].receipt_hash != wanted:
-            raise CapacityStoreError("current index does not point to authoritative receipt")
+            raise CapacityStoreError(
+                "current index does not point to authoritative receipt"
+            )
         return tuple(chain)
 
-    def _uncommitted_successors(self, entries: Iterable[ProviderCapacityReceipt],
-                                chain: Iterable[ProviderCapacityReceipt], pool_id: str
-                                ) -> tuple[ProviderCapacityReceipt, ...]:
+    def _uncommitted_successors(
+        self,
+        entries: Iterable[ProviderCapacityReceipt],
+        chain: Iterable[ProviderCapacityReceipt],
+        pool_id: str,
+    ) -> tuple[ProviderCapacityReceipt, ...]:
         """Durable same-pool successors claiming to supersede the committed chain.
 
         These are rows the committed current index does not represent; their mere
@@ -216,14 +294,19 @@ class ProviderCapacityStore:
         commits them."""
         chain_hashes = {r.receipt_hash for r in chain}
         return tuple(
-            r for r in entries
-            if r.pool_id == pool_id and r.receipt_hash not in chain_hashes
+            r
+            for r in entries
+            if r.pool_id == pool_id
+            and r.receipt_hash not in chain_hashes
             and r.supersedes in chain_hashes
         )
 
-    def _successor_leaf(self, entries: Iterable[ProviderCapacityReceipt],
-                        chain: Iterable[ProviderCapacityReceipt], pool_id: str
-                        ) -> ProviderCapacityReceipt:
+    def _successor_leaf(
+        self,
+        entries: Iterable[ProviderCapacityReceipt],
+        chain: Iterable[ProviderCapacityReceipt],
+        pool_id: str,
+    ) -> ProviderCapacityReceipt:
         """The unique durable successor-maximal receipt stemming from the chain.
 
         Raises fail-closed when multiple competing uncommitted leaves exist (an
@@ -249,11 +332,15 @@ class ProviderCapacityStore:
         leaves = [by_hash[h] for h in reachable if h not in children]
         if len(leaves) != 1:
             raise CapacityStoreError(
-                "ambiguous authority has competing uncommitted successors")
+                "ambiguous authority has competing uncommitted successors"
+            )
         return leaves[0]
 
-    def _authoritative_current(self, entries: Iterable[ProviderCapacityReceipt],
-                               index: Mapping[str, Mapping[str, str]]) -> dict[str, ProviderCapacityReceipt]:
+    def _authoritative_current(
+        self,
+        entries: Iterable[ProviderCapacityReceipt],
+        index: Mapping[str, Mapping[str, str]],
+    ) -> dict[str, ProviderCapacityReceipt]:
         """Single authority-resolution primitive (fail closed on ambiguity).
 
         The committed index is authority. If durable history contains a valid
@@ -267,7 +354,8 @@ class ProviderCapacityStore:
             if self._uncommitted_successors(entries, chain, pool_id):
                 raise CapacityStoreError(
                     "ambiguous authority: durable history contains an uncommitted "
-                    f"successor superseding the indexed receipt for {pool_id}")
+                    f"successor superseding the indexed receipt for {pool_id}"
+                )
             active[pool_id] = chain[0]
         return active
 
@@ -288,7 +376,9 @@ class ProviderCapacityStore:
         index = self._read_index(required=True)
         entries = self._entries_for_index(index)
         active = self._authoritative_current(entries, index)
-        chains = {pool_id: self._indexed_chain(entries, index, pool_id) for pool_id in index}
+        chains = {
+            pool_id: self._indexed_chain(entries, index, pool_id) for pool_id in index
+        }
         authoritative: list[ProviderCapacityReceipt] = []
         seen: set[str] = set()
         for pool_id in sorted(chains):
@@ -299,7 +389,9 @@ class ProviderCapacityStore:
                     authoritative.append(receipt)
         return tuple(authoritative)
 
-    def _entries_for_index(self, index: Mapping[str, Mapping[str, str]]) -> Tuple[ProviderCapacityReceipt, ...]:
+    def _entries_for_index(
+        self, index: Mapping[str, Mapping[str, str]]
+    ) -> tuple[ProviderCapacityReceipt, ...]:
         """Read valid rows for indexed resolution; trailing orphan rows are not authority."""
         if not os.path.exists(self.receipts_path):
             return ()
@@ -309,11 +401,21 @@ class ProviderCapacityStore:
                 if not line.strip():
                     continue
                 try:
-                    payload = json.loads(line, object_pairs_hook=_json_no_duplicate_pairs)
-                    if not isinstance(payload, dict) or not capacity_receipt_hash_is_valid(payload):
+                    payload = json.loads(
+                        line, object_pairs_hook=_json_no_duplicate_pairs
+                    )
+                    if not isinstance(
+                        payload, dict
+                    ) or not capacity_receipt_hash_is_valid(payload):
                         continue
                     out.append(capacity_receipt_from_dict(payload))
-                except (ValueError, KeyError, TypeError, json.JSONDecodeError, CapacityError):
+                except (
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    json.JSONDecodeError,
+                    CapacityError,
+                ):
                     continue
         return tuple(out)
 
@@ -329,7 +431,9 @@ class ProviderCapacityStore:
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise CapacityStoreBusyError("capacity store writer lock is busy")
+                        raise CapacityStoreBusyError(
+                            "capacity store writer lock is busy"
+                        )
                     time.sleep(0.01)
             yield
         finally:
@@ -338,7 +442,7 @@ class ProviderCapacityStore:
             finally:
                 handle.close()
 
-    def _read_index(self, *, required: bool) -> Dict[str, dict]:
+    def _read_index(self, *, required: bool) -> dict[str, dict]:
         if not os.path.exists(self.index_path):
             if required:
                 raise CapacityStoreError("current index is missing")
@@ -348,23 +452,39 @@ class ProviderCapacityStore:
                 data = json.load(handle, object_pairs_hook=_json_no_duplicate_pairs)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise CapacityStoreError(f"current index is unreadable: {exc}") from exc
-        if not isinstance(data, dict) or any(not isinstance(v, Mapping) for v in data.values()):
+        if not isinstance(data, dict) or any(
+            not isinstance(v, Mapping) for v in data.values()
+        ):
             raise CapacityStoreError("current index is not a map of pool entries")
         return {str(k): dict(v) for k, v in data.items()}
 
     def _append_line(self, receipt: ProviderCapacityReceipt) -> None:
         os.makedirs(self.directory, exist_ok=True)
         with open(self.receipts_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(receipt.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n")
+            handle.write(
+                json.dumps(
+                    receipt.to_dict(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
             handle.flush()
             os.fsync(handle.fileno())
 
     def _write_index(self, index: Mapping[str, Mapping[str, str]]) -> None:
         os.makedirs(self.directory, exist_ok=True)
-        handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.directory,
-                                             prefix=".current-", delete=False)
+        handle = tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=self.directory, prefix=".current-", delete=False
+        )
         try:
-            json.dump({k: dict(index[k]) for k in sorted(index)}, handle, indent=2, sort_keys=True)
+            json.dump(
+                {k: dict(index[k]) for k in sorted(index)},
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -380,3 +500,8 @@ class ProviderCapacityStore:
             if os.path.exists(handle.name):
                 os.unlink(handle.name)
             raise
+
+
+def store_from_env() -> ProviderCapacityStore:
+    """The operator's configured store (env override, else the default dir)."""
+    return ProviderCapacityStore()
