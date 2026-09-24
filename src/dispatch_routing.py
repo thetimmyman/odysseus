@@ -553,7 +553,7 @@ class ExecutionTargetProfile:
         return bool(role) and role in self.roles
 
     def core(self) -> dict:
-        return {
+        value = {
             "schema_version": self.schema_version, "target_id": self.target_id,
             "profile_id": self.profile_id, "provider": self.provider,
             "host": self.host, "runtime_kind": self.runtime_kind,
@@ -567,11 +567,15 @@ class ExecutionTargetProfile:
             "budget_class": self.budget_class, "cost_rank": self.cost_rank,
             "inference": self.inference, "endpoint_url": self.endpoint_url,
             "endpoint_type": self.endpoint_type,
-            "credential_sha256": self.credential_sha256,
             "runtime_options": dict(self.runtime_options),
             "configured_context": self.configured_context,
             "configured_served_context": self.configured_served_context,
         }
+
+        # Preserve historical local evidence hashes when this additive scope is absent.
+        if self.credential_sha256:
+            value["credential_sha256"] = self.credential_sha256
+        return value
 
     def to_dict(self) -> dict:
         return self.core()
