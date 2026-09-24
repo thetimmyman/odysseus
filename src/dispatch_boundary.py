@@ -325,7 +325,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
     create canonical PS-632 receipts in a test store.
     """
     from core.database import ModelEndpoint, RoutingModelProfile
-    from src.routing_engine import endpoint_is_local
+    from src.routing_locality import endpoint_is_local
 
     overrides = dict(receipt_overrides or {})
     profiles: List[Any] = []
@@ -435,7 +435,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
 
 def _sensitivity_local_only(task: Any) -> bool:
     """True when the task's sensitivity ranks above the policy's remote ceiling."""
-    from src.routing_engine import sensitivity_requires_local_only
+    from src.routing_locality import sensitivity_requires_local_only
 
     return sensitivity_requires_local_only(
         getattr(task, "data_sensitivity", None))
@@ -588,12 +588,12 @@ def role_for_task(task: Any, estate: "TargetEstate",
     """The role the run is routed as: the task's FIRST supported preference.
 
     Uses the routing layer's public role-preference contract
-    (``routing_engine.roles_for_task_type``) and the estate's declared roles, so the
+    (``routing_locality.roles_for_task_type``) and the estate's declared roles, so the
     request asks for what the task MEANS rather than for what happens
     to be available — the difference matters when nothing supports it, which is a
     refusal rather than a downgrade.
     """
-    from src.routing_engine import roles_for_task_type
+    from src.routing_locality import roles_for_task_type
 
     declared: set = set(available_roles)
     for profile in estate.profiles:
@@ -784,7 +784,7 @@ def verify_invocation(bound: BoundDispatch, *,
     remote URL is precisely the failure this exists to stop).
     """
     from src.endpoint_identity import canonical_endpoint_identity, EndpointIdentityError
-    from src.routing_engine import endpoint_is_local
+    from src.routing_locality import endpoint_is_local
 
     profile_id = invocation.profile_id
     pin = bound.pin_for(profile_id)
