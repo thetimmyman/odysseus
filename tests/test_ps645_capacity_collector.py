@@ -418,8 +418,8 @@ def test_freshest_wins_per_pool_and_gate_sees_only_fresh(monkeypatch, tmp_path):
 # --------------------------------------------------------------- PS-641 seam
 def test_collect_receipts_drive_the_real_hosted_gate(monkeypatch):
     """The deliverable: dispatch's hosted gate consumes collector-minted
-    receipts.  A fresh available pool is ELIGIBLE; stale / missing /
-    rate-limited pools are refused — and only by the documented reasons."""
+    receipts. A fresh available third-party pool remains refused by entitlement
+    policy; stale / missing / rate-limited pools carry their documented reasons."""
     import datetime as dt
 
     from src import dispatch_routing as dr
@@ -441,12 +441,14 @@ def test_collect_receipts_drive_the_real_hosted_gate(monkeypatch):
         model="gpt-5.5",
         locality=dr.LOCALITY_HOSTED,
     )
-    receipts = [cc.collect("auth1")]
+    from dataclasses import replace
+    receipts = [pc.make_capacity_receipt(**{**cc.collect("auth1").core(), "endpoint_url": "https://chatgpt.com/backend-api/codex/responses"})]
+    profile = replace(profile, endpoint_url=receipts[0].endpoint_url, credential_sha256=receipts[0].credential_sha256)
     assert receipts[0] is not None and receipts[0].state is pc.CapacityState.AVAILABLE
 
-    # 1) a fresh, available third-party-harness pool is usable by dispatch.
+    # 1) observed capacity stays reportable, but third-party entitlement is not a policy grant.
     ok, _refs, rule, _why = dr.classify_capacity_for(profile, receipts)
-    assert ok is True and rule == "eligible"
+    assert ok is False and rule == dr.REFUSED_CAPACITY_UNUSABLE
 
     # 2) no receipts at all -> missing (fail closed).
     ok, _refs, rule, _why = dr.classify_capacity_for(profile, ())
@@ -467,6 +469,7 @@ def test_collect_receipts_drive_the_real_hosted_gate(monkeypatch):
         "limit_reached": True,
     }
     rl = _collect_via(db, monkeypatch, limited)
+    rl = pc.make_capacity_receipt(**{**rl.core(), "endpoint_url": profile.endpoint_url})
     ok, _refs, rule, _why = dr.classify_capacity_for(profile, [rl])
     assert ok is False and rule == dr.REFUSED_CAPACITY_UNUSABLE
 
@@ -508,3 +511,38 @@ def test_endpoint_capacity_binds_live_query_credentials(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="credentials changed"):
         cc.collect_endpoint_capacity(store, "bound-endpoint", MODELS[0])
     assert list(store.entries()) == before
+
+
+def test_unknown_usage_and_nonfinite_windows_never_authorize(monkeypatch):
+    SessionLocal = _mem_db(monkeypatch)
+    with SessionLocal() as db:
+        _auth(db)
+        for payload in ({}, {"error": {"message": "denied"}}, {"rate_limit": {}},
+                        *({"rate_limit": {"primary_window": {"used_percent": n}}}
+                          for n in (float("nan"), float("inf"), float("-inf"), 10**1000))):
+            receipt = _collect_via(db, monkeypatch, payload)
+            assert receipt.state == pc.CapacityState.UNKNOWN
+            assert all(q.remaining == pc.UNKNOWN for q in receipt.quotas)
+            assert not receipt.has_usable_capacity_facts()
+
+
+def test_hosted_capacity_missing_index_is_not_recovered_from_history(monkeypatch, tmp_path):
+    SessionLocal = _mem_db(monkeypatch)
+    with SessionLocal() as db:
+        _auth(db)
+        receipt = _collect_via(db, monkeypatch, usage_body())
+    store = ProviderCapacityStore(str(tmp_path))
+    store.append(receipt)
+    assert cc.fresh_hosted_capacity_receipts(store)
+    Path(store.index_path).unlink()
+    assert cc.fresh_hosted_capacity_receipts(store) == {}
+
+
+def test_caller_cannot_relabel_capacity_account(monkeypatch):
+    SessionLocal = _mem_db(monkeypatch)
+    with SessionLocal() as db:
+        _auth(db, owner="actual@example.test")
+    monkeypatch.setattr(cc.cgs, "fetch_available_models", lambda *a, **k: (_ for _ in ()).throw(AssertionError("mismatch must not query")))
+    assert cc.collect("auth1", owner="other@example.test", usage=usage_body(), models=MODELS) is None
+    receipt = cc.collect("auth1", owner=" Actual@Example.Test ", usage=usage_body(), models=MODELS)
+    assert receipt.account_identity == "actual@example.test"

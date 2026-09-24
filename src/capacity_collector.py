@@ -29,13 +29,14 @@ Design posture, all fail-closed:
 import base64
 import datetime as _dt
 import json
+import math
 import os
 from typing import Any, TypeGuard
 
 from core.database import ProviderAuthSession, SessionLocal
 from src import chatgpt_subscription as cgs
 from src import provider_capacity as pc
-from src.provider_capacity_store import ProviderCapacityStore
+from src.provider_capacity_store import ProviderCapacityStore, CapacityStoreError
 from src.routing_workdir import data_root
 
 #: Collector identity on every provenance; stable across T3/PS-641 callers.
@@ -103,7 +104,12 @@ def _is_true(value: Any) -> bool:
 
 def _is_number(value: Any) -> TypeGuard[int | float]:
     """A real provider number (int/float, never a bool) we may convert."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, ValueError):
+        return False
 
 
 def _positive(value: Any) -> bool:
@@ -277,6 +283,8 @@ def _state_and_rate_limit(windows: tuple, usage: dict, now_iso: str):
         return pc.CapacityState.RATE_LIMITED, _rate_limit_quota(
             now_iso, rate if isinstance(rate, dict) else None, windows
         )
+    if not any(not pc._is_unknown(w.remaining) for w in windows):
+        return pc.CapacityState.UNKNOWN, None
     return pc.CapacityState.AVAILABLE, None
 
 
@@ -346,6 +354,9 @@ def collect(
         db.close()
     if auth is None:
         return None
+    if owner is not None and str(owner).strip().lower() != str(auth.owner or "").strip().lower():
+        # A caller may constrain which account it observes, never relabel it.
+        return None
     access_token = str(auth.access_token or "")
     if not access_token:
         return None
@@ -387,7 +398,7 @@ def collect(
         credential_sha256=credential_fingerprint(cgs.chatgpt_headers(access_token)),
         pool_id=hosted_pool_id(auth_id),
         account_identity=account_identity_for(
-            owner if owner else (auth.owner or ""), auth_id
+            auth.owner or "", auth_id
         ),
         authorization_class=pc.AuthorizationClass.OAUTH_CLI,
         entitlement=pc.Entitlement.THIRD_PARTY_HARNESS,
@@ -459,8 +470,8 @@ def fresh_hosted_capacity_receipts(
     if now_dt.tzinfo is None:
         now_dt = now_dt.replace(tzinfo=_dt.timezone.utc)
     try:
-        current = pc.validated_current_receipts(store.entries())
-    except pc.CapacityError:
+        current = pc.validated_current_receipts(store.authoritative_current_receipts())
+    except (pc.CapacityError, CapacityStoreError):
         current = ()
     best: dict[str, pc.ProviderCapacityReceipt] = {}
     for receipt in current:

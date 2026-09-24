@@ -267,3 +267,52 @@ explicitly verified configs for these distinct processes/paths. A config for one
 harness is intentionally refused by the other, even for the same provider/model.
 Both supported paths have offer-enabled regression tests; no claim is made that
 Scout automatically produces a canonical sealed dispatch receipt.
+
+### Isolated free scout command
+
+`scripts/odysseus-free-scout` connects the existing `odysseus-run --mode scout`
+entrypoint to a private, dedicated OpenCode Go runtime. It does not activate a
+service or change the default database, provider configuration, or user routing.
+Use the repository's Python environment to invoke it:
+
+```sh
+python scripts/odysseus-free-scout prepare --directory /absolute/private/new-runtime --task /absolute/public-task.json
+python scripts/odysseus-free-scout preview --directory /absolute/private/new-runtime
+python scripts/odysseus-free-scout run --directory /absolute/private/new-runtime
+```
+
+The task must declare `dataSensitivity: public`, a stable `id`, and an absolute
+`repoPath`. Preparation reads the existing `opencode-go` key from
+`~/.local/share/opencode/auth.json` (override with `--auth-file`), stores it encrypted
+in a newly owned SQLite database, and fixes the sole route to `space-bunny-free`,
+256 output tokens, one attempt, and zero USD. Existing databases are refused;
+subsequent commands verify the database's device/inode ownership marker. Runtime
+files are private. No credentials enter command arguments or output.
+
+Every command rechecks the official Go documentation's exact free input/output/
+cache price row and exact model endpoint, then queries authenticated capacity and
+model availability. A changed/missing price, endpoint, credential, model, or quota
+refuses dispatch. The model catalog and quota establish no claim of callability.
+The HTTP request includes the required user agent and a task-stable OpenCode
+session header; the same headers are bound into the capacity/offer receipts.
+
+Each runtime permits only one `run`. A durable marker is written before invoking
+the harness and survives process crashes/timeouts; a second invocation is refused,
+even after success. Inspect the private result before deliberately preparing any
+new runtime. There is no automatic retry or paid fallback. Scout produces analysis,
+not a verified code change, so this connectivity cohort earns no validated-task
+credit. Outcome events go to `~/.local/state/tmos-ai-usage/outcome-events` by default;
+use `--export-directory` with the plugin's configured state directory when needed.
+
+Hosted canonical dispatch separately requires provider, full endpoint, and the
+fingerprint of actual resolved headers to match the capacity receipt. Unscoped
+legacy receipts cannot authorize hosted profiles. Adapters must supply that same
+`credential_sha256` in `InvocationIdentity` immediately before dispatch. Quota
+responses with no known capacity or nonfinite values remain unknown/unusable, and
+history alone cannot restore authority when the capacity store's current index is
+missing or corrupt.
+
+The hosted selector currently admits only explicit API or Agent SDK entitlements.
+A healthy third-party-harness ChatGPT capacity report remains observable but does
+not activate that route. Collector callers can constrain the persisted account
+owner; they cannot overwrite its account identity.

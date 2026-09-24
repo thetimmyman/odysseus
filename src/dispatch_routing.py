@@ -511,6 +511,7 @@ class ExecutionTargetProfile:
     inference: bool = True
     endpoint_url: str = ""
     endpoint_type: str = ""
+    credential_sha256: str = ""
     runtime_options: Mapping[str, Any] = field(default_factory=dict)
     #: Request-scoped generation settings are not target authority. They remain
     #: available only for a future PS-641 request/decision composition seam.
@@ -566,6 +567,7 @@ class ExecutionTargetProfile:
             "budget_class": self.budget_class, "cost_rank": self.cost_rank,
             "inference": self.inference, "endpoint_url": self.endpoint_url,
             "endpoint_type": self.endpoint_type,
+            "credential_sha256": self.credential_sha256,
             "runtime_options": dict(self.runtime_options),
             "configured_context": self.configured_context,
             "configured_served_context": self.configured_served_context,
@@ -778,8 +780,10 @@ def classify_capacity_for(profile: ExecutionTargetProfile,
 
     matching = tuple(r for r in (capacity_receipts or ())
                      if profile.model in tuple(getattr(r, "exposed_models", ()))
-                     and (not getattr(r, "endpoint_url", "") or
-                          (r.endpoint_url == profile.endpoint_url and r.provider == profile.provider)))
+                     and r.provider == profile.provider
+                     and bool(profile.endpoint_url) and r.endpoint_url == profile.endpoint_url
+                     and bool(profile.credential_sha256)
+                     and r.credential_sha256 == profile.credential_sha256)
     if not matching:
         return (False, (), REFUSED_CAPACITY_MISSING,
                 f"no capacity receipt exposes model {profile.model!r}")
@@ -787,7 +791,12 @@ def classify_capacity_for(profile: ExecutionTargetProfile,
     if not fresh:
         return (False, (), REFUSED_CAPACITY_STALE,
                 f"capacity receipts exposing model {profile.model!r} are stale")
-    usable = tuple(r for r in fresh if r.has_usable_capacity_facts(now=now))
+    from src.provider_capacity import Entitlement
+    # Reporting a healthy subscription is not permission to use its native
+    # entitlement from this hosted adapter. Third-party harness enablement is
+    # deliberately absent until a separate policy grant is implemented.
+    usable = tuple(r for r in fresh if r.entitlement in (Entitlement.API, Entitlement.AGENT_SDK)
+                   and r.has_usable_capacity_facts(now=now))
     if not usable:
         return (False, (), REFUSED_CAPACITY_UNUSABLE,
                 f"fresh capacity receipts exposing model {profile.model!r} are unusable")
@@ -1180,6 +1189,11 @@ def select_target(request: RoutingRequest, *,
     order is selected. Determinism is asserted by the test suite (same inputs ->
     identical ``decision_hash``), which is what makes a receipt re-checkable.
     """
+    # Capacity freshness must be evaluated against one instant for the whole
+    # decision. Re-reading the clock after candidate assessment could leave a
+    # hosted candidate eligible while its cited capacity refs have already gone
+    # stale.
+    selection_time = now if now is not None else datetime.now(timezone.utc)
     profiles = list(profiles or ())
     if not profiles:
         raise RoutingRefused(REFUSED_NO_CANDIDATES,
@@ -1201,7 +1215,7 @@ def select_target(request: RoutingRequest, *,
         assessments.append(_assess(
             profile, receipt, request, domain_policy=resolved_policy,
             policy_local_only=policy_local_only, resources=resources,
-            capacity_receipts=capacity_receipts, now=now, preference_rank=rank))
+            capacity_receipts=capacity_receipts, now=selection_time, preference_rank=rank))
 
     eligible = [a for a in assessments if a.eligible]
     local_only = bool(policy_local_only)
@@ -1243,7 +1257,7 @@ def select_target(request: RoutingRequest, *,
     receipt = (index.get(profile.profile_id)
                or index.get(f"target:{profile.target_id}"))
     _, selected_capacity_refs, _, _ = classify_capacity_for(
-        profile, capacity_receipts, now=now)
+        profile, capacity_receipts, now=selection_time)
     # The RECORD is canonical, not input-ordered: the assessment list is sorted so
     # two runs over the same candidates produce the same decision hash even if the
     # caller passed the profiles in a different order.
@@ -1274,7 +1288,7 @@ def select_target(request: RoutingRequest, *,
         reason = ("no profile preference was expressed; the deterministic order "
                   "decided")
 
-    observed = (now or datetime.now(timezone.utc)).isoformat()
+    observed = selection_time.isoformat()
     facts = {
         "request_budget_class": request.budget_class,
         "selected_budget_class": profile.budget_class,

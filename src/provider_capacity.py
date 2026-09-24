@@ -419,7 +419,10 @@ class ProviderCapacityReceipt:
 
     def has_usable_capacity_facts(self, *, now: Optional[datetime] = None) -> bool:
         """Facts-only usability; PS-605 still decides policy permission."""
-        return (self.is_operationally_available(now=now) and
+        known_capacity = (not _is_unknown(self.concurrency_remaining) or
+                          any(not _is_unknown(q.remaining) for q in self.quotas))
+        return (self.is_operationally_available(now=now) and known_capacity and
+                all(_is_unknown(q.remaining) or q.remaining > 0 for q in self.quotas) and
                 self.entitlement not in (Entitlement.UNKNOWN, Entitlement.INTERACTIVE_NATIVE))
 
 

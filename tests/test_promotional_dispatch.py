@@ -123,7 +123,7 @@ def test_explicit_exhausted_quota_refused_even_with_available_state(configured):
                                       provenance=capacity.state_provenance),)
     updated = make_capacity_receipt(**fields)
     store.append(updated, supersedes=capacity.receipt_hash)
-    with pytest.raises(PromotionUnavailable, match="quota"):
+    with pytest.raises(PromotionUnavailable, match="quota|capacity"):
         enforce_free_offer(**kwargs)
 
 

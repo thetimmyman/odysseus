@@ -25,7 +25,7 @@ def test_bound_subscription_reads(monkeypatch, provider, url):
     receipt = sc.collect_api_capacity(url, "actual-model", headers)
     assert len(seen) == (3 if provider == "command-code" else 2) and all(h is headers for _, h in seen)
     from src.dispatch_routing import ExecutionTargetProfile, classify_capacity_for, LOCALITY_HOSTED
-    profile = ExecutionTargetProfile(target_id="t", profile_id="p", provider=provider, model="actual-model", locality=LOCALITY_HOSTED, endpoint_url=url)
+    profile = ExecutionTargetProfile(target_id="t", profile_id="p", provider=provider, model="actual-model", locality=LOCALITY_HOSTED, endpoint_url=url, credential_sha256=receipt.credential_sha256)
     assert classify_capacity_for(profile, [receipt])[0]
     from dataclasses import replace
     assert not classify_capacity_for(replace(profile, endpoint_url="https://other/v1/chat/completions"), [receipt])[0]
@@ -139,8 +139,12 @@ def test_database_endpoint_capacity_canonical_dispatch_and_invocation(monkeypatc
     assert bound.offer_quotes[0]["chat_url"] == actual_url
     assert bound.decision.offer_quote_digests
 
-    boundary.verify_invocation(bound, invocation=boundary.InvocationIdentity(profile_id="p-openrouter", provider="command-code", model=actual_model,
-        chat_url=actual_url, runtime_kind="openai_compatible", runtime_version="", runtime_commit="", runtime_image_digest="", backend="", backend_version="", model_digest="verified-model", endpoint_type="openai_compatible", locality="hosted", workload=workload, offer_identity=identity))
+    invocation = boundary.InvocationIdentity(credential_sha256=capacity.credential_sha256, profile_id="p-openrouter", provider="command-code", model=actual_model,
+        chat_url=actual_url, runtime_kind="openai_compatible", runtime_version="", runtime_commit="", runtime_image_digest="", backend="", backend_version="", model_digest="verified-model", endpoint_type="openai_compatible", locality="hosted", workload=workload, offer_identity=identity)
+    boundary.verify_invocation(bound, invocation=invocation)
+    from dataclasses import replace
+    with pytest.raises(boundary.DispatchPinViolation, match="credentials"):
+        boundary.verify_invocation(bound, invocation=replace(invocation, credential_sha256="b" * 64))
     db.close()
 
 

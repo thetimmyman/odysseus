@@ -217,7 +217,7 @@ def _endpoint_identity(profile: Any) -> str:
 _PROFILE_EXECUTION_FIELDS = (
     "provider", "runtime_kind", "runtime_version", "runtime_commit",
     "runtime_image_digest", "model", "model_digest", "backend",
-    "backend_version", "endpoint_url", "endpoint_type", "runtime_options",
+    "backend_version", "endpoint_url", "endpoint_type", "runtime_options", "credential_sha256",
     "configured_context", "configured_served_context",
     "locality",
 )
@@ -414,6 +414,17 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
         # The qualified receipt, not the mutable discovery row, supplies the
         # exact execution identity pinned into the decision.
         profile = _canonical_profile_from_receipt(profile, canonical)
+        if profile.locality == LOCALITY_HOSTED:
+            from src.endpoint_resolver import resolve_endpoint_runtime, build_chat_url, build_headers
+            from src.offer_economics import credential_fingerprint
+            try:
+                resolved_base, resolved_key = resolve_endpoint_runtime(endpoint)
+                if build_chat_url(resolved_base) != profile.endpoint_url:
+                    raise ValueError("resolved hosted endpoint differs from qualified endpoint")
+                profile = dataclasses.replace(profile, credential_sha256=credential_fingerprint(build_headers(resolved_key, resolved_base)))
+            except Exception:
+                skipped.append({"profile_id": profile_id, "reason": "hosted_credential_scope_unresolved"})
+                continue
         profiles.append(profile)
         receipts.append(_legacy_view_from_receipt(canonical, profile, now=now))
         kept.append(candidate)
@@ -534,6 +545,10 @@ class BoundDispatch:
                 if profile is None:
                     return None
                 return {
+                    "receipt_hash": self.decision.receipt_hash,
+                    "run_id": self.request.run_id,
+                    "packet_id": self.request.packet_id,
+                    "execution_package_hash": self.request.execution_package_hash,
                     "target_id": profile.target_id, "profile_id": profile.profile_id,
                     "provider": profile.provider, "host": profile.host,
                     "model": profile.model, "runtime_kind": profile.runtime_kind,
@@ -545,6 +560,7 @@ class BoundDispatch:
                     "backend_version": profile.backend_version,
                     "locality": profile.locality, "endpoint_url": profile.endpoint_url,
                     "endpoint_type": profile.endpoint_type,
+                    "credential_sha256": profile.credential_sha256,
                     "endpoint_identity": _endpoint_identity(profile),
                     "runtime_options": dict(profile.runtime_options),
                     "configured_context": profile.configured_context,
@@ -753,6 +769,7 @@ class InvocationIdentity:
     execution_options: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     configured_context: int = 0
     configured_served_context: int = 0
+    credential_sha256: str = ""
     workload: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     offer_identity: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
@@ -782,6 +799,10 @@ def verify_invocation(bound: BoundDispatch, *,
             PIN_MODEL_MISMATCH,
             f"resolved model {invocation.model!r} is not the pinned model {pinned_model!r}",
             decision_id=bound.decision.decision_id)
+    if pin.get("locality") == LOCALITY_HOSTED and (
+            not pin.get("credential_sha256") or invocation.credential_sha256 != pin["credential_sha256"]):
+        raise DispatchPinViolation(PIN_PROFILE_MISMATCH, "resolved hosted credentials differ from capacity scope",
+                                   decision_id=bound.decision.decision_id)
     resolved_local = endpoint_is_local(invocation.chat_url)
     if resolved_local != (pin.get("locality") == LOCALITY_LOCAL):
         raise DispatchPinViolation(
@@ -1147,6 +1168,7 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     # 7. capacity receipts (PS-640) must still hash to their recorded content, and
     #    every ref the decision cited must be present among the valid receipts.
     valid_capacity_refs: set = set()
+    capacity_by_ref: Dict[str, Mapping[str, Any]] = {}
     for recorded in (body.get("capacity_receipts") or ()):
         if (not isinstance(recorded, dict)
                 or not provider_capacity.capacity_receipt_hash_is_valid(recorded)):
@@ -1154,17 +1176,63 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
             continue
         receipt_hash = str(recorded.get("receipt_hash") or "")
         if receipt_hash:
-            valid_capacity_refs.add(f"capacity:{receipt_hash}")
-    for ref in (receipt.get("capacity_receipt_refs") or ()):
+            ref = f"capacity:{receipt_hash}"
+            valid_capacity_refs.add(ref)
+            capacity_by_ref[ref] = recorded
+    decision_capacity_refs = list(receipt.get("capacity_receipt_refs") or ())
+    recorded_decision_refs = list(decision.get("capacity_receipt_refs") or ())
+    selected_profile = dict(decision.get("selected_profile") or {})
+    selected_is_hosted = selected_profile.get("locality") == LOCALITY_HOSTED
+    if decision_capacity_refs != recorded_decision_refs:
+        codes.append(EVIDENCE_CAPACITY_CHANGED)
+    if selected_is_hosted and not decision_capacity_refs:
+        codes.append(EVIDENCE_CAPACITY_CHANGED)
+    for ref in decision_capacity_refs:
         if str(ref) not in valid_capacity_refs:
             codes.append(EVIDENCE_CAPACITY_CHANGED)
             break
+    if selected_is_hosted and decision_capacity_refs:
+        # Use the recorded selection instant, not current wall time. A historical
+        # evidence review must not reject a receipt merely because it expired later.
+        try:
+            selected_at_text = str(decision.get("observed_at") or receipt.get("decided_at") or "")
+            selected_at = datetime.fromisoformat(selected_at_text.replace("Z", "+00:00"))
+            if selected_at.tzinfo is None or selected_at.utcoffset() is None:
+                raise ValueError("selection time must include a timezone")
+            selected_at = selected_at.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            selected_at = None
+            codes.append(EVIDENCE_CAPACITY_CHANGED)
+        for ref in decision_capacity_refs:
+            recorded = capacity_by_ref.get(str(ref))
+            if recorded is None:
+                continue
+            try:
+                capacity = provider_capacity.capacity_receipt_from_dict(recorded)
+                matches_selected = (
+                    bool(selected_profile.get("provider"))
+                    and capacity.provider == selected_profile.get("provider")
+                    and bool(selected_profile.get("endpoint_url"))
+                    and capacity.endpoint_url == selected_profile.get("endpoint_url")
+                    and bool(selected_profile.get("credential_sha256"))
+                    and capacity.credential_sha256 == selected_profile.get("credential_sha256")
+                    and bool(selected_profile.get("model"))
+                    and selected_profile.get("model") in capacity.exposed_models)
+                accepted_entitlements = (provider_capacity.Entitlement.API,
+                                         provider_capacity.Entitlement.AGENT_SDK)
+                if (not matches_selected or selected_at is None
+                        or capacity.entitlement not in accepted_entitlements
+                        or not capacity.has_usable_capacity_facts(now=selected_at)):
+                    codes.append(EVIDENCE_CAPACITY_CHANGED)
+                    break
+            except (TypeError, ValueError, KeyError, provider_capacity.CapacityError):
+                codes.append(EVIDENCE_CAPACITY_CHANGED)
+                break
 
     # Offer receipts are optional for legacy dispatches, but binding is strict
     # whenever present. Recompute quotes at the recorded observation time.
     from src.offer_economics import comparable_cash, quote_digest
     from src.provider_model_offer import provider_model_offer_from_dict
-    from datetime import datetime
     valid_offer_refs = set()
     quote_digests = []
     for quote in body.get("offer_quotes") or ():
