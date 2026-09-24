@@ -511,6 +511,11 @@ def _finalize(db, model_run, result: dict, run_dir: str, sandbox_log: list,
         artifacts["verification_path"] = verification_path
     model_run.artifacts = json.dumps(artifacts)
     db.commit()
+    from src.routing_outcomes import export_after_commit
+    from core.database import RoutingRun
+    run = db.get(RoutingRun, model_run.run_id)
+    if run is not None:
+        export_after_commit(db, run.task_id)
     return result
 
 
@@ -604,6 +609,8 @@ def verify_model_run(db, task, model_run, *, mode: Optional[str] = None,
 
     # --- patch-accepting modes ---
     patch_text = load_patch_text(model_run)  # ValueError when absent
+    import hashlib
+    result["patch_sha256"] = hashlib.sha256(patch_text.encode()).hexdigest()
     validation = validate_patch_shape(patch_text, task.repo_path)
     if not validation["allowed"]:
         result["patch_applied"] = False
@@ -653,7 +660,9 @@ def verify_model_run(db, task, model_run, *, mode: Optional[str] = None,
             result["layers"].append(layer)
 
         result["passed"] = all(l["passed"] for l in result["layers"] if l["blocking"])
-        result["patch_accepted"] = bool(result["passed"] and MODE_ACCEPTS_PATCH[resolved])
+        from src.routing_outcomes import meaningful_verification
+        result["meaningful_verification"] = meaningful_verification(result)
+        result["patch_accepted"] = bool(result["meaningful_verification"] and MODE_ACCEPTS_PATCH[resolved])
         if result["layers"] and all(l.get("skipped") for l in result["layers"]):
             result["notes"].append(
                 "every layer was skipped (no verification commands configured) — "

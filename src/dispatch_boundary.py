@@ -236,11 +236,13 @@ def _canonical_profile_from_receipt(profile: Any, receipt: Any) -> Any:
     """Rebuild the execution portion of a profile from PS-632 evidence."""
     from src.local_targets import PRIVACY_LOCAL_ONLY
 
+    from src.subscription_capacity import subscription_endpoint_identity
+    subscription = subscription_endpoint_identity(receipt.runtime.endpoint_url)
     locality = (LOCALITY_LOCAL if receipt.locality == PRIVACY_LOCAL_ONLY
                 else receipt.locality)
     return dataclasses.replace(
         profile,
-        provider=receipt.runtime.provider,
+        provider=subscription[0] if subscription else receipt.runtime.provider,
         runtime_kind=receipt.runtime.runtime_kind,
         runtime_version=receipt.runtime.version,
         runtime_commit=receipt.runtime.commit,
@@ -249,7 +251,7 @@ def _canonical_profile_from_receipt(profile: Any, receipt: Any) -> Any:
         model_digest=receipt.model.digest,
         backend=receipt.runtime.backend,
         backend_version=receipt.runtime.backend_version,
-        endpoint_url=receipt.runtime.endpoint_url,
+        endpoint_url=subscription[1] if subscription else receipt.runtime.endpoint_url,
         endpoint_type=receipt.runtime.endpoint_type,
         runtime_options=receipt.context.options,
         configured_context=receipt.context.configured_context,
@@ -396,7 +398,11 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
             skipped.append({"profile_id": profile_id,
                             "reason": "canonical_profile_mismatch"})
             continue
-        if canonical.runtime.endpoint_url != base_url:
+        from src.subscription_capacity import subscription_endpoint_identity
+        endpoint_identity = subscription_endpoint_identity(base_url)
+        canonical_identity = subscription_endpoint_identity(canonical.runtime.endpoint_url)
+        if (canonical.runtime.endpoint_url != base_url and
+                not (endpoint_identity and endpoint_identity == canonical_identity)):
             skipped.append({"profile_id": profile_id,
                             "reason": "canonical_endpoint_mismatch"})
             continue
@@ -499,6 +505,7 @@ class BoundDispatch:
     decision: Any
     policy: Any
     capacity_receipts: Tuple[Any, ...] = ()
+    offer_quotes: Tuple[Mapping[str, Any], ...] = ()
 
     def execution_order(self,
                         candidates: Sequence[Mapping[str, Any]]
@@ -601,6 +608,8 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
                      resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
                      capability_store: Any = None,
                      capacity_receipts: Optional[Sequence[Any]] = None,
+                     workload: Optional[Mapping[str, Any]] = None,
+                     offer_identity: Optional[Mapping[str, Any]] = None,
                      now: Optional[datetime] = None,
                      decision_id: str = "") -> BoundDispatch:
     """Resolve the routing decision the dispatcher must obey. Raises on refusal.
@@ -632,6 +641,7 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
                                network_classes=network_classes,
                                policy=snapshot, resources=resources,
                                capacity_receipts=capacity_receipts or (), now=now,
+                               workload=workload, offer_identity=offer_identity,
                                decision_id=decision_id)
 
 
@@ -641,6 +651,8 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                         policy: Any = None,
                         resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
                         capacity_receipts: Optional[Sequence[Any]] = None,
+                        workload: Optional[Mapping[str, Any]] = None,
+                        offer_identity: Optional[Mapping[str, Any]] = None,
                         now: Optional[datetime] = None,
                         decision_id: str = "") -> BoundDispatch:
     """Bind an already-built estate + request to a decision: no DB, no task row.
@@ -701,8 +713,23 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
         request, profiles=estate.profiles, receipts=estate.receipts,
         policy=snapshot, resources=resources,
         capacity_receipts=capacity, now=now, decision_id=decision_id)
+    from src.offer_economics import configured_quote, quote_digest
+    selected = decision.selected_profile
+    quote = configured_quote(profile_id=selected.profile_id, model=selected.model,
+        chat_url=selected.endpoint_url, harness=selected.runtime_kind, provider=selected.provider,
+        workload=workload, now=datetime.fromisoformat(decision.observed_at.replace("Z", "+00:00")), **dict(offer_identity or {}))
+    if quote is not None:
+        from decimal import Decimal
+        if Decimal(quote["predicted_cash_usd"]) > 0 and request.max_cost_rank < 1:
+            raise DispatchBoundaryError("dispatch request does not authorize paid offers")
+        if quote["capacity_receipt_ref"] not in {r.ref for r in capacity}:
+            raise DispatchBoundaryError("offer capacity is not bound to this dispatch")
+        decision = dataclasses.replace(decision, offer_receipt_refs=tuple(quote["offer_refs"]),
+                                       offer_quote_digests=(quote_digest(quote),))
+        decision = dataclasses.replace(decision, receipt_hash=ps638_receipt_hash(decision.to_ps638_receipt_kwargs()))
     return BoundDispatch(request=request, estate=estate, decision=decision,
-                         policy=snapshot, capacity_receipts=capacity)
+                         policy=snapshot, capacity_receipts=capacity,
+                         offer_quotes=(quote,) if quote else ())
 
 
 @dataclass(frozen=True)
@@ -726,6 +753,8 @@ class InvocationIdentity:
     execution_options: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     configured_context: int = 0
     configured_served_context: int = 0
+    workload: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    offer_identity: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
 
 def verify_invocation(bound: BoundDispatch, *,
@@ -803,6 +832,26 @@ def verify_invocation(bound: BoundDispatch, *,
                 PIN_RUNTIME_MISMATCH,
                 f"invocation {name} {actual!r} is not the pinned value {expected!r}",
                 decision_id=bound.decision.decision_id)
+    from src.promotional_dispatch import enforce_free_offer
+    enforce_free_offer(profile_id=profile_id, model=invocation.model,
+                       chat_url=invocation.chat_url, harness=invocation.runtime_kind,
+                       provider=invocation.provider, **dict(invocation.offer_identity))
+    from src.offer_economics import configured_quote
+    prior_quote = next((q for q in bound.offer_quotes if q["profile_id"] == profile_id), None)
+    if prior_quote is not None and dict(invocation.workload) != prior_quote["workload"]:
+        raise DispatchPinViolation(PIN_RUNTIME_MISMATCH, "actual invocation workload differs from selected quote",
+                                   decision_id=bound.decision.decision_id)
+    current_quote = configured_quote(profile_id=profile_id, model=invocation.model,
+        chat_url=invocation.chat_url, harness=invocation.runtime_kind, provider=invocation.provider,
+        workload=dict(invocation.workload) or None, **dict(invocation.offer_identity))
+    if (prior_quote is None) != (current_quote is None):
+        raise DispatchPinViolation(PIN_RUNTIME_MISMATCH, "offer policy changed after selection",
+                                   decision_id=bound.decision.decision_id)
+    if prior_quote is not None:
+        for field in ("offer_refs", "capacity_receipt_ref", "predicted_cash_usd", "maximum_predicted_request_usd", "workload", "credential_sha256", "endpoint_id", "transport_provider", "account_identity"):
+            if prior_quote[field] != current_quote[field]:
+                raise DispatchPinViolation(PIN_RUNTIME_MISMATCH, "offer binding changed after selection",
+                                           decision_id=bound.decision.decision_id)
     return pin
 
 
@@ -958,6 +1007,8 @@ def seal_dispatch_evidence(bound: BoundDispatch, *,
     if bound.capacity_receipts:
         payload["capacity_receipts"] = [
             getattr(r, "to_dict", lambda: dict(r))() for r in bound.capacity_receipts]
+    if bound.offer_quotes:
+        payload["offer_quotes"] = [dict(q) for q in bound.offer_quotes]
     payload["seal"] = {
         "evidence_hash": _sha256_hex(_canonical(payload)),
         "policy_ref": bound.policy.policy_ref,
@@ -1108,6 +1159,51 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
         if str(ref) not in valid_capacity_refs:
             codes.append(EVIDENCE_CAPACITY_CHANGED)
             break
+
+    # Offer receipts are optional for legacy dispatches, but binding is strict
+    # whenever present. Recompute quotes at the recorded observation time.
+    from src.offer_economics import comparable_cash, quote_digest
+    from src.provider_model_offer import provider_model_offer_from_dict
+    from datetime import datetime
+    valid_offer_refs = set()
+    quote_digests = []
+    for quote in body.get("offer_quotes") or ():
+        try:
+            offers = [provider_model_offer_from_dict(o) for o in quote["offers"]]
+            if quote["capacity_receipt_ref"] not in valid_capacity_refs:
+                raise ValueError("unbound capacity")
+            capacity_fact = next(r for r in body["capacity_receipts"]
+                                 if "capacity:" + r["receipt_hash"] == quote["capacity_receipt_ref"])
+            if ((capacity_fact.get("endpoint_url") and capacity_fact["endpoint_url"] != quote.get("chat_url"))
+                    or quote.get("credential_sha256") != capacity_fact.get("credential_sha256")
+                    or quote.get("account_identity") != capacity_fact.get("account_identity")):
+                raise ValueError("quote account/credential differs from capacity")
+            at = datetime.fromisoformat(quote["observed_at"].replace("Z", "+00:00"))
+            decided = datetime.fromisoformat(receipt["decided_at"].replace("Z", "+00:00"))
+            if not 0 <= (decided - at).total_seconds() <= 5:
+                raise ValueError("quote observation is not anchored to dispatch time")
+            quote_digests.append(quote_digest(quote))
+            if quote["offer_refs"] != [o.ref for o in offers] or any(not o.is_eligible(
+                    now=at, provider=quote["provider"], pool_id=quote["pool_id"],
+                    capacity_receipt_ref=quote["capacity_receipt_ref"], harness=quote["harness"],
+                    usage_path=quote["usage_path"], native_model=quote["model"]) for o in offers):
+                raise ValueError("invalid offer scope")
+            from decimal import Decimal
+            cash = comparable_cash(offers, quote["workload"])
+            if cash != Decimal(quote["predicted_cash_usd"]) or cash > Decimal(quote["maximum_predicted_request_usd"]):
+                raise ValueError("quote changed")
+            selected = decision.get("selected_profile") or {}
+            if (quote["profile_id"] != selected.get("profile_id") or quote["model"] != selected.get("model")
+                    or quote["provider"] != selected.get("provider") or quote["harness"] != selected.get("runtime_kind")
+                    or quote["chat_url"] != selected.get("endpoint_url")):
+                raise ValueError("offer is not bound to selected execution identity")
+            valid_offer_refs.update(o.ref for o in offers)
+        except (KeyError, ValueError, TypeError, ArithmeticError):
+            codes.append("offer_receipt_changed")
+    if set(receipt.get("offer_receipt_refs") or ()) != valid_offer_refs:
+        codes.append("offer_receipt_changed")
+    if list(receipt.get("offer_quote_digests") or ()) != quote_digests:
+        codes.append("offer_quote_changed")
 
     # 8. the policy revision AND its content hash must still match the ref.
     policy_ref = str(receipt.get("policy_ref") or "")

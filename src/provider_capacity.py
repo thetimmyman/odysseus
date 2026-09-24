@@ -306,10 +306,14 @@ class ProviderCapacityReceipt:
     invalidation_reason: str = ""
     schema_version: int = CAPACITY_SCHEMA_VERSION
     receipt_hash: str = ""
+    credential_sha256: str = ""
+    endpoint_url: str = ""
 
     def __post_init__(self) -> None:
         if self.schema_version != CAPACITY_SCHEMA_VERSION:
             raise CapacityError("unsupported capacity receipt schema")
+        if self.credential_sha256 and (len(self.credential_sha256) != 64 or any(c not in "0123456789abcdef" for c in self.credential_sha256)):
+            raise CapacityError("credential_sha256 must be a lowercase SHA-256 digest")
         object.__setattr__(self, "exposed_models", tuple(self.exposed_models))
         object.__setattr__(self, "quotas", tuple(self.quotas))
         for name in ("provider", "pool_id", "account_identity", "authorization_class"):
@@ -350,7 +354,7 @@ class ProviderCapacityReceipt:
             raise CapacityError("receipt_hash does not cover receipt content")
 
     def core(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "provider": self.provider,
+        payload = {"schema_version": self.schema_version, "provider": self.provider,
                 "pool_id": self.pool_id, "account_identity": self.account_identity,
                 "authorization_class": self.authorization_class,
                 "entitlement": self.entitlement, "exposed_models": list(self.exposed_models),
@@ -367,6 +371,11 @@ class ProviderCapacityReceipt:
                 "zdr_required_by_pool": self.zdr_required_by_pool,
                 "supersedes": self.supersedes,
                 "invalidation_reason": self.invalidation_reason}
+        if self.credential_sha256:
+            payload["credential_sha256"] = self.credential_sha256
+        if self.endpoint_url:
+            payload["endpoint_url"] = self.endpoint_url
+        return payload
 
     def to_dict(self) -> dict[str, Any]:
         return {**_encode(self.core()), "receipt_hash": self.receipt_hash}
@@ -437,6 +446,10 @@ def make_capacity_receipt(**kwargs: Any) -> ProviderCapacityReceipt:
     payload.setdefault("entitlement_provenance", base_prov)
     payload.setdefault("zdr_provenance", base_prov)
     payload.pop("receipt_hash", None)
+    if not payload.get("endpoint_url"):
+        payload.pop("endpoint_url", None)
+    if not payload.get("credential_sha256"):
+        payload.pop("credential_sha256", None)
     return ProviderCapacityReceipt(**payload, receipt_hash=_sha256(payload))
 
 

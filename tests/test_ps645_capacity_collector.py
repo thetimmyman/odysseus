@@ -480,3 +480,31 @@ def test_collect_receipts_drive_the_real_hosted_gate(monkeypatch):
     )
     ok, _refs, rule, _why = dr.classify_capacity_for(other, receipts)
     assert ok is False and rule == dr.REFUSED_CAPACITY_MISSING
+
+
+def test_endpoint_capacity_binds_live_query_credentials(monkeypatch, tmp_path):
+    import pytest
+    from core.database import ModelEndpoint
+    from src.offer_economics import credential_fingerprint
+    sessions = _mem_db(monkeypatch)
+    db = sessions()
+    _auth(db)
+    db.add(ModelEndpoint(id="bound-endpoint", name="bound", base_url="https://chatgpt.com/backend-api/codex", provider_auth_id="auth1"))
+    db.commit(); db.close()
+    queried = []
+    def usage(token, **kwargs):
+        queried.append(token)
+        return usage_body()
+    monkeypatch.setattr(cc.cgs, "fetch_available_models", lambda token, **k: MODELS)
+    monkeypatch.setattr(cc.cgs, "fetch_codex_usage", usage)
+    headers = cc.cgs.chatgpt_headers(BEARER)
+    monkeypatch.setattr("src.endpoint_resolver.resolve_endpoint_by_id", lambda *a: ("https://chatgpt.com/backend-api/codex/responses", MODELS[0], headers))
+    store = ProviderCapacityStore(tmp_path / "capacity")
+    receipt = cc.collect_endpoint_capacity(store, "bound-endpoint", MODELS[0])
+    assert queried == [BEARER]
+    assert receipt.credential_sha256 == credential_fingerprint(headers)
+    before = list(store.entries())
+    headers["Authorization"] = "Bearer rotated-test-token"
+    with pytest.raises(ValueError, match="credentials changed"):
+        cc.collect_endpoint_capacity(store, "bound-endpoint", MODELS[0])
+    assert list(store.entries()) == before

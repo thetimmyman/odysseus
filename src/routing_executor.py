@@ -19,6 +19,7 @@ import re
 import subprocess
 import time
 import uuid
+from decimal import Decimal
 from typing import List
 
 from src import routing_policy
@@ -33,6 +34,7 @@ from src.routing_engine import ROLE_BY_TASK, _PATCH_SHAPED_TASK_TYPES
 from src.routing_patch import extract_diff, validate_patch_shape
 from src.routing_prompts import build_prompt, render_context_block, render_universal_wrapper
 from src.routing_workdir import data_root
+from src.routing_outcomes import export_after_commit
 
 
 def archive_root() -> str:
@@ -186,8 +188,8 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
     db.add(run)
     db.commit()
 
-    spent_so_far = 0.0
-    premium_spent = 0.0
+    spent_so_far = Decimal(0)
+    premium_spent = Decimal(0)
     attempted = 0       # real API-call attempts (completed or errored), not skips/blocks
     any_blocked = False
     summaries = []
@@ -211,6 +213,32 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
         # no provenance record, no run).
         _write_run_manifest(db, task, run_id, run_dir, bundle)
 
+        from src.promotional_dispatch import prefer_verified_free
+        from src.offer_economics import credential_fingerprint
+        from src.llm_core import _detect_provider
+        prepared = {}
+        def prepared_request(candidate):
+            profile_id = candidate["profile_id"]
+            if profile_id not in prepared:
+                item = db.get(RoutingModelProfile, profile_id)
+                prompt = build_prompt(_role_for_profile(item, task), task, bundle)
+                prepared[profile_id] = (prompt, {"input_tokens": estimate_tokens(prompt),
+                    "output_tokens": item.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+                    "cache_read_tokens": 0, "cache_write_tokens": 0})
+            return prepared[profile_id]
+        def resolve_offer_candidate(candidate):
+            offer_profile = db.get(RoutingModelProfile, candidate["profile_id"])
+            if offer_profile is None or not offer_profile.enabled or not offer_profile.model_endpoint_id:
+                raise ValueError("unavailable profile")
+            resolved = resolve_endpoint_by_id(offer_profile.model_endpoint_id, offer_profile.model)
+            if resolved is None:
+                raise ValueError("unavailable endpoint")
+            return resolved[1], resolved[0], {"endpoint_id": offer_profile.model_endpoint_id,
+                "credential_sha256": credential_fingerprint(resolved[2]), "transport_provider": _detect_provider(resolved[0])}
+        candidates = prefer_verified_free(candidates, resolve_candidate=resolve_offer_candidate)
+        from src.offer_economics import prefer_discounted
+        candidates = prefer_discounted(candidates, resolve_candidate=resolve_offer_candidate,
+                                       workload=lambda c: prepared_request(c)[1])
         for candidate in candidates:
             if attempted >= max_attempts:
                 break
@@ -235,7 +263,11 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                     _skip(db, run_id, profile.id, profile.model, "budget_blocked", premium_check["reason"], summaries)
                     continue
 
-            task_check = check_task_budget(db, task, spent_so_far, candidate["estimated_cost_usd"])
+            # With scoped offers, evaluate the fresh quote below; the old
+            # catalog estimate must not reject a genuinely discounted request.
+            offer_policy_active = bool(os.environ.get("ODYSSEUS_OFFER_CONFIG") or os.environ.get("ODYSSEUS_FREE_OFFER_CONFIG"))
+            task_check = ({"allowed": True} if offer_policy_active else
+                          check_task_budget(db, task, spent_so_far, candidate["estimated_cost_usd"]))
             if not task_check["allowed"]:
                 any_blocked = True
                 _skip(db, run_id, profile.id, profile.model, "budget_blocked", task_check["reason"], summaries)
@@ -244,14 +276,19 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
             attempted += 1
             model_run_id = str(uuid.uuid4())
             prompt_path = None
+            inference_attempted = False
+            inference_completed = False
+            reserved_cost = Decimal(0)
+            accounted_cost = Decimal(0)
+            cash_quote = None
+            cost = Decimal(0)
             t0 = time.time()
             try:
                 attempt_dir = os.path.join(run_dir, f"{attempted:03d}-{profile.id}")
                 os.makedirs(attempt_dir, exist_ok=True)
                 prompt_path = os.path.join(attempt_dir, "prompt.md")
 
-                role = _role_for_profile(profile, task)
-                prompt_text = build_prompt(role, task, bundle)
+                prompt_text, actual_workload = prepared_request(candidate)
                 with open(prompt_path, "w") as f:
                     f.write(prompt_text)
 
@@ -262,12 +299,40 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                         f"{profile.model!r} (disabled, missing, or model not available on that endpoint)"
                     )
                 chat_url, model_name, headers = resolved
+                identity = {"endpoint_id": profile.model_endpoint_id,
+                    "credential_sha256": credential_fingerprint(headers), "transport_provider": _detect_provider(chat_url)}
 
+                from src.promotional_dispatch import enforce_free_offer
+                offer_evidence = enforce_free_offer(profile_id=profile.id, model=model_name,
+                    chat_url=chat_url, harness="odysseus-scout", **identity)
+                from src.offer_economics import configured_quote
+                cash_quote = configured_quote(profile_id=profile.id, model=model_name,
+                    chat_url=chat_url, harness="odysseus-scout", workload=actual_workload, **identity)
+                if cash_quote is not None:
+                    paid_permission = task.allow_premium_models if profile.is_premium else task.allow_paid_models
+                    if Decimal(cash_quote["predicted_cash_usd"]) > 0 and not paid_permission:
+                        raise ValueError("task does not authorize a paid offer")
+                    quote_budget = check_task_budget(db, task, spent_so_far, Decimal(cash_quote["predicted_cash_usd"]))
+                    if not quote_budget["allowed"]:
+                        raise ValueError("offer quote exceeds existing task budget")
+                elif offer_policy_active:
+                    # A scoped cash offer says nothing about omitted profiles.
+                    # Preserve their original task budget before dispatch.
+                    catalog_budget = check_task_budget(db, task, spent_so_far, candidate["estimated_cost_usd"])
+                    if not catalog_budget["allowed"]:
+                        raise ValueError("unconfigured candidate exceeds existing task budget")
+                inference_attempted = True
+                reserved_cost = Decimal(cash_quote["predicted_cash_usd"]) if cash_quote else Decimal(str(candidate["estimated_cost_usd"]))
+                accounted_cost = reserved_cost
+                spent_so_far += accounted_cost
+                if profile.is_premium:
+                    premium_spent += accounted_cost
                 response_text, usage = llm_call_with_usage(
                     chat_url, model_name, [{"role": "user", "content": prompt_text}],
-                    max_tokens=profile.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+                    max_tokens=actual_workload["output_tokens"],
                     headers=headers, timeout=120, bypass_cache=True,
                 )
+                inference_completed = True
                 # Some providers/models return a null `content` field (a genuine
                 # empty completion, not an HTTP error) -- record it as a real,
                 # scoreable "completed but empty" outcome rather than crashing on
@@ -278,13 +343,31 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 tokens_estimated = usage is None
                 input_tokens = usage["input_tokens"] if usage else estimate_tokens(prompt_text)
                 output_tokens = usage["output_tokens"] if usage else estimate_tokens(response_text)
-                cost = estimate_cost_usd(profile, input_tokens, output_tokens)
+                cost = Decimal(str(estimate_cost_usd(profile, input_tokens, output_tokens)))
+                if cash_quote is not None:
+                    from src.offer_economics import comparable_cash
+                    from src.provider_model_offer import provider_model_offer_from_dict
+                    cost = comparable_cash(
+                        [provider_model_offer_from_dict(o) for o in cash_quote["offers"]],
+                        {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                         "cache_read_tokens": 0, "cache_write_tokens": 0})
+                spent_so_far += cost - accounted_cost
+                if profile.is_premium:
+                    premium_spent += cost - accounted_cost
+                accounted_cost = cost
 
                 response_path = os.path.join(attempt_dir, "response.md")
                 with open(response_path, "w") as f:
                     f.write(response_text)
 
-                artifacts = {"response_text_path": response_path, "prompt_path": prompt_path}
+                artifacts = {"response_text_path": response_path, "prompt_path": prompt_path,
+                             "inference_attempted": True, "upstream_error": False}
+                if offer_evidence is not None:
+                    artifacts["promotion"] = offer_evidence
+                if cash_quote is not None:
+                    artifacts["offer_quote"] = cash_quote
+                    artifacts["cost_basis"] = "offer_tariff_estimate_not_provider_invoice"
+                    artifacts["predicted_ceiling_exceeded"] = cost > Decimal(cash_quote["maximum_predicted_request_usd"])
                 patch_validation = None
                 patch_summary = None
                 # Phase 3 (extraction/shape-validation only -- no apply/verify/
@@ -310,21 +393,20 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 db.add(RoutingModelRun(
                     id=model_run_id, run_id=run_id, model_profile_id=profile.id,
                     input_tokens=input_tokens, output_tokens=output_tokens,
-                    tokens_estimated=tokens_estimated, cost_usd=cost, latency_ms=latency_ms,
+                    tokens_estimated=tokens_estimated, cost_usd=float(cost), latency_ms=latency_ms,
                     completed=True, rate_limited=False, errored=False,
                     artifacts=json.dumps(artifacts),
                     patch_validation=json.dumps(patch_validation) if patch_validation is not None else None,
                 ))
-                spent_so_far += cost
-                if profile.is_premium:
-                    premium_spent += cost
                 summary_entry = {
                     "model_run_id": model_run_id, "profile_id": profile.id, "model": profile.model,
-                    "status": "completed", "cost_usd": round(cost, 4), "latency_ms": latency_ms,
+                    "status": "completed", "cost_usd": round(float(cost), 4), "latency_ms": latency_ms,
                     "tokens_estimated": tokens_estimated,
                 }
                 if patch_summary is not None:
                     summary_entry["patch"] = patch_summary
+                if cash_quote is not None:
+                    summary_entry["predicted_ceiling_exceeded"] = artifacts["predicted_ceiling_exceeded"]
                 summaries.append(summary_entry)
             except Exception as e:
                 latency_ms = int((time.time() - t0) * 1000)
@@ -333,15 +415,27 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 db.add(RoutingModelRun(
                     id=model_run_id, run_id=run_id, model_profile_id=profile.id,
                     latency_ms=latency_ms, completed=False,
+                    cost_usd=float(accounted_cost),
                     rate_limited=classification["rate_limited"], errored=classification["errored"],
                     error_message=classification["error_message"],
-                    artifacts=json.dumps({"prompt_path": prompt_path}) if prompt_path else None,
+                    artifacts=json.dumps({"prompt_path": prompt_path,
+                        "inference_attempted": inference_attempted,
+                        "inference_completed": inference_completed,
+                        "retained_cost_usd": str(accounted_cost),
+                        "offer_quote": cash_quote,
+                        "cost_basis": "conservative_quote_reserve" if accounted_cost == reserved_cost else "offer_tariff_estimate_not_provider_invoice",
+                        "upstream_error": inference_attempted and not inference_completed}),
                 ))
                 summaries.append({
                     "model_run_id": model_run_id, "profile_id": profile.id, "model": profile.model,
                     "status": "failed", "reason": classification["error_message"][:200],
                 })
             db.commit()
+            export_after_commit(db, task.id)
+            if offer_policy_active and inference_attempted and not any(m.get("model_run_id") == model_run_id and m.get("status") == "completed" for m in summaries):
+                # Billing is uncertain after transport or post-processing errors;
+                # retain reserve and stop this invocation instead of paid fallback.
+                break
 
     except Exception as e:
         # Anything unexpected outside the per-candidate try/except (e.g.
@@ -371,6 +465,6 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
 
     return {
         "run_id": run_id, "task_id": task.id, "status": run.status,
-        "spend_total_usd": round(spent_so_far, 4), "spend_premium_usd": round(premium_spent, 4),
+        "spend_total_usd": round(float(spent_so_far), 4), "spend_premium_usd": round(float(premium_spent), 4),
         "model_runs": summaries,
     }

@@ -276,7 +276,7 @@ PS638_RECEIPT_FIELDS: Tuple[str, ...] = (
     "candidates_considered", "capability_receipt_refs", "selected_runtime_kind",
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope", "network_policy",
-    "decided_at", "authority", "capacity_receipt_refs", "schema_version",
+    "decided_at", "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "schema_version",
 )
 #: The fields PS-638's ``core()`` covers, in ITS order. The receipt hash is
 #: sha256 over the canonical JSON of exactly these, with tuple-valued fields
@@ -294,17 +294,17 @@ PS638_RECEIPT_CORE_FIELDS: Tuple[str, ...] = (
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope",
     "network_policy", "decided_by", "reason", "decided_at", "authority",
-    "capacity_receipt_refs",
+    "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests",
 )
 _PS638_LIST_FIELDS: Tuple[str, ...] = (
     "requested_capabilities", "candidates_considered", "capability_receipt_refs",
-    "capacity_receipt_refs", "granted_tools", "granted_write_scope", "granted_read_scope",
+    "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "granted_tools", "granted_write_scope", "granted_read_scope",
 )
 #: Fields that, like ``authority``, are omitted from the hashed core entirely
 #: when absent rather than serialized as ``null`` — so introducing them never
 #: changes the hash of a receipt that predates them.
 _PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = (
-    "authority", "capacity_receipt_refs",
+    "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests",
 )
 DECIDED_BY_POLICY = "ps605_policy"
 
@@ -777,7 +777,9 @@ def classify_capacity_for(profile: ExecutionTargetProfile,
         return (True, (), "eligible", "local target: no subscription capacity required")
 
     matching = tuple(r for r in (capacity_receipts or ())
-                     if profile.model in tuple(getattr(r, "exposed_models", ())))
+                     if profile.model in tuple(getattr(r, "exposed_models", ()))
+                     and (not getattr(r, "endpoint_url", "") or
+                          (r.endpoint_url == profile.endpoint_url and r.provider == profile.provider)))
     if not matching:
         return (False, (), REFUSED_CAPACITY_MISSING,
                 f"no capacity receipt exposes model {profile.model!r}")
@@ -971,6 +973,8 @@ class DispatchDecision:
     schema_version: int = SCHEMA_VERSION
     authority: Optional[Mapping[str, Any]] = None
     capacity_receipt_refs: Tuple[str, ...] = ()
+    offer_receipt_refs: Tuple[str, ...] = ()
+    offer_quote_digests: Tuple[str, ...] = ()
     receipt_hash: str = field(default="")
 
     def pin(self) -> dict:
@@ -1078,6 +1082,10 @@ class DispatchDecision:
             kwargs["authority"] = self.authority
         if self.capacity_receipt_refs:
             kwargs["capacity_receipt_refs"] = self.capacity_receipt_refs
+        if self.offer_receipt_refs:
+            kwargs["offer_receipt_refs"] = self.offer_receipt_refs
+        if self.offer_quote_digests:
+            kwargs["offer_quote_digests"] = self.offer_quote_digests
         return kwargs
 
     def core(self) -> dict:
@@ -1103,6 +1111,10 @@ class DispatchDecision:
         }
         if self.capacity_receipt_refs:
             payload["capacity_receipt_refs"] = list(self.capacity_receipt_refs)
+        if self.offer_receipt_refs:
+            payload["offer_receipt_refs"] = list(self.offer_receipt_refs)
+        if self.offer_quote_digests:
+            payload["offer_quote_digests"] = list(self.offer_quote_digests)
         return payload
 
     @property

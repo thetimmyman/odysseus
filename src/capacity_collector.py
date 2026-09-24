@@ -378,8 +378,13 @@ def collect(
     state, rate_quota = _state_and_rate_limit(windows, usage, now_iso)
     provenance = _usage_provenance(now_iso)
 
+    # The same token authenticated the live usage/model queries. Bind the
+    # provider's actual inference headers, not a self-declared config hash.
+    from src.offer_economics import credential_fingerprint
+
     return pc.make_capacity_receipt(
         provider="chatgpt_subscription",
+        credential_sha256=credential_fingerprint(cgs.chatgpt_headers(access_token)),
         pool_id=hosted_pool_id(auth_id),
         account_identity=account_identity_for(
             owner if owner else (auth.owner or ""), auth_id
@@ -467,3 +472,55 @@ def fresh_hosted_capacity_receipts(
         if previous is None or receipt.observed_at > previous.observed_at:
             best[receipt.pool_id] = receipt
     return best
+
+
+def collect_endpoint_capacity(store, endpoint_id, model):
+    """Live provider read, bound to the resolved endpoint's real credentials.
+
+    Supports the existing ChatGPT collector and fixed Command Code/OpenCode API adapters.
+    No arbitrary provider/account receipt can be minted by configuration.
+    """
+    from core.database import ModelEndpoint
+    from src.endpoint_resolver import resolve_endpoint_by_id
+    from src.offer_economics import credential_fingerprint
+    db = SessionLocal()
+    try:
+        endpoint = db.get(ModelEndpoint, endpoint_id)
+        enabled = endpoint is not None and endpoint.is_enabled
+        auth_id = endpoint.provider_auth_id if enabled else None
+    finally:
+        db.close()
+    if not enabled:
+        raise ValueError("endpoint is disabled or missing")
+    resolved = resolve_endpoint_by_id(endpoint_id, model)
+    if resolved is None:
+        raise ValueError("endpoint credentials/model could not be resolved")
+    if auth_id:
+        receipt = collect(auth_id)
+    else:
+        from src.subscription_capacity import collect_api_capacity
+        receipt = collect_api_capacity(resolved[0], model, resolved[2])
+    if receipt is None or model not in receipt.exposed_models:
+        raise ValueError("live provider capacity could not be established")
+    if receipt.credential_sha256 != credential_fingerprint(resolved[2]):
+        raise ValueError("credentials changed between endpoint resolution and capacity query; retry collection")
+    receipt = pc.make_capacity_receipt(**{**receipt.core(), "endpoint_url": resolved[0]})
+    prior = store.current(receipt.pool_id)
+    return store.append(receipt, supersedes=prior.receipt_hash if prior else "")
+
+
+def main():
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description="Query live provider capacity for an existing authenticated endpoint")
+    parser.add_argument("--endpoint-id", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--store-dir", default="")
+    args = parser.parse_args()
+    receipt = collect_endpoint_capacity(ProviderCapacityStore(args.store_dir), args.endpoint_id, args.model)
+    print(json.dumps({"receipt_ref": receipt.ref, "pool_id": receipt.pool_id,
+                      "provider": receipt.provider, "credential_bound": True}))
+
+
+if __name__ == "__main__":
+    main()

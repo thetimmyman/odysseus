@@ -249,7 +249,7 @@ def test_the_receipt_field_set_is_the_ps638_contract():
     kwargs = select().to_ps638_receipt_kwargs()
     assert set(kwargs) <= set(dr.PS638_RECEIPT_FIELDS)
     required_fields = set(dr.PS638_RECEIPT_FIELDS) - {
-        "authority", "capacity_receipt_refs"
+        "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests"
     }
     assert required_fields <= set(kwargs)
     assert "authority" not in kwargs  # this decision was built with none
@@ -262,7 +262,7 @@ def test_the_receipt_field_set_includes_authority_when_present():
     """The optional field appears in the kwargs exactly when it is set."""
     decision = dataclasses.replace(select(), authority={"grant_id": "g1"})
     kwargs = decision.to_ps638_receipt_kwargs()
-    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS) - {"capacity_receipt_refs"}
+    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS) - {"capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests"}
     assert kwargs["authority"] == {"grant_id": "g1"}
 
 
