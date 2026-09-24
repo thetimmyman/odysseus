@@ -489,3 +489,7 @@ def test_capacity_and_capability_are_independent_contract_inputs():
     assert not dispatch_ready(True, receipt(state=CapacityState.EXHAUSTED))
     assert not dispatch_ready(False, receipt())
     assert not dispatch_ready(True, receipt(entitlement=Entitlement.UNKNOWN))
+
+
+def test_available_without_known_capacity_is_not_usable():
+    assert not receipt(concurrency_remaining=UNKNOWN, quotas=()).has_usable_capacity_facts(now=AT_NOW)

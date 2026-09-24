@@ -194,6 +194,19 @@ def test_only_the_decisions_eligible_candidates_are_offered_to_the_dispatcher():
     assert bound.pin_for("p-rtx")["selected"] is True
 
 
+def test_pin_carries_complete_execution_binding_for_pi_adapter():
+    db = _db()
+    task = _seed(db)
+    package_hash = "a" * 64
+    bound = _resolve(db, task, "p-rtx", run_id="run-bound",
+                     packet_id="packet-bound", execution_package_hash_=package_hash)
+    pin = bound.pin_for("p-rtx")
+    assert pin["receipt_hash"] == bound.decision.receipt_hash
+    assert pin["run_id"] == "run-bound"
+    assert pin["packet_id"] == "packet-bound"
+    assert pin["execution_package_hash"] == package_hash
+
+
 def test_a_free_only_task_cannot_reach_a_premium_profile():
     """The task's own allow_* flags become a material budget fact."""
     db = _db()
@@ -527,6 +540,7 @@ def _hosted_profile(**overrides):
         "runtime_kind": "openai_compatible", "runtime_version": "1.2.3",
         "model": HOSTED_MODEL, "model_digest": "hosted-model-digest",
         "backend": "saas", "endpoint_url": "https://api.clinepass.example/v1",
+        "credential_sha256": "a" * 64,
         "endpoint_type": "openai_compatible", "locality": dr.LOCALITY_HOSTED,
         "roles": frozenset({dr.ROLE_IMPLEMENTER}),
         "tools": frozenset({"write_file"}), "network_policy": "hosted-egress",
@@ -570,6 +584,8 @@ def _capacity_receipt(**overrides):
     fields = {
         "provider": "clinepass", "pool_id": "clinepass:sub",
         "account_identity": "sub:primary",
+        "credential_sha256": "a" * 64, "endpoint_url": "https://api.clinepass.example/v1",
+        "concurrency_remaining": 1,
         "authorization_class": AuthorizationClass.AGENT_SDK,
         "entitlement": Entitlement.AGENT_SDK,
         "exposed_models": (HOSTED_MODEL,), "observed_at": NOW.isoformat(),
@@ -624,3 +640,54 @@ def test_hosted_dispatch_without_capacity_receipts_still_refuses():
     with pytest.raises(dr.RoutingRefused) as err:
         _hosted_bound(capacity_receipts=())
     assert err.value.code == dr.REFUSED_CAPACITY_MISSING
+
+
+def _with_capacity_refs(bound, refs, *, capacity_receipts=None):
+    decision = dataclasses.replace(bound.decision, capacity_receipt_refs=tuple(refs), receipt_hash="")
+    decision = dataclasses.replace(
+        decision,
+        receipt_hash=dr.ps638_receipt_hash(decision.to_ps638_receipt_kwargs()))
+    return dataclasses.replace(
+        bound, decision=decision,
+        capacity_receipts=tuple(bound.capacity_receipts if capacity_receipts is None else capacity_receipts))
+
+
+def test_hosted_evidence_requires_selected_capacity_refs():
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    assert bound.decision.capacity_receipt_refs
+    unbound = _with_capacity_refs(bound, ())
+    payload = _sealed(unbound)
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert not ok and dbd.EVIDENCE_CAPACITY_CHANGED in codes
+
+
+@pytest.mark.parametrize("changes", [
+    {"provider": "other-provider"},
+    {"endpoint_url": "https://other.example/v1"},
+    {"credential_sha256": "b" * 64},
+    {"exposed_models": ("other-model",)},
+])
+def test_hosted_evidence_rejects_capacity_refs_for_another_identity(changes):
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    other = _capacity_receipt(**changes)
+    unbound = _with_capacity_refs(bound, (other.ref,), capacity_receipts=(other,))
+    payload = _sealed(unbound)
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert not ok and dbd.EVIDENCE_CAPACITY_CHANGED in codes
+
+
+def test_hosted_evidence_rejects_disallowed_capacity_entitlement():
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    disallowed = _capacity_receipt(entitlement=Entitlement.THIRD_PARTY_HARNESS)
+    forged = _with_capacity_refs(bound, (disallowed.ref,), capacity_receipts=(disallowed,))
+    ok, codes = dbd.validate_dispatch_evidence(_sealed(forged))
+    assert not ok and dbd.EVIDENCE_CAPACITY_CHANGED in codes
+
+
+def test_historical_hosted_evidence_uses_recorded_selection_time():
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    # Test selection is pinned to NOW (2026-09-15); this receipt is stale by
+    # today's clock, but was usable at the time the recorded decision was made.
+    payload = _sealed(bound)
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert ok is True and codes == ()

@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -560,15 +561,41 @@ class PiRuntime:
         execution_id: Optional[str] = None,
         keep_alive: bool = False,
     ) -> Dict[str, Any]:
-        """Start Pi only from a validated dispatch pin."""
-        provider = pin["provider"]
-        model = pin["model"]
-        runtime_kind = pin.get("runtime_kind") or ""
-        if runtime_kind not in ("", "pi", None):
-            raise ValueError(
-                "a Pi adapter must never execute a pin that is not a Pi target"
-            )
-        runtime_kind = "pi" if not runtime_kind else runtime_kind
+        """Start from a complete pin emitted by ``BoundDispatch.pin_for``.
+
+        This checks the pin's binding against the caller's run/package values
+        before spawning. It does not authenticate an arbitrary caller-created
+        dict; callers must pass the canonical pin from a resolved BoundDispatch.
+        """
+        if not isinstance(pin, dict):
+            raise ValueError("a complete canonical dispatch pin is required")
+        runtime_kind = pin.get("runtime_kind")
+        if not isinstance(runtime_kind, str) or runtime_kind.strip() != "pi":
+            raise ValueError("a Pi adapter must never execute a pin that is not a Pi target")
+        required_text = (
+            "provider", "model", "target_id", "profile_id",
+            "receipt_hash", "run_id", "packet_id", "execution_package_hash",
+        )
+        for field in required_text:
+            value = pin.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"dispatch pin is missing {field}")
+        if not isinstance(pin.get("host"), str):
+            raise ValueError("dispatch pin is missing host")
+        provider = pin["provider"].strip()
+        model = pin["model"].strip()
+        runtime_kind = runtime_kind.strip()
+        if not re.fullmatch(r"[a-f0-9]{64}", pin["receipt_hash"]):
+            raise ValueError("dispatch pin receipt hash is invalid")
+        if not re.fullmatch(r"[a-f0-9]{64}", pin["execution_package_hash"]):
+            raise ValueError("dispatch pin execution package hash is invalid")
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+            raise ValueError("attempt must be a positive integer")
+        if (run_id != pin["run_id"] or packet_id != pin["packet_id"]
+                or execution_package_hash != pin["execution_package_hash"]):
+            raise ValueError("caller run, packet, or package binding differs from the dispatch pin")
+        if "attempt" in pin and pin["attempt"] != attempt:
+            raise ValueError("caller attempt differs from the dispatch pin")
         return await self.start(
             task=task,
             worktree=worktree,
@@ -1287,4 +1314,3 @@ def get_pi_runtime() -> PiRuntime:
     if _RUNTIME is None:
         _RUNTIME = PiRuntime()
     return _RUNTIME
-

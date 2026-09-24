@@ -69,6 +69,7 @@ def capacity_receipt(**overrides):
     fields = {
         "provider": "openrouter", "pool_id": "openrouter:subscription",
         "account_identity": "subscription:primary",
+        "credential_sha256": "a" * 64, "endpoint_url": "https://openrouter.ai/api/v1",
         "authorization_class": AuthorizationClass.AGENT_SDK,
         "entitlement": Entitlement.AGENT_SDK,
         "exposed_models": ("qwen3.8:27b",), "observed_at": NOW.isoformat(),
@@ -137,7 +138,7 @@ def test_the_positive_control_selects_and_receipts():
 def hosted_profile():
     return profile(target_id="hosted-target", profile_id="hosted-profile",
                    provider="openrouter", host="api.openrouter.ai",
-                   locality=dr.LOCALITY_HOSTED,
+                   locality=dr.LOCALITY_HOSTED, credential_sha256="a" * 64,
                    endpoint_url="https://openrouter.ai/api/v1")
 
 
@@ -249,7 +250,7 @@ def test_the_receipt_field_set_is_the_ps638_contract():
     kwargs = select().to_ps638_receipt_kwargs()
     assert set(kwargs) <= set(dr.PS638_RECEIPT_FIELDS)
     required_fields = set(dr.PS638_RECEIPT_FIELDS) - {
-        "authority", "capacity_receipt_refs"
+        "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests"
     }
     assert required_fields <= set(kwargs)
     assert "authority" not in kwargs  # this decision was built with none
@@ -262,7 +263,7 @@ def test_the_receipt_field_set_includes_authority_when_present():
     """The optional field appears in the kwargs exactly when it is set."""
     decision = dataclasses.replace(select(), authority={"grant_id": "g1"})
     kwargs = decision.to_ps638_receipt_kwargs()
-    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS) - {"capacity_receipt_refs"}
+    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS) - {"capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests"}
     assert kwargs["authority"] == {"grant_id": "g1"}
 
 
@@ -481,6 +482,7 @@ def test_a_fallback_must_satisfy_the_same_policy_as_the_preferred_candidate():
     hosted = profile(target_id="openrouter-v4pro", profile_id="or-v4pro",
                      provider="openrouter", host="api.openrouter.ai",
                      locality=dr.LOCALITY_HOSTED, budget_class="dev", cost_rank=1,
+                     endpoint_url="https://openrouter.ai/api/v1", credential_sha256="a" * 64,
                      roles=frozenset({dr.ROLE_IMPLEMENTER}),
                      tools=frozenset({"write_file"}),
                      network_policy="tailnet-loopback")
@@ -573,3 +575,47 @@ def test_the_refusal_is_serializable_and_names_every_candidate():
     assert payload["run_id"] == "run-1" and payload["packet_id"] == "P-1"
     assert payload["candidates"][0]["rule"] == dr.REFUSED_BUDGET
     assert payload["candidates"][0]["eligible"] is False
+
+@pytest.mark.parametrize("changes", [
+    {"provider": "other-provider"}, {"endpoint_url": ""},
+    {"endpoint_url": "https://other.example/v1"},
+    {"credential_sha256": ""}, {"credential_sha256": "b" * 64},
+])
+def test_hosted_capacity_cannot_cross_provider_endpoint_or_credential(changes):
+    target = hosted_profile()
+    assert dr.classify_capacity_for(target, [capacity_receipt()], now=NOW)[0]
+    assert not dr.classify_capacity_for(target, [capacity_receipt(**changes)], now=NOW)[0]
+    assert not dr.classify_capacity_for(dataclasses.replace(target, credential_sha256=""),
+                                        [capacity_receipt()], now=NOW)[0]
+
+
+def test_selected_capacity_refs_share_assessment_time(monkeypatch):
+    """A receipt expiring between candidate check and ref collection stays pinned once."""
+    import datetime as dt
+
+    target = hosted_profile()
+    observed = dt.datetime.now(dt.timezone.utc)
+    cap = capacity_receipt(observed_at=observed.isoformat(), ttl_seconds=60)
+    cap_view = receipt(profile_id=target.profile_id, target_id=target.target_id,
+                       observed_at=observed.isoformat(), ttl_s=60)
+    original = dr.classify_capacity_for
+    seen = []
+
+    def time_advancing_classify(profile, receipts, *, now=None):
+        # Model a slow selection: under the old double-clock path, first check is
+        # fresh and the later binding check occurs well after the short TTL.
+        effective = now if now is not None else (observed if not seen else observed + dt.timedelta(seconds=61))
+        seen.append(effective)
+        return original(profile, receipts, now=effective)
+
+    monkeypatch.setattr(dr, "classify_capacity_for", time_advancing_classify)
+    decision = dr.select_target(request(), profiles=[target], receipts=[cap_view],
+                                capacity_receipts=[cap], policy=POLICY)
+    assert len(seen) == 2
+    assert seen[0] == seen[1]
+    assert decision.capacity_receipt_refs == (cap.ref,)
+
+
+@pytest.mark.parametrize("entitlement", [Entitlement.THIRD_PARTY_HARNESS, Entitlement.INTERACTIVE_NATIVE, Entitlement.UNKNOWN, Entitlement.LOCAL])
+def test_hosted_entitlement_requires_explicit_api_or_sdk(entitlement):
+    assert not dr.classify_capacity_for(hosted_profile(), [capacity_receipt(entitlement=entitlement)], now=NOW)[0]

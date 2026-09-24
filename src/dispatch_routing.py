@@ -276,7 +276,7 @@ PS638_RECEIPT_FIELDS: Tuple[str, ...] = (
     "candidates_considered", "capability_receipt_refs", "selected_runtime_kind",
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope", "network_policy",
-    "decided_at", "authority", "capacity_receipt_refs", "schema_version",
+    "decided_at", "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "schema_version",
 )
 #: The fields PS-638's ``core()`` covers, in ITS order. The receipt hash is
 #: sha256 over the canonical JSON of exactly these, with tuple-valued fields
@@ -294,17 +294,17 @@ PS638_RECEIPT_CORE_FIELDS: Tuple[str, ...] = (
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope",
     "network_policy", "decided_by", "reason", "decided_at", "authority",
-    "capacity_receipt_refs",
+    "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests",
 )
 _PS638_LIST_FIELDS: Tuple[str, ...] = (
     "requested_capabilities", "candidates_considered", "capability_receipt_refs",
-    "capacity_receipt_refs", "granted_tools", "granted_write_scope", "granted_read_scope",
+    "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "granted_tools", "granted_write_scope", "granted_read_scope",
 )
 #: Fields that, like ``authority``, are omitted from the hashed core entirely
 #: when absent rather than serialized as ``null`` — so introducing them never
 #: changes the hash of a receipt that predates them.
 _PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = (
-    "authority", "capacity_receipt_refs",
+    "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests",
 )
 DECIDED_BY_POLICY = "ps605_policy"
 
@@ -511,6 +511,7 @@ class ExecutionTargetProfile:
     inference: bool = True
     endpoint_url: str = ""
     endpoint_type: str = ""
+    credential_sha256: str = ""
     runtime_options: Mapping[str, Any] = field(default_factory=dict)
     #: Request-scoped generation settings are not target authority. They remain
     #: available only for a future PS-641 request/decision composition seam.
@@ -552,7 +553,7 @@ class ExecutionTargetProfile:
         return bool(role) and role in self.roles
 
     def core(self) -> dict:
-        return {
+        value = {
             "schema_version": self.schema_version, "target_id": self.target_id,
             "profile_id": self.profile_id, "provider": self.provider,
             "host": self.host, "runtime_kind": self.runtime_kind,
@@ -570,6 +571,11 @@ class ExecutionTargetProfile:
             "configured_context": self.configured_context,
             "configured_served_context": self.configured_served_context,
         }
+
+        # Preserve historical local evidence hashes when this additive scope is absent.
+        if self.credential_sha256:
+            value["credential_sha256"] = self.credential_sha256
+        return value
 
     def to_dict(self) -> dict:
         return self.core()
@@ -777,7 +783,11 @@ def classify_capacity_for(profile: ExecutionTargetProfile,
         return (True, (), "eligible", "local target: no subscription capacity required")
 
     matching = tuple(r for r in (capacity_receipts or ())
-                     if profile.model in tuple(getattr(r, "exposed_models", ())))
+                     if profile.model in tuple(getattr(r, "exposed_models", ()))
+                     and r.provider == profile.provider
+                     and bool(profile.endpoint_url) and r.endpoint_url == profile.endpoint_url
+                     and bool(profile.credential_sha256)
+                     and r.credential_sha256 == profile.credential_sha256)
     if not matching:
         return (False, (), REFUSED_CAPACITY_MISSING,
                 f"no capacity receipt exposes model {profile.model!r}")
@@ -785,7 +795,12 @@ def classify_capacity_for(profile: ExecutionTargetProfile,
     if not fresh:
         return (False, (), REFUSED_CAPACITY_STALE,
                 f"capacity receipts exposing model {profile.model!r} are stale")
-    usable = tuple(r for r in fresh if r.has_usable_capacity_facts(now=now))
+    from src.provider_capacity import Entitlement
+    # Reporting a healthy subscription is not permission to use its native
+    # entitlement from this hosted adapter. Third-party harness enablement is
+    # deliberately absent until a separate policy grant is implemented.
+    usable = tuple(r for r in fresh if r.entitlement in (Entitlement.API, Entitlement.AGENT_SDK)
+                   and r.has_usable_capacity_facts(now=now))
     if not usable:
         return (False, (), REFUSED_CAPACITY_UNUSABLE,
                 f"fresh capacity receipts exposing model {profile.model!r} are unusable")
@@ -971,6 +986,8 @@ class DispatchDecision:
     schema_version: int = SCHEMA_VERSION
     authority: Optional[Mapping[str, Any]] = None
     capacity_receipt_refs: Tuple[str, ...] = ()
+    offer_receipt_refs: Tuple[str, ...] = ()
+    offer_quote_digests: Tuple[str, ...] = ()
     receipt_hash: str = field(default="")
 
     def pin(self) -> dict:
@@ -1078,6 +1095,10 @@ class DispatchDecision:
             kwargs["authority"] = self.authority
         if self.capacity_receipt_refs:
             kwargs["capacity_receipt_refs"] = self.capacity_receipt_refs
+        if self.offer_receipt_refs:
+            kwargs["offer_receipt_refs"] = self.offer_receipt_refs
+        if self.offer_quote_digests:
+            kwargs["offer_quote_digests"] = self.offer_quote_digests
         return kwargs
 
     def core(self) -> dict:
@@ -1103,6 +1124,10 @@ class DispatchDecision:
         }
         if self.capacity_receipt_refs:
             payload["capacity_receipt_refs"] = list(self.capacity_receipt_refs)
+        if self.offer_receipt_refs:
+            payload["offer_receipt_refs"] = list(self.offer_receipt_refs)
+        if self.offer_quote_digests:
+            payload["offer_quote_digests"] = list(self.offer_quote_digests)
         return payload
 
     @property
@@ -1168,6 +1193,11 @@ def select_target(request: RoutingRequest, *,
     order is selected. Determinism is asserted by the test suite (same inputs ->
     identical ``decision_hash``), which is what makes a receipt re-checkable.
     """
+    # Capacity freshness must be evaluated against one instant for the whole
+    # decision. Re-reading the clock after candidate assessment could leave a
+    # hosted candidate eligible while its cited capacity refs have already gone
+    # stale.
+    selection_time = now if now is not None else datetime.now(timezone.utc)
     profiles = list(profiles or ())
     if not profiles:
         raise RoutingRefused(REFUSED_NO_CANDIDATES,
@@ -1189,7 +1219,7 @@ def select_target(request: RoutingRequest, *,
         assessments.append(_assess(
             profile, receipt, request, domain_policy=resolved_policy,
             policy_local_only=policy_local_only, resources=resources,
-            capacity_receipts=capacity_receipts, now=now, preference_rank=rank))
+            capacity_receipts=capacity_receipts, now=selection_time, preference_rank=rank))
 
     eligible = [a for a in assessments if a.eligible]
     local_only = bool(policy_local_only)
@@ -1231,7 +1261,7 @@ def select_target(request: RoutingRequest, *,
     receipt = (index.get(profile.profile_id)
                or index.get(f"target:{profile.target_id}"))
     _, selected_capacity_refs, _, _ = classify_capacity_for(
-        profile, capacity_receipts, now=now)
+        profile, capacity_receipts, now=selection_time)
     # The RECORD is canonical, not input-ordered: the assessment list is sorted so
     # two runs over the same candidates produce the same decision hash even if the
     # caller passed the profiles in a different order.
@@ -1262,7 +1292,7 @@ def select_target(request: RoutingRequest, *,
         reason = ("no profile preference was expressed; the deterministic order "
                   "decided")
 
-    observed = (now or datetime.now(timezone.utc)).isoformat()
+    observed = selection_time.isoformat()
     facts = {
         "request_budget_class": request.budget_class,
         "selected_budget_class": profile.budget_class,

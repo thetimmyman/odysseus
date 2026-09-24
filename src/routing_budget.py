@@ -253,8 +253,9 @@ def check_task_budget(db, task, spent_so_far: float, next_estimated_cost: float)
     global/period budget in check_global_budget)."""
     if task.max_cost_usd is None:
         return {"allowed": True, "reason": None}
-    projected = spent_so_far + next_estimated_cost
-    if projected > task.max_cost_usd:
+    from decimal import Decimal
+    projected = Decimal(str(spent_so_far)) + Decimal(str(next_estimated_cost))
+    if projected > Decimal(str(task.max_cost_usd)):
         return {
             "allowed": False,
             "reason": f"projected spend ${projected:.4f} would exceed task cap ${task.max_cost_usd:.2f}",
