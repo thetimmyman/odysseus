@@ -94,6 +94,42 @@ async def wait_terminal(runtime, execution_id, timeout=25.0):
             return status
         await asyncio.sleep(0.1)
     return runtime.status(execution_id)
+
+
+def test_execution_record_persists_ps638_attempt_binding(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path))
+    binding = {
+        "run_id": "run-605",
+        "packet_id": "packet-638",
+        "attempt": 2,
+        "execution_package_hash": "package-hash",
+        "dispatch_receipt_hash": "receipt-hash",
+        "target_id": "target-1",
+        "host": "host-1",
+        "runtime_kind": "pi",
+    }
+
+    record = pe.create_execution(**binding)
+    persisted = pe.get_execution(record["execution_id"])
+
+    assert persisted is not None
+    for field, value in binding.items():
+        assert persisted[field] == value
+
+
+def test_execution_record_defaults_ps638_attempt_binding_to_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path))
+    record = pe.create_execution()
+    persisted = pe.get_execution(record["execution_id"])
+
+    assert persisted is not None
+    for field in (
+        "run_id", "packet_id", "attempt", "execution_package_hash",
+        "dispatch_receipt_hash", "target_id", "host", "runtime_kind",
+    ):
+        assert persisted[field] is None
+
+
 # --- Test A — Start --------------------------------------------------------
 async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-a")
@@ -115,6 +151,105 @@ async def test_a_start_creates_execution_record(repo, worktree, pi_env):
 
     final = await wait_terminal(runtime, record["execution_id"])
     assert final["status"] == pe.STATUS_COMPLETED
+
+
+async def test_start_from_pin_persists_dispatch_binding(repo, worktree, pi_env):
+    configure(worktree, session_id="stub-session-pin")
+    runtime = PiRuntime()
+    pin = {
+        "provider": pc.DEFAULT_PI_PROVIDER,
+        "model": pc.DEFAULT_PI_MODEL_ID,
+        "runtime_kind": "pi",
+        "receipt_hash": "a" * 64,
+        "run_id": "run-pin",
+        "packet_id": "packet-pin",
+        "execution_package_hash": "b" * 64,
+        "profile_id": "profile-pin",
+        "target_id": "target-pin",
+        "host": "host-pin",
+    }
+
+    record = await runtime.start_from_pin(
+        pin,
+        task="Run from a dispatch pin.",
+        worktree=str(worktree),
+        attempt=2,
+        run_id="run-pin",
+        packet_id="packet-pin",
+        execution_package_hash="b" * 64,
+    )
+
+    assert record["provider"] == pin["provider"]
+    assert record["model"] == pin["model"]
+    assert record["dispatch_receipt_hash"] == "a" * 64
+    assert record["target_id"] == "target-pin"
+    assert record["host"] == "host-pin"
+    assert record["runtime_kind"] == "pi"
+    assert record["attempt"] == 2
+
+
+async def test_start_from_pin_rejects_non_pi_without_spawning(repo, worktree, pi_env, monkeypatch):
+    configure(worktree, session_id="stub-session-non-pi")
+    runtime = PiRuntime()
+
+    async def no_spawn(*args, **kwargs):
+        raise AssertionError("non-Pi dispatch pin must not spawn Pi")
+
+    monkeypatch.setattr(runtime, "_spawn", no_spawn)
+    pin = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "runtime_kind": "openai_compatible",
+    }
+
+    with pytest.raises(ValueError, match="not a Pi target"):
+        await runtime.start_from_pin(pin, task="Must not run.", worktree=str(worktree))
+    assert not list((Path(pi_env) / "executions").glob("*.json"))
+
+
+@pytest.mark.parametrize("field", ["runtime_kind", "receipt_hash", "run_id", "packet_id",
+                                   "execution_package_hash", "target_id", "profile_id", "host"])
+async def test_start_from_pin_rejects_incomplete_binding_before_spawning(
+        repo, worktree, pi_env, monkeypatch, field):
+    runtime = PiRuntime()
+
+    async def no_spawn(*args, **kwargs):
+        raise AssertionError("incomplete pin must be rejected before spawning")
+
+    monkeypatch.setattr(runtime, "_spawn", no_spawn)
+    pin = {"provider": "local-qwen", "model": "qwen", "runtime_kind": "pi",
+           "receipt_hash": "a" * 64, "run_id": "run", "packet_id": "packet",
+           "execution_package_hash": "b" * 64, "target_id": "target",
+           "profile_id": "profile", "host": "host"}
+    pin.pop(field)
+    expected = "not a Pi target" if field == "runtime_kind" else "dispatch pin"
+    with pytest.raises(ValueError, match=expected):
+        await runtime.start_from_pin(pin, task="No run.", worktree=str(worktree),
+            run_id="run", packet_id="packet", execution_package_hash="b" * 64)
+    assert not list((Path(pi_env) / "executions").glob("*.json"))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_id", "other-run"), ("packet_id", "other-packet"),
+    ("execution_package_hash", "c" * 64),
+])
+async def test_start_from_pin_rejects_caller_binding_mismatch_before_spawning(
+        repo, worktree, pi_env, monkeypatch, field, value):
+    runtime = PiRuntime()
+
+    async def no_spawn(*args, **kwargs):
+        raise AssertionError("binding mismatch must be rejected before spawning")
+
+    monkeypatch.setattr(runtime, "_spawn", no_spawn)
+    pin = {"provider": "local-qwen", "model": "qwen", "runtime_kind": "pi",
+           "receipt_hash": "a" * 64, "run_id": "run", "packet_id": "packet",
+           "execution_package_hash": "b" * 64, "target_id": "target",
+           "profile_id": "profile", "host": "host"}
+    kwargs = {"run_id": "run", "packet_id": "packet", "execution_package_hash": "b" * 64}
+    kwargs[field] = value
+    with pytest.raises(ValueError, match="binding differs"):
+        await runtime.start_from_pin(pin, task="No run.", worktree=str(worktree), **kwargs)
+    assert not list((Path(pi_env) / "executions").glob("*.json"))
 
 
 # --- Test B — Identity -----------------------------------------------------

@@ -29,6 +29,8 @@ from src import dispatch_boundary as dbd
 from src import dispatch_routing as dr
 from src.local_targets import (CapabilityEvidence, ContextProfile, ModelIdentity,
                                RuntimeIdentity, TargetCapabilityReceipt)
+from src.provider_capacity import (AuthorizationClass, CapacityState, Entitlement,
+                                   make_capacity_receipt)
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
 #: Fixture profiles are "created" a little BEFORE the decision clock, so a declared
@@ -190,6 +192,19 @@ def test_only_the_decisions_eligible_candidates_are_offered_to_the_dispatcher():
     assert order == ["p-rtx", "p-openrouter"]      # MS-R1 is refused, not offered
     assert bound.pin_for("p-msr") is None
     assert bound.pin_for("p-rtx")["selected"] is True
+
+
+def test_pin_carries_complete_execution_binding_for_pi_adapter():
+    db = _db()
+    task = _seed(db)
+    package_hash = "a" * 64
+    bound = _resolve(db, task, "p-rtx", run_id="run-bound",
+                     packet_id="packet-bound", execution_package_hash_=package_hash)
+    pin = bound.pin_for("p-rtx")
+    assert pin["receipt_hash"] == bound.decision.receipt_hash
+    assert pin["run_id"] == "run-bound"
+    assert pin["packet_id"] == "packet-bound"
+    assert pin["execution_package_hash"] == package_hash
 
 
 def test_a_free_only_task_cannot_reach_a_premium_profile():
@@ -507,3 +522,172 @@ def test_the_recorder_proves_a_local_only_dispatch_made_no_hosted_call():
     recorder.record(target_id="profile:p-openrouter", locality="hosted", model="m")
     with pytest.raises(dbd.DispatchBoundaryError):
         recorder.assert_no_hosted()
+
+
+# =================================================== capacity evidence (T7) ===
+# PS-640: capacity receipts must be part of the SEALED evidence, so removing or
+# tampering with the capacity fact the decision relied on is detectable — and the
+# capacity GATE (T1+T2) still refuses a hosted dispatch that has none.
+
+HOSTED_PROFILE_ID = "clinepass-profile"
+HOSTED_MODEL = "cline-3.5-pro"
+
+
+def _hosted_profile(**overrides):
+    fields = {
+        "target_id": "profile:clinepass-profile", "profile_id": HOSTED_PROFILE_ID,
+        "provider": "clinepass", "host": "api.clinepass.example",
+        "runtime_kind": "openai_compatible", "runtime_version": "1.2.3",
+        "model": HOSTED_MODEL, "model_digest": "hosted-model-digest",
+        "backend": "saas", "endpoint_url": "https://api.clinepass.example/v1",
+        "credential_sha256": "a" * 64,
+        "endpoint_type": "openai_compatible", "locality": dr.LOCALITY_HOSTED,
+        "roles": frozenset({dr.ROLE_IMPLEMENTER}),
+        "tools": frozenset({"write_file"}), "network_policy": "hosted-egress",
+        "budget_class": "dev", "cost_rank": 1,
+    }
+    fields.update(overrides)
+    return dr.make_target_profile(**fields)
+
+
+class _HostedCapabilityStore:
+    """A canonical PS-632 receipt whose locality is genuinely HOSTED.
+
+    The default `TargetCapabilityReceipt.locality` is local-only, which would
+    silently re-classify this profile as local and bypass the capacity gate —
+    exactly what the negative control must not do.
+    """
+
+    def __init__(self, profile):
+        self._profile = profile
+
+    def current(self, profile_id):
+        if profile_id != self._profile.profile_id:
+            return None
+        p = self._profile
+        return TargetCapabilityReceipt(
+            host_id="hosted-clinepass", profile_id=p.profile_id,
+            observed_at=NOW.isoformat(),
+            runtime=RuntimeIdentity(provider=p.provider, runtime_kind=p.runtime_kind,
+                                    version=p.runtime_version, endpoint_url=p.endpoint_url,
+                                    endpoint_type=p.endpoint_type, backend=p.backend),
+            model=ModelIdentity(model_id=p.model, alias=p.model, digest=p.model_digest),
+            context=ContextProfile(safe_working_context=32768),
+            capabilities=CapabilityEvidence(measured=tuple(sorted({
+                dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
+                dr.CAP_EXACT_REFERENCE_SEMANTICS}))),
+            health="healthy", health_checked_at=NOW.isoformat(),
+            qualification_ref="fixture-qualified", locality=dr.LOCALITY_HOSTED)
+
+
+def _capacity_receipt(**overrides):
+    fields = {
+        "provider": "clinepass", "pool_id": "clinepass:sub",
+        "account_identity": "sub:primary",
+        "credential_sha256": "a" * 64, "endpoint_url": "https://api.clinepass.example/v1",
+        "concurrency_remaining": 1,
+        "authorization_class": AuthorizationClass.AGENT_SDK,
+        "entitlement": Entitlement.AGENT_SDK,
+        "exposed_models": (HOSTED_MODEL,), "observed_at": NOW.isoformat(),
+        "ttl_seconds": 3600, "collector_id": "t",
+        "evidence_source": "fixture", "evidence_reference": "c1",
+        "state": CapacityState.AVAILABLE,
+    }
+    fields.update(overrides)
+    return make_capacity_receipt(**fields)
+
+
+def _hosted_bound(*, capacity_receipts):
+    profile = _hosted_profile()
+    request = dr.RoutingRequest(
+        domain="general_swe", role=dr.ROLE_IMPLEMENTER, run_id="run-hosted",
+        packet_id="P-hosted", execution_package_hash="pkg-hosted",
+        required_tools=("write_file",), network_policy="hosted-egress",
+        budget_class="dev", write_scope=("src/thing.py",), max_cost_rank=1)
+    estate = dbd.TargetEstate(profiles=(profile,))
+    return dbd.resolve_from_estate(
+        estate, request, capability_store=_HostedCapabilityStore(profile),
+        now=NOW, decision_id="dec-hosted", capacity_receipts=capacity_receipts)
+
+
+def test_capacity_receipts_are_sealed_and_validate_clean():
+    cap = _capacity_receipt()
+    bound = _hosted_bound(capacity_receipts=(cap,))
+
+    # The decision records the capacity receipt it relied on, and the bound
+    # dispatch carries the receipts themselves into the evidence layer.
+    assert bound.decision.capacity_receipt_refs == (cap.ref,)
+    assert bound.capacity_receipts == (cap,)
+
+    payload = _sealed(bound)
+    assert [r["receipt_hash"] for r in payload["capacity_receipts"]] == [cap.receipt_hash]
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert ok is True and codes == ()
+
+
+def test_removing_capacity_receipts_invalidates_the_evidence():
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    payload = _sealed(bound)
+    assert payload["capacity_receipts"]
+    payload["capacity_receipts"] = []
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert ok is False
+    assert dbd.EVIDENCE_CAPACITY_CHANGED in codes
+
+
+def test_hosted_dispatch_without_capacity_receipts_still_refuses():
+    # The gate from T1+T2 is exercised, not bypassed by the evidence layer.
+    with pytest.raises(dr.RoutingRefused) as err:
+        _hosted_bound(capacity_receipts=())
+    assert err.value.code == dr.REFUSED_CAPACITY_MISSING
+
+
+def _with_capacity_refs(bound, refs, *, capacity_receipts=None):
+    decision = dataclasses.replace(bound.decision, capacity_receipt_refs=tuple(refs), receipt_hash="")
+    decision = dataclasses.replace(
+        decision,
+        receipt_hash=dr.ps638_receipt_hash(decision.to_ps638_receipt_kwargs()))
+    return dataclasses.replace(
+        bound, decision=decision,
+        capacity_receipts=tuple(bound.capacity_receipts if capacity_receipts is None else capacity_receipts))
+
+
+def test_hosted_evidence_requires_selected_capacity_refs():
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    assert bound.decision.capacity_receipt_refs
+    unbound = _with_capacity_refs(bound, ())
+    payload = _sealed(unbound)
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert not ok and dbd.EVIDENCE_CAPACITY_CHANGED in codes
+
+
+@pytest.mark.parametrize("changes", [
+    {"provider": "other-provider"},
+    {"endpoint_url": "https://other.example/v1"},
+    {"credential_sha256": "b" * 64},
+    {"exposed_models": ("other-model",)},
+])
+def test_hosted_evidence_rejects_capacity_refs_for_another_identity(changes):
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    other = _capacity_receipt(**changes)
+    unbound = _with_capacity_refs(bound, (other.ref,), capacity_receipts=(other,))
+    payload = _sealed(unbound)
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert not ok and dbd.EVIDENCE_CAPACITY_CHANGED in codes
+
+
+def test_hosted_evidence_rejects_disallowed_capacity_entitlement():
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    disallowed = _capacity_receipt(entitlement=Entitlement.THIRD_PARTY_HARNESS)
+    forged = _with_capacity_refs(bound, (disallowed.ref,), capacity_receipts=(disallowed,))
+    ok, codes = dbd.validate_dispatch_evidence(_sealed(forged))
+    assert not ok and dbd.EVIDENCE_CAPACITY_CHANGED in codes
+
+
+def test_historical_hosted_evidence_uses_recorded_selection_time():
+    bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
+    # Test selection is pinned to NOW (2026-09-15); this receipt is stale by
+    # today's clock, but was usable at the time the recorded decision was made.
+    payload = _sealed(bound)
+    ok, codes = dbd.validate_dispatch_evidence(payload)
+    assert ok is True and codes == ()

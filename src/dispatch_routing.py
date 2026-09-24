@@ -160,6 +160,9 @@ REFUSED_NETWORK = "network_policy_unsatisfied"
 REFUSED_BUDGET = "budget_class_exceeded"
 REFUSED_RESOURCE = "resource_unavailable"
 REFUSED_UNKNOWN_CAPABILITY = "unknown_capability"
+REFUSED_CAPACITY_MISSING = "capacity_receipt_missing"
+REFUSED_CAPACITY_STALE = "capacity_receipt_stale"
+REFUSED_CAPACITY_UNUSABLE = "capacity_receipt_unusable"
 
 KNOWN_REFUSALS: FrozenSet[str] = frozenset({
     REFUSED_NO_CANDIDATES, REFUSED_NO_ELIGIBLE_TARGET, REFUSED_PRIVACY_LOCAL_ONLY,
@@ -167,6 +170,7 @@ KNOWN_REFUSALS: FrozenSet[str] = frozenset({
     REFUSED_RECEIPT_STALE, REFUSED_RECEIPT_UNHEALTHY, REFUSED_CAPABILITY_MISSING,
     REFUSED_EXACTNESS, REFUSED_NOT_INFERENCE_TARGET, REFUSED_ROLE, REFUSED_TOOL,
     REFUSED_NETWORK, REFUSED_BUDGET, REFUSED_RESOURCE, REFUSED_UNKNOWN_CAPABILITY,
+    REFUSED_CAPACITY_MISSING, REFUSED_CAPACITY_STALE, REFUSED_CAPACITY_UNUSABLE,
 })
 
 #: Success reason codes: HOW the selected candidate was reached, which is what
@@ -178,6 +182,10 @@ REASON_SELECTED_DETERMINISTIC = "selected_deterministic_candidate"
 
 #: The fallback rule, recorded verbatim on every decision. It is a property of the
 #: SELECTOR (one filter path, deterministic order), not a per-call choice.
+#: HASH-STABILITY INVARIANT: this exact string is embedded in the hashed receipt
+#: (via candidates_considered). Do NOT edit its rule wording to describe new rules
+#: (e.g. the capacity gate) — that would change every historical receipt hash.
+#: Describe rule additions in _assess's numbered comments and docs instead.
 FALLBACK_RULE = (
     "every candidate is filtered by the same ordered rules (domain privacy, "
     "locality, inference capability, role, receipt presence/match/freshness/"
@@ -267,8 +275,8 @@ PS638_RECEIPT_FIELDS: Tuple[str, ...] = (
     "reason", "requested_role", "requested_capabilities", "policy_ref",
     "candidates_considered", "capability_receipt_refs", "selected_runtime_kind",
     "selected_runtime_version", "selected_model_digest", "selected_backend",
-    "granted_tools", "granted_write_scope", "granted_read_scope",
-    "network_policy", "decided_at", "authority", "schema_version",
+    "granted_tools", "granted_write_scope", "granted_read_scope", "network_policy",
+    "decided_at", "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "schema_version",
 )
 #: The fields PS-638's ``core()`` covers, in ITS order. The receipt hash is
 #: sha256 over the canonical JSON of exactly these, with tuple-valued fields
@@ -286,15 +294,18 @@ PS638_RECEIPT_CORE_FIELDS: Tuple[str, ...] = (
     "selected_runtime_version", "selected_model_digest", "selected_backend",
     "granted_tools", "granted_write_scope", "granted_read_scope",
     "network_policy", "decided_by", "reason", "decided_at", "authority",
+    "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests",
 )
 _PS638_LIST_FIELDS: Tuple[str, ...] = (
     "requested_capabilities", "candidates_considered", "capability_receipt_refs",
-    "granted_tools", "granted_write_scope", "granted_read_scope",
+    "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "granted_tools", "granted_write_scope", "granted_read_scope",
 )
 #: Fields that, like ``authority``, are omitted from the hashed core entirely
 #: when absent rather than serialized as ``null`` — so introducing them never
 #: changes the hash of a receipt that predates them.
-_PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = ("authority",)
+_PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = (
+    "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests",
+)
 DECIDED_BY_POLICY = "ps605_policy"
 
 
@@ -320,7 +331,13 @@ def ps638_receipt_core(kwargs: Mapping[str, Any]) -> dict:
         value = kwargs.get(name)
         if name in _PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS:
             if value is not None:
-                core[name] = _normalize_authority(value)
+                if name == "authority":
+                    core[name] = _normalize_authority(value)
+                elif name in _PS638_LIST_FIELDS:
+                    core[name] = [dict(v) if isinstance(v, Mapping) else v
+                                  for v in (value or ())]
+                else:
+                    core[name] = value
             continue
         if name in _PS638_LIST_FIELDS:
             core[name] = [dict(v) if isinstance(v, Mapping) else v
@@ -494,6 +511,7 @@ class ExecutionTargetProfile:
     inference: bool = True
     endpoint_url: str = ""
     endpoint_type: str = ""
+    credential_sha256: str = ""
     runtime_options: Mapping[str, Any] = field(default_factory=dict)
     #: Request-scoped generation settings are not target authority. They remain
     #: available only for a future PS-641 request/decision composition seam.
@@ -535,7 +553,7 @@ class ExecutionTargetProfile:
         return bool(role) and role in self.roles
 
     def core(self) -> dict:
-        return {
+        value = {
             "schema_version": self.schema_version, "target_id": self.target_id,
             "profile_id": self.profile_id, "provider": self.provider,
             "host": self.host, "runtime_kind": self.runtime_kind,
@@ -553,6 +571,11 @@ class ExecutionTargetProfile:
             "configured_context": self.configured_context,
             "configured_served_context": self.configured_served_context,
         }
+
+        # Preserve historical local evidence hashes when this additive scope is absent.
+        if self.credential_sha256:
+            value["credential_sha256"] = self.credential_sha256
+        return value
 
     def to_dict(self) -> dict:
         return self.core()
@@ -752,11 +775,45 @@ class CandidateAssessment:
         }
 
 
+def classify_capacity_for(profile: ExecutionTargetProfile,
+                           capacity_receipts: Sequence[Any], *,
+                           now: Optional[datetime] = None) -> Tuple[bool, Tuple[str, ...], str, str]:
+    """Classify PS-640 capacity facts for one target profile."""
+    if profile.locality == LOCALITY_LOCAL:
+        return (True, (), "eligible", "local target: no subscription capacity required")
+
+    matching = tuple(r for r in (capacity_receipts or ())
+                     if profile.model in tuple(getattr(r, "exposed_models", ()))
+                     and r.provider == profile.provider
+                     and bool(profile.endpoint_url) and r.endpoint_url == profile.endpoint_url
+                     and bool(profile.credential_sha256)
+                     and r.credential_sha256 == profile.credential_sha256)
+    if not matching:
+        return (False, (), REFUSED_CAPACITY_MISSING,
+                f"no capacity receipt exposes model {profile.model!r}")
+    fresh = tuple(r for r in matching if r.facts_are_fresh(now))
+    if not fresh:
+        return (False, (), REFUSED_CAPACITY_STALE,
+                f"capacity receipts exposing model {profile.model!r} are stale")
+    from src.provider_capacity import Entitlement
+    # Reporting a healthy subscription is not permission to use its native
+    # entitlement from this hosted adapter. Third-party harness enablement is
+    # deliberately absent until a separate policy grant is implemented.
+    usable = tuple(r for r in fresh if r.entitlement in (Entitlement.API, Entitlement.AGENT_SDK)
+                   and r.has_usable_capacity_facts(now=now))
+    if not usable:
+        return (False, (), REFUSED_CAPACITY_UNUSABLE,
+                f"fresh capacity receipts exposing model {profile.model!r} are unusable")
+    refs = tuple(sorted({str(r.ref) for r in usable}))
+    return (True, refs, "eligible", "fresh usable capacity facts available")
+
+
 def _assess(profile: ExecutionTargetProfile,
             receipt: Optional[LegacyCapabilityView],
             request: RoutingRequest, *, domain_policy: Any = None,
             policy_local_only: bool = False,
             resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
+            capacity_receipts: Sequence[Any] = (),
             now: Optional[datetime] = None,
             preference_rank: int = 0) -> CandidateAssessment:
     """Filter ONE candidate. First failing rule wins; the order IS the contract."""
@@ -850,19 +907,25 @@ def _assess(profile: ExecutionTargetProfile,
         return fate(False, REFUSED_CAPABILITY_MISSING,
                     f"receipt does not evidence capability(ies) {missing}")
 
-    # 10. tools / permission envelope.
+    # 10. provider capacity / entitlement facts for hosted profiles.
+    capacity_ok, _, capacity_rule, capacity_reason = classify_capacity_for(
+        profile, capacity_receipts, now=now)
+    if not capacity_ok:
+        return fate(False, capacity_rule, capacity_reason)
+
+    # 11. tools / permission envelope.
     missing_tools = sorted(set(request.required_tools) - set(profile.tools))
     if missing_tools:
         return fate(False, REFUSED_TOOL,
                     f"profile does not grant tool(s) {missing_tools}")
 
-    # 11. network.
+    # 12. network.
     if request.network_policy and profile.network_policy != request.network_policy:
         return fate(False, REFUSED_NETWORK,
                     f"profile network policy {profile.network_policy!r} does not "
                     f"satisfy {request.network_policy!r}")
 
-    # 12. budget.
+    # 13. budget.
     if request.budget_class and profile.budget_class != request.budget_class:
         return fate(False, REFUSED_BUDGET,
                     f"profile budget class {profile.budget_class!r} does not match "
@@ -872,7 +935,7 @@ def _assess(profile: ExecutionTargetProfile,
                     f"cost rank {profile.cost_rank} exceeds the request ceiling "
                     f"{request.max_cost_rank}")
 
-    # 13. resources (a fact about NOW, not about capability).
+    # 14. resources (a fact about NOW, not about capability).
     if state and state.get("available") is False:
         return fate(False, REFUSED_RESOURCE,
                     str(state.get("reason") or "resource unavailable"))
@@ -922,6 +985,9 @@ class DispatchDecision:
     observed_at: str = ""
     schema_version: int = SCHEMA_VERSION
     authority: Optional[Mapping[str, Any]] = None
+    capacity_receipt_refs: Tuple[str, ...] = ()
+    offer_receipt_refs: Tuple[str, ...] = ()
+    offer_quote_digests: Tuple[str, ...] = ()
     receipt_hash: str = field(default="")
 
     def pin(self) -> dict:
@@ -1027,10 +1093,16 @@ class DispatchDecision:
         # originally cover.
         if self.authority is not None:
             kwargs["authority"] = self.authority
+        if self.capacity_receipt_refs:
+            kwargs["capacity_receipt_refs"] = self.capacity_receipt_refs
+        if self.offer_receipt_refs:
+            kwargs["offer_receipt_refs"] = self.offer_receipt_refs
+        if self.offer_quote_digests:
+            kwargs["offer_quote_digests"] = self.offer_quote_digests
         return kwargs
 
     def core(self) -> dict:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "decision_id": self.decision_id,
             "request": self.request.core(),
@@ -1050,6 +1122,13 @@ class DispatchDecision:
             "network_policy": self.network_policy,
             "observed_at": self.observed_at,
         }
+        if self.capacity_receipt_refs:
+            payload["capacity_receipt_refs"] = list(self.capacity_receipt_refs)
+        if self.offer_receipt_refs:
+            payload["offer_receipt_refs"] = list(self.offer_receipt_refs)
+        if self.offer_quote_digests:
+            payload["offer_quote_digests"] = list(self.offer_quote_digests)
+        return payload
 
     @property
     def decision_hash(self) -> str:
@@ -1104,6 +1183,7 @@ def select_target(request: RoutingRequest, *,
                   policy: Optional[PolicySnapshot] = None,
                   domain_policy: Any = None,
                   resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
+                  capacity_receipts: Sequence[Any] = (),
                   now: Optional[datetime] = None,
                   decision_id: str = "") -> DispatchDecision:
     """Select an execution target, or raise :class:`RoutingRefused`.
@@ -1113,6 +1193,11 @@ def select_target(request: RoutingRequest, *,
     order is selected. Determinism is asserted by the test suite (same inputs ->
     identical ``decision_hash``), which is what makes a receipt re-checkable.
     """
+    # Capacity freshness must be evaluated against one instant for the whole
+    # decision. Re-reading the clock after candidate assessment could leave a
+    # hosted candidate eligible while its cited capacity refs have already gone
+    # stale.
+    selection_time = now if now is not None else datetime.now(timezone.utc)
     profiles = list(profiles or ())
     if not profiles:
         raise RoutingRefused(REFUSED_NO_CANDIDATES,
@@ -1133,8 +1218,8 @@ def select_target(request: RoutingRequest, *,
             f"target:{profile.target_id}")
         assessments.append(_assess(
             profile, receipt, request, domain_policy=resolved_policy,
-            policy_local_only=policy_local_only, resources=resources, now=now,
-            preference_rank=rank))
+            policy_local_only=policy_local_only, resources=resources,
+            capacity_receipts=capacity_receipts, now=selection_time, preference_rank=rank))
 
     eligible = [a for a in assessments if a.eligible]
     local_only = bool(policy_local_only)
@@ -1175,6 +1260,8 @@ def select_target(request: RoutingRequest, *,
                    and p.profile_id == chosen.profile_id)
     receipt = (index.get(profile.profile_id)
                or index.get(f"target:{profile.target_id}"))
+    _, selected_capacity_refs, _, _ = classify_capacity_for(
+        profile, capacity_receipts, now=selection_time)
     # The RECORD is canonical, not input-ordered: the assessment list is sorted so
     # two runs over the same candidates produce the same decision hash even if the
     # caller passed the profiles in a different order.
@@ -1205,7 +1292,7 @@ def select_target(request: RoutingRequest, *,
         reason = ("no profile preference was expressed; the deterministic order "
                   "decided")
 
-    observed = (now or datetime.now(timezone.utc)).isoformat()
+    observed = selection_time.isoformat()
     facts = {
         "request_budget_class": request.budget_class,
         "selected_budget_class": profile.budget_class,
@@ -1228,7 +1315,7 @@ def select_target(request: RoutingRequest, *,
         granted_write_scope=tuple(request.write_scope),
         granted_read_scope=tuple(request.read_scope),
         network_policy=request.network_policy or profile.network_policy,
-        observed_at=observed)
+        observed_at=observed, capacity_receipt_refs=selected_capacity_refs)
     payload = {name: getattr(provisional, name)
                for name in provisional.__dataclass_fields__
                if name != "receipt_hash"}

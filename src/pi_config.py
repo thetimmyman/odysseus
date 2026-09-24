@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import shutil
+import tempfile
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from src.constants import DATA_DIR
@@ -269,4 +272,96 @@ def ensure_pi_model_config(provider: str | None = None, model_id: str | None = N
         json.dump(data, fh, indent=2)
         fh.write("\n")
     os.replace(tmp, path)
+    return path
+
+
+def ensure_pi_provider_auth(provider: str, auth_entry: object, *, directory: str | None = None) -> str:
+    """Provision one provider credential into an explicitly isolated Pi dir."""
+    target = directory or agent_dir()
+    if not target:
+        raise ValueError(
+            "subscription credential provisioning requires an isolated "
+            "ODYSSEUS_PI_AGENT_DIR; refusing to write the operator ~/.pi/agent/auth.json"
+        )
+    if not isinstance(provider, str) or not provider.strip():
+        raise ValueError("provider name must be non-empty")
+
+    # Explicit paths are supported for isolated runtimes and tests, but they
+    # must not alias Pi's operator credential directory (including via symlink).
+    target_path = os.path.abspath(os.path.expanduser(target))
+    user_home = os.path.realpath(os.path.expanduser("~"))
+    operator_dir = os.path.realpath(os.path.join(user_home, ".pi", "agent"))
+    resolved_target = os.path.realpath(target_path)
+    protected = (user_home, os.path.realpath(os.path.join(user_home, ".pi")),
+                 operator_dir, os.path.realpath(tempfile.gettempdir()),
+                 os.path.realpath("/var/tmp"))
+    if any(resolved_target == item or item.startswith(resolved_target.rstrip(os.sep) + os.sep)
+           for item in protected):
+        raise ValueError("refusing to provision credentials into an operator or shared directory")
+
+    # Do not let any existing symlink in the selected path redirect writes.
+    cursor = os.path.sep
+    for component in Path(target_path).parts[1:]:
+        cursor = os.path.join(cursor, component)
+        try:
+            info = os.lstat(cursor)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("isolated Pi directory must not contain symlink components")
+
+    os.makedirs(target_path, mode=0o700, exist_ok=True)
+    dir_info = os.stat(target_path, follow_symlinks=False)
+    if (not stat.S_ISDIR(dir_info.st_mode) or dir_info.st_uid != os.geteuid()
+            or os.path.realpath(target_path) != target_path):
+        raise ValueError("isolated Pi directory must be an owned directory")
+    os.chmod(target_path, 0o700)
+    path = os.path.join(target_path, "auth.json")
+    auth = {}
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        fd = None
+    if fd is not None:
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_size > 1024 * 1024):
+                raise ValueError("existing Pi auth file must be an owned regular file under 1 MiB")
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as fh:
+                current = json.load(fh)
+            if not isinstance(current, dict):
+                raise ValueError("existing Pi auth file must contain an object")
+            auth = current
+        finally:
+            os.close(fd)
+
+    auth[provider.strip()] = auth_entry
+    raw = (json.dumps(auth, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    fd, temporary = tempfile.mkstemp(prefix=".auth-", suffix=".tmp", dir=target_path)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Refuse a symlinked destination even though replace itself would
+        # replace the link rather than follow it; it signals unsafe state.
+        try:
+            if stat.S_ISLNK(os.lstat(path).st_mode):
+                raise ValueError("Pi auth destination must not be a symlink")
+        except FileNotFoundError:
+            pass
+        os.replace(temporary, path)
+        dfd = os.open(target_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
     return path

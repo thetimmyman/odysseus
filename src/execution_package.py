@@ -196,6 +196,9 @@ class DispatchDecisionReceipt:
     policy_ref: str = ""
     candidates_considered: Tuple[Mapping[str, Any], ...] = ()
     capability_receipt_refs: Tuple[str, ...] = ()
+    capacity_receipt_refs: Tuple[str, ...] = ()
+    offer_receipt_refs: Tuple[str, ...] = ()
+    offer_quote_digests: Tuple[str, ...] = ()
     selected_runtime_kind: str = ""
     selected_runtime_version: str = ""
     selected_model_digest: str = ""
@@ -263,6 +266,12 @@ class DispatchDecisionReceipt:
         # hash-bound when present. Records/audits — not enforced authorization.
         if self.authority is not None:
             payload["authority"] = _normalize_authority(self.authority)
+        if self.capacity_receipt_refs:
+            payload["capacity_receipt_refs"] = list(self.capacity_receipt_refs)
+        if self.offer_receipt_refs:
+            payload["offer_receipt_refs"] = list(self.offer_receipt_refs)
+        if self.offer_quote_digests:
+            payload["offer_quote_digests"] = list(self.offer_quote_digests)
         return payload
 
     def to_dict(self) -> dict:
@@ -295,7 +304,7 @@ def make_dispatch_receipt(**kwargs: Any) -> DispatchDecisionReceipt:
     if not payload.get("decided_at"):
         payload["decided_at"] = utc_now()
     for name in ("requested_capabilities", "candidates_considered",
-                 "capability_receipt_refs", "granted_tools",
+                 "capability_receipt_refs", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "granted_tools",
                  "granted_write_scope", "granted_read_scope"):
         if name in payload and payload[name] is not None:
             payload[name] = tuple(payload[name])
