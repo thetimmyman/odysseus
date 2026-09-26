@@ -53,14 +53,14 @@ def _db():
 def _seed(db, *, sensitivity="internal", allow_paid=False, allow_premium=False):
     """A real estate: a local tool-capable worker, a hosted scout, a deterministic node."""
     db.add_all([
-        cdb.ModelEndpoint(id="ep-rtx", name="RTX4500 minipc",
-                          base_url="http://192.168.1.130:11434/v1",
+        cdb.ModelEndpoint(id="ep-rtx", name="GPU host A",
+                          base_url="http://10.0.0.10:11434/v1",
                           is_enabled=True, supports_tools=True),
         cdb.ModelEndpoint(id="ep-or", name="OpenRouter",
                           base_url="https://openrouter.ai/api/v1",
                           is_enabled=True, supports_tools=True),
         cdb.ModelEndpoint(id="ep-msr", name="MS-R1 verifier",
-                          base_url="http://192.168.1.131:8080/v1",
+                          base_url="http://10.0.0.11:8080/v1",
                           is_enabled=True, supports_tools=None),
     ])
     db.add_all([
@@ -102,14 +102,14 @@ class _FixtureCapabilityStore:
 
     def current(self, profile_id):
         facts = {
-            "p-rtx": ("ollama", "qwen3.8:27b", "http://192.168.1.130:11434/v1",
+            "p-rtx": ("ollama", "qwen3.8:27b", "http://10.0.0.10:11434/v1",
                       {dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
                        dr.CAP_EXACT_REFERENCE_SEMANTICS}),
             "p-openrouter": ("openrouter", "deepseek-v4-pro",
                              "https://openrouter.ai/api/v1",
                              {dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
                               dr.CAP_EXACT_REFERENCE_SEMANTICS}),
-            "p-msr": ("msr1", "qwen3.8:27b", "http://192.168.1.131:8080/v1",
+            "p-msr": ("msr1", "qwen3.8:27b", "http://10.0.0.11:8080/v1",
                       {dr.CAP_TEXT_GENERATION}),
         }
         if profile_id not in facts:
@@ -137,7 +137,7 @@ def _resolve(db, task, *profile_ids, **kwargs):
 
 
 def _invocation(profile_id="p-rtx", *, model="qwen3.8:27b",
-                chat_url="http://192.168.1.130:11434/v1", **overrides):
+                chat_url="http://10.0.0.10:11434/v1", **overrides):
     values = {
         "profile_id": profile_id, "provider": "ollama",
         "runtime_kind": "ollama", "runtime_version": "0.32.11",
@@ -323,7 +323,7 @@ def test_the_pin_guard_refuses_a_different_local_endpoint_before_dispatch():
     bound = _resolve(db, task, "p-rtx")
     with pytest.raises(dbd.DispatchPinViolation) as err:
         dbd.verify_invocation(bound, invocation=_invocation(
-            chat_url="http://192.168.1.130:8732/v1"))
+            chat_url="http://10.0.0.10:8732/v1"))
     assert err.value.code == dbd.PIN_ENDPOINT_MISMATCH
 
 
@@ -367,7 +367,7 @@ def test_canonical_receipt_projection_remains_dispatchable():
     ("model", "foreign-model"), ("model_digest", "foreign-digest"),
     ("provider", "foreign-provider"), ("runtime_kind", "foreign-runtime"),
     ("backend", "foreign-backend"),
-    ("endpoint_url", "http://192.168.1.130:9999/v1"),
+    ("endpoint_url", "http://10.0.0.10:9999/v1"),
     ("runtime_options", {"foreign": True}),
     ("configured_context", 1234), ("locality", "hosted"),
 ])

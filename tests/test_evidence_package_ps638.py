@@ -123,8 +123,8 @@ def make_run(root, **opts):
 
     dispatch = make_dispatch_receipt(
         receipt_id="d-1", execution_package_hash=package.package_hash,
-        run_id="r-1", packet_id="P-1", selected_target_id="local-rtx4500",
-        selected_host="minipc", selected_model="qwen3.8:27b",
+        run_id="r-1", packet_id="P-1", selected_target_id="local-sim-gpu",
+        selected_host="gpu-host", selected_model="qwen3.8:27b",
         decided_by=DECIDED_BY_EXPLICIT_PIN,
         reason=("operator pinned the node for the controlled experiment"
                 + ("; token = AbCdEf1234567890"
@@ -154,8 +154,8 @@ def make_run(root, **opts):
             execution_package_hash=package.package_hash,
             dispatch_receipt_hash=opts.get("dispatch_hash",
                                            dispatch.receipt_hash),
-            target_id=opts.get("target_id", "local-rtx4500"),
-            host=opts.get("host", "minipc"),
+            target_id=opts.get("target_id", "local-sim-gpu"),
+            host=opts.get("host", "gpu-host"),
             model=opts.get("model", "qwen3.8:27b"),
             context_projection_hash=hashlib.sha256(ctx_bytes).hexdigest(),
             rendered_context_ref=(ArtifactRef(**context_ref)

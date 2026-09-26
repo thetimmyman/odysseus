@@ -34,7 +34,7 @@ from src.routing_absis import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
-KUBECTL_PREFIX = "sudo kubectl exec -n tacticus deploy/absis-orchestrator --"
+KUBECTL_PREFIX = "sudo kubectl exec -n app-ns deploy/job-orchestrator --"
 
 
 # --- helpers -----------------------------------------------------------------
@@ -164,15 +164,15 @@ def test_ssh_argv_construction(monkeypatch):
         return SimpleNamespace(returncode=0, stdout='{"ok": true}\n', stderr="")
 
     monkeypatch.setattr(ra.subprocess, "run", fake_run)
-    t = AbsisTransport(ssh_target="minipc", kubectl_exec_prefix=KUBECTL_PREFIX, timeout_s=30)
+    t = AbsisTransport(ssh_target="edge-node", kubectl_exec_prefix=KUBECTL_PREFIX, timeout_s=30)
     script = 'print("{}")'
     result = t.run_remote_python(script)
     assert result == {"ok": True}
     assert len(calls) == 1
     argv = calls[0].argv
-    # argv list, never a shell string: ["ssh", "minipc", <remote command>].
+    # argv list, never a shell string: ["ssh", "edge-node", <remote command>].
     assert isinstance(argv, list) and len(argv) == 3
-    assert argv[:2] == ["ssh", "minipc"]
+    assert argv[:2] == ["ssh", "edge-node"]
     # Remote command = kubectl exec prefix + python -c + the shlex-quoted script.
     assert argv[2] == f"{KUBECTL_PREFIX} python -c {shlex.quote(script)}"
     assert calls[0].timeout == 30
@@ -251,7 +251,7 @@ def test_enqueue_script_is_shell_quoted_end_to_end(monkeypatch):
 
     monkeypatch.setattr(ra.subprocess, "run", fake_run)
     spec = AbsisJobSpec(scenario_id="s1", required_worker_class="llm_inference")
-    t = AbsisTransport(ssh_target="minipc", kubectl_exec_prefix=KUBECTL_PREFIX)
+    t = AbsisTransport(ssh_target="edge-node", kubectl_exec_prefix=KUBECTL_PREFIX)
     enqueue(t, spec, force=True)
     remote_cmd = captured["argv"][2]
     prefix = f"{KUBECTL_PREFIX} python -c "
@@ -448,7 +448,7 @@ def _load_cli():
 def test_cli_disabled_by_policy_message(monkeypatch, capsys):
     cli = _load_cli()
     monkeypatch.setattr(cli, "load_absis_policy", lambda: {
-        "enabled": False, "sshTarget": "minipc",
+        "enabled": False, "sshTarget": "edge-node",
         "kubectlExecPrefix": KUBECTL_PREFIX, "transportTimeoutSeconds": 30,
         "note": "no workers deployed",
     })
