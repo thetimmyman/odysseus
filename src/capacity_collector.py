@@ -1,29 +1,21 @@
-"""PS-645 ChatGPT-subscription capacity collector (T3 of PS-640).
+"""ChatGPT-subscription capacity collector.
 
-Turns the provider's own facts (model list + the ``/backend-api/wham/usage``
-endpoint) into the PS-640 ``ProviderCapacityReceipt`` the hosted gate ranks,
-and wires the store to the deploy layout.
+Turns the provider's model list and ``/backend-api/wham/usage`` into the
+``ProviderCapacityReceipt`` the hosted gate ranks.
 
-The one architectural decision carried here (recorded against open
-question Q2): this pool is a ``THIRD_PARTY_HARNESS`` entitlement, NOT the
-Agent SDK itself.  The runtime eligibility gate for such receipts therefore
-stays OFF by design -- a healthy hosted pool is exactly the case this
-collector must report while the gate refuses.
+This pool is a ``THIRD_PARTY_HARNESS`` entitlement, not the Agent SDK, so the
+runtime eligibility gate for these receipts stays off by design.
 
-Design posture, all fail-closed:
+All fail-closed:
 
-* unknown auth id, empty model list, or an unparseable usage response gives
-  ``None`` and the store is left untouched -- the last recorded facts remain
-  the authority;
-* a 429 from the usage endpoint is a POOL FACT (``rate_limited`` state with
-  the provider's reset), not a transport failure;
-* quota numbers are never invented: anything the provider did not say stays
-  explicitly ``UNKNOWN`` (UNKNOWN is not zero);
-* the bearer token never enters a receipt, store entry, or error surface.
-* Known limitation (see PS640-ARCHITECTURE.md): the frozen receipt shape
-  has no per-model tier scoping, so a plan-level weekly meter for premium
-  models is not represented; the collector mints no per-model rate or
-  coverage claim.
+* unknown auth id, empty model list or unparseable usage gives ``None`` and
+  leaves the store untouched;
+* a 429 from the usage endpoint is a pool fact (``rate_limited``), not a
+  transport failure;
+* quota numbers are never invented: unknown stays ``UNKNOWN``, not zero;
+* the bearer token never enters a receipt, store entry or error.
+* The receipt shape has no per-model tier scoping, so plan-level premium
+  meters are not represented.
 """
 
 import base64
@@ -39,28 +31,21 @@ from src import provider_capacity as pc
 from src.provider_capacity_store import ProviderCapacityStore, CapacityStoreError
 from src.routing_workdir import data_root
 
-#: Collector identity on every provenance; stable across T3/PS-641 callers.
 COLLECTOR_ID = "col.chatgpt_subscription.v1"
 
-#: On-demand TTL: short enough that a stale window is treated as "no facts"
-#: (fail-closed) well before a 5h/7d provider window could reset under us --
-#: and cheap enough that dispatch never pays for a background quota poll.
+#: Short enough that a stale window reads as "no facts" well before a 5h/7d
+#: provider window could reset; dispatch never pays for a background poll.
 DEF_TTL_SECONDS = 900
 
-#: Provider usage-field name -> PS-640 quota dimension name. The field name
-#: is the provider's usage-JSON key; the quota name is what PS-640 stores.
+#: Provider usage-JSON key -> stored quota dimension name.
 WINDOW_QUOTAS = (("primary_window", "primary"), ("secondary_window", "secondary"))
 RATE_LIMIT_QUOTA_NAME = "rate_limit"
 RATE_LIMIT_QUOTA_UNIT = "requests_per_window"
 
-#: Where the facts came from, on every provenance/reference the collector
-#: mints.  A URL only -- deliberately no bearer, owner email, or auth id, so
-#: nothing retrievable can ride in a provenance reference.
+#: A URL only: no bearer, owner email or auth id may ride in provenance.
 USAGE_REFERENCE = "https://chatgpt.com/backend-api/wham/usage"
 
-#: Store location: env override wins, else the deploy data root (tests point
-#: ``ODYSSEUS_DATA_DIR`` at a temp dir and stay hermetic; production gets
-#: ``~/.odysseus/data/provider_capacity``).
+#: Env override wins, else the deploy data root.
 STORE_ENV = "PS640_CAPACITY_STORE"
 STORE_DIRNAME = "provider_capacity"
 
@@ -73,22 +58,18 @@ def default_store_dir() -> str:
 
 
 def store_from_env() -> ProviderCapacityStore:
-    """The dispatch-level store handle: one place the route and the gate
-    both resolve the on-disk layout through."""
+    """The store handle the route and the gate both resolve through."""
     return ProviderCapacityStore(default_store_dir())
 
 
 def hosted_pool_id(auth_id: str) -> str:
-    """Pools track the entitlement that owns the capacity -- the session
-    whose subscription it is (the rate window, the spend cap, and the model
-    list all belong to that session)."""
+    """Pools track the session whose subscription owns the capacity."""
     return f"chatgpt-subscription:session:{str(auth_id or '').strip()}"
 
 
 def account_identity_for(owner: Any, auth_id: str) -> str:
-    """The account the window belongs to: the configured owner when known,
-    else a deterministic auth-session tag.  Canonical and non-token: this
-    string may sit in logs."""
+    """The owning account: the configured owner, else a deterministic auth-session
+    tag. Never a token; safe to log."""
     identity = str(owner or "").strip().lower()
     if identity:
         return identity
@@ -96,9 +77,7 @@ def account_identity_for(owner: Any, auth_id: str) -> str:
 
 
 def _is_true(value: Any) -> bool:
-    """Strict provider booleans only: ``1``/``"true"`` must NOT count as
-    facts (an int in a flag slot is exactly the kind of corruption the
-    frozen facts layer refuses)."""
+    """Strict booleans only: ``1``/``"true"`` must not count as facts."""
     return value is True
 
 
@@ -132,9 +111,7 @@ def _parse_iso(value: Any) -> _dt.datetime | None:
 
 
 def _reset_already_rolled(reset: _dt.datetime | None, now_iso: str) -> bool:
-    """Frozen-facts rule for reset timestamps: a tz-aware reset that predates
-    the observation means the window already rolled by the provider's clock --
-    that is not a fresh fact and is dropped (best-effort, not an error)."""
+    """Drop a tz-aware reset that predates the observation: the window already rolled."""
     if reset is None or reset.tzinfo is None:
         return False
     return reset < _dt.datetime.fromisoformat(now_iso)
@@ -155,11 +132,8 @@ def _usage_provenance(now_iso: str) -> pc.EvidenceProvenance:
 
 
 def _window_quota(scope: str, window: Any, now_iso: str) -> pc.QuotaDimension:
-    """Map one wham window (``used_percent`` + ``reset_at``) to a PS-640
-    quota: ``limit = 100`` (percent), ``remaining = 100 - used`` (percent).
-
-    A missing/malformed window yields an all-UNKNOWN dimension: the absence
-    is carried explicitly, never as zero."""
+    """Map one wham window to a quota in percent (limit 100, remaining 100-used).
+    A missing/malformed window yields all-UNKNOWN, never zero."""
     name = dict(WINDOW_QUOTAS).get(scope, scope)
     provenance = _usage_provenance(now_iso)
     if not isinstance(window, dict):
@@ -182,9 +156,7 @@ def _window_quota(scope: str, window: Any, now_iso: str) -> pc.QuotaDimension:
 
 
 def _reset_quota_fields(now_iso: str, rate_block: dict | None) -> tuple:
-    """Best-effort (resets_in_seconds, resets_at) from the rate_limit block.
-    429 bodies carry ISO reset fields; a positive ``resets_in_seconds``
-    (wham-shaped) is honored when present."""
+    """Best-effort (resets_in_seconds, resets_at) from the rate_limit block."""
     rate_block = rate_block if isinstance(rate_block, dict) else {}
     resets_in = rate_block.get("resets_in_seconds")
     if _is_number(resets_in) and _positive(resets_in):
@@ -215,12 +187,8 @@ def _reset_quota_fields(now_iso: str, rate_block: dict | None) -> tuple:
 def _rate_limit_quota(
     now_iso: str, rate_block: dict | None, windows: tuple
 ) -> pc.QuotaDimension:
-    """The ``rate_limit`` fact minted when the pool is proven limited.
-
-    Reset preference: provider ``resets_in_seconds``/``resets_at`` (the
-    limit's own clock), else the soonest known window reset, else explicit
-    UNKNOWN.  Quota ``limit=100``/``remaining=0`` (percent): the window is
-    spent until the provider's reset rolls it."""
+    """The rate_limit fact for a proven-limited pool. Reset: the provider's own
+    reset, else the soonest known window reset, else UNKNOWN."""
     reset_at, resets_in = None, None
     if isinstance(rate_block, dict):
         resets_in, reset_at = _reset_quota_fields(now_iso, rate_block)
@@ -248,8 +216,7 @@ def _rate_limit_quota(
 
 
 def _state_and_rate_limit(windows: tuple, usage: dict, now_iso: str):
-    """The state decision table -- each row answers what the provider
-    actually said, not what we fear:
+    """State decision table:
 
     * ``spend_control.reached`` (strict bool)                -> EXHAUSTED
     * ``limit_reached`` / ``allowed=False`` / 429 flag       -> RATE_LIMITED
@@ -278,8 +245,7 @@ def _state_and_rate_limit(windows: tuple, usage: dict, now_iso: str):
             zero_window = w
             break
     if zero_window is not None:
-        # A KNOWN window at 0 is a proven limit: carry its reset (the
-        # provider's own clock) on the minted rate_limit fact.
+        # A known window at 0 is a proven limit; carry its reset.
         return pc.CapacityState.RATE_LIMITED, _rate_limit_quota(
             now_iso, rate if isinstance(rate, dict) else None, windows
         )
@@ -289,9 +255,7 @@ def _state_and_rate_limit(windows: tuple, usage: dict, now_iso: str):
 
 
 def _plan_version(access_token: str) -> str:
-    """Price provenance: the plan the subscription actually runs (the JWT
-    ``chatgpt_plan_type`` claim), e.g. ``plus`` -- verifiable against the
-    account and stable enough for the pricing_version slot."""
+    """Price provenance: the JWT ``chatgpt_plan_type`` claim (e.g. ``plus``)."""
     try:
         payload = _decode_jwt_payload(access_token or "")
     except Exception:
@@ -310,10 +274,8 @@ def _decode_jwt_payload(token: str) -> dict[str, Any]:
 
 
 def _fetch_usage_or_429(access_token: str) -> Any:
-    """Live usage fetch; a 429 is mapped into the fact-shape the state
-    machine understands (``usage_limit_reached`` + the provider's reset),
-    never re-raised.  The bearer token never enters the returned body or any
-    error string."""
+    """Live usage fetch; a 429 is mapped to ``usage_limit_reached`` + reset, never
+    re-raised. The bearer never enters the body or error strings."""
     try:
         return cgs.fetch_codex_usage(access_token)
     except cgs.ChatGPTSubscriptionRateLimited as exc:
@@ -329,12 +291,9 @@ def collect(
 ) -> pc.ProviderCapacityReceipt | None:
     """Mint one hosted-capacity receipt for an auth session, or ``None``.
 
-    ``usage`` / ``models`` may be INJECTED provider facts (tests / pre-fetch);
-    unfetched values are read live.  A 429 from the usage endpoint is mapped
-    to a ``rate_limited`` FACT -- it is not a transport failure.  ``None`` is
-    returned when pool facts cannot be established (unknown auth, an empty
-    model list, or an absent/unparseable usage response), so the store is
-    left untouched and the pre-vacancy receipt remains the authority."""
+    ``usage``/``models`` may be injected; missing values are fetched live.
+    ``None`` when pool facts can't be established, leaving the store untouched.
+    """
     auth_id = str(auth_id or "").strip()
     if not auth_id:
         return None
@@ -368,8 +327,7 @@ def collect(
             models = None
     names = tuple(str(m).strip() for m in (models or []) if str(m).strip())
     if not names:
-        # An empty model list means the subscription exposes nothing we can
-        # verify as routeable -- fail closed, leave the store untouched.
+        # Nothing verifiably routeable: fail closed.
         return None
 
     usage = _fetch_usage_or_429(access_token) if usage is None else usage
@@ -389,8 +347,7 @@ def collect(
     state, rate_quota = _state_and_rate_limit(windows, usage, now_iso)
     provenance = _usage_provenance(now_iso)
 
-    # The same token authenticated the live usage/model queries. Bind the
-    # provider's actual inference headers, not a self-declared config hash.
+        # Bind the provider's actual inference headers, not a declared config hash.
     from src.offer_economics import credential_fingerprint
 
     return pc.make_capacity_receipt(
@@ -432,13 +389,8 @@ def sync_capacity_store(
     usage: Any = None,
     models: Any = None,
 ) -> str | None:
-    """Collect-and-append for one pool: the on-demand quota sync that
-    answers the PS-641 question -- dispatch time costs one collect, the
-    background path costs zero.  Returns the new receipt's hash, or ``None``
-    when the collector produced no facts (store left untouched).
-
-    Supersession is explicit: a sync that finds a current receipt for this
-    pool chains to it (``supersedes``); a first sync starts the pool."""
+    """On-demand quota sync for one pool; chains to the current receipt via
+    ``supersedes``. Returns the new receipt hash, or ``None`` if no facts."""
     receipt = collect(auth_id, owner=owner, usage=usage, models=models)
     if receipt is None:
         return None
@@ -456,14 +408,11 @@ def fresh_hosted_capacity_receipts(
     now: Any | None = None,
     provider: str = "chatgpt_subscription",
 ) -> dict[str, pc.ProviderCapacityReceipt]:
-    """The freshest FRESH receipt per pool: the exact input the hosted gate
-    must rank.
+    """The freshest fresh receipt per pool, as the hosted gate must rank them.
 
-    Freshest-first, not state-first: a newer report is authoritative whatever
-    its state, so ``available`` later reported ``rate_limited`` yields the
-    rate-limit fact.  Stale (past TTL) or future-dated reports are dropped --
-    and a pool with no fresh report yields nothing at all (the store may hold
-    old truths, but dispatch must not rank on them)."""
+    Newest wins regardless of state. Stale or future-dated reports are dropped,
+    and a pool with no fresh report yields nothing.
+    """
     if not isinstance(now, _dt.datetime):
         now = _dt.datetime.now(_dt.timezone.utc)
     now_dt = now
@@ -486,11 +435,8 @@ def fresh_hosted_capacity_receipts(
 
 
 def collect_endpoint_capacity(store, endpoint_id, model):
-    """Live provider read, bound to the resolved endpoint's real credentials.
-
-    Supports the existing ChatGPT collector and fixed Command Code/OpenCode API adapters.
-    No arbitrary provider/account receipt can be minted by configuration.
-    """
+    """Live provider read bound to the resolved endpoint's real credentials.
+    Only fixed adapters are supported; configuration can't mint receipts."""
     from core.database import ModelEndpoint
     from src.endpoint_resolver import resolve_endpoint_by_id
     from src.offer_economics import credential_fingerprint

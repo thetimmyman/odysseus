@@ -1,7 +1,5 @@
-"""src/routing_verification.py — Phase 4 mode-aware verification (spec
-Section 16). A task's verification_mode decides WHICH invariants a patch must
-satisfy before it can be accepted, instead of Phase 3's flat
-run-every-test_command loop:
+"""Mode-aware verification: a task's verification_mode decides which invariants
+a patch must satisfy before it can be accepted.
 
     regression_guard      existing tests must pass; no new regressions
                           (baseline fuzz); generated tests run ADVISORY only
@@ -18,37 +16,16 @@ run-every-test_command loop:
     analysis_only         NO patch acceptance, ever. Verification means
                           evidence completeness / report quality.
 
-Test authority (spec Section 16): generated tests have authority weight 0 by
-default — an unpromoted generated test RUNS and REPORTS but can NEVER flip
-`passed`. Only human authority blocks: authority
-"human_authored_acceptance_test" natively, or a generated test a human/admin
-explicitly PROMOTED (persistent + auditable via the routing_generated_tests
-table's promoted/promoted_by/promoted_at columns and notes trail).
+Only human authority blocks: human-authored acceptance tests, or generated
+tests a human explicitly promoted. Other generated tests run and report only.
 
-Baseline fuzzing: fuzz cases run against BOTH the ORIGINAL worktree (task
-repo HEAD) and the PATCHED worktree (HEAD + patch); only NEW regressions
-(pass-on-original but fail-on-patched) block. A case already failing on the
-original base is pre-existing and never blocks — the baseline comparison,
-not promotion, is fuzz's fairness mechanism.
+Fuzz cases run on both the original and patched worktrees; only new
+regressions block. Equivalence compares stdout byte-wise.
 
-Behavioral equivalence (v1): equivalence commands run on both worktrees and
-their STDOUT is compared BYTE-WISE — stdout comparison is the v1 equivalence
-check (exit codes are recorded but only a stdout mismatch fails the layer).
-Outputs are truncated at sandbox.maxOutputBytes before comparison; a
-truncated pair that matches within the cap gets a warning note.
+Confidence is metadata only and never changes `passed`.
 
-Confidence is METADATA ONLY and never a pass/fail condition: a model-reported
-confidence is copied into the result with an explicit neverBlocks marker.
-An overconfident failure (passed=False with confidence >= the policy's
-verification.overconfidenceThreshold) is flagged for the calibration stats
-WP6 consumes; a low-confidence pass may deepen human review — neither ever
-changes `passed`.
-
-Every layer command goes through routing_sandbox.run_in_sandbox (allowlist +
-network-less container + ToolCallRecord audit rows); a DENIED command is a
-layer error and fails a blocking layer CLOSED. Nothing here commits, merges,
-or pushes — "patch_accepted" means "eligible for human promotion", never an
-automatic git action.
+Commands run via routing_sandbox; a denied command fails a blocking layer
+closed. "patch_accepted" means eligible for human promotion, never a git action.
 """
 from __future__ import annotations
 
@@ -73,9 +50,7 @@ from src.routing_workdir import (
 
 
 class TestAuthority(str, Enum):
-    """Spec Section 16 test-authority levels. Blocking eligibility is NOT the
-    enum itself — see is_blocking_eligible(): only human_authored_acceptance_test
-    (native human authority) or an explicitly promoted row may block."""
+    """Test-authority levels; blocking eligibility is decided by is_blocking_eligible()."""
     EXISTING_REPO_TEST = "existing_repo_test"
     HUMAN_AUTHORED_ACCEPTANCE_TEST = "human_authored_acceptance_test"
     GENERATED_AMPLIFICATION_TEST = "generated_amplification_test"
@@ -83,19 +58,8 @@ class TestAuthority(str, Enum):
     MODEL_SUGGESTED_TEST = "model_suggested_test"
 
 
-# Mode -> ordered layer specs, the spec Section 16 invariants table verbatim.
-# layer: free-form display name; source: where the layer's commands come from
-# (see _layer_entries); blocking: whether the layer's outcome counts toward
-# the top-level `passed`. Notes on the encoding:
-#   - regression_guard's "generated tests advisory" row is a blocking=False
-#     layer: generated/acceptance tests run and report but never gate here.
-#   - "no (new/unrelated) regressions" rows are the baseline-fuzz layer,
-#     blocking ONLY on new regressions (see _run_fuzz_layer).
-#   - security_fix: "unsafe prior behavior may change" -> existing tests are
-#     advisory (blocking=False); only the security assertions gate.
-#   - equivalence appears ONLY under refactor_equivalence — strict behavioral
-#     equivalence is not available in any other mode.
-#   - analysis_only is [] and never accepts a patch (MODE_ACCEPTS_PATCH).
+# Mode -> ordered layers; `blocking` layers decide the top-level `passed`.
+# Equivalence exists only under refactor_equivalence.
 MODE_INVARIANTS: Dict[str, List[Dict[str, Any]]] = {
     VerificationMode.REGRESSION_GUARD.value: [
         {"layer": "existing_tests", "source": "existing_tests", "blocking": True},
@@ -123,8 +87,6 @@ MODE_INVARIANTS: Dict[str, List[Dict[str, Any]]] = {
     VerificationMode.ANALYSIS_ONLY.value: [],
 }
 
-# analysis_only NEVER accepts a patch; every other mode gates acceptance on
-# its blocking layers.
 MODE_ACCEPTS_PATCH: Dict[str, bool] = {
     m.value: m is not VerificationMode.ANALYSIS_ONLY for m in VerificationMode
 }
@@ -133,8 +95,6 @@ MODE_ACCEPTS_PATCH: Dict[str, bool] = {
 # second (ORIGINAL) worktree.
 _BASELINE_SOURCES = ("fuzz", "equivalence")
 
-# Task-type -> verification-mode inference used when a task carries no
-# explicit verification_mode (spec Section 16 defaults).
 INFERRED_MODE_BY_TASK_TYPE = {
     "bug_debug": VerificationMode.BUG_FIX.value,
     "implementation": VerificationMode.FEATURE_ADDITION.value,
@@ -160,10 +120,7 @@ def _now_iso() -> str:
 
 
 def infer_mode(task, policy: Optional[dict] = None) -> str:
-    """Verification mode inferred from task_type when the task doesn't carry
-    one: bug_debug->bug_fix, implementation->feature_addition,
-    diff_review/feature_plan->analysis_only, anything else falls back to the
-    policy's verification.defaultMode (regression_guard by default)."""
+    """Infer the mode from task_type, else the policy's verification.defaultMode."""
     mapped = INFERRED_MODE_BY_TASK_TYPE.get(task.task_type)
     if mapped:
         return mapped
@@ -176,10 +133,7 @@ def infer_mode(task, policy: Optional[dict] = None) -> str:
 
 
 def is_blocking_eligible(test_row) -> bool:
-    """Spec Section 16 blocking eligibility for a registry test row: ONLY
-    human authority blocks — authority == human_authored_acceptance_test, or
-    promoted == True (the persistent, auditable human grant). Everything else
-    is weight-0/advisory: it runs and reports but can never flip `passed`."""
+    """Only human-authored or explicitly promoted tests may block."""
     return (
         test_row.authority == TestAuthority.HUMAN_AUTHORED_ACCEPTANCE_TEST.value
         or bool(test_row.promoted)
@@ -187,10 +141,7 @@ def is_blocking_eligible(test_row) -> bool:
 
 
 def load_patch_text(model_run) -> str:
-    """The archived patch.diff located via artifacts.patch_path — the same
-    convention odysseus-patch writes/reads (shared here so odysseus-exec and
-    this module never diverge). Raises ValueError when no archived patch
-    exists; callers (CLI fail(), route 400) decide how to surface it."""
+    """The archived patch.diff via artifacts.patch_path; ValueError when absent."""
     artifacts = json.loads(model_run.artifacts) if model_run.artifacts else {}
     patch_path = artifacts.get("patch_path")
     if not patch_path or not os.path.isfile(patch_path):
@@ -203,9 +154,7 @@ def load_patch_text(model_run) -> str:
 
 
 def attempt_dir(model_run) -> Optional[str]:
-    """The model run's archive dir (where prompt.md/response.md live), so
-    sandbox stdout/stderr land next to the run's other artifacts. None when
-    the run predates archiving — run_in_sandbox falls back to its default."""
+    """The run's archive dir, or None for runs that predate archiving."""
     artifacts = json.loads(model_run.artifacts) if model_run.artifacts else {}
     for key in ("response_text_path", "patch_path", "prompt_path"):
         p = artifacts.get(key)
@@ -215,8 +164,7 @@ def attempt_dir(model_run) -> Optional[str]:
 
 
 def _registry_tests(db, task_id: str) -> list:
-    """All routing_generated_tests rows for the task, oldest first (stable
-    layer ordering across re-verifications)."""
+    """Generated-test rows oldest first, for stable layer ordering."""
     from core.database import GeneratedTest
 
     return (
@@ -228,9 +176,7 @@ def _registry_tests(db, task_id: str) -> list:
 
 
 def _layer_entries(db, task, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The commands a layer will run, as entries {cmd, advisory, origin}.
-    advisory=True marks a weight-0 command whose failure is reported but can
-    never fail the layer (unpromoted generated tests)."""
+    """Layer commands as {cmd, advisory, origin}; advisory failures never fail the layer."""
     inputs = json.loads(task.inputs) if task.inputs else {}
     source = spec["source"]
 
@@ -308,10 +254,7 @@ def _new_layer(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 def _run_single_tree_layer(db, spec, entries, worktree, *, policy, run_id,
                            artifacts_dir, sandbox_log) -> Dict[str, Any]:
-    """Layers judged on the PATCHED tree alone (existing/acceptance/failing-
-    case/security). Layer passes iff every NON-advisory command exits 0; a
-    denied or infrastructure-failed command fails the layer closed; advisory
-    (weight-0) failures are reported in notes but never fail the layer."""
+    """Passes iff every non-advisory command exits 0; denied/infra errors fail closed."""
     layer = _new_layer(spec)
     for entry in entries:
         sb = run_in_sandbox(worktree, entry["cmd"], policy=policy, run_id=run_id,
@@ -338,10 +281,7 @@ def _run_single_tree_layer(db, spec, entries, worktree, *, policy, run_id,
 
 def _run_fuzz_layer(db, spec, entries, original_wt, patched_wt, *, policy,
                     run_id, artifacts_dir, sandbox_log) -> Dict[str, Any]:
-    """Baseline fuzzing: each case runs on the ORIGINAL and the PATCHED
-    worktree. Blocks ONLY on new regressions (ok-on-original, not-ok-on-
-    patched). A case failing on the original base is pre-existing and never
-    blocks. Denied/infrastructure errors fail the layer closed."""
+    """Blocks only on new regressions; failures already on the original never block."""
     layer = _new_layer(spec)
     for entry in entries:
         orig = run_in_sandbox(original_wt, entry["cmd"], policy=policy, run_id=run_id,
@@ -400,10 +340,7 @@ def _read_bytes(path: Optional[str]) -> bytes:
 
 def _run_equivalence_layer(db, spec, entries, original_wt, patched_wt, *, policy,
                            run_id, artifacts_dir, sandbox_log) -> Dict[str, Any]:
-    """Strict behavioral equivalence (refactor_equivalence ONLY): each command
-    runs on both worktrees and stdout must match BYTE-WISE — the v1
-    equivalence check. Exit codes are recorded for the audit trail but only a
-    stdout mismatch (or a denied/errored command, fail-closed) fails."""
+    """Stdout must match byte-wise on both worktrees; exit codes are only recorded."""
     layer = _new_layer(spec)
     for entry in entries:
         orig = run_in_sandbox(original_wt, entry["cmd"], policy=policy, run_id=run_id,
@@ -447,10 +384,7 @@ def _run_equivalence_layer(db, spec, entries, original_wt, patched_wt, *, policy
 
 
 def _apply_confidence(result: dict, scores: dict, threshold: float) -> None:
-    """Confidence is metadata ONLY — copied into the result, never consulted
-    for pass/fail. Overconfident failures get a calibration flag for WP6's
-    model-calibration stats; a low-confidence pass may deepen human review;
-    neither changes `passed`."""
+    """Record confidence as metadata and flag overconfident failures; never changes `passed`."""
     conf = scores.get("confidence")
     if isinstance(conf, bool) or not isinstance(conf, (int, float)):
         return
@@ -468,15 +402,11 @@ def _apply_confidence(result: dict, scores: dict, threshold: float) -> None:
 
 def _finalize(db, model_run, result: dict, run_dir: str, sandbox_log: list,
               threshold: float) -> dict:
-    """Stamp confidence/infrastructure metadata, archive verification.json
-    next to the run's manifest.json, and persist into model_run.scores under
-    "verification" (merged — other score keys are never clobbered) plus the
-    tool-call artifact trail."""
+    """Archive verification.json and merge it into model_run.scores["verification"]."""
     scores = json.loads(model_run.scores) if model_run.scores else {}
     _apply_confidence(result, scores, threshold)
     if any(sb.get("error") == "docker_unavailable" for sb in sandbox_log):
-        # Infrastructure failure, not command failure: still fail-closed, but
-        # flagged so a docker-equipped re-run isn't scored as a patch break.
+        # Fail closed but flag it, so it isn't scored as a patch break.
         result["infrastructure_error"] = "docker_unavailable"
     result["completed_at"] = _now_iso()
 
@@ -524,9 +454,7 @@ def _wt_id(model_run_id: str, tag: str) -> str:
 
 
 def _cleanup_worktree(repo_path: str, worktree: str, notes: List[str]) -> None:
-    """Best-effort revert (the documented failed-patch reset) then remove.
-    Cleanup failure must never destroy a completed verification verdict — it
-    is recorded as a note instead."""
+    """Best-effort revert and remove; a cleanup failure becomes a note, not a lost verdict."""
     try:
         revert_worktree(worktree)
     except Exception:
@@ -540,32 +468,13 @@ def _cleanup_worktree(repo_path: str, worktree: str, notes: List[str]) -> None:
 def verify_model_run(db, task, model_run, *, mode: Optional[str] = None,
                      allow_dirty: bool = False, keep_worktree: bool = False,
                      policy: Optional[dict] = None) -> dict:
-    """Run spec Section 16 mode-aware verification for one archived model run
-    and return the VerificationResult dict:
+    """Verify one archived model run and return the VerificationResult dict.
 
-        {"mode", "passed", "patch_accepted", "patch_applied", "layers":
-         [{layer, source, blocking, passed, skipped, commands: [{cmd,
-         exit_code, tool_call_record_id, ...}], notes}], "notes",
-         "confidence"?, "calibration"?, "infrastructure_error"?,
-         "completed_at"}
-
-    Mode resolution: explicit `mode` arg > task.verification_mode >
-    infer_mode(task). `passed` = every BLOCKING layer passed; advisory layers
-    and weight-0 commands report but never gate. analysis_only runs no
-    commands and NEVER accepts a patch — its `passed` is evidence
-    completeness (a non-empty archived analysis/response text).
-
-    Worktrees: one temp worktree at the task repo's HEAD with the patch
-    applied; a second ORIGINAL (unpatched) worktree is added only when a
-    fuzz/equivalence layer actually has commands to baseline against. ALL
-    worktrees are reverted+removed at the end — keep_worktree=True keeps the
-    PATCHED one only (path reported in the result). Nothing is ever
-    committed, merged, or pushed.
-
-    The result is persisted into model_run.scores["verification"] (merged,
-    other keys preserved) and archived as verification.json in the run's
-    archive dir next to manifest.json. Raises ValueError for an unknown mode
-    or a missing archived patch."""
+    Mode: `mode` arg, then task.verification_mode, then infer_mode(task).
+    `passed` means every blocking layer passed. analysis_only runs nothing and
+    never accepts a patch. An unpatched worktree is added only when a
+    fuzz/equivalence layer needs a baseline; keep_worktree keeps only the
+    patched one. Raises ValueError for an unknown mode or missing patch."""
     if policy is None:
         policy = routing_policy.load_policy()
     verification_cfg = policy.get("verification") or {}
@@ -590,7 +499,6 @@ def verify_model_run(db, task, model_run, *, mode: Optional[str] = None,
     }
     sandbox_log: List[dict] = []
 
-    # --- analysis_only: no patch, no worktrees, no commands, EVER ---
     if resolved == VerificationMode.ANALYSIS_ONLY.value:
         artifacts = json.loads(model_run.artifacts) if model_run.artifacts else {}
         response_path = artifacts.get("response_text_path")
@@ -607,7 +515,6 @@ def verify_model_run(db, task, model_run, *, mode: Optional[str] = None,
             result["notes"].append("no archived analysis output found (artifacts.response_text_path)")
         return _finalize(db, model_run, result, run_dir, sandbox_log, threshold)
 
-    # --- patch-accepting modes ---
     patch_text = load_patch_text(model_run)  # ValueError when absent
     import hashlib
     result["patch_sha256"] = hashlib.sha256(patch_text.encode()).hexdigest()

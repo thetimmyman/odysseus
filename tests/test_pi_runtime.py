@@ -130,7 +130,6 @@ def test_execution_record_defaults_ps638_attempt_binding_to_none(tmp_path, monke
         assert persisted[field] is None
 
 
-# --- Test A — Start --------------------------------------------------------
 async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-a")
     runtime = PiRuntime()
@@ -252,7 +251,6 @@ async def test_start_from_pin_rejects_caller_binding_mismatch_before_spawning(
     assert not list((Path(pi_env) / "executions").glob("*.json"))
 
 
-# --- Test B — Identity -----------------------------------------------------
 async def test_b_execution_id_maps_to_pi_session_id(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-b")
     runtime = PiRuntime()
@@ -269,7 +267,6 @@ async def test_b_execution_id_maps_to_pi_session_id(repo, worktree, pi_env):
     assert on_disk["pi_session_file"]
 
 
-# --- Test C — Worktree isolation -------------------------------------------
 async def test_c_pi_edits_only_the_assigned_worktree(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-c", write_files=["stub_output.txt"])
     runtime = PiRuntime()
@@ -284,7 +281,6 @@ async def test_c_pi_edits_only_the_assigned_worktree(repo, worktree, pi_env):
     assert "stub_output.txt" in result["files_changed"]
 
 
-# --- Test D — Events -------------------------------------------------------
 async def test_d_useful_events_are_observable(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-d", run_command="pytest -q",
               write_files=["mod.py"])
@@ -306,7 +302,6 @@ async def test_d_useful_events_are_observable(repo, worktree, pi_env):
 
 
 
-# --- Test E — Completion ---------------------------------------------------
 async def test_e_success_produces_explicit_completed_result(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-e")
     runtime = PiRuntime()
@@ -321,7 +316,6 @@ async def test_e_success_produces_explicit_completed_result(repo, worktree, pi_e
     assert result["ended_at"]
 
 
-# --- Test F — Failure ------------------------------------------------------
 @pytest.mark.parametrize("scenario,expected", [
     ("provider_fail", pe.STATUS_PROVIDER_FAILURE),
     ("tool_fail", pe.STATUS_TOOL_FAILURE),
@@ -344,7 +338,6 @@ async def test_f_failures_map_to_explicit_states(repo, worktree, pi_env, scenari
     assert result["status"] == expected
 
 
-# --- Test G — Cancellation -------------------------------------------------
 async def test_g_cancel_stops_an_active_execution(repo, worktree, pi_env):
     configure(worktree, scenario="slow")
     runtime = PiRuntime()
@@ -357,7 +350,6 @@ async def test_g_cancel_stops_an_active_execution(repo, worktree, pi_env):
     final = await wait_terminal(runtime, eid)
     assert final["status"] == pe.STATUS_CANCELLED
     assert not final["runtime_alive"]
-# --- Adapter surface smoke test -------------------------------------------
 def test_ensure_model_config_does_not_clobber_existing_endpoint(tmp_path, monkeypatch):
     """An operator/deployment-managed endpoint must survive a config rewrite."""
     models_json = tmp_path / "models.json"
@@ -408,7 +400,6 @@ def test_route_surface_exposes_adapter_contract():
 
 
 
-# --- Test H — Resume -------------------------------------------------------
 async def test_h_resume_continues_the_same_pi_session(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-h")
     runtime = PiRuntime()
@@ -432,7 +423,6 @@ async def test_h_resume_continues_the_same_pi_session(repo, worktree, pi_env):
     assert args[args.index("--session") + 1] == session_file
 
 
-# --- Test I — Routing authority --------------------------------------------
 async def test_i_pi_cannot_touch_routing_or_secrets(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-i")
     runtime = PiRuntime()
@@ -461,7 +451,6 @@ async def test_i_pi_cannot_touch_routing_or_secrets(repo, worktree, pi_env):
 
 
 
-# --- Worktree assignment enforcement ---------------------------------------
 def prompts_sent():
     """Prompts actually delivered to the stub Pi (cwd-independent log)."""
     path = os.path.join(pc.session_dir(), "pi_stub_prompts.jsonl")

@@ -1,15 +1,8 @@
-r"""DOM/CSS-injection regression for calendar background-image URL escaping.
+r"""CSS-injection guard for calendar background-image URL escaping.
 
-CodeQL `js/incomplete-sanitization` (#463 calendar.js:416, #464 calendar.js:1263)
-flagged event-background CSS that escaped `'` -> `\'` without first escaping
-backslashes. A `bg:`-color value (settable per event, and CalDAV-syncable, so
-untrusted) ending in or containing a backslash can then consume the closing
-quote of `url('...')` and break out of the CSS string.
-
-The fix is a single canonical escaper, `_cssUrlEscape`, in calendar/utils.js,
-used by both inline sinks and by `_calBgCss` (which had the same incomplete
-escaping). These tests pin the escaper: backslashes are doubled FIRST, then
-quotes, so no input can terminate the `url('...')` string early.
+`bg:` values are CalDAV-syncable, so untrusted. `_cssUrlEscape` (calendar/utils.js)
+must double backslashes BEFORE escaping quotes, or a trailing backslash consumes
+the closing quote of `url('...')` and breaks out of the CSS string.
 """
 
 import json
@@ -92,11 +85,8 @@ def test_calbgcss_escapes_quote_breakout():
 
 
 def test_every_calendar_url_interpolation_is_escaped():
-    # Whole-file invariant: every CSS `url('${...}')` built in calendar.js must
-    # route its (CalDAV-syncable, untrusted) value through `_cssUrlEscape`. This
-    # is the guard that catches a *newly added* bg-image sink the centralization
-    # forgot - the failure mode that left calendar.js:2856 (edit-form color
-    # swatch) and :2953 (custom-dot preview) raw before this change.
+    # Every CSS `url('${...}')` in calendar.js must route its untrusted value
+    # through `_cssUrlEscape`; catches newly added sinks that bypass it.
     src = _CALENDAR_JS.read_text(encoding="utf-8")
     interps = re.findall(r"url\('\$\{([^}]*)\}'\)", src)
     assert interps, "expected at least one url('${...}') interpolation in calendar.js"

@@ -1,14 +1,6 @@
-// static/js/terminal.js — integrated interactive terminal (roadmap Tier 2 #6).
-//
-// A real xterm.js terminal bridged over a same-origin WebSocket to a NON-root
-// PTY on the Framework (the app runs as uid 1000). The server enforces auth +
-// admin + Origin allowlist on the handshake BEFORE accepting; this client just
-// wires keystrokes <-> PTY bytes and reports resizes.
-//
-// Mirrors projectFiles.js / gitPanel.js: a desktop-oriented sidebar section
-// that rides the existing sidebar overlay on mobile. xterm + fit addon are
-// loaded LOCALLY from /static/lib (vendored, pinned 5.5.0 / 0.10.0) — never a
-// live CDN dependency.
+// xterm.js terminal over a same-origin WebSocket to a non-root PTY. The server
+// checks auth, admin and Origin before accepting. xterm is vendored under
+// /static/lib, never loaded from a CDN.
 
 let API_BASE = '';
 let _curSession = null;
@@ -34,7 +26,6 @@ function _status(text, cls) {
   el.className = 'terminal-status' + (cls ? ' ' + cls : '');
 }
 
-// --- vendored asset loading (local, pinned) ----------------------------------
 function _loadCss(href) {
   if (document.querySelector(`link[href="${href}"]`)) return;
   const link = document.createElement('link');
@@ -72,7 +63,6 @@ function _ensureLibs() {
   return _libsLoading;
 }
 
-// --- terminal lifecycle ------------------------------------------------------
 function _ensureTerm() {
   if (_term) return;
   const host = document.getElementById('terminal-xterm');
@@ -91,22 +81,19 @@ function _ensureTerm() {
   _term.open(host);
   try { _fit.fit(); } catch (_e) { /* host not laid out yet */ }
 
-  // Keystrokes -> PTY. Only the bytes the human types; the server's shell argv
-  // is fixed, so this can never change WHAT runs.
+  // The server's shell argv is fixed; keystrokes can't change what runs.
   _term.onData((data) => {
     if (_ws && _ws.readyState === WebSocket.OPEN) {
       _ws.send(JSON.stringify({ type: 'input', data }));
     }
   });
 
-  // Local resize -> bounded TIOCSWINSZ server-side.
   _term.onResize(({ cols, rows }) => {
     if (_ws && _ws.readyState === WebSocket.OPEN) {
       _ws.send(JSON.stringify({ type: 'resize', cols, rows }));
     }
   });
 
-  // Refit when the sidebar/section is resized.
   if (window.ResizeObserver && !_resizeObs) {
     _resizeObs = new ResizeObserver(() => _doFit());
     _resizeObs.observe(host);
@@ -139,8 +126,7 @@ function _connect() {
 
   let ws;
   try {
-    // Cookies (the odysseus_session) ride along automatically on a same-origin
-    // WebSocket; the server validates them on the handshake before accept().
+    // The session cookie rides along and is validated before accept().
     ws = new WebSocket(_wsUrl());
   } catch (e) {
     _status('Connection failed', 'err');
@@ -196,16 +182,13 @@ function _setBtns(isConnected) {
   if (disc) disc.style.display = isConnected ? '' : 'none';
 }
 
-// --- public API (mirrors projectFiles/gitPanel) ------------------------------
 function refresh(sessionId) {
-  // The terminal opens from the Tools menu now — just track the active session
-  // so the next connect uses its project_root as cwd.
+  // Track the active session so the next connect uses its project_root as cwd.
   _curSession = sessionId;
 }
 
 async function _onActivate() {
-  // Lazy: only fetch the ~290KB xterm bundle when the user actually opens the
-  // terminal section, then connect.
+  // Load the ~290KB xterm bundle only when opened.
   try {
     await _ensureLibs();
   } catch (e) {
@@ -217,7 +200,6 @@ async function _onActivate() {
   if (!_connected) _connect();
 }
 
-// --- overlay open/close (opens as a full page from the Tools menu) -----------
 function _openOverlay() {
   const ov = document.getElementById('terminal-overlay');
   if (!ov) return;
@@ -229,8 +211,7 @@ function _openOverlay() {
 function _closeOverlay() {
   const ov = document.getElementById('terminal-overlay');
   if (ov) ov.style.display = 'none';
-  // Keep the PTY/WebSocket alive so reopening resumes; the server idle cap
-  // reaps an abandoned terminal. Use the Stop button to disconnect explicitly.
+  // Keep the PTY alive so reopening resumes; the server's idle cap reaps it.
 }
 
 function init(apiBase) {

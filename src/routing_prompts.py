@@ -1,6 +1,4 @@
-"""src/routing_prompts.py — prompt templates for the model routing harness,
-ported directly from the source spec's Section 10 (universal wrapper +
-scout/implementation/adversarial-review role templates)."""
+"""Prompt templates for the routing harness: universal wrapper plus role templates."""
 import json
 from typing import List, Optional
 
@@ -94,9 +92,7 @@ Return:
 4. Suggested scope cuts
 5. Final verdict: approve / revise / reject"""
 
-# Roles without a dedicated template (planner, escalation) fall back to the
-# universal wrapper alone -- the spec doesn't define a distinct template for
-# them in Section 10.
+# Roles without a template (planner, escalation) use the universal wrapper alone.
 ROLE_TEMPLATES = {
     "scout": SCOUT_PROMPT,
     "debugger": SCOUT_PROMPT,
@@ -126,11 +122,7 @@ def render_context_block(bundle: dict) -> str:
 
 
 def build_prompt(role: str, task, bundle: dict) -> str:
-    """Compose the final prompt for a given routing role: the universal
-    wrapper (objective/constraints/rules/return-format), a role-specific
-    goal block when one exists, and the rendered context bundle. `task` is a
-    core.database.RoutingTask row; `bundle` is routing_context.build_context_bundle()'s
-    output."""
+    """Universal wrapper, optional role goal block, then the rendered context bundle."""
     constraints = json.loads(task.constraints) if task.constraints else []
     sections = [render_universal_wrapper(task.objective, constraints)]
     role_block = ROLE_TEMPLATES.get(role)

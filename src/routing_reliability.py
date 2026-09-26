@@ -1,10 +1,7 @@
 
 """
-routing_reliability.py — WorkflowReliabilityMonitor (Section 13).
-
-Workflow reliability is a REVIEW-READINESS signal only. It MUST NOT reduce
-per-engineer or per-task budgets in core Odysseus (Section 13 policy). The
-signal may increase review depth / coaching surfaces but never touches budget.
+Workflow reliability is a review-readiness signal only; it must never reduce
+per-engineer or per-task budgets.
 """
 from __future__ import annotations
 
@@ -108,9 +105,7 @@ def compute_signal(inp: ReliabilityInput) -> ReviewReadinessSignal:
 
 def budget_affecting_policy_allowed() -> bool:
     """
-    Section 13 policy: core Odysseus MUST NOT reduce per-engineer/per-task
-    budgets from reliability signals. An organization that wants a budget-
-    affecting policy must implement it as an EXTERNAL layer, not default Odysseus.
-    This helper exists so callers can assert the constraint explicitly.
+    Lets callers assert that reliability signals never reduce budgets; a
+    budget-affecting policy must be an external layer.
     """
     return False

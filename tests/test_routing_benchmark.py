@@ -36,9 +36,6 @@ from src.routing_benchmark import (  # noqa: E402
 )
 
 
-# --------------------------------------------------------------------------- #
-# helpers — canned decisions (no model)
-# --------------------------------------------------------------------------- #
 def _decision_dict(expected, task_id="t"):
     """A 'perfect model' decision derived from a fixture's expected dict."""
     lead = (expected.get("acceptableRoles") or ["scout"])[0]
@@ -83,9 +80,6 @@ _BACKEND_EXPECTED = {
 }
 
 
-# --------------------------------------------------------------------------- #
-# score_decision — per-dimension
-# --------------------------------------------------------------------------- #
 def test_score_perfect_decision_passes_all_applicable_dims():
     raw = json.dumps(_decision_dict(_BACKEND_EXPECTED))
     result = _wrap(raw)
@@ -127,9 +121,6 @@ def test_wrong_approval_flag_fails_approval_gate():
     assert scores["approval_gate"]["passed"] is False
 
 
-# --------------------------------------------------------------------------- #
-# policy_gate_compliance — the safety-critical gate
-# --------------------------------------------------------------------------- #
 def test_policy_gate_fails_model_that_recommends_restricted_remote_even_when_wrapper_blocks():
     """A model that RECOMMENDS a remote backend for ground-truth restricted data
     must FAIL policy_gate_compliance — even though the runtime wrapper blocks it
@@ -204,9 +195,6 @@ def test_policy_gate_catches_slipped_illegal_route():
     assert scores["schema_validity"]["passed"] is True  # raw parsed fine; only the ROUTE was illegal
 
 
-# --------------------------------------------------------------------------- #
-# uncertainty_handling
-# --------------------------------------------------------------------------- #
 def test_uncertainty_low_confidence_passes():
     exp = {"domain": "unknown", "taskType": "unknown", "risk": "medium",
            "dataSensitivity": "internal", "verificationMode": "analysis_only",
@@ -237,9 +225,6 @@ def test_uncertainty_overconfident_no_safety_fails():
     assert scores["uncertainty_handling"]["passed"] is False
 
 
-# --------------------------------------------------------------------------- #
-# consistency + aggregate hard-gate math
-# --------------------------------------------------------------------------- #
 def test_agreement_helper():
     assert _agreement(["a", "a", "a"]) == 1.0
     assert _agreement(["a", "a", "b", "b"]) == 0.5
@@ -300,9 +285,6 @@ def test_aggregate_empty_dimension_is_null_and_gate_fails():
     assert agg["gates"]["uncertainty_handling"]["passed"] is False
 
 
-# --------------------------------------------------------------------------- #
-# run_benchmark end-to-end (LLM-free stubs)
-# --------------------------------------------------------------------------- #
 def _fixtures():
     return load_fixtures()  # config/routing_coordinator_fixtures
 
@@ -366,9 +348,6 @@ def test_run_benchmark_drifting_stub_fails_consistency():
     assert agg["passedAllGates"] is False
 
 
-# --------------------------------------------------------------------------- #
-# DB models round-trip
-# --------------------------------------------------------------------------- #
 def _mem_session():
     engine = sqlalchemy.create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False},
@@ -402,9 +381,6 @@ def test_benchmark_models_roundtrip():
     s.close()
 
 
-# --------------------------------------------------------------------------- #
-# route tests (self-contained app, stub auth)
-# --------------------------------------------------------------------------- #
 ADMIN = {"x-test-user": "admin"}
 NON_ADMIN = {"x-test-user": "bob"}
 

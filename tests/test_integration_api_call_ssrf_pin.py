@@ -1,15 +1,8 @@
-"""PS-602 / upstream #5727: execute_api_call is pinned to the SSRF-validated IP.
+"""execute_api_call is pinned to the SSRF-validated IP.
 
-execute_api_call resolves the integration ``base_url`` host via
-``src.url_safety.check_outbound_url`` to decide accept/reject, but the guard
-only returns ``(ok, reason)`` — no address. The request that follows used a
-plain ``httpx.AsyncClient``, which resolves the host *again* at connect time.
-A host on a low TTL can answer with a public/loopback IP for the guard and
-then flip to ``169.254.169.254`` for the connect (DNS rebinding), landing on
-cloud metadata with the integration's stored auth headers attached.
-
-These tests prove the request is pinned to the address the guard actually
-validated:
+Resolving the host again at connect time would allow DNS rebinding to cloud
+metadata with the integration's auth headers attached. These tests prove the
+request is pinned to the address the guard actually validated:
 
 * equivalence — a public host still requests; a LAN host still works by
   default and is rejected only under the opt-in lock-down env knob;
@@ -76,8 +69,6 @@ async def _call_capturing(base_url, path="/items"):
     return result, transport, client
 
 
-# --- negative controls: the guard stays fail-closed -------------------------
-
 async def test_metadata_ip_base_url_is_rejected_without_requesting():
     result, _t, client = await _call_capturing("http://169.254.169.254")
 
@@ -95,8 +86,6 @@ async def test_hostname_resolving_to_metadata_ip_is_rejected(monkeypatch):
     assert "rejected" in result["error"].lower()
     client.request.assert_not_called()
 
-
-# --- equivalence: ordinary hosts behave exactly as before -------------------
 
 async def test_public_ip_base_url_still_requests():
     result, transport, client = await _call_capturing("http://93.184.216.34")
@@ -129,8 +118,6 @@ async def test_ipv6_host_pins_every_validated_address(monkeypatch):
     assert isinstance(transport, integrations._PinnedAsyncTransport)
     assert [str(ip) for ip in transport._pinned_ips] == [v6]
 
-
-# --- the TOCTOU: the pin must hold the guard-approved address ---------------
 
 async def test_rebind_flip_does_not_move_the_pin(monkeypatch):
     """The guard's first resolution is public, every later resolution is the
@@ -165,8 +152,6 @@ def test_validated_ips_deduplicates_repeated_addresses():
     )
     assert [str(ip) for ip in got] == ["198.51.100.7", "93.184.216.34", "fe80::1"]
 
-
-# --- real-socket controls: the connect truly follows the pin ----------------
 
 async def _serve_once(captured, payload=b'{"ok": true}',
                      ctype=b"application/json"):

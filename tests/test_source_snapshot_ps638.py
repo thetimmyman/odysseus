@@ -1,13 +1,12 @@
-"""PS-638 — SourceSnapshotIdentity: HEAD is not a source identity.
+"""SourceSnapshotIdentity: HEAD is not a source identity.
 
 Every test here uses a REAL temporary git repository rather than a mock, because
 the property under test is exactly the one a mock would assume away: that the
 identity changes when the tree changes, and does not change when it does not.
 
 The load-bearing test is
-``test_changing_relevant_source_after_sealing_changes_identity``: PS-638 requires
-that changing relevant source state after sealing invalidates source-bound
-evidence. If that test passes vacuously the whole envelope is decorative.
+``test_changing_relevant_source_after_sealing_changes_identity``: changing
+relevant source after sealing must invalidate source-bound evidence.
 """
 import subprocess
 
@@ -46,7 +45,6 @@ def _snapshot(repo, **kwargs):
     return take_source_snapshot(str(repo), **kwargs)
 
 
-# ------------------------------------------------------------------ parsing ---
 def test_parse_porcelain_splits_each_disposition():
     raw = b" M src/a.py\x00?? new.py\x00MM both.py\x00A  staged.py\x00"
     staged, unstaged, untracked = parse_porcelain(raw)
@@ -59,7 +57,6 @@ def test_parse_porcelain_handles_an_empty_status():
     assert parse_porcelain(b"") == ([], [], [])
 
 
-# --------------------------------------------------------- a clean worktree ---
 def test_clean_worktree_is_clean_and_complete(repo):
     snap = _snapshot(repo)
     assert snap.is_clean is True
@@ -82,7 +79,6 @@ def test_identity_is_deterministic_across_calls(repo):
     assert first.snapshot_digest == second.snapshot_digest
 
 
-# ------------------------------------------------------- dirty dispositions ---
 def test_untracked_file_changes_the_identity(repo):
     before = _snapshot(repo)
     (repo / "scratch.py").write_text("generated = True\n")
@@ -125,7 +121,6 @@ def test_a_path_with_a_space_is_one_path(repo):
     assert snap.snapshot_digest
 
 
-# -------------------------------------------------------- relevant digests ---
 def test_relevant_path_digests_are_recorded_per_path(repo):
     snap = _snapshot(repo, relevant_paths=["src.py", "absent.py"])
     assert len(snap.relevant_digest("src.py")) == 64
@@ -142,7 +137,7 @@ def test_irrelevant_changes_do_not_move_a_relevant_digest(repo):
 
 
 def test_changing_relevant_source_after_sealing_changes_identity(repo):
-    """PS-638: sealed evidence must not survive a change to what it measured."""
+    """Sealed evidence must not survive a change to what it measured."""
     sealed = _snapshot(repo, base_sha="HEAD", relevant_paths=["src.py"])
     (repo / "src.py").write_text("x = 999\n")
     now = _snapshot(repo, base_sha="HEAD", relevant_paths=["src.py"])
@@ -172,7 +167,6 @@ def test_truncation_makes_the_snapshot_incomplete_not_clean(tmp_path):
     assert snap.disposition() == "clean-but-incomplete"
 
 
-# ------------------------------------------------------------ serialization ---
 def test_digest_roundtrip_and_tamper_detection(repo):
     snap = _snapshot(repo, base_sha="HEAD")
     payload = snap.to_dict()
@@ -196,7 +190,6 @@ def test_missing_digest_is_invalid(repo):
     assert snapshot_digest_is_valid(payload) is False
 
 
-# ----------------------------------------------------------------- refusals ---
 def test_a_non_repository_is_refused(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()

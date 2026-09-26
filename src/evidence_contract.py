@@ -1,26 +1,13 @@
-"""src/evidence_contract.py — typed, mechanically closable evidence requirements.
+"""Typed, mechanically closable evidence requirements.
 
-PS-638, hardening item 1: ``ExecutionPackage`` carries an explicit set of
-EvidenceRequirement IDs, and package validation COMPUTES whether each is
-SATISFIED / FAILED / BLOCKED / NOT_APPLICABLE from receipts. "Evidence looks
-complete" is not a state this module can represent.
+``ExecutionPackage`` carries explicit EvidenceRequirement IDs, and validation
+computes SATISFIED / FAILED / BLOCKED / NOT_APPLICABLE for each from receipts.
 
-Two things here are deliberate and worth reading before changing them.
-
-**UNRESOLVED is a real state.** The ticket lists four terminal states. A
-requirement that no receipt addresses is none of them, and collapsing it into
-NOT_APPLICABLE would let an omission read as a waiver. So closure computes a
-fifth, *non-terminal* state, and the validator refuses to seal while any
-mandatory requirement is UNRESOLVED. NOT_APPLICABLE is only reachable through an
-explicit recorded waiver with a reason — never by absence.
-
-**INDEPENDENCE is compared, not trusted.** PS-638 requires that worker-authored
-tests cannot silently become the sole independent acceptance proof. So every
-requirement names the independence class its proof must have, every receipt
-declares the class of proof it carries, and closure refuses to satisfy an
-independent requirement with a WORKER_AUTHORED receipt even when that receipt
-says PASS. The rule is enforced where the comparison happens, not left to a
-reviewer to notice.
+* UNRESOLVED is a fifth, non-terminal state for requirements no receipt
+  addresses; the validator refuses to seal over a mandatory one. NOT_APPLICABLE
+  needs an explicit recorded waiver, never mere absence.
+* Independence is compared: a WORKER_AUTHORED receipt can't satisfy a
+  requirement demanding independent proof, even if it says PASS.
 """
 from __future__ import annotations
 
@@ -29,7 +16,6 @@ from typing import Iterable, Mapping, Sequence, Tuple
 
 REQUIREMENT_SCHEMA_VERSION = 1
 
-# ------------------------------------------------------------- independence ---
 #: Proof already produced by an authoritative process that predates this work.
 INDEPENDENCE_EXISTING_AUTHORITATIVE = "EXISTING_AUTHORITATIVE"
 #: Proof owned by the harness and never shown to the worker (a hidden test).
@@ -51,7 +37,6 @@ INDEPENDENT_CLASSES = frozenset({
     INDEPENDENCE_INDEPENDENT_VERIFIER,
 })
 
-# ------------------------------------------------------------ requirement ---
 KIND_DETERMINISTIC_VERIFICATION = "deterministic_verification"
 KIND_POSITIVE_CONTROL = "positive_control"
 KIND_NEGATIVE_CONTROL = "negative_control"
@@ -71,13 +56,12 @@ KNOWN_KINDS = frozenset({
     KIND_SECRET_HYGIENE, KIND_PACKAGE_INTEGRITY,
 })
 
-# ---------------------------------------------------------------- closures ---
 STATE_SATISFIED = "SATISFIED"
 STATE_FAILED = "FAILED"
 STATE_BLOCKED = "BLOCKED"
 STATE_NOT_APPLICABLE = "NOT_APPLICABLE"
-#: NOT a terminal state: nothing has addressed this requirement yet. Only
-#: closure produces it, and the validator refuses to seal over it.
+#: Non-terminal: nothing has addressed this requirement yet. The validator
+#: refuses to seal over it.
 STATE_UNRESOLVED = "UNRESOLVED"
 
 KNOWN_STATES = frozenset({STATE_SATISFIED, STATE_FAILED, STATE_BLOCKED,
@@ -100,12 +84,9 @@ def _clean(value: object, field_name: str, *, required: bool = True) -> str:
 
 @dataclass(frozen=True)
 class EvidenceRequirement:
-    """One piece of proof a sealed package must be able to produce.
-
-    ``freshness_rule`` is non-empty only for LIVE requirements (a probe, a
-    capability measurement) — a deterministic test result is timeless for a
-    fixed source, whereas "this node was healthy ten minutes ago" is not.
-    """
+    """One piece of proof a sealed package must produce. ``freshness_rule`` is set
+    only for live requirements (probes, measurements); test results are timeless
+    for a fixed source."""
 
     requirement_id: str
     kind: str
@@ -183,12 +164,8 @@ class RequirementState:
 
 def requirement_index(requirements: Iterable[EvidenceRequirement]
                       ) -> Tuple[EvidenceRequirement, ...]:
-    """Requirements in stable order, rejecting duplicate ids.
-
-    Duplicates are refused rather than de-duplicated: two requirements under one
-    id means closure could report SATISFIED for a requirement that is also
-    FAILED, and a package that can hold both states is not evidence.
-    """
+    """Requirements in stable order. Duplicate ids are refused, not merged, since
+    one id could then be both SATISFIED and FAILED."""
     items = tuple(requirements or ())
     seen: set = set()
     for req in items:
@@ -202,12 +179,10 @@ def requirement_index(requirements: Iterable[EvidenceRequirement]
     return items
 
 
-# ------------------------------------------------------------------ claims ---
 CLAIM_PASS = "PASS"
 CLAIM_FAIL = "FAIL"
 CLAIM_BLOCKED = "BLOCKED"
-#: The receipt ran and could not decide. Recorded so that "we tried and could
-#: not tell" is never silently the same as "nobody tried".
+#: The receipt ran but couldn't decide; distinct from nobody trying.
 CLAIM_INCONCLUSIVE = "INCONCLUSIVE"
 
 KNOWN_CLAIM_OUTCOMES = frozenset({CLAIM_PASS, CLAIM_FAIL, CLAIM_BLOCKED,
@@ -216,12 +191,8 @@ KNOWN_CLAIM_OUTCOMES = frozenset({CLAIM_PASS, CLAIM_FAIL, CLAIM_BLOCKED,
 
 @dataclass(frozen=True)
 class RequirementClaim:
-    """What one receipt says about one requirement.
-
-    ``proof_class`` is the independence class of the proof the receipt carries,
-    which is NOT necessarily the class the requirement demands — that mismatch is
-    exactly what closure must catch.
-    """
+    """What one receipt says about one requirement. ``proof_class`` may differ from
+    the class the requirement demands; closure catches that."""
 
     requirement_id: str
     receipt_id: str
@@ -255,7 +226,7 @@ def close_requirements(
 ) -> Tuple[RequirementState, ...]:
     """Reduce each requirement to exactly one state, deterministically.
 
-    Precedence, highest first — and the order is the whole design:
+    Precedence, highest first:
 
       1. an accepted PASS      -> SATISFIED
       2. any FAIL              -> FAILED
@@ -263,12 +234,9 @@ def close_requirements(
       4. any BLOCKED           -> BLOCKED  (allowed or not; the validator judges)
       5. otherwise             -> UNRESOLVED
 
-    FAIL outranks a waiver on purpose. A waiver is a judgement that evidence was
-    not needed; a measured failure is evidence that it was, and a judgement must
-    not erase a measurement. Likewise a PASS carried by a proof class the
-    requirement does not accept is NOT a pass: it is recorded as FAILED with the
-    mismatched class named, so the package cannot launder worker-authored proof
-    into independent acceptance.
+    FAIL outranks a waiver: a judgement must not erase a measurement. A PASS from
+    an unaccepted proof class is FAILED with the class named, so worker-authored
+    proof can't be laundered into independent acceptance.
     """
     items = requirement_index(requirements)
     waivers = dict(waivers or {})
@@ -331,7 +299,6 @@ def close_requirements(
 
 
 def states_by_id(states: Iterable[RequirementState]) -> dict:
-    """Index closure results by requirement id."""
     return {state.requirement_id: state for state in states or ()}
 
 
@@ -353,14 +320,8 @@ def unsatisfied_mandatory(
     requirements: Sequence[EvidenceRequirement],
     states: Sequence[RequirementState],
 ) -> Tuple[str, ...]:
-    """Mandatory requirements that are UNRESOLVED, FAILED or BLOCKED.
-
-    Deliberately the SAME rule the validator applies: SATISFIED and an explicit
-    waiver (NOT_APPLICABLE) are both acceptable terminal dispositions for a
-    mandatory requirement; an omission, a measured failure and a block are not.
-    Keeping the two in step matters — a helper that disagreed with the validator
-    would become the thing callers trusted instead.
-    """
+    """Mandatory requirements that are UNRESOLVED, FAILED or BLOCKED; the same
+    rule the validator applies, so the two can't disagree."""
     index = states_by_id(states)
     gap = {STATE_UNRESOLVED, STATE_FAILED, STATE_BLOCKED}
     return tuple(req.requirement_id for req in requirement_index(requirements)

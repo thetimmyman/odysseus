@@ -67,7 +67,6 @@ def _make_app_and_client():
     return app, TestClient(app)
 
 
-# ---------- seeding helpers ----------
 def _seed_audit(parsed_ok=True, fallback_path="none", validation_errors=(),
                 raw_output="{}", created_at=None, task_id="t"):
     s = rh.SessionLocal()
@@ -112,7 +111,6 @@ def _metrics(client, days=None):
     return r.json()["metrics"]
 
 
-# ---------- observability metrics ----------
 def test_observability_empty_is_null_not_zero():
     _app, client = _make_app_and_client()
     m = _metrics(client)
@@ -211,7 +209,6 @@ def test_days_window_excludes_old_rows():
     assert _metrics(client, days=90)["coordinatorSchemaValidityRate"]["denominator"] == 1
 
 
-# ---------- persisted-verification viewer ----------
 def test_verification_viewer_returns_stored_block():
     _app, client = _make_app_and_client()
     verification = {
@@ -248,7 +245,6 @@ def test_verification_viewer_404s():
     assert "verification" in r2.json()["detail"]
 
 
-# ---------- dataPolicy pass-through (WP3 known gap) ----------
 def test_route_preview_passes_data_policy_through():
     _app, client = _make_app_and_client()
     r = client.post("/api/harness/route/preview", headers=ADMIN, json={"task": {
@@ -263,7 +259,6 @@ def test_route_preview_passes_data_policy_through():
     assert "remoteCandidatesExcluded" in dp
 
 
-# ---------- auth gating (AUTH_ENABLED=true, real gate code paths) ----------
 class TestObservabilityAuthGating:
     def setup_method(self):
         os.environ["AUTH_ENABLED"] = "true"

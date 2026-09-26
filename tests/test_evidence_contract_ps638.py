@@ -1,4 +1,4 @@
-"""PS-638 — evidence requirements: closure is computed, never asserted.
+"""Evidence requirements: closure is computed, never asserted.
 
 The precedence order is the whole design, so most of this file is about which
 fact wins when two disagree. A closure that let a judgement erase a measurement,
@@ -54,7 +54,6 @@ def state_of(states, requirement_id):
     return states_by_id(states)[requirement_id].state
 
 
-# ------------------------------------------------------------ construction ---
 def test_an_unknown_kind_is_refused():
     with pytest.raises(EvidenceContractError):
         EvidenceRequirement(requirement_id="x", kind="vibes", vantage="v",
@@ -97,7 +96,6 @@ def test_an_unknown_proof_class_is_refused():
         claim("verification", CLAIM_PASS, proof_class="SELF")
 
 
-# ---------------------------------------------------------------- accepts ---
 def test_an_independent_requirement_refuses_worker_authored_proof():
     assert INDEPENDENT.accepts(INDEPENDENCE_HARNESS_HIDDEN) is True
     assert INDEPENDENT.accepts(INDEPENDENCE_INDEPENDENT_VERIFIER) is True
@@ -109,7 +107,6 @@ def test_a_worker_authored_requirement_accepts_any_known_class():
     assert WORKER_OK.accepts(INDEPENDENCE_EXISTING_AUTHORITATIVE) is True
 
 
-# ---------------------------------------------------------------- closure ---
 def test_no_claim_leaves_a_requirement_unresolved():
     states = close_requirements([INDEPENDENT], [])
     assert state_of(states, "verification") == STATE_UNRESOLVED

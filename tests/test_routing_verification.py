@@ -167,7 +167,6 @@ def _verify(db, task, mr, **kwargs):
     return rv.verify_model_run(db, task, mr, **kwargs)
 
 
-# ---------- MODE_INVARIANTS completeness (the spec Section 16 table) ----------
 def test_mode_invariants_encodes_the_spec_table():
     assert set(rv.MODE_INVARIANTS) == {m.value for m in VerificationMode}
 
@@ -214,7 +213,6 @@ def test_mode_invariants_encodes_the_spec_table():
             assert all(l["source"] != "equivalence" for l in layers), mode
 
 
-# ---------- infer_mode ----------
 @pytest.mark.parametrize("task_type,expected", [
     ("bug_debug", "bug_fix"),
     ("implementation", "feature_addition"),
@@ -239,7 +237,6 @@ def test_infer_mode_fallback_honors_policy_default_mode():
     assert rv.infer_mode(task, policy={"verification": {"defaultMode": "nope"}}) == "regression_guard"
 
 
-# ---------- analysis_only ----------
 def test_analysis_only_never_accepts_patch_even_when_commands_would_pass(
         tmp_path, data_dir, repo, monkeypatch):
     calls = _fake_docker(monkeypatch, {"pytest -q": _always(0)})
@@ -271,7 +268,6 @@ def test_analysis_only_fails_on_missing_evidence(tmp_path, data_dir, repo, monke
     assert result["patch_accepted"] is False
 
 
-# ---------- bug_fix ----------
 BUG_FIX_INPUTS = {
     "test_commands": ["pytest -q"],
     "failing_case_commands": ["pytest -q tests/test_bug.py"],
@@ -346,7 +342,6 @@ def test_bug_fix_missing_failing_case_skips_layer_with_note(tmp_path, data_dir, 
     assert result["passed"] is True
 
 
-# ---------- generated-test authority (weight 0 until promoted) ----------
 def test_unpromoted_generated_test_failure_never_flips_passed_but_promoted_does(
         tmp_path, data_dir, repo, monkeypatch):
     _fake_docker(monkeypatch, {
@@ -414,7 +409,6 @@ def test_generated_tests_are_advisory_layer_in_regression_guard(tmp_path, data_d
     assert result["passed"] is True      # ...but never gates in this mode
 
 
-# ---------- baseline fuzz ----------
 def test_fuzz_new_regression_blocks(tmp_path, data_dir, repo, monkeypatch):
     calls = _fake_docker(monkeypatch, {
         "pytest -q": _always(0),
@@ -464,7 +458,6 @@ def test_fuzz_pre_existing_failure_does_not_block(tmp_path, data_dir, repo, monk
     assert any("pre-existing" in n for n in fuzz["notes"])
 
 
-# ---------- strict equivalence (refactor_equivalence ONLY) ----------
 EQ_INPUTS = {"test_commands": ["pytest -q"],
              "equivalence_commands": ["pytest -q tests/test_eq.py"]}
 
@@ -521,7 +514,6 @@ def test_equivalence_stdout_match_passes(tmp_path, data_dir, repo, monkeypatch):
     assert eq["commands"][0]["stdout_match"] is True
 
 
-# ---------- fail-closed on denied commands ----------
 def test_denied_command_fails_blocking_layer_closed(tmp_path, data_dir, repo, monkeypatch):
     calls = _fake_docker(monkeypatch, {})  # docker must never be reached
     db = _db()
@@ -542,7 +534,6 @@ def test_denied_command_fails_blocking_layer_closed(tmp_path, data_dir, repo, mo
     assert rec is not None and rec.allowed is False
 
 
-# ---------- confidence: metadata only, NEVER a gate ----------
 @pytest.mark.parametrize("tests_pass", [True, False])
 @pytest.mark.parametrize("confidence", [0.1, 0.79, 0.8, 0.95])
 def test_confidence_never_changes_passed(tmp_path, data_dir, repo, monkeypatch,
@@ -580,7 +571,6 @@ def test_overconfident_failure_calibration_note(tmp_path, data_dir, repo, monkey
     assert scores["correctness"] == 2 and scores["confidence"] == 0.9
 
 
-# ---------- worktree retention ----------
 def test_keep_worktree_keeps_patched_only(tmp_path, data_dir, repo, monkeypatch):
     _fake_docker(monkeypatch, {
         "pytest -q": _always(0),
@@ -602,7 +592,6 @@ def test_keep_worktree_keeps_patched_only(tmp_path, data_dir, repo, monkeypatch)
     assert _is_patched(kept)
 
 
-# ---------- registry routes: create/list + promote/demote audit roundtrip ----------
 def test_generated_test_routes_promote_demote_roundtrip(monkeypatch):
     monkeypatch.setenv("AUTH_ENABLED", "false")
     from test_routing_harness_routes import ADMIN, _make_app_and_client

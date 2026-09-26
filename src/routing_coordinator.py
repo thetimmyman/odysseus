@@ -1,20 +1,16 @@
 
 """
-routing_coordinator.py — Coordinator plane for the v0.5 Model Routing Harness.
+Coordinator plane: strict CoordinatorDecision validation and hard gates.
 
-Implements Section 6 (Versioned CoordinatorDecision schema) and Section 8
-(Deterministic wrapper around coordinator). The resident local coordinator LLM
-produces a JSON decision; this module validates it STRICTLY (fail-closed: an
-unknown enum value or missing required field rejects the decision — it is
-never silently coerced to a permissive default), runs the hard gates, and
-either yields a final route or walks the Section 8 fallback chain:
+Unknown enum values or missing fields reject the decision rather than coercing
+to a default. A rejected decision walks the fallback chain:
 
     repair (one retry, known-compatible schema versions only)
       -> deterministic router (routing_engine.route_task, injected)
         -> safe scout
 
-Never does a coordinator output bypass data policy, budget, sandbox,
-verification, or approval gates.
+Coordinator output never bypasses data policy, budget, sandbox, verification or
+approval gates.
 """
 from __future__ import annotations
 
@@ -31,22 +27,17 @@ SCHEMA_VERSION = "0.5"
 
 
 class SchemaVersionError(ValueError):
-    """Raised when an unknown / unsupported CoordinatorDecision schemaVersion is seen.
-    Unknown versions FAIL CLOSED: no schema repair is attempted (repair is only
-    allowed for known compatible versions, per Section 6)."""
+    """Unknown schemaVersion; fails closed with no repair attempt."""
 
 
 class DecisionValidationError(ValueError):
-    """Raised when a known-version decision fails strict field validation.
-    Carries the full error list so the audit archive records every problem,
-    not just the first."""
+    """Strict field validation failed; carries every error for the audit archive."""
 
     def __init__(self, errors: List[str]):
         super().__init__("; ".join(errors))
         self.errors = list(errors)
 
 
-# --- Enums (kept in sync with the v0.5 spec) ---
 class Domain(str, Enum):
     GENERAL_SWE = "general_swe"
     TACTICUS_ANALYTICS = "tacticus_analytics"
@@ -84,8 +75,7 @@ class DataSensitivity(str, Enum):
 
 
 class VerificationMode(str, Enum):
-    """Section 16 verification modes. Strict behavioral equivalence is only
-    available for REFACTOR_EQUIVALENCE; ANALYSIS_ONLY never accepts a patch."""
+    """Only REFACTOR_EQUIVALENCE proves behaviour; ANALYSIS_ONLY never accepts a patch."""
     REGRESSION_GUARD = "regression_guard"
     BUG_FIX = "bug_fix"
     FEATURE_ADDITION = "feature_addition"
@@ -127,7 +117,6 @@ class ModelRole(str, Enum):
 APPROVAL_LEVELS = ("none", "reviewer", "admin", "security_admin")
 
 
-# --- Structured decision graph (validated, not just parsed) ---
 @dataclass
 class Classification:
     domain: Domain
@@ -150,7 +139,6 @@ class RouteRecommendation:
     backend: ExecutionBackend
     modelRoleChain: List[Dict[str, Any]] = field(default_factory=list)
     allowPremium: bool = False
-    # NOTE (v0.5): premiumJustification removed. Use rationale[] + RunManifest.auditNotes.
 
 
 @dataclass
@@ -169,7 +157,7 @@ class ApprovalRecommendation:
 class CoordinatorConfidence:
     score: float = 0.0
     basis: str = "metadata"
-    # NOTE (v0.5): confidence is metadata only, never a pass/fail verification layer.
+    # Confidence is metadata only, never a verification layer.
 
 
 @dataclass
@@ -197,10 +185,8 @@ class WrapperResult:
     rawOutput: Optional[str]
 
 
-# --- Parsing / STRICT validation (fail-closed) ---
 def _enum_strict(value: Any, enum_cls, field_name: str, errors: List[str]):
-    """Strict enum coercion: an unknown or missing value is a validation error,
-    never a silent default. Returns None on failure (caller aborts via errors)."""
+    """Strict enum coercion: unknown or missing values are errors, returning None."""
     if value is None:
         errors.append(f"missing_required_field:{field_name}")
         return None
@@ -222,15 +208,10 @@ def _bool_strict(value: Any, default: bool, field_name: str, errors: List[str]) 
 
 
 def parse_decision(raw: Dict[str, Any]) -> CoordinatorDecision:
-    """Build a typed CoordinatorDecision from parsed JSON.
+    """Build a typed CoordinatorDecision from parsed JSON, strictly.
 
-    STRICT: raises SchemaVersionError on an unknown schemaVersion and
-    DecisionValidationError (with the complete error list) on any missing
-    required field, unknown enum value, or malformed sub-structure. Optional
-    sections (contextRequest, budgetRecommendation, approvalRecommendation,
-    confidence, rationale) may be omitted entirely and take spec defaults, but
-    when present their fields are type-checked — a typo'd enum in an optional
-    section still fails closed rather than routing on a silent default.
+    Optional sections may be omitted, but when present they are type-checked,
+    so a typo'd enum still fails closed.
     """
     if not isinstance(raw, dict):
         raise DecisionValidationError(["decision_not_an_object"])
@@ -375,14 +356,10 @@ def parse_decision(raw: Dict[str, Any]) -> CoordinatorDecision:
     )
 
 
-# --- Deterministic harness gates (Section 8) ---
 @dataclass
 class GateContext:
-    """Inputs the deterministic harness uses to adjudicate a coordinator decision.
-
-    `remote_exception_approved` defaults to False: restricted/secret data
-    recommended to a remote backend is BLOCKED unless an explicit, recorded
-    policy exception was granted (Section 9 hard filter, fail-closed)."""
+    """Gate inputs; restricted/secret data stays local unless
+    `remote_exception_approved` is explicitly granted."""
     remote_exception_approved: bool = False
     budget_ok: bool = True
     backend_available: bool = True
@@ -392,16 +369,13 @@ class GateContext:
 
 
 def run_hard_gates(decision: CoordinatorDecision, gctx: GateContext) -> List[str]:
-    """Return a list of validation errors. Empty list == gates passed."""
     errors: List[str] = []
     r = decision.routeRecommendation
     if not gctx.backend_available:
         errors.append(f"backend_unavailable:{r.backend.value}")
     if r.allowPremium and not gctx.budget_ok:
         errors.append("premium_over_budget")
-    # Restricted/secret data is local-only unless an explicit approved
-    # exception exists (Section 9). This fires regardless of caller flags —
-    # the exception must be affirmatively granted, never assumed.
+    # Restricted/secret stays local unless an exception was affirmatively granted.
     if decision.classification.dataSensitivity in (DataSensitivity.RESTRICTED, DataSensitivity.SECRET):
         if r.backend in REMOTE_BACKENDS and not gctx.remote_exception_approved:
             errors.append("restricted_data_remote_blocked")
@@ -432,8 +406,7 @@ def _final_route(decision: CoordinatorDecision, gctx: GateContext) -> Dict[str, 
 def safe_scout_fallback(task_id: str, errors: Optional[List[str]] = None,
                         audit_notes: Optional[List[str]] = None,
                         raw_output: Optional[str] = None) -> WrapperResult:
-    """Terminal fail-closed route: local scout, analysis only, no patch
-    acceptance, no premium, nothing approved."""
+    """Terminal fail-closed route: local scout, analysis only, nothing approved."""
     return WrapperResult(
         ok=False,  # coordinator decision REJECTED; fail-closed to safe-scout
         decision=None,
@@ -458,9 +431,7 @@ def safe_scout_fallback(task_id: str, errors: Optional[List[str]] = None,
 
 def _deterministic_fallback(task_id: str, deterministic_fn, errors: List[str],
                             audit_notes: List[str], raw_output: Optional[str]) -> WrapperResult:
-    """Second fallback tier: hand the task to the deterministic router
-    (routing_engine.route_task via the injected callable). If that also fails,
-    terminate at safe-scout."""
+    """Fallback to the deterministic router, then to safe-scout."""
     if deterministic_fn is None:
         audit_notes.append("deterministic_router_unavailable")
         return safe_scout_fallback(task_id, errors, audit_notes, raw_output)
@@ -488,24 +459,16 @@ def wrap_coordinator_output(
     deterministic_fn: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
 ) -> WrapperResult:
     """
-    Section 8 pipeline:
-      raw -> archive -> JSON parse -> schemaVersion -> STRICT schema validation
-      -> policy/data-sensitivity/budget/backend gates -> final route.
+    Parse, strictly validate and gate a raw decision into a final route.
 
-    Fallback chain on failure:
-      1. `repair_fn(raw_text, errors)` — one retry with a schema-repair prompt.
-         Only attempted for KNOWN schema versions with field-level problems;
-         never for unknown schemaVersion (fail closed) and never for hard-gate
-         policy failures (a repair prompt can't make a policy violation legal).
-      2. `deterministic_fn(task_id)` — the deterministic router.
-      3. safe-scout terminal fallback.
-    Every path records truthful fallbackPath + validationErrors for audit.
+    On failure: one `repair_fn` retry (known schema versions with field errors
+    only; never for policy failures), then `deterministic_fn`, then safe-scout.
+    Every path records fallbackPath and validationErrors.
     """
     raw_text = raw_text or ""
     audit_notes: List[str] = []
 
     def _parse(text: str):
-        """Returns (decision, errors, schema_version_bad)."""
         try:
             parsed_json = json.loads(text)
         except json.JSONDecodeError as e:
@@ -519,8 +482,6 @@ def wrap_coordinator_output(
 
     decision, errors, version_bad = _parse(raw_text)
 
-    # One repair retry for known-compatible-version field errors (not for
-    # unknown versions, which fail closed immediately).
     if decision is None and not version_bad and repair_fn is not None:
         audit_notes.append("repair_attempted")
         try:
@@ -552,8 +513,7 @@ def wrap_coordinator_output(
 
     gate_errors = run_hard_gates(decision, gctx)
     if gate_errors:
-        # Policy failures are never "repaired" — the recommendation is legal
-        # JSON expressing an illegal route. Straight to deterministic tier.
+        # Repair can't make an illegal route legal, so skip to the deterministic tier.
         audit_notes.append("gates_failed:" + ";".join(gate_errors))
         return _deterministic_fallback(gctx.task_id, deterministic_fn, gate_errors,
                                        audit_notes, raw_text)

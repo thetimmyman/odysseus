@@ -1,16 +1,8 @@
 """User-defined email spam rules.
 
-Created from the email client's 3-dot menu ("Mark as spam & block…"). A rule
-captures the offending email's signals and blocks future mail by any combination
-the user picks: exact SENDER, sender DOMAIN, and/or CONTENT similarity (local
-embedding cosine — free, runs on the resident model). The email poller calls
-apply_rules_to_inbox() each cycle to silently move matches to the Spam/Junk
-folder and log every hit for review. Self-contained: no edits to the fragile
-per-email LLM loop in email_pollers.
-
-Storage lives in the email subsystem DB (scheduled_emails.db) alongside the
-existing AI spam-classify cache (email_tags). All ops are best-effort and
-logged; a failure here must never break mail polling.
+A rule blocks future mail by sender, domain and/or local-embedding content
+similarity. The poller calls apply_rules_to_inbox() each cycle to move matches
+to Spam. Everything is best-effort: a failure must never break mail polling.
 """
 from __future__ import annotations
 import json
@@ -283,7 +275,6 @@ def move_to_spam(uid, account_id=None, owner="", src_folder="INBOX") -> str:
 
 
 def fetch_email_fields(uid, folder="INBOX", account_id=None, owner="") -> Optional[dict]:
-    """Fetch sender / subject / body / message-id for one uid."""
     from routes.email_helpers import _imap_connect, _decode_header, _q
     try:
         conn = _imap_connect(account_id, owner)

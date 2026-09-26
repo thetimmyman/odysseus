@@ -1,13 +1,8 @@
-"""Regression guard for #1616 — the send_to_session agent tool must be owner-scoped.
+"""The send_to_session agent tool must be owner-scoped.
 
-`do_send_to_session` resolved any session id via `_session_manager.get_session()`
-with no ownership check, then read its history and appended messages. The agent
-dispatcher also did not pass `owner=` (every sibling session tool does). Together,
-an agent acting for user A could read from and write into user B's session.
-
-The fix threads `owner` through `dispatch_ai_tool` and rejects a session owned by
-someone else — returning the same "not found" message so ids can't be probed.
-`owner=None` (single-user / no-auth installs) is a no-op, preserving behavior.
+`owner` is threaded through `dispatch_ai_tool`; another owner's session gets the
+same "not found" message so ids can't be probed. `owner=None` (single-user /
+no-auth installs) skips the check.
 """
 import os
 

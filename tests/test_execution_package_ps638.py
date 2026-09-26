@@ -1,4 +1,4 @@
-"""PS-638 — ExecutionPackage + DispatchDecisionReceipt.
+"""ExecutionPackage + DispatchDecisionReceipt.
 
 The two properties worth reading the tests for:
 
@@ -86,7 +86,6 @@ def build(packet, source, plan, **kwargs):
                                    allowed_tools=("write_file",), **kwargs)
 
 
-# --------------------------------------------------------------- the packet ---
 def test_a_packageable_packet_seals_with_a_valid_hash(source, plan):
     pkg = build(PACKET, source, plan)
     payload = pkg.to_dict()
@@ -158,7 +157,6 @@ def test_duplicate_interface_names_are_refused(source, plan):
     assert "duplicate" in str(exc.value)
 
 
-# ------------------------------------------------------------------ scopes ---
 def test_write_scope_may_be_narrowed(source, plan):
     packet = dict(PACKET, write_scope=["src/thing.py", "src/other.py"])
     pkg = build(packet, source, plan, write_scope=["src/thing.py"])
@@ -171,7 +169,6 @@ def test_write_scope_may_not_be_widened(source, plan):
     assert "widens" in str(exc.value)
 
 
-# ------------------------------------------------------------------ hashing ---
 def test_the_hash_is_stable_for_the_same_inputs(source, plan):
     first = build(PACKET, source, plan).package_hash
     second = build(PACKET, source, plan).package_hash
@@ -214,7 +211,6 @@ def test_a_missing_hash_is_not_valid(source, plan):
     assert package_hash_is_valid(payload) is False
 
 
-# ------------------------------------------------------- dispatch provenance ---
 def _dispatch(pkg, **overrides):
     kwargs = dict(
         receipt_id="d-1",
@@ -279,7 +275,6 @@ def test_an_unknown_dispatch_field_is_refused(source, plan):
         _dispatch(pkg, surprise="x")
 
 
-# ------------------------------------------------------------------ budgets ---
 def test_budgets_default_to_a_bounded_envelope(source, plan):
     pkg = build(PACKET, source, plan)
     assert pkg.budgets.max_attempts == 3
@@ -297,7 +292,6 @@ def test_budgets_are_part_of_the_package_hash(source, plan):
     assert smaller.package_hash != base
 
 
-# -------------------------------------------------------- verification plan ---
 def test_a_plan_without_a_verifier_identity_is_refused():
     with pytest.raises(ExecutionPackageError):
         VerificationPlan(verifier_id="", command="pytest -q")

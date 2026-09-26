@@ -1,4 +1,4 @@
-"""PS-578 deterministic landing over PS-638 sealed evidence.
+"""Deterministic landing over sealed evidence.
 
 ExecutionPackage.source is input provenance. A writable run's accepted
 candidate is the source snapshot named by its passing VerificationReceipt(s).
@@ -143,8 +143,8 @@ def _verified_candidate_digest(evidence_package: Mapping[str, Any]) -> str | Non
 def _candidate_matches(source: Mapping[str, Any], acceptance: SemanticAcceptance) -> bool:
     """Match only fields owned by canonical SourceSnapshotIdentity.
 
-    ``candidate_tree_sha`` is repository landing material, not a field of the
-    PS-638 snapshot. It is intentionally checked only by equivalence proof.
+    ``candidate_tree_sha`` is repository landing material, not a snapshot
+    field, so it is checked only by equivalence proof.
     """
     return (source.get("snapshot_digest") == acceptance.candidate_source_digest
             and source.get("head_sha") == acceptance.candidate_head_sha

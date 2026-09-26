@@ -1,35 +1,19 @@
-"""Dev Preview — run a repo's dev server inside the Odysseus container and
-preview it in the browser.
+"""Dev Preview: run a repo's dev server inside the container and preview it.
 
-SECURITY MODEL (admin-only feature on a network-exposed multi-user box):
-  * PATH-CONFINED to REPOS_ROOT. Every app_id is realpath + commonpath validated
-    to a DIRECT child of REPOS_ROOT containing a package.json — no traversal,
-    no symlink escape, no nested dirs.
-  * NO ARBITRARY SHELL. Commands are fixed list-arg templates (npm ci / npm run
-    <script> -- --hostname 0.0.0.0 --port <port>); subprocess WITHOUT shell=True.
-  * PACKAGE-MANAGER ALLOWLIST — npm only (MVP).
-  * SCRIPT ALLOWLIST — only a fixed set of dev/start scripts, AND the script
-    must actually exist in the app's package.json.
-  * SINGLE running dev server (MVP); start() stops any existing one first.
-  * KILLABLE — the server runs in its own session (start_new_session) so the
-    whole process tree is killed via killpg + kill_process_tree.
-  * CAPPED LOGS — bounded deques, never unbounded growth.
-  * SECRET-SCRUBBED CHILD ENV — Odysseus's own secrets are stripped from the
-    env handed to npm/next so a previewed app can't read them.
+Security (admin-only):
+  * app_id must realpath-resolve to a direct child of REPOS_ROOT with a
+    package.json; no traversal or symlink escape.
+  * Fixed list-arg npm command templates, never shell=True; npm only, and only
+    allowlisted scripts that exist in package.json.
+  * One server at a time, in its own session so the whole tree can be killed.
+  * Bounded logs; the child env is an allowlist so no app secrets leak.
 
-The dev server binds container LOOPBACK only (127.0.0.1:<PREVIEW_PORT>) and is
-NOT published to the host at all — so neither the LAN/Tailscale NOR sibling
-docker containers can reach it. The sole path in is the admin-cookie-gated
-in-Odysseus proxy (src/dev_preview_proxy.py) on PROXY_PORT, which serves the app
-at its origin root (Codespaces-style) so the Dev Preview iframe can embed it.
-Admin-gating lives in the route + proxy layers; this module is the confined
-process manager only.
+The dev server binds container loopback only and is never published; the sole
+way in is the admin-gated proxy (src/dev_preview_proxy.py), which serves it at
+an origin root so the iframe can embed it.
 
-ORPHAN SAFETY: the manager tracks a single server in `_running`, but that state
-can desync from reality (a crash mid-stop, a lost reference). So `stop()` ALSO
-kills whatever is listening on PREVIEW_PORT (kill-by-port fallback), and
-`status()` RECONCILES — if `_running` is empty but the port is live, it reports
-an "unmanaged" server so the UI can still offer Stop. Stop is authoritative.
+``_running`` can desync from reality, so ``stop()`` also kills whatever holds
+PREVIEW_PORT and ``status()`` reports an "unmanaged" server if the port is live.
 """
 
 import errno
@@ -53,29 +37,22 @@ logger = logging.getLogger(__name__)
 
 REPOS_ROOT = os.path.realpath(os.environ.get("DEV_PREVIEW_ROOT", "/app/work"))
 PREVIEW_PORT = int(os.environ.get("DEV_PREVIEW_PORT", "3000"))
-# The dev server binds container LOOPBACK only; preview goes through the
-# admin-gated in-Odysseus proxy on PROXY_PORT (src/dev_preview_proxy.py).
 PROXY_PORT = int(os.environ.get("DEV_PREVIEW_PROXY_PORT", "7100"))
 PM_ALLOWLIST = {"npm"}
-# dev/start-style scripts we will run (must ALSO exist in the app package.json)
+# Runnable scripts (must also exist in the app's package.json).
 SCRIPT_ALLOWLIST = {"dev", "dev:codespace", "dev:turbo", "start"}
 LOG_CAP = 4000
 READY_MARKERS = ("ready in", "ready -", "✓ ready", "started server", "compiled", "- local:")
 
-# Default-DENY env for the previewed child. A previewed repo runs UNTRUSTED code
-# (its next.config.js, build scripts, and process.env are all readable by repo
-# code), so the child env is an explicit ALLOWLIST — never a denylist. A denylist
-# that misses a prefix leaks live secrets: the 2026-06-05 security review found
-# DATA_BRAVE_API_KEY/GOOGLE_API_KEY/SERPER_API_KEY/TAVILY_API_KEY/HUGGING_FACE_HUB_TOKEN
-# all slipped past the old prefix list. next/npm need only PATH+HOME+a few locale
-# vars; the app reads its own NEXT_PUBLIC_*/secrets from its .env* files on disk.
+# Default-deny env for the child: previewed repos run untrusted code, so this is
+# an allowlist (a prefix denylist has leaked API keys before). The app reads its
+# own secrets from its .env* files.
 _ENV_ALLOWLIST = {
     "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM",
     "TMPDIR", "TMP", "TEMP", "PWD", "USER", "LOGNAME", "SHELL", "HOSTNAME",
     "NODE_ENV", "NODE_OPTIONS", "NODE_PATH", "CI", "FORCE_COLOR",
 }
-# Belt-and-suspenders: even if a var is ever added to the allowlist, never pass
-# anything whose NAME looks like a credential.
+# Never pass anything whose name looks like a credential, even if allowlisted.
 _SECRET_NAME_RE = re.compile(
     r"(API_?KEY|_TOKEN$|^TOKEN$|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY|"
     r"ACCESS_?KEY|CLIENT_SECRET|AUTH)", re.I)
@@ -85,10 +62,8 @@ _running: Optional[dict] = None          # the single live dev server, or None
 _install: dict = {}                      # app_id -> {status, logs, started_at, finished_at, code}
 
 
-# --- path confinement --------------------------------------------------------
 def _safe_app_dir(app_id: str) -> str:
-    """Return the realpath of a DIRECT child of REPOS_ROOT that holds a
-    package.json, or raise ValueError. Rejects traversal / symlink escape."""
+    """Realpath of a direct child of REPOS_ROOT with a package.json, else ValueError."""
     if not app_id or not isinstance(app_id, str):
         raise ValueError("missing app id")
     if "/" in app_id or "\\" in app_id or app_id in (".", ".."):
@@ -104,9 +79,7 @@ def _safe_app_dir(app_id: str) -> str:
 
 
 def _clean_env() -> dict:
-    """Build the previewed child's env from an explicit ALLOWLIST (default-deny),
-    so no Odysseus secret can leak into untrusted repo code. Next reads its own
-    .env* config from disk, so PATH + HOME + a few locale vars are all it needs."""
+    """Child env from an explicit allowlist, so no app secret reaches repo code."""
     env = {k: v for k, v in os.environ.items()
            if k in _ENV_ALLOWLIST and not _SECRET_NAME_RE.search(k)}
     env.setdefault("PATH", os.environ.get("PATH", ""))
@@ -128,10 +101,8 @@ def _git_info(d: str):
 
 
 def _check_embeddable(port: int) -> Optional[bool]:
-    """True if the running app can be shown in a cross-origin iframe, False if it
-    blocks framing (X-Frame-Options DENY/SAMEORIGIN or CSP frame-ancestors
-    none/self), None if undetermined. Many apps (e.g. tacticus) send DENY for
-    anti-clickjacking, in which case the UI falls back to an Open-in-new-tab."""
+    """True if the app allows cross-origin framing, False if XFO or CSP
+    frame-ancestors blocks it (UI falls back to a new tab), None if unknown."""
     xfo = csp = ""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=6) as r:
@@ -152,8 +123,7 @@ def _check_embeddable(port: int) -> Optional[bool]:
 
 
 def _port_free(port: int) -> bool:
-    # SO_REUSEADDR mirrors how a real server (next dev) binds, so a lingering
-    # TIME_WAIT socket from a just-killed server doesn't read as "in use".
+    # SO_REUSEADDR like a real server, so a TIME_WAIT socket doesn't read as in use.
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -166,8 +136,7 @@ def _port_free(port: int) -> bool:
 
 
 def _pids_on_port(port: int) -> set:
-    """PIDs holding a LISTEN socket on `port`, via /proc/net/tcp(+6) + /proc/*/fd.
-    Used to reconcile + kill orphaned dev servers when `_running` is lost."""
+    """PIDs listening on `port` (via /proc), to reconcile and kill orphaned servers."""
     port_hex = format(port, "04X")
     inodes = set()
     for tcp in ("/proc/net/tcp", "/proc/net/tcp6"):
@@ -199,8 +168,8 @@ def _pids_on_port(port: int) -> set:
 
 
 def _kill_port(port: int) -> list:
-    """Kill the process tree of anything listening on `port`. Returns killed PIDs.
-    The authoritative backstop so Stop works even when `_running` desynced."""
+    """Kill the process tree listening on `port`; the backstop when `_running`
+    desynced. Returns killed PIDs."""
     from core.platform_compat import kill_process_tree
     killed = []
     for pid in _pids_on_port(port):
@@ -216,7 +185,6 @@ def _kill_port(port: int) -> list:
     return killed
 
 
-# --- discovery ---------------------------------------------------------------
 def _detect(app_id: str, d: str) -> dict:
     name, scripts = app_id, {}
     try:
@@ -270,7 +238,6 @@ def list_apps() -> list:
     return out
 
 
-# --- install -----------------------------------------------------------------
 def install(app_id: str) -> dict:
     if not _enabled():
         raise ValueError("Dev Preview is disabled in settings")
@@ -314,7 +281,6 @@ def install(app_id: str) -> dict:
     return {"status": "running"}
 
 
-# --- start / stop ------------------------------------------------------------
 def start(app_id: str, script: str = "dev", port: Optional[int] = None) -> dict:
     if not _enabled():
         raise ValueError("Dev Preview is disabled in settings")
@@ -333,9 +299,7 @@ def start(app_id: str, script: str = "dev", port: Optional[int] = None) -> dict:
 
     stop()  # single-server MVP
 
-    # A killed server releases its port asynchronously (SIGKILL + child reaping
-    # + TIME_WAIT), so poll briefly before declaring the port busy — this makes
-    # stop-then-start (restart) reliable.
+    # A killed server frees its port asynchronously; poll briefly so restart works.
     freed = False
     for _ in range(16):
         if _port_free(use_port):
@@ -345,9 +309,7 @@ def start(app_id: str, script: str = "dev", port: Optional[int] = None) -> dict:
     if not freed:
         raise ValueError(f"port {use_port} is already in use")
 
-    # Fixed template — NO arbitrary shell. script is from the allowlist.
-    # Bind to container LOOPBACK only — siblings can't reach it; the admin-gated
-    # proxy (dev_preview_proxy) is the sole path in.
+    # Fixed template; loopback-only bind so only the admin-gated proxy can reach it.
     cmd = ["npm", "run", script, "--", "--hostname", "127.0.0.1", "--port", str(use_port)]
     logs = deque(maxlen=LOG_CAP)
     logs.append("$ " + " ".join(cmd))
@@ -387,17 +349,15 @@ def start(app_id: str, script: str = "dev", port: Optional[int] = None) -> dict:
 
 
 def stop(app_id: Optional[str] = None) -> dict:
-    """Stop the dev server. Authoritative: kills the tracked process tree AND
-    anything still listening on PREVIEW_PORT (so a desynced/orphaned server is
-    reaped too). Works even when `_running` was lost."""
+    """Stop the dev server: kill the tracked tree and anything still on
+    PREVIEW_PORT, so orphans are reaped even if `_running` was lost."""
     with _lock:
         global _running
         st = _running
         if st and app_id and st.get("app_id") != app_id:
             return {"stopped": False, "reason": "that app is not the running server"}
         _running = None
-    # 1. Kill the tracked tree (independent steps — a dead pid on SIGTERM must
-    #    not skip SIGKILL or the kill-by-port backstop).
+    # Independent steps: a dead pid on SIGTERM must not skip SIGKILL or the port backstop.
     if st:
         pid = st.get("pid")
         for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -413,7 +373,6 @@ def stop(app_id: Optional[str] = None) -> dict:
         except Exception:
             pass
         st["status"] = "stopped"
-    # 2. Backstop: kill anything STILL on the port (orphan reconcile).
     orphans = _kill_port(PREVIEW_PORT)
     if not st and not orphans:
         return {"stopped": False}
@@ -432,7 +391,7 @@ def status() -> dict:
             "status": st["status"], "embeddable": st.get("embeddable"),
             "uptime_s": int(time.time() - st["started_at"]), "unmanaged": False,
         }}
-    # RECONCILE: nothing tracked, but is a server still listening? (orphan)
+    # Nothing tracked, but an orphan may still be listening.
     if not _port_free(PREVIEW_PORT):
         return {"running": {
             "app_id": None, "port": PREVIEW_PORT, "script": None,
@@ -443,9 +402,7 @@ def status() -> dict:
 
 
 def get_logs(app_id: str, kind: str = "run") -> dict:
-    # The previewed child's stdout can echo its own .env.local secrets — scrub
-    # them (+ high-entropy token shapes) BEFORE returning. Reading the values for
-    # redaction is server-side only; they are never sent to the client.
+    # Child stdout can echo .env.local secrets; scrub before returning.
     vals = _values_for_redaction(app_id)
     def _scrub(lines):
         return [_redact_log_line(ln, vals) for ln in lines]
@@ -461,12 +418,8 @@ def get_logs(app_id: str, kind: str = "run") -> dict:
     return {"kind": "run", "status": None, "lines": []}
 
 
-# --- per-app detail (read-only: install cmd, scripts, env status) -----------
-# Env status compares the app's .env.local against .env.example by KEY NAME only.
-# Values are never returned, logged, or stored — a value is read momentarily ONLY
-# to classify set vs blank, then immediately discarded — so only the key name +
-# set/blank/missing ever leaves this module, and no secret material crosses the
-# read-only boundary (the masked value editor is a separate, security-reviewed pass).
+# Env status compares .env.local with .env.example by key name only; values are
+# read only to classify set vs blank and are never returned, logged or stored.
 _ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
 
 
@@ -488,9 +441,7 @@ def _env_keys(path: str) -> list:
 
 
 def _env_set_status(path: str) -> dict:
-    """{KEY: 'set'|'blank'} for an env file — judged by name+emptiness only. The
-    value is read solely to test blank-ness and is immediately discarded; it is
-    never stored or returned."""
+    """{KEY: 'set'|'blank'} for an env file; values are never stored or returned."""
     out = {}
     try:
         with open(path) as f:
@@ -510,8 +461,7 @@ def _env_set_status(path: str) -> dict:
 
 
 def _env_local_gitignored(d: str) -> Optional[bool]:
-    """Is .env.local ignored by git? True/False, or None if git can't answer.
-    Lets the UI warn when a secrets file would be committable."""
+    """Whether .env.local is gitignored (None if git can't say), so the UI can warn."""
     try:
         r = subprocess.run(["git", "-C", d, "check-ignore", "-q", ".env.local"],
                            capture_output=True, timeout=5)
@@ -525,9 +475,7 @@ def _env_local_gitignored(d: str) -> Optional[bool]:
 
 
 def _env_status(d: str) -> dict:
-    """Read-only env posture: compares .env.example (template of expected keys)
-    against .env.local (what's configured). Per-KEY set/blank/missing + a rollup
-    — NEVER any value."""
+    """Per-key set/blank/missing of .env.local vs .env.example plus a rollup; never values."""
     ex_path = os.path.join(d, ".env.example")
     local_path = os.path.join(d, ".env.local")
     has_example = os.path.isfile(ex_path)
@@ -561,10 +509,8 @@ def _env_status(d: str) -> dict:
 
 
 def app_detail(app_id: str) -> dict:
-    """Per-app READ-ONLY config: the detected install command (the same fixed
-    template install() would run — never arbitrary), runnable start scripts,
-    env-file status (key names + set/blank/missing, NO values), and metadata.
-    Path-confined via _safe_app_dir."""
+    """Read-only per-app config: install command, start scripts, env status
+    (names only) and metadata. Path-confined."""
     d = _safe_app_dir(app_id)
     base = _detect(app_id, d)
     install_cmd = ["npm", "ci"] if base["has_lockfile"] else ["npm", "install"]
@@ -575,17 +521,12 @@ def app_detail(app_id: str) -> dict:
     return base
 
 
-# --- masked .env.local editor (WRITE-ONLY; values never returned or logged) --
-# THREAT MODEL (red-teamed 2026-06-05): the previewed app runs as the SAME uid as
-# this process, in the very directory we write. It is therefore an ACTIVE
-# adversary that can swap d/.env.local for a symlink (to /app/.env, a sibling
-# app's .env.local, ~/.ssh, ...) at any instant. So the entire read-modify-write
-# runs on PINNED fds (dir_fd + O_NOFOLLOW), validates inode identity (fstat
-# S_ISREG + euid), creates the temp via O_CREAT|O_EXCL|O_NOFOLLOW with a random
-# name, and renameat()s within the pinned dir — the final path is NEVER opened by
-# name. Path-name checks are meaningless against a same-uid swap; only fd
-# identity is sound. Serialization is single-quote-literal with $, backslash, and
-# single-quote FORBIDDEN, which neutralizes dotenv-expand + escape processing.
+# Masked .env.local editor (write-only). The previewed app runs as the same uid
+# in this directory and can swap .env.local for a symlink at any time, so the
+# read-modify-write runs on pinned fds (dir_fd + O_NOFOLLOW), checks inode
+# identity, creates the temp with O_EXCL|O_NOFOLLOW and renameat()s within the
+# pinned dir; the path is never opened by name. Values are single-quoted with
+# ', $, and backslash forbidden, neutralizing dotenv expansion and escapes.
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Keys that steer the node/loader process or the JS prototype chain — refused.
 _ENV_KEY_DENY = {
@@ -600,8 +541,7 @@ _ENV_VALUE_MAX = 8192
 
 def _env_validate(key: str, value) -> None:
     """Reject anything that could break out of KEY='value' or trigger dotenv
-    expansion / escape processing. All messages are STATIC — the value is never
-    echoed back, even in an error."""
+    expansion. Messages are static; the value is never echoed."""
     if not key or not _ENV_KEY_RE.match(key):
         raise ValueError("invalid key name")
     if key.upper() in _ENV_KEY_DENY:
@@ -627,9 +567,8 @@ def _env_parse_single(line: str) -> dict:
 
 
 def _env_serialize_line(key: str, value: str) -> bytes:
-    """KEY='value' — single-quote literal. Safe ONLY because _env_validate has
-    forbidden ', $, \\, and control chars, so dotenv reads it verbatim. A
-    round-trip self-check guards against a serializer bug."""
+    """KEY='value', safe only because _env_validate forbids ', $, \\ and controls;
+    a round-trip self-check guards the serializer."""
     line = f"{key}='{value}'"
     if _env_parse_single(line) != {key: value}:
         raise ValueError("internal serialization check failed")
@@ -645,9 +584,8 @@ def _open_dir_fd(d: str) -> int:
 
 
 def _read_env_local_bytes(dfd: int) -> bytes:
-    """Read .env.local via a NOFOLLOW fd under dfd. b'' if absent. Raises
-    ValueError on a symlink / non-regular / not-ours / oversized file — so a
-    same-uid planted symlink is refused, never followed."""
+    """Read .env.local via a NOFOLLOW fd (b'' if absent); a symlink, non-regular,
+    foreign-owned or oversized file raises ValueError."""
     try:
         ffd = os.open(".env.local", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
     except FileNotFoundError:
@@ -677,15 +615,12 @@ def _read_env_local_bytes(dfd: int) -> bytes:
 
 
 def _env_write_pinned(d: str, key: str, value: Optional[str], *, clear: bool) -> str:
-    """Atomically set/clear KEY in d/.env.local on PINNED fds (see module note).
-    Preserves all other lines verbatim; removes EVERY existing assignment of KEY
-    (dotenv is last-wins, so a stale duplicate would shadow us). 0600, fsynced,
-    renameat within the pinned dir. Whole sequence under _lock (TOCTOU)."""
+    """Atomically set/clear KEY in .env.local on pinned fds, under _lock. Removes
+    every assignment of KEY (dotenv is last-wins); other lines kept verbatim."""
     with _lock:
         dfd = _open_dir_fd(d)
         try:
-            # Fail-closed: must be provably gitignored. (The NOFOLLOW read below
-            # is the real symlink defense; this just blocks a committable file.)
+            # Must be provably gitignored; the NOFOLLOW read is the symlink defense.
             if _env_local_gitignored(d) is not True:
                 raise ValueError(".env.local is not gitignored — refusing to write a committable secrets file")
             existing = _read_env_local_bytes(dfd)
@@ -724,8 +659,7 @@ def _env_write_pinned(d: str, key: str, value: Optional[str], *, clear: bool) ->
 
 
 def env_set(app_id: str, key: str, value: str) -> dict:
-    """Set KEY=value in the app's .env.local. WRITE-ONLY — the value is never
-    returned or logged (only the key name + resulting set/blank status)."""
+    """Set KEY in the app's .env.local. Write-only: the value is never returned or logged."""
     if not _enabled():
         raise ValueError("Dev Preview is disabled in settings")
     d = _safe_app_dir(app_id)
@@ -746,14 +680,9 @@ def env_clear(app_id: str, key: str) -> dict:
     return {"ok": True, "key": key, "status": status}
 
 
-# --- vault sourcing (fetch a secret value into .env.local, value-never-returned)
-# SECURITY: both fetchers route through `ssh minipc`, so the vault credentials
-# (kubeconfig for k3s; the bw session for Vaultwarden) stay on the MINI-PC, NOT in
-# this container — the container only triggers a fetch over the ssh access it
-# already has, and the value comes back over that channel straight to the pinned
-# writer. The value is NEVER returned to the client or logged. The mapping lives in
-# settings.json dev_preview.vault_map[app][KEY] = {source, ...locator...} and holds
-# only LOCATORS (k3s ns/secret/key or a Vaultwarden item id/field) — never values.
+# Vault sourcing: fetchers run over ssh on the vault host, so vault credentials
+# never live in this container. vault_map holds only locators, never values,
+# and fetched values are never returned or logged.
 _SSH_MINIPC = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "minipc"]
 _VAULT_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")   # injection-safe locator token
 
@@ -774,20 +703,16 @@ def _ssh_env() -> dict:
 
 
 def _ssh_fetch(remote_cmd: str) -> str:
-    """Run a fetch command on the mini-PC over ssh; return stdout (the secret
-    value), minus a single trailing newline. Raises ValueError on failure. The
-    value is NEVER logged OR surfaced in an error: on nonzero exit the caller gets
-    a generic 'exit N', and only a high-entropy-redacted tail of stderr is logged
-    server-side."""
+    """Run a fetch command over ssh; return stdout minus one trailing newline.
+    The value never reaches logs or errors: failures report 'exit N' and only a
+    redacted stderr tail is logged."""
     try:
         r = subprocess.run(_SSH_MINIPC + [remote_cmd], capture_output=True,
                            text=True, timeout=30, env=_ssh_env())
     except Exception as e:
         raise ValueError(f"vault fetch failed (ssh {e.__class__.__name__})")
     if r.returncode != 0:
-        # NEVER surface raw stderr to the client — a vault helper could echo the
-        # secret value on error. Log a high-entropy-redacted tail server-side and
-        # return a generic message.
+        # Vault helpers may echo the secret in stderr; log a redacted tail only.
         logger.warning("dev_preview: vault fetch exit %s: %s", r.returncode,
                        _HIGH_ENTROPY.sub("[REDACTED]", (r.stderr or "").strip()[:300]))
         raise ValueError(f"vault fetch failed (exit {r.returncode})")
@@ -801,10 +726,8 @@ def _fetch_k3s(loc: dict) -> str:
     key = str(loc.get("key") or "")
     if not all(_VAULT_TOKEN_RE.match(x) for x in (ns, secret, key)):
         raise ValueError("invalid k3s locator (ns/secret/key)")
-    # Fetch the raw base64 (NO remote pipe — a `| base64 -d` would mask kubectl's
-    # exit code via the pipeline, turning a NotFound into a silent empty value).
-    # Decode in Python. Tokens are charset-validated, so interpolation is
-    # injection-safe (no shell metacharacters).
+    # Decode locally: a remote `| base64 -d` would hide kubectl's exit code and
+    # turn NotFound into an empty value. Tokens are charset-validated.
     cmd = f"kubectl get secret {secret} -n {ns} -o jsonpath='{{.data.{key}}}'"
     b64 = _ssh_fetch(cmd)
     if not b64:
@@ -817,16 +740,13 @@ def _fetch_k3s(loc: dict) -> str:
 
 
 def _fetch_vaultwarden(loc: dict) -> str:
-    # Delegates to an operator-provisioned helper on the mini-PC that OWNS the bw
-    # session/credential (kept OFF this container). It takes an item-id + field and
-    # prints the value. Locator uses an item ID (UUID) to dodge name-quoting issues.
+    # The remote helper owns the bw session; the item ID avoids name quoting.
     item = str(loc.get("item_id") or loc.get("item") or "")
     field = str(loc.get("field") or "password")
     if not _VAULT_TOKEN_RE.match(item) or not _VAULT_TOKEN_RE.match(field):
         raise ValueError("invalid vaultwarden locator (item_id/field)")
-    # Fixed ABSOLUTE remote path — no `$HOME`/`~` (no reliance on remote shell
-    # expansion). An operator override must be a plain absolute path with NO shell
-    # metacharacters, so the helper invocation can't be turned into injection.
+    # Fixed absolute path (no remote shell expansion); overrides must be plain
+    # absolute paths without shell metacharacters.
     helper = os.environ.get("DEV_PREVIEW_VW_HELPER", "/home/timmyman/dev-preview-vault-fetch.sh")
     if not re.match(r"^/[A-Za-z0-9._/-]+$", helper):
         raise ValueError("invalid DEV_PREVIEW_VW_HELPER path")
@@ -840,9 +760,8 @@ _VAULT_FETCHERS = {"k3s": _fetch_k3s, "vaultwarden": _fetch_vaultwarden}
 
 
 def env_source_from_vault(app_id: str, key: str) -> dict:
-    """Fetch KEY's value from its mapped vault and write it to .env.local. The
-    value is fetched server-side, written via the pinned writer, and NEVER returned
-    or logged — only {ok, key, status, source}."""
+    """Fetch KEY from its mapped vault into .env.local server-side; returns only
+    {ok, key, status, source}, never the value."""
     if not _enabled():
         raise ValueError("Dev Preview is disabled in settings")
     d = _safe_app_dir(app_id)
@@ -858,8 +777,7 @@ def env_source_from_vault(app_id: str, key: str) -> dict:
     if not fetch:
         raise ValueError(f"unknown vault source '{source}'")
     value = fetch(mapping)
-    # Same storage invariant as manual entry: reject anything the single-quote
-    # serializer can't hold safely (so a sourced value can't break out or expand).
+    # Same invariant as manual entry, so a sourced value can't break out or expand.
     try:
         _env_validate(key, value)
     except ValueError:
@@ -874,8 +792,7 @@ def env_source_from_vault(app_id: str, key: str) -> dict:
 
 
 def vault_keys(app_id: str) -> list:
-    """Key NAMES that have a vault mapping for this app + their source (non-secret;
-    powers the UI 'Source from vault' button). No locators-as-values, names only."""
+    """Key names with a vault mapping and their source (no values)."""
     out = []
     for k, m in _vault_map(app_id).items():
         if _ENV_KEY_RE.match(k) and isinstance(m, dict) and m.get("source") in _VAULT_FETCHERS:
@@ -883,12 +800,8 @@ def vault_keys(app_id: str) -> list:
     return out
 
 
-# --- log redaction (scrub .env.local values out of previewed-app stdout) -----
-# The previewed app is untrusted code that reads .env.local itself and routinely
-# echoes values on error (zod parse errors, console.log(process.env), ...). The
-# "never log values" rule must therefore extend to the CHILD's stdout we relay,
-# not just this module's own logging. So get_logs() scrubs the current .env.local
-# values (read server-side, never returned) plus high-entropy token shapes.
+# The previewed app often echoes env values in its output, so get_logs() scrubs
+# current .env.local values plus high-entropy token shapes.
 _HIGH_ENTROPY = re.compile(
     r"eyJ[A-Za-z0-9_\-]{20,}"                                   # JWT
     r"|AKIA[0-9A-Z]{16}"                                        # AWS access-key id
@@ -898,9 +811,8 @@ _HIGH_ENTROPY = re.compile(
 
 
 def _env_read_kv(d: str) -> dict:
-    """{KEY: value} from .env.local — read ONLY to scrub those values out of log
-    output server-side. NEVER returned to any client. Tolerant parser; reads via
-    the NOFOLLOW pinned reader so a planted symlink yields {} (regex still masks)."""
+    """.env.local values, read only to scrub logs; never returned. A planted
+    symlink yields {} (the regex still masks)."""
     try:
         dfd = _open_dir_fd(d)
     except OSError:
@@ -949,13 +861,9 @@ def _redact_log_line(line: str, values: list) -> str:
     return _HIGH_ENTROPY.sub("[REDACTED]", line)
 
 
-# --- config (settings -> env -> default) + live security status -------------
 def config() -> dict:
-    """Merged dev-preview config. Precedence: settings.json (admin UI) -> env ->
-    code default. NOTE coupling for the UI: `proxy_port` is DEPLOYMENT-coupled
-    (must match a published Compose port + needs a proxy restart — not a live
-    UI write); `repos_root` is the CONTAINER scan path (the host bind dir is the
-    deploy-level REPOS_HOST_DIR, a separate thing)."""
+    """Merged config: settings.json -> env -> default. ``proxy_port`` needs a
+    Compose change and restart; ``repos_root`` is the container scan path."""
     s = {}
     try:
         from src import settings as _settings
@@ -969,10 +877,8 @@ def config() -> dict:
         except (TypeError, ValueError):
             return d
 
-    # Defensive coercion: settings.json can be hand-edited or backup-restored, so
-    # never trust its shapes — a malformed app_allowlist/package_manager/repos_root
-    # must not reach list_apps or the start template. (set_config validates writes;
-    # this guards reads of an already-bad file.)
+    # settings.json may be hand-edited; coerce shapes so bad values never reach
+    # list_apps or the start template.
     def _allow(v):
         if isinstance(v, list):
             safe = sorted({x for x in v if isinstance(x, str) and _SAFE_APP_NAME.match(x)})
@@ -987,15 +893,13 @@ def config() -> dict:
         "proxy_port": _i(s.get("proxy_port"), PROXY_PORT),
         "app_allowlist": _allow(s.get("app_allowlist")),    # coerced: list[safe-name] or None
         "package_manager": _pm if _pm in ("npm",) else "npm",
-        # proxy_port + dev_port both need a Compose change + proxy restart to take
-        # effect (the proxy binds them at startup), so they're display-only.
+        # Bound by the proxy at startup, so display-only.
         "_deployment_coupled": ["proxy_port", "dev_port"],
         "_container_path_keys": ["repos_root"],
         "_editable": ["enabled", "app_allowlist", "package_manager"],   # runtime-safe UI writes
     }
 
 
-# --- editable config + vault-map management (UI-writable; settings.json) ------
 _CONFIG_EDITABLE = {"enabled", "app_allowlist", "package_manager"}
 _CONFIG_READONLY = {"repos_root", "dev_port", "proxy_port"}   # deployment/restart-coupled
 _SAFE_APP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1022,9 +926,8 @@ def _enabled() -> bool:
 
 
 def set_config(updates: dict) -> dict:
-    """Write the runtime-safe dev_preview config keys to settings.json. REFUSES
-    the deployment-coupled keys (proxy_port/dev_port/repos_root) — those need a
-    Compose change + restart, not a live UI write. Returns the merged config()."""
+    """Write runtime-safe dev_preview keys to settings.json; refuses deployment-
+    coupled keys. Returns the merged config()."""
     if not isinstance(updates, dict):
         raise ValueError("invalid config payload")
     with _lock:                                       # serialize the read-modify-write
@@ -1053,15 +956,13 @@ def set_config(updates: dict) -> dict:
 
 
 def vault_map_get(app_id: str) -> dict:
-    """Full vault mapping for an app — LOCATORS only, never values. Powers the
-    mapping editor UI."""
+    """Full vault mapping for an app (locators only)."""
     _safe_app_dir(app_id)
     return {"app_id": app_id, "map": _vault_map(app_id), "sources": sorted(_VAULT_FETCHERS)}
 
 
 def vault_map_set(app_id: str, key: str, mapping: dict) -> dict:
-    """Add/update one vault mapping entry. Stores ONLY a strictly-validated
-    locator (k3s ns/secret/key or a Vaultwarden item_id/field) — never a value."""
+    """Add/update one vault mapping; stores only a strictly validated locator."""
     _safe_app_dir(app_id)
     if not key or not _ENV_KEY_RE.match(key):
         raise ValueError("invalid key name")
@@ -1117,8 +1018,7 @@ def vault_map_delete(app_id: str, key: str) -> dict:
 
 
 def _port_bind_scope(port: int) -> str:
-    """Live: is `port` LISTENing on loopback only, on all interfaces, or not at
-    all (inside this container)? Reads /proc/net/tcp(6)."""
+    """Whether `port` listens on loopback, all interfaces, or not at all (/proc)."""
     ph = format(port, "04X")
     loop = exposed = False
     for tcp in ("/proc/net/tcp", "/proc/net/tcp6"):
@@ -1160,8 +1060,8 @@ def _service_role_present(app_id) -> Optional[bool]:
 
 
 def security_status() -> dict:
-    """Live security posture for the read-only Security Status panel. 'enforced'
-    items are FIXED in code (not UI toggles); the bind scope is a live /proc check."""
+    """Security posture for the status panel: 'enforced' items are code invariants;
+    bind scope is a live /proc check."""
     cfg = config()
     running = status().get("running")
     app_id = running.get("app_id") if running else None
@@ -1177,9 +1077,8 @@ def security_status() -> dict:
         "proxy_admin_gated": True,                      # enforced: require_admin_cookie + gate
         "proxy_csrf_guard": True,                       # enforced: Origin/Fetch-Metadata on unsafe+WS
         "frame_strip_only": True,                       # enforced: strips only XFO + CSP frame-ancestors
-        # How each item is established — so the UI never overstates a guarantee.
-        # 'live' = checked now; 'enforced' = code invariant; 'configured' = a
-        # deploy-config fact this in-container process CANNOT verify live.
+        # 'live' = checked now; 'enforced' = code invariant; 'configured' =
+        # deploy config this process can't verify, so the UI never overstates.
         "_proof": {
             "dev_server_loopback_only": "live",
             "service_role_present": "live",

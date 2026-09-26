@@ -18,8 +18,6 @@ from src import tool_execution  # noqa: E402
 from src import agent_loop  # noqa: E402
 
 
-# ── Workspace ─────────────────────────────────────────────────────────────
-
 def test_agent_workdir_is_not_the_live_state_directory():
     data_root = os.path.realpath(DATA_DIR)
     workspace = os.path.realpath(tool_execution.agent_workspace_path())

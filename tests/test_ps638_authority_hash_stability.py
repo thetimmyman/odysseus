@@ -1,46 +1,21 @@
-"""F1 — falsification of the DR-01 + DR-09 `authority` hash-stability claim.
+"""The optional ``authority`` field must not change hashes when absent.
 
-PS-638 `DispatchDecisionReceipt` (src/execution_package.py) and PS-605
-`DispatchDecision` (src/dispatch_routing.py) gained one optional, additive
-field: ``authority``. The claim under test (PS-649 §15, confidence
-Medium-High, previously UNRUN): *an absent authority block serialises
-deterministically and does not change core()/receipt_hash*. This file is that
-falsification, per PACKAGES.md B.1 and OPERATOR_RULINGS.md Q-N4:
+Covers ``DispatchDecisionReceipt`` (src/execution_package.py) and
+``DispatchDecision`` (src/dispatch_routing.py):
 
-  (a) POSITIVE — two otherwise-identical receipts/decisions differing only in
-      ``authority`` hash *differently*. If a present block left the hash
-      unchanged, authority would be outside the hash input entirely: unbound,
-      forgeable evidence — a different and worse defect than the one nominally
-      under test.
-  (b) NEGATIVE CONTROL (the one that must fail without the fix) — a receipt/
-      decision built the same way as a fixture captured from the landed
-      baseline (7afd55bad7034d789c98be4ee6e9ebcfcc97cdba), BEFORE `authority`
-      existed as a field, with `authority` omitted, must hash BYTE-IDENTICALLY
-      to that frozen fixture -- not to a same-run rebuild, which could hide two
-      independently wrong hash computations agreeing with each other.
-  (c) ROUND-TRIP / DETERMINISM — key order and null-vs-absent inside the
-      `authority` mapping must not be separately expressible hash identities,
-      and a receipt built, serialized, and reconstructed compares equal to the
-      original.
+  (a) POSITIVE: receipts differing only in ``authority`` hash differently,
+      otherwise authority would be unbound, forgeable evidence.
+  (b) NEGATIVE CONTROL: with ``authority`` omitted, the hash is BYTE-IDENTICAL
+      to a frozen fixture captured before the field existed (not a same-run
+      rebuild, which could hide two wrong computations agreeing). This must
+      also hold for ``seal.evidence_hash``, since the kwargs dict is sealed
+      verbatim by ``seal_dispatch_evidence()``.
+  (c) ROUND-TRIP / DETERMINISM: key order and null-vs-absent inside
+      ``authority`` are not separate hash identities, and a round-tripped
+      receipt compares equal.
 
-**Review round 2 (2026-09-16), finding F-1:** the claim must hold at every
-boundary that separately content-addresses a receipt, not only at
-`receipt_hash` / `ps638_receipt_core()`. `DispatchDecision.to_ps638_receipt_kwargs()`'s
-own returned dict is written verbatim into `seal_dispatch_evidence()`'s
-`"decision_receipt"` payload (`src/dispatch_boundary.py`) and separately
-hashed as `seal.evidence_hash` — an unconditional `"authority": None` entry in
-that dict would leave `ps638_receipt_core()` untouched while still moving
-`seal.evidence_hash` for every authority-free dispatch. The `test_b_seal_*`
-cases below pin that hash against a fixture captured from a clean checkout of
-the landed baseline using the same real dispatch-sealing helpers
-(`tests/test_dispatch_boundary.py`), and `test_b_negative_control_*` exercise
-the real serializers via monkeypatch rather than asserting on a locally
-mutated dict literal (review F-7).
-
-Mandatory qualifier carried by every assertion here (D7 / CHECKPOINT §2): the
-`authority` block RECORDS AND AUDITS. Nothing in this file exercises or
-implies runtime enforcement, and none of it treats a recorded principal as an
-access-control decision.
+The ``authority`` block only records and audits; nothing here implies runtime
+enforcement or treats a recorded principal as an access-control decision.
 """
 from __future__ import annotations
 
@@ -53,11 +28,6 @@ from src import dispatch_routing as dr
 from src.execution_package import make_dispatch_receipt
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-# --------------------------------------------------------------------------
-# Shared fixtures / helpers
-# --------------------------------------------------------------------------
-
 
 def _load(name: str) -> dict:
     with open(FIXTURES / name) as f:
@@ -119,7 +89,7 @@ AUTHORITY_BLOCK = {
 }
 
 
-# ============================================================ (a) POSITIVE ===
+# (a) POSITIVE
 
 def test_a_present_authority_changes_the_dispatch_decision_receipt_hash():
     absent = make_dispatch_receipt(**RECEIPT_FIXTURE["kwargs"])
@@ -150,12 +120,8 @@ def test_a_two_decisions_differing_only_in_authority_hash_differently():
     assert hash_with != hash_without
 
 
-# ================================================== (b) NEGATIVE CONTROL ===
-# The one that must fail without the fix. Compares against a fixture captured
-# from the LANDED baseline (7afd55bad7034d789c98be4ee6e9ebcfcc97cdba), before
-# `authority` existed -- not against a receipt rebuilt in this same test run,
-# which could hide two independently-wrong hash computations agreeing with
-# each other.
+# (b) NEGATIVE CONTROL: compares against fixtures captured before `authority`
+# existed, not a same-run rebuild.
 
 def test_b_absent_authority_hashes_identically_to_the_pre_change_fixture():
     assert RECEIPT_FIXTURE["captured_from_sha"] == \
@@ -177,17 +143,10 @@ def test_b_absent_authority_hashes_identically_for_dispatch_decision():
 
 
 def test_b_negative_control_actually_exercises_the_receipt_serializer(monkeypatch):
-    """Falsification of the falsification: prove (b) is not vacuously true.
+    """Prove (b) is not vacuously true.
 
-    Review round 2, F-7: the v1 form of this test compared two locally-mutated
-    dict LITERALS (``{**core, "authority": None} != core``), which is true of
-    ANY dict regardless of what the real implementation does -- it never called
-    ``DispatchDecisionReceipt.core()`` at all. This is the reviewer's NC-(b),
-    made real: monkeypatch the ACTUAL ``core()`` method so an absent
-    ``authority`` is (incorrectly) serialized as an explicit ``null``, and
-    assert that a receipt built through the real, still-otherwise-correct
-    constructor now diverges from the frozen fixture. This is what test_b_*
-    above would have to catch if this exact regression were ever reintroduced.
+    Patches the real ``core()`` to serialize an absent ``authority`` as
+    ``null`` and asserts the result diverges from the frozen fixture.
     """
     from src import execution_package as ep
 
@@ -206,7 +165,7 @@ def test_b_negative_control_actually_exercises_the_receipt_serializer(monkeypatc
 
 
 def test_b_negative_control_actually_exercises_the_decision_serializer(monkeypatch):
-    """Same falsification-of-the-falsification, for DispatchDecision's path."""
+    """Same non-vacuity check, for DispatchDecision's path."""
     original = dr.ps638_receipt_core
 
     def defective(kwargs):
@@ -222,19 +181,10 @@ def test_b_negative_control_actually_exercises_the_decision_serializer(monkeypat
 
 
 def test_b_absent_authority_is_omitted_from_the_kwargs_dict_itself():
-    """F-1 (review round 2, material): the seal-level regression.
+    """The kwargs dict itself must omit an absent ``authority``.
 
-    Omitting ``authority`` from ``ps638_receipt_core``'s HASH INPUT is not
-    enough. ``to_ps638_receipt_kwargs()``'s own returned dict is written
-    verbatim into ``seal_dispatch_evidence``'s "decision_receipt" payload
-    (src/dispatch_boundary.py) and THAT payload is separately hashed as
-    ``seal.evidence_hash``. An unconditional ``"authority": None`` entry in
-    the kwargs dict would leave ``ps638_receipt_core`` unaffected (it never
-    sees the key) while still changing ``seal.evidence_hash`` for every
-    authority-free dispatch -- exactly the class of defect the review caught
-    and the original version of this file could not see, because every
-    assertion here targeted ``receipt_hash`` / ``ps638_receipt_core`` and none
-    targeted the kwargs dict or the sealed payload.
+    It is sealed verbatim as ``seal.evidence_hash`` input, so a ``None`` entry
+    would move that hash even though ``ps638_receipt_core`` never sees the key.
     """
     decision = _select()
     kwargs = decision.to_ps638_receipt_kwargs()
@@ -244,14 +194,10 @@ def test_b_absent_authority_is_omitted_from_the_kwargs_dict_itself():
 
 
 def test_b_seal_evidence_hash_is_stable_for_an_authority_free_dispatch():
-    """The actual regression this review round exists to close.
+    """An authority-free real dispatch seals byte-identically to the fixture.
 
-    Seals a real dispatch (the repo's own tests/test_dispatch_boundary.py
-    ``_db``/``_seed``/``_resolve``/``_sealed`` helpers, unmodified) with no
-    ``authority`` set anywhere, and asserts ``seal.evidence_hash`` is
-    byte-identical to a fixture captured from a CLEAN checkout of the landed
-    baseline (7afd55bad7034d789c98be4ee6e9ebcfcc97cdba) using those same
-    helpers -- not a same-run rebuild.
+    Uses the unmodified tests/test_dispatch_boundary.py helpers, which also
+    captured the fixture.
     """
     import test_dispatch_boundary as tdb
     from src import dispatch_boundary as dbd
@@ -302,7 +248,7 @@ def test_b_seal_evidence_hash_changes_when_authority_is_present():
     assert payload_with["seal"]["evidence_hash"] != payload_without["seal"]["evidence_hash"]
 
 
-# ============================================== (c) ROUND-TRIP / DETERMINISM ===
+# (c) ROUND-TRIP / DETERMINISM
 
 def test_c_key_order_inside_authority_does_not_change_the_hash():
     ordered_a = {"grant_id": "g1", "action": "run", "resource": "r1"}
@@ -362,13 +308,12 @@ def test_c_receipt_without_authority_round_trips_too():
     assert rebuilt.receipt_hash == original.receipt_hash
 
 
-# ===================================================== D7 mandatory qualifier ===
 
 def test_authority_is_never_read_to_permit_or_deny_anything():
     """No enforcement: constructing a receipt with ANY authority content must
     never raise, and constructing one WITHOUT authority must never raise
     either -- the field is optional, unvalidated, and decorative to the
-    constructor's own logic. This is the D7 boundary asserted as code."""
+    constructor's own logic."""
     # Content-free garbage is accepted as-is; schema policing is a later,
     # separate, sensitivity-dependent ruling -- not this one.
     receipt = make_dispatch_receipt(**{**RECEIPT_FIXTURE["kwargs"],

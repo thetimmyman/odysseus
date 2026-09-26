@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 """A deterministic stand-in for the real ``pi`` binary, for adapter tests.
 
-It speaks the verified Pi 0.74.2 RPC protocol (strict JSON-lines over
-stdin/stdout) but never touches a model, so the Odysseus adapter can be tested
-without a live local Qwen server.
-
-Scenario control is read from ``<cwd>/.pi_stub.json`` rather than the
-environment, because the adapter deliberately launches Pi with a minimal
-environment allowlist (that allowlist is itself under test). Recognised keys:
+It speaks Pi's RPC protocol without touching a model. Scenarios come from
+``<cwd>/.pi_stub.json``, not the environment, because the adapter launches Pi
+with a minimal env allowlist that is itself under test. Recognised keys:
 
     scenario      "ok" (default) | "tool_fail" | "provider_fail"
                   | "slow" | "instant_fail"
                   | "retry_then_ok" | "retry_exhausted"
-    settle        emit Pi 0.85.1's ``agent_settled`` after the terminal agent_end
+    settle        emit ``agent_settled`` after the terminal agent_end
     linger        keep the process alive after the scenario (as real RPC Pi does)
     attempts      failed-attempt count for the "retry_exhausted" scenario
     session_id    fixed session id to report (default: derived from --session
@@ -88,11 +84,7 @@ def _ensure_session_file(opts, session_id, cwd):
 
 
 def log_prompt(opts, session_id, message, fallback_dir):
-    """Record that a prompt was delivered.
-
-    Written to the (cwd-independent) session dir so a test can prove the task
-    was never handed to Pi even when the stub has chdir'd elsewhere.
-    """
+    """Record prompt delivery in the session dir, which is independent of cwd."""
     directory = opts.get("session_dir") or fallback_dir
     try:
         os.makedirs(directory, exist_ok=True)
@@ -123,7 +115,7 @@ class Stub:
                 fh.write("stub output\n")
 
     def _attempt(self, ok, command=None, write_files=None):
-        """Emit one agent attempt (Pi 0.85.1 ends EVERY attempt with agent_end)."""
+        """Emit one agent attempt; every attempt ends with agent_end."""
         _emit({"type": "agent_start"})
         _emit({"type": "turn_start"})
         _emit({"type": "message_start", "message": {"role": "assistant"}})
@@ -148,9 +140,7 @@ class Stub:
             }
             _emit({"type": "turn_end", "message": end_message})
         else:
-            # A failed attempt produces NO assistant text. With ``error_stop``,
-            # Pi 0.85.1 also attaches stopReason/errorMessage (protocol-native
-            # provider/model failure evidence).
+            # No assistant text; ``error_stop`` adds stopReason/errorMessage.
             end_message = {"role": "assistant", "content": []}
             if self.cfg.get("error_stop"):
                 end_message = {"role": "assistant", "content": [],
@@ -161,7 +151,6 @@ class Stub:
         _emit({"type": "agent_end", "messages": [dict(end_message)]})
 
     def _settle(self, payload=None):
-        """Emit Pi 0.85.1's run-settled event when the scenario asks for it."""
         if self.cfg.get("settle"):
             _emit({"type": "agent_settled", "messages": payload or []})
 
@@ -238,7 +227,6 @@ class Stub:
         finally:
             self.busy = False
 
-    # -- command dispatch ---------------------------------------------------
     def handle(self, cmd):
         kind = cmd.get("type")
         req_id = cmd.get("id")

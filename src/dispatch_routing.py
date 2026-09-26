@@ -1,42 +1,31 @@
-"""src/dispatch_routing.py — deterministic execution-target selection (PS-605).
+"""Deterministic execution-target selection.
 
-This is the production routing seam. One function of canonical inputs produces
-either a selected target or a typed refusal, and the decision is written down as a
-`DispatchDecision` whose receipt form is PS-638's `DispatchDecisionReceipt`.
+One pure function of canonical inputs yields a selected target or a typed
+refusal, recorded as a `DispatchDecision` whose receipt form is
+`DispatchDecisionReceipt`.
 
     ExecutionPackage -> requested domain/role/capabilities
         -> deterministic policy (src.routing_domain_policy: privacy/allow/deny)
         -> fresh, qualified ExecutionTarget candidates (profile + capability receipt)
         -> privacy / permission / network / budget / exactness filters
         -> deterministically SELECTED target
-        -> immutable DispatchDecision (+ PS-638 receipt kwargs)
+        -> immutable DispatchDecision (+ receipt kwargs)
         -> pinned attempt identity
 
-Three properties are structural, not promised:
+Structural properties:
 
-**1. Nothing here dispatches.** :func:`select_target` is a pure function of its
-arguments: no I/O, no model call, no lifecycle write. It returns a frozen record.
-A runtime adapter therefore cannot reroute itself — there is no API to call, and
-the selected identity is data handed TO the adapter, not a decision the adapter
-makes.
+1. Nothing here dispatches: :func:`select_target` does no I/O and returns a
+   frozen record, so an adapter is handed its identity and can't reroute.
+2. One filter path: fallback is a recorded preference rank, never an escape
+   from policy. No survivor means a typed refusal (a privacy refusal for
+   local-only work).
+3. Capability comes from a fresh receipt for the exact profile, not a host
+   name, so a runtime/model/backend change invalidates routing. Approximate
+   profiles can't satisfy exact intent; deterministic-only nodes never serve
+   inference.
 
-**2. There is ONE filter path.** Fallback is not a second, weaker route: every
-candidate goes through the same ordered filters, and the selection is the first
-eligible candidate in a deterministic order. "Fallback" is then a recorded fact
-about which preference rank was used, never an escape from policy. If no candidate
-survives, the result is a typed refusal — and for local-only work it is
-specifically a privacy refusal, because failing closed there is the point.
-
-**3. Capability comes from a RECEIPT, not from a host name.** A profile is
-eligible only with a fresh, healthy capability receipt for that exact profile, so a
-runtime/model/backend/approximation change that invalidates capability also
-invalidates routing, even though the physical host is unchanged. Approximate
-profiles cannot satisfy an exact/reference-intent request; a deterministic-only
-node cannot be routed as an inference target.
-
-Deliberately NOT here: retry policy, budgets as accounting, the ledger, the
-evidence package, verification, landing, or any notion of acceptance. PS-605 owns
-selection; PS-635 owns the loop and PS-638 owns the envelope.
+Selection only: retries, accounting, ledger, evidence, verification and
+landing live elsewhere.
 """
 from __future__ import annotations
 
@@ -49,10 +38,8 @@ from typing import Any, FrozenSet, Iterable, List, Mapping, Optional, Sequence, 
 
 SCHEMA_VERSION = 1
 
-# ------------------------------------------------------------- capabilities ---
-#: Profile-level capabilities, measured per (runtime, backend, model, profile) by
-#: PS-632 and carried in a capability receipt. Names mirror the PS-605 ticket's
-#: list verbatim so a packet can require exactly what the ticket names.
+#: Profile-level capabilities, measured per (runtime, backend, model, profile)
+#: and carried in a capability receipt.
 CAP_TEXT_GENERATION = "text_generation"
 CAP_REASONING_FRAMING = "reasoning_framing"
 CAP_SINGLE_TOOL_CALL = "single_tool_call"
@@ -62,14 +49,12 @@ CAP_NO_TOOL_DECLINE = "no_tool_decline"
 CAP_MULTI_ROUND = "multi_round_tool_continuation"
 CAP_CONTEXT_INTEGRITY = "context_integrity"
 CAP_CANCELLATION = "cancellation"
-#: The name PS-632's registry uses for a streamed runtime. Deliberately the SAME
-#: string, so a packet requirement, a capability receipt and a profile all say
-#: "streaming" instead of three near-synonyms that stop matching each other.
+#: Same string the capability registry uses, so packet, receipt and profile all
+#: say "streaming".
 CAP_STREAMING = "streaming"
 CAP_EXACT_REFERENCE_SEMANTICS = "exact_reference_semantics"
 CAP_DETERMINISTIC_VERIFICATION = "deterministic_verification"
-#: PS-623's catalog vocabulary, kept as the hosted/subscription role names so the
-#: two layers describe the same estate instead of inventing parallel words.
+#: Catalog role names, shared so both layers describe the estate in one vocabulary.
 CAP_INTEGRATION_STRONG = "integration_strong"
 CAP_IMPLEMENTATION_FAST = "implementation_fast"
 CAP_BULK_LOCAL = "bulk_local"
@@ -82,9 +67,8 @@ KNOWN_CAPABILITIES: FrozenSet[str] = frozenset({
     CAP_INTEGRATION_STRONG, CAP_IMPLEMENTATION_FAST, CAP_BULK_LOCAL,
 })
 
-#: Capabilities that only an INFERENCE target can carry. Their presence in a
-#: request is what makes a deterministic-only node ineligible rather than
-#: "merely not preferred".
+#: Capabilities only an inference target can carry; requiring one makes a
+#: deterministic-only node ineligible, not merely less preferred.
 INFERENCE_CAPABILITIES: FrozenSet[str] = frozenset({
     CAP_TEXT_GENERATION, CAP_REASONING_FRAMING, CAP_SINGLE_TOOL_CALL,
     CAP_PARALLEL_TOOL_CALLS, CAP_STREAMED_TOOL_CALLS, CAP_NO_TOOL_DECLINE,
@@ -92,26 +76,22 @@ INFERENCE_CAPABILITIES: FrozenSet[str] = frozenset({
     CAP_IMPLEMENTATION_FAST, CAP_BULK_LOCAL,
 })
 
-# -------------------------------------------------------------------- roles ---
 ROLE_IMPLEMENTER = "local_implementer"
 ROLE_REPAIR = "local_repair"
 ROLE_VERIFIER = "deterministic_verifier"
 ROLE_GOVERNANCE_CI = "governance_ci"
 ROLE_PLANNER = "planner"
 ROLE_SCOUT = "read_only_analyst"
-#: The routing harness's own role names (RoutingModelProfile.roles + ROLE_BY_TASK).
-#: Included so the two layers share one vocabulary instead of translating between
-#: two, which is how a role quietly stops matching the capability set it implies.
+#: The routing harness's role names, shared so roles never drift from the
+#: capability sets they imply.
 ROLE_REVIEWER = "reviewer"
 ROLE_DEBUGGER = "debugger"
 ROLE_ESCALATION = "escalation"
-#: The bare names the routing harness uses for the two roles that differ from the
-#: canonical spelling (ROLE_BY_TASK / RoutingModelProfile.roles).
+#: Harness spellings of the two roles that differ from the canonical names.
 ROLE_IMPLEMENTER_ROUTER = "implementer"
 ROLE_SCOUT_ROUTER = "scout"
 
-#: What a role requires when the request does not name its own capabilities. A
-#: role is a shorthand for a capability set, never a substitute for one.
+#: A role's capabilities when the request names none; shorthand, never a substitute.
 ROLE_CAPABILITIES: Mapping[str, Tuple[str, ...]] = {
     ROLE_IMPLEMENTER: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL,
                        CAP_EXACT_REFERENCE_SEMANTICS),
@@ -131,7 +111,6 @@ ROLE_CAPABILITIES: Mapping[str, Tuple[str, ...]] = {
     ROLE_SCOUT_ROUTER: (CAP_TEXT_GENERATION, CAP_EXACT_REFERENCE_SEMANTICS),
 }
 
-# ------------------------------------------------------- locality/exactness ---
 LOCALITY_LOCAL = "local"
 LOCALITY_HOSTED = "hosted"
 
@@ -140,9 +119,7 @@ EXACTNESS_APPROXIMATE = "approximate"
 
 KNOWN_EXACTNESS = frozenset({EXACTNESS_EXACT, EXACTNESS_APPROXIMATE})
 
-# ---------------------------------------------------------- refusal codes ---
-#: Every refusal is typed. These are reason CODES, not prose: a caller can branch
-#: on them, and a receipt can name them, without parsing a sentence.
+#: Typed refusal reason codes, so callers and receipts never parse prose.
 REFUSED_NO_CANDIDATES = "no_candidates_supplied"
 REFUSED_NO_ELIGIBLE_TARGET = "no_eligible_target"
 REFUSED_PRIVACY_LOCAL_ONLY = "privacy_local_only_no_eligible_target"
@@ -173,19 +150,16 @@ KNOWN_REFUSALS: FrozenSet[str] = frozenset({
     REFUSED_CAPACITY_MISSING, REFUSED_CAPACITY_STALE, REFUSED_CAPACITY_UNUSABLE,
 })
 
-#: Success reason codes: HOW the selected candidate was reached, which is what
-#: makes "fallback" an auditable fact rather than an omission.
+#: How the selected candidate was reached, making fallback auditable.
 REASON_SELECTED_PREFERRED = "selected_preferred_candidate"
 REASON_SELECTED_FALLBACK = "selected_fallback_candidate"
 REASON_SELECTED_LOCAL_ONLY = "selected_local_only_candidate"
 REASON_SELECTED_DETERMINISTIC = "selected_deterministic_candidate"
 
-#: The fallback rule, recorded verbatim on every decision. It is a property of the
-#: SELECTOR (one filter path, deterministic order), not a per-call choice.
-#: HASH-STABILITY INVARIANT: this exact string is embedded in the hashed receipt
-#: (via candidates_considered). Do NOT edit its rule wording to describe new rules
-#: (e.g. the capacity gate) — that would change every historical receipt hash.
-#: Describe rule additions in _assess's numbered comments and docs instead.
+#: The fallback rule, recorded on every decision.
+#: Hash-stable: this exact string is embedded in hashed receipts, so never
+#: reword it for new rules (e.g. the capacity gate) or every historical hash
+#: changes. Document additions in _assess's numbered comments instead.
 FALLBACK_RULE = (
     "every candidate is filtered by the same ordered rules (domain privacy, "
     "locality, inference capability, role, receipt presence/match/freshness/"
@@ -197,12 +171,10 @@ FALLBACK_RULE = (
 
 
 def _canonical(payload: object) -> bytes:
-    """PS-638's canonical form, byte-for-byte, because receipt hashes must agree.
+    """Canonical JSON form, byte-for-byte, so receipt hashes agree.
 
-    ``ensure_ascii=False`` is not cosmetic: PS-638's ``_canonical`` uses it, and a
-    receipt hash computed over an escaped payload would differ from the hash PS-638
-    stamps on the same fields. The cross-lineage contract test asserts the equality
-    rather than trusting this comment.
+    ``ensure_ascii=False`` matters: the receipt layer uses it too, and escaping
+    would change the hash. A contract test asserts equality.
     """
     return json.dumps(payload, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, default=str).encode("utf-8")
@@ -232,12 +204,8 @@ class DispatchRoutingError(ValueError):
 
 
 class RoutingRefused(Exception):
-    """Typed, fail-closed refusal. Raised INSTEAD of a substitute target.
-
-    A refusal carries the per-candidate assessment list, so "why not" is data:
-    every candidate that was considered has a code and a reason, which is what
-    makes an ineligible estate debuggable instead of mysterious.
-    """
+    """Typed, fail-closed refusal raised instead of a substitute target. Carries
+    the per-candidate assessments so every rejection has a code and reason."""
 
     def __init__(self, code: str, reason: str, *,
                  assessments: Sequence["CandidateAssessment"] = (),
@@ -262,12 +230,9 @@ class RoutingRefused(Exception):
         }
 
 
-# ------------------------------------------------------- PS-638 receipt shape ---
-#: PS-638 `DispatchDecisionReceipt`'s constructor fields and the fields its
-#: ``core()`` seals over, copied from src/execution_package.py on branch
-#: work/ps-635-loop-demo (DISPATCH_RECEIPT_SCHEMA_VERSION = 1). Frozen here as a
-#: CONTRACT: this module emits a receipt PS-638 can construct UNCHANGED, and the
-#: mapping is asserted by a test rather than discovered when the branches meet.
+#: `DispatchDecisionReceipt` constructor fields and the fields its ``core()``
+#: seals (DISPATCH_RECEIPT_SCHEMA_VERSION = 1). Frozen here as a contract,
+#: asserted by a test, so emitted receipts construct unchanged.
 PS638_RECEIPT_SCHEMA_VERSION_EXPECTED = 1
 PS638_RECEIPT_FIELDS: Tuple[str, ...] = (
     "receipt_id", "execution_package_hash", "run_id", "packet_id",
@@ -278,14 +243,9 @@ PS638_RECEIPT_FIELDS: Tuple[str, ...] = (
     "granted_tools", "granted_write_scope", "granted_read_scope", "network_policy",
     "decided_at", "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "schema_version",
 )
-#: The fields PS-638's ``core()`` covers, in ITS order. The receipt hash is
-#: sha256 over the canonical JSON of exactly these, with tuple-valued fields
-#: serialized as lists (PS-638's own loose ends: it does that in ``core()``).
-#: ``authority`` (PS-638 DR-01+DR-09, added 2026-09-16) is the one field here
-#: that is NOT unconditionally included: ``ps638_receipt_core`` below omits it
-#: entirely when absent, so a receipt sealed before this field existed hashes
-#: exactly as it always did. It records/audits; it is not enforced
-#: authorization.
+#: Fields ``core()`` covers, in its order; the receipt hash is sha256 over their
+#: canonical JSON with tuples as lists. ``authority`` is omitted entirely when
+#: absent so older receipts hash unchanged; it is recorded, not enforced.
 PS638_RECEIPT_CORE_FIELDS: Tuple[str, ...] = (
     "schema_version", "receipt_id", "execution_package_hash", "run_id",
     "packet_id", "requested_role", "requested_capabilities", "policy_ref",
@@ -300,9 +260,8 @@ _PS638_LIST_FIELDS: Tuple[str, ...] = (
     "requested_capabilities", "candidates_considered", "capability_receipt_refs",
     "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "granted_tools", "granted_write_scope", "granted_read_scope",
 )
-#: Fields that, like ``authority``, are omitted from the hashed core entirely
-#: when absent rather than serialized as ``null`` — so introducing them never
-#: changes the hash of a receipt that predates them.
+#: Like ``authority``: omitted from the hashed core when absent (never ``null``),
+#: so adding them never changes older receipt hashes.
 _PS638_OPTIONAL_OMIT_WHEN_ABSENT_FIELDS: Tuple[str, ...] = (
     "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests",
 )
@@ -310,22 +269,14 @@ DECIDED_BY_POLICY = "ps605_policy"
 
 
 def _normalize_authority(value: Mapping[str, Any]) -> dict:
-    """Canonical form of an optional ``authority`` block (mirrors PS-638's own).
-
-    A sub-field a caller omits and the same sub-field explicitly set to
-    ``None`` must hash identically, so both are dropped here. Normalization
-    only — no key is required, no value is checked.
-    """
+    """Canonical form of an optional ``authority`` block. An omitted sub-field
+    and one set to ``None`` must hash identically, so both are dropped."""
     return {k: v for k, v in dict(value).items() if v is not None}
 
 
 def ps638_receipt_core(kwargs: Mapping[str, Any]) -> dict:
-    """The exact dict PS-638 hashes for a dispatch receipt.
-
-    One implementation, used for the receipt this module emits, so the hash a
-    decision publishes is the hash PS-638 will verify — not a lookalike computed
-    by a second code path that could drift from it.
-    """
+    """The exact dict hashed for a dispatch receipt; the single implementation,
+    so the published hash can't drift from the verified one."""
     core: dict = {}
     for name in PS638_RECEIPT_CORE_FIELDS:
         value = kwargs.get(name)
@@ -348,15 +299,12 @@ def ps638_receipt_core(kwargs: Mapping[str, Any]) -> dict:
 
 
 def ps638_receipt_hash(kwargs: Mapping[str, Any]) -> str:
-    """sha256 over PS-638's receipt core, exactly as PS-638 computes it."""
+    """sha256 over the receipt core, exactly as the receipt layer computes it."""
     return _sha256_hex(_canonical(ps638_receipt_core(kwargs)))
 
 
-# ------------------------------------------------------- capability receipt ---
-#: HOW a receipt's capabilities became known. The strength of the claim is part of
-#: the evidence, so it is recorded rather than assumed: a "declared" capability is
-#: what a profile row says about itself, "detected" is a fact the system probed
-#: about the endpoint, and "measured" is PS-632's per-profile measurement.
+#: How a receipt's capabilities became known: "declared" (the row's own claim),
+#: "detected" (probed on the endpoint) or "measured" (per-profile measurement).
 PROVENANCE_MEASURED = "measured"
 PROVENANCE_DETECTED = "detected"
 PROVENANCE_DECLARED = "declared"
@@ -366,14 +314,9 @@ KNOWN_PROVENANCE = frozenset({PROVENANCE_MEASURED, PROVENANCE_DETECTED,
 
 @dataclass(frozen=True)
 class LegacyCapabilityView:
-    """Non-authoritative PS-605 view of canonical PS-632 evidence.
-
-    A receipt is what makes eligibility measurable rather than assumed: it names
-    the profile it was measured against, what was actually measured, when, how
-    long it stays valid, and whether the runtime is currently healthy. Routing on
-    a host name instead of a receipt is how "the node is up" quietly becomes "the
-    capability is present".
-    """
+    """Non-authoritative routing view of canonical capability evidence: the
+    profile measured, what, when, how long valid and current health. Routing on
+    a receipt, not a host name, keeps "node up" from meaning "capable"."""
 
     receipt_id: str
     profile_id: str
@@ -388,11 +331,8 @@ class LegacyCapabilityView:
     host: str = ""
     notes: str = ""
     provenance: str = PROVENANCE_DECLARED
-    #: The PS-632 persisted-receipt hash this capability evidence came from, when
-    #: there is one. PS-605's own receipt_hash covers its ROUTING view; this is the
-    #: identity that resolves back to the exact measured capability evidence, so a
-    #: later reader can re-derive what the profile could do instead of trusting a
-    #: decision-time summary of it.
+    #: Hash of the persisted capability receipt this came from, when there is
+    #: one, so readers can re-derive the evidence instead of trusting a summary.
     source_receipt_hash: str = ""
     schema_version: int = SCHEMA_VERSION
     receipt_hash: str = field(default="")
@@ -429,12 +369,8 @@ class LegacyCapabilityView:
         return int((current - observed).total_seconds())
 
     def is_fresh(self, now: Optional[datetime] = None) -> bool:
-        """Fresh = readable timestamp AND inside its TTL.
-
-        An unreadable timestamp is NOT fresh: "unknown" must never widen
-        eligibility, which is the same rule the context budget uses for an
-        unmeasured window.
-        """
+        """Fresh = readable timestamp and inside its TTL. Unknown never widens
+        eligibility."""
         age = self.freshness_s(now)
         return age is not None and 0 <= age <= int(self.ttl_s)
 
@@ -473,20 +409,14 @@ def make_legacy_capability_view(**kwargs: Any) -> LegacyCapabilityView:
                              **payload)
 
 
-# ------------------------------------------------------------ the profile ---
 @dataclass(frozen=True)
 class ExecutionTargetProfile:
     """One exact execution profile: runtime + backend + model + role identity.
 
-    Deliberately per-PROFILE, not per-host. ``host`` is recorded because evidence
-    needs it, never used as the routing key: a runtime/model/backend change on the
-    same box is a different profile with a different receipt, and possibly no
-    receipt at all — which is exactly when it must stop being eligible.
-
-    ``inference=False`` marks a node that must never be selected for inference
-    work (MS-R1 is deterministic verification/governance only). ``exactness``
-    marks an approximation profile, which may not satisfy a request that demands
-    exact/reference-intent semantics.
+    Per profile, not per host: ``host`` is evidence only, so a runtime/model/
+    backend change on the same box is a different profile needing its own
+    receipt. ``inference=False`` marks a deterministic-only node;
+    ``exactness`` marks an approximation that can't satisfy exact intent.
     """
 
     target_id: str
@@ -513,8 +443,7 @@ class ExecutionTargetProfile:
     endpoint_type: str = ""
     credential_sha256: str = ""
     runtime_options: Mapping[str, Any] = field(default_factory=dict)
-    #: Request-scoped generation settings are not target authority. They remain
-    #: available only for a future PS-641 request/decision composition seam.
+    #: Request-scoped generation settings; not target authority.
     execution_options: Mapping[str, Any] = field(default_factory=dict)
     configured_context: int = 0
     configured_served_context: int = 0
@@ -545,11 +474,7 @@ class ExecutionTargetProfile:
         return self.locality == LOCALITY_LOCAL
 
     def supports_role(self, role: str) -> bool:
-        """A profile supports a role only if it declares it.
-
-        An empty role set means "no declared roles", so nothing is inferred: an
-        unlabelled profile is not silently treated as a general-purpose worker.
-        """
+        """A profile supports a role only if it declares it; no roles are inferred."""
         return bool(role) and role in self.roles
 
     def core(self) -> dict:
@@ -572,7 +497,7 @@ class ExecutionTargetProfile:
             "configured_served_context": self.configured_served_context,
         }
 
-        # Preserve historical local evidence hashes when this additive scope is absent.
+        # Keep historical local evidence hashes stable when this scope is absent.
         if self.credential_sha256:
             value["credential_sha256"] = self.credential_sha256
         return value
@@ -595,16 +520,10 @@ def make_target_profile(**kwargs: Any) -> ExecutionTargetProfile:
     return ExecutionTargetProfile(**payload)
 
 
-# ------------------------------------------------------------ the request ---
 @dataclass(frozen=True)
 class RoutingRequest:
-    """What a packet needs, in the terms routing is allowed to decide on.
-
-    Built from an `ExecutionPackage` (PS-638) rather than from a caller's
-    preference: domain, role, capabilities, privacy class, permission envelope and
-    budgets are the package's fields, so a decision can be traced back to the
-    intent it served.
-    """
+    """What a packet needs, in terms routing may decide on, built from an
+    `ExecutionPackage` so a decision traces back to the intent it served."""
 
     domain: str
     role: str
@@ -641,11 +560,8 @@ class RoutingRequest:
                 f"unknown capability name(s) in request: {sorted(unknown)}")
 
     def required_capabilities(self) -> Tuple[str, ...]:
-        """Explicit capabilities, or the role's shorthand — unioned, never one of.
-
-        A caller that names both gets both: a role is a shorthand for a capability
-        set, so it can only ever ADD requirements.
-        """
+        """Explicit capabilities unioned with the role's shorthand; a role can
+        only add requirements."""
         merged = list(ROLE_CAPABILITIES.get(self.role, ()))
         for cap in self.capabilities:
             if cap not in merged:
@@ -676,17 +592,10 @@ class RoutingRequest:
         return self.core()
 
 
-# ------------------------------------------------------------ the policy ---
 @dataclass(frozen=True)
 class PolicySnapshot:
-    """The policy revision a decision was made under, BY CONTENT.
-
-    A version string alone is not enough: two different policies can share a
-    version, and a routing receipt that cannot name the exact policy it applied
-    cannot be re-evaluated later. So the version, the source and a content hash
-    are all recorded, and ``policy_ref`` carries them as one string for the
-    receipt.
-    """
+    """The policy a decision was made under, by content: version, source and
+    content hash (versions alone can collide), joined in ``policy_ref``."""
 
     version: str
     policy_hash: str
@@ -704,14 +613,8 @@ class PolicySnapshot:
 
 
 def policy_snapshot(*, policy: Optional[Mapping[str, Any]] = None) -> PolicySnapshot:
-    """Snapshot the live routing policy (version + content hash).
-
-    ``policy`` may be supplied directly (tests, or a caller that already loaded
-    it); otherwise the live versioned policy is read through
-    ``src.routing_policy.load_policy``. The hash is computed over the CONTENT of
-    whatever was loaded, so a monkeypatched or edited policy produces a different
-    policy_ref instead of inheriting the old one.
-    """
+    """Snapshot the routing policy (supplied, or loaded via load_policy). The hash
+    covers the loaded content, so an edited policy gets a new policy_ref."""
     source = "src.routing_policy.load_policy"
     loaded: Mapping[str, Any] = {}
     if policy is not None:
@@ -723,9 +626,8 @@ def policy_snapshot(*, policy: Optional[Mapping[str, Any]] = None) -> PolicySnap
 
             loaded = load_policy() or {}
         except Exception:
-            # A policy that cannot be read is NOT "no policy": the caller gets an
-            # unversioned snapshot whose hash covers the empty mapping, and the
-            # domain layer still fails closed on unknown domains.
+            # Unreadable is not "no policy": hash the empty mapping; the domain
+            # layer still fails closed on unknown domains.
             loaded = {}
             source = "unavailable"
     version = str(loaded.get("routingPolicyVersion") or "unversioned")
@@ -733,15 +635,10 @@ def policy_snapshot(*, policy: Optional[Mapping[str, Any]] = None) -> PolicySnap
     return PolicySnapshot(version=version, policy_hash=digest, source=source)
 
 
-# ------------------------------------------------------- candidate filter ---
 @dataclass(frozen=True)
 class CandidateAssessment:
-    """One candidate's fate, with the rule that decided it.
-
-    Every candidate gets one of these, eligible or not. That is what makes a
-    refusal diagnosable: "nothing worked" is not an answer a person can act on,
-    and a refusal that cannot be explained gets explained away instead.
-    """
+    """One candidate's fate and the rule that decided it, so refusals are
+    diagnosable."""
 
     target_id: str
     profile_id: str
@@ -778,7 +675,7 @@ class CandidateAssessment:
 def classify_capacity_for(profile: ExecutionTargetProfile,
                            capacity_receipts: Sequence[Any], *,
                            now: Optional[datetime] = None) -> Tuple[bool, Tuple[str, ...], str, str]:
-    """Classify PS-640 capacity facts for one target profile."""
+    """Classify provider capacity facts for one target profile."""
     if profile.locality == LOCALITY_LOCAL:
         return (True, (), "eligible", "local target: no subscription capacity required")
 
@@ -796,9 +693,8 @@ def classify_capacity_for(profile: ExecutionTargetProfile,
         return (False, (), REFUSED_CAPACITY_STALE,
                 f"capacity receipts exposing model {profile.model!r} are stale")
     from src.provider_capacity import Entitlement
-    # Reporting a healthy subscription is not permission to use its native
-    # entitlement from this hosted adapter. Third-party harness enablement is
-    # deliberately absent until a separate policy grant is implemented.
+    # A healthy subscription doesn't grant its native entitlement to this hosted
+    # adapter; third-party harness use needs a separate policy grant.
     usable = tuple(r for r in fresh if r.entitlement in (Entitlement.API, Entitlement.AGENT_SDK)
                    and r.has_usable_capacity_facts(now=now))
     if not usable:
@@ -849,20 +745,17 @@ def _assess(profile: ExecutionTargetProfile,
         return fate(False, REFUSED_POLICY_DENIED,
                     f"domain policy rule {decision.rule}: {decision.reason}")
 
-    # 2. locality. A local-only request (explicitly, or because its domain is
-    #    local-only) cannot be satisfied by a hosted profile, ever.
+    # 2. locality: local-only work can never use a hosted profile.
     if (request.local_only or policy_local_only) and not profile.is_local:
         return fate(False, REFUSED_PRIVACY_LOCAL_ONLY,
                     "local-only work may not execute on a hosted target")
 
-    # 3. inference: a deterministic-only node is not "less preferred", it is
-    #    ineligible for inference work.
+    # 3. inference: deterministic-only nodes are ineligible for inference.
     if request.needs_inference() and not profile.inference:
         return fate(False, REFUSED_NOT_INFERENCE_TARGET,
                     f"profile {profile.target_id} is not an inference target")
 
-    # 4. exactness: an approximation profile — declared, or MEASURED as
-    #    approximate in the receipt — cannot satisfy exact/reference intent.
+    # 4. exactness: declared or measured approximation can't satisfy exact intent.
     if request.exactness == EXACTNESS_EXACT and profile.exactness != EXACTNESS_EXACT:
         return fate(False, REFUSED_EXACTNESS,
                     "an approximate profile cannot satisfy an exact/"
@@ -878,7 +771,7 @@ def _assess(profile: ExecutionTargetProfile,
         return fate(False, REFUSED_ROLE,
                     f"profile does not declare role {request.role!r}")
 
-    # 6. a receipt is required, and it must be FOR THIS PROFILE.
+    # 6. a receipt is required, for this exact profile.
     if receipt is None:
         return fate(False, REFUSED_RECEIPT_MISSING,
                     "no capability receipt for this profile")
@@ -901,7 +794,7 @@ def _assess(profile: ExecutionTargetProfile,
         return fate(False, REFUSED_RECEIPT_UNHEALTHY,
                     f"receipt reports the profile unhealthy: {receipt.notes}")
 
-    # 9. MEASURED capabilities (the receipt's evidence, not the profile's claim).
+    # 9. measured capabilities (the receipt's evidence, not the profile's claim).
     missing = sorted(set(required) - set(receipt.capabilities))
     if missing:
         return fate(False, REFUSED_CAPABILITY_MISSING,
@@ -943,26 +836,16 @@ def _assess(profile: ExecutionTargetProfile,
     return fate(True, "eligible", "all filters passed")
 
 
-# ------------------------------------------------------------- the decision ---
 @dataclass(frozen=True)
 class DispatchDecision:
-    """The immutable routing decision, in the exact shape a receipt needs.
+    """The immutable routing decision and the receipt's source of truth.
 
-    This IS the receipt's source of truth: `to_ps638_receipt_kwargs()` returns the
-    field set PS-638's `DispatchDecisionReceipt` accepts, and ``receipt_hash`` is
-    computed with PS-638's own rule (sha256 over its ``core()`` fields), so the
-    identity an `AttemptReceipt` records is the identity of THIS decision.
-
-    Decision-level facts PS-638 has no field for — the fallback rule, the
-    budget/resource facts that materially affected selection — are carried on the
-    SELECTED candidate's entry in ``candidates_considered``, so a sealed package
-    built from this receipt still contains them.
-
-    ``authority`` (PS-638 DR-01+DR-09, added 2026-09-16) mirrors the same
-    optional field on ``DispatchDecisionReceipt``: it RECORDS AND AUDITS who/
-    what asked and on whose credential, is never validated or enforced here,
-    and is omitted from ``to_ps638_receipt_kwargs()``'s hash input when absent
-    so ``receipt_hash`` is unchanged for every decision that predates it.
+    `to_ps638_receipt_kwargs()` returns `DispatchDecisionReceipt`'s fields and
+    ``receipt_hash`` uses its ``core()`` rule, so an `AttemptReceipt` records
+    this decision's identity. Facts the receipt has no field for (fallback rule,
+    budget/resource facts) ride on the selected entry in ``candidates_considered``.
+    ``authority`` is recorded, never enforced, and omitted from the hash input
+    when absent.
     """
 
     decision_id: str
@@ -991,12 +874,8 @@ class DispatchDecision:
     receipt_hash: str = field(default="")
 
     def pin(self) -> dict:
-        """The frozen execution identity an attempt must use.
-
-        A caller pins THIS, not a host name: target/profile/provider/runtime/
-        model/digest/backend and the granted envelope all come from the decision,
-        so an adapter has nothing left to choose.
-        """
+        """The frozen execution identity an attempt must use; the adapter has
+        nothing left to choose."""
         profile = self.selected_profile
         return {
             "target_id": profile.target_id, "profile_id": profile.profile_id,
@@ -1021,8 +900,8 @@ class DispatchDecision:
         for receipt in (self.selected_receipt,):
             if receipt is None:
                 continue
-            # A persisted PS-632 receipt is the stronger reference: it is the
-            # capability EVIDENCE identity, not a decision-time summary of it.
+            # A persisted capability receipt is the stronger reference: the
+            # evidence identity, not a decision-time summary.
             ref = str(getattr(receipt, "source_receipt_hash", "")
                       or receipt.receipt_hash)
             if ref not in refs:
@@ -1038,12 +917,8 @@ class DispatchDecision:
         }
 
     def to_ps638_receipt_kwargs(self) -> dict:
-        """Exactly PS-638's ``DispatchDecisionReceipt`` constructor fields.
-
-        The SELECTED candidate's entry also carries the decision-level facts
-        (reason_code, fallback rule/usage, budget and resource facts), so a sealed
-        receipt is self-contained without a PS-638 schema change.
-        """
+        """Exactly ``DispatchDecisionReceipt``'s constructor fields. The selected
+        entry carries decision-level facts so the receipt is self-contained."""
         considered = []
         for assessment in self.candidates:
             entry = assessment.to_dict()
@@ -1083,14 +958,9 @@ class DispatchDecision:
             "decided_at": self.observed_at,
             "schema_version": PS638_RECEIPT_SCHEMA_VERSION_EXPECTED,
         }
-        # Additive, DR-01+DR-09 (review fix F-1, 2026-09-16): the key itself
-        # must be OMITTED when authority is absent, not merely excluded from
-        # ps638_receipt_core()'s hash input. This dict is also written verbatim
-        # into seal_dispatch_evidence()'s "decision_receipt" payload
-        # (src/dispatch_boundary.py) and hashed there as seal.evidence_hash --
-        # an unconditional `"authority": None` entry would change THAT hash for
-        # every authority-free dispatch, exactly the regression F1 did not
-        # originally cover.
+        # Omit the key entirely when authority is absent: this dict is hashed
+        # verbatim as seal.evidence_hash, so a `None` entry would change that
+        # hash for every authority-free dispatch.
         if self.authority is not None:
             kwargs["authority"] = self.authority
         if self.capacity_receipt_refs:
@@ -1132,11 +1002,7 @@ class DispatchDecision:
 
     @property
     def decision_hash(self) -> str:
-        """Content identity of the PS-605 record (distinct from the receipt hash).
-
-        Both are named and both are published: the receipt hash is what PS-638
-        verifies, and the decision hash is what this record's own fields add up to.
-        """
+        """Content hash of this record's own fields (distinct from receipt_hash)."""
         return _sha256_hex(_canonical(self.core()))
 
     def to_dict(self) -> dict:
@@ -1146,7 +1012,6 @@ class DispatchDecision:
         return payload
 
 
-# ------------------------------------------------------------- the selector ---
 def _receipt_index(receipts: Any) -> dict:
     """Index capability receipts by profile_id (and target_id as a fallback)."""
     index: dict = {}
@@ -1163,7 +1028,7 @@ def _receipt_index(receipts: Any) -> dict:
 
 
 def _resolve_domain_policy(request: RoutingRequest, provided: Any) -> tuple:
-    """(domain_policy, local_only). Fail CLOSED when the policy cannot be read."""
+    """(domain_policy, local_only); fails closed when the policy can't be read."""
     if provided is not None:
         return provided, bool(getattr(provided, "local_only", False))
     try:
@@ -1172,8 +1037,7 @@ def _resolve_domain_policy(request: RoutingRequest, provided: Any) -> tuple:
         pol = domain_policy(request.domain)
         return pol, bool(getattr(pol, "local_only", False))
     except Exception:
-        # An unresolvable domain policy is treated as local-only: the failure mode
-        # must be "refuse to leave the machine", never "assume unrestricted".
+        # Unresolvable policy means local-only: refuse to leave the machine.
         return None, True
 
 
@@ -1188,15 +1052,11 @@ def select_target(request: RoutingRequest, *,
                   decision_id: str = "") -> DispatchDecision:
     """Select an execution target, or raise :class:`RoutingRefused`.
 
-    Pure: no I/O, no model call, no state change. Every candidate is filtered by
-    the same ordered rules and the first ELIGIBLE one in deterministic preference
-    order is selected. Determinism is asserted by the test suite (same inputs ->
-    identical ``decision_hash``), which is what makes a receipt re-checkable.
+    Pure: every candidate gets the same ordered rules and the first eligible one
+    in deterministic order wins (tests assert identical ``decision_hash``).
     """
-    # Capacity freshness must be evaluated against one instant for the whole
-    # decision. Re-reading the clock after candidate assessment could leave a
-    # hosted candidate eligible while its cited capacity refs have already gone
-    # stale.
+    # Evaluate capacity freshness at one instant for the whole decision, so a
+    # cited capacity ref can't go stale between assessment and selection.
     selection_time = now if now is not None else datetime.now(timezone.utc)
     profiles = list(profiles or ())
     if not profiles:
@@ -1232,9 +1092,7 @@ def select_target(request: RoutingRequest, *,
                 "hosted target, so this is a refusal, not a downgrade",
                 assessments=assessments, run_id=request.run_id,
                 packet_id=request.packet_id)
-        # When every candidate was refused for the SAME reason, that reason IS the
-        # refusal: "no_eligible_target" is the honest summary only when the estate
-        # failed in different ways. The per-candidate rules are always attached.
+        # If every candidate failed for the same reason, that is the refusal.
         rules = sorted({a.rule for a in assessments})
         code = rules[0] if len(rules) == 1 else REFUSED_NO_ELIGIBLE_TARGET
         raise RoutingRefused(
@@ -1246,10 +1104,8 @@ def select_target(request: RoutingRequest, *,
             assessments=assessments, run_id=request.run_id,
             packet_id=request.packet_id)
 
-    # Deterministic preference order: explicit preference, then local-first when
-    # locality is a requirement, then cost rank, then a stable tie-break. This
-    # ordering IS the fallback rule; a lower rank is a lower preference, never a
-    # weaker standard.
+    # Preference order: explicit preference, local-first when required, cost
+    # rank, stable tie-break. This order is the fallback rule.
     eligible.sort(key=lambda a: (
         a.preference_rank,
         0 if (local_only and a.locality == LOCALITY_LOCAL) else 1,
@@ -1262,9 +1118,7 @@ def select_target(request: RoutingRequest, *,
                or index.get(f"target:{profile.target_id}"))
     _, selected_capacity_refs, _, _ = classify_capacity_for(
         profile, capacity_receipts, now=selection_time)
-    # The RECORD is canonical, not input-ordered: the assessment list is sorted so
-    # two runs over the same candidates produce the same decision hash even if the
-    # caller passed the profiles in a different order.
+    # Sort assessments so input order never changes the decision hash.
     ordered = sorted(assessments, key=lambda a: (
         a.preference_rank,
         0 if a.eligible else 1,
@@ -1285,9 +1139,7 @@ def select_target(request: RoutingRequest, *,
         reason = (f"no preferred candidate was eligible; selected the first "
                   f"eligible candidate at preference rank {chosen.preference_rank}")
     else:
-        # No preference was expressed, so nothing was substituted: the
-        # deterministic order decided, and saying "preferred" here would imply the
-        # caller asked for something it did not.
+        # No preference expressed, so nothing was substituted.
         reason_code = REASON_SELECTED_DETERMINISTIC
         reason = ("no profile preference was expressed; the deterministic order "
                   "decided")
@@ -1308,9 +1160,8 @@ def select_target(request: RoutingRequest, *,
         reason=reason, fallback_used=(reason_code == REASON_SELECTED_FALLBACK),
         preference_rank=chosen.preference_rank, budget_facts=facts,
         resource_facts=dict((resources or {}).get(profile.target_id) or {}),
-        # The granted tool envelope is what the REQUEST needed, verified to be
-        # inside the profile's declared envelope by the filters above. A packet
-        # that names no tools is granted none — silence is not a grant.
+        # Grant only what the request needed (within the profile's envelope);
+        # naming no tools grants none.
         granted_tools=tuple(sorted(request.required_tools)),
         granted_write_scope=tuple(request.write_scope),
         granted_read_scope=tuple(request.read_scope),

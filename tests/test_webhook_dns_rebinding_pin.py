@@ -1,11 +1,8 @@
 """Regression: webhook delivery must pin the TCP connect to the SSRF-approved IP.
 
-validate_webhook_url resolves the host to accept/reject, but the delivery
-connect previously re-resolved independently — a DNS record flipping between
-the two lookups (rebinding) could slip an internal IP past the check. _deliver
-now resolves+validates once via _validated_public_ips and pins the connect to
-that IP through _PinnedAsyncTransport. These tests drive the real transport
-against local servers so the pin is exercised end-to-end, not mocked away.
+A second, independent resolution at connect time would let DNS rebinding slip
+an internal IP past the check, so _deliver pins the connect to the IP validated
+by _validated_public_ips. Tests drive the real transport against local servers.
 """
 import asyncio
 import http.server
@@ -30,10 +27,6 @@ with patch.dict(os.environ, {"DATABASE_URL": "sqlite:///:memory:"}), \
     import src.webhook_manager as wm
 
 
-# ---------------------------------------------------------------------------
-# _validated_public_ips
-# ---------------------------------------------------------------------------
-
 def test_validated_public_ips_rejects_metadata_literal():
     with pytest.raises(ValueError):
         wm._validated_public_ips("http://169.254.169.254/")
@@ -56,10 +49,6 @@ def test_validated_public_ips_rejects_hostname_resolving_private(monkeypatch):
     with pytest.raises(ValueError):
         wm._validated_public_ips("http://evil.rebind.example/")
 
-
-# ---------------------------------------------------------------------------
-# End-to-end: the pinned transport actually routes to the pinned IP
-# ---------------------------------------------------------------------------
 
 def _serve(handler):
     srv = socketserver.TCPServer(("127.0.0.1", 0), handler)

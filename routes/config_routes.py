@@ -1,18 +1,8 @@
-"""routes/config_routes.py — the dedicated Settings config surface (PR-A).
+"""Settings config surface: versioned budget editor and read-only effective view.
 
-Exposes the versioned Budget editor and a read-only Effective-config view under
-``/api/config``. Every route is gated on ``require_admin_cookie`` (cookie admin
-only — bearer tokens and the internal-tool loopback are rejected, exactly like
-the routing-harness control surface: editing budget caps changes spend
-exposure). The actor recorded on a publish/rollback is the current cookie
-principal.
-
-Persistence: the budget live file now lives under the data/ volume
-(config_store.live_path), seeded from the baked config/routing_budget.json on
-first boot — so an in-app save survives a redeploy (the whole point of PR-A).
-
-Mirrors setup_routing_harness_routes structure. Registered in app.py right
-after the routing-harness routes.
+Every route requires an admin cookie (bearer and internal-tool loopback are
+rejected) since editing caps changes spend exposure. The budget live file lives
+under data/ (seeded from config/routing_budget.json) so saves survive redeploys.
 """
 from __future__ import annotations
 
@@ -40,11 +30,8 @@ _CAP_KEYS = (
 
 
 class BudgetPublishRequest(BaseModel):
-    """The five cap floats. Value-level validity (positivity, premium<=general)
-    is enforced by routing_budget.validate_budget → HTTP 400 {detail:[...]}, not
-    here — pydantic only guarantees they parse as numbers. The version is
-    server-owned (auto-bumped on publish); a client-supplied version is
-    deliberately NOT accepted."""
+    """Value validity is checked by routing_budget.validate_budget (400), not here.
+    The version is server-owned; a client-supplied version is not accepted."""
     daily_max_usd: float
     weekly_max_usd: float
     monthly_max_usd: float
@@ -61,9 +48,7 @@ def _caps(d: dict) -> dict:
 
 
 def _reasons_from_value_error(e: ValueError) -> list:
-    """config_store.publish raises ValueError(list-of-reasons); the jail check
-    raises ValueError('invalid archive name') (a bare string). Normalize both
-    into a list for the {detail:[...]} contract."""
+    """Normalize a list-of-reasons or bare-string ValueError into a list."""
     reasons = e.args[0] if e.args else str(e)
     if isinstance(reasons, list):
         return [str(r) for r in reasons]
@@ -72,8 +57,7 @@ def _reasons_from_value_error(e: ValueError) -> list:
 
 @router.get("/budget")
 def budget_get(request: Request):
-    """Current caps + server-owned version + live spend + persistence facts.
-    Shape per the PR-A CONTRACT."""
+    """Current caps, server-owned version, live spend and persistence facts."""
     require_admin_cookie(request)
     cfg = load_budget_config()
     db = SessionLocal()
@@ -98,9 +82,7 @@ def budget_get(request: Request):
 
 @router.post("/budget/publish")
 def budget_publish(body: BudgetPublishRequest, request: Request):
-    """Publish the five caps as a new server-versioned budget. Invalid caps
-    (non-positive, or a premium sub-cap above its general cap) → 400
-    {detail:[reasons]} with the live file left intact (fail-safe)."""
+    """Publish caps as a new version; invalid caps → 400 with the live file intact."""
     actor = require_admin_cookie(request)
     d = {k: getattr(body, k) for k in _CAP_KEYS}
     try:
@@ -112,16 +94,14 @@ def budget_publish(body: BudgetPublishRequest, request: Request):
 
 @router.get("/budget/versions")
 def budget_versions(request: Request):
-    """Archived budget snapshots newest-first: [{archive_name, version, ts,
-    actor}]."""
+    """Archived budget snapshots, newest first."""
     require_admin_cookie(request)
     return routing_budget.list_budget_versions()
 
 
 @router.post("/budget/rollback")
 def budget_rollback(body: BudgetRollbackRequest, request: Request):
-    """Re-publish an archived budget snapshot (a logged publish). A bad/absent
-    archive name → 400 (traversal-jailed) or 404 (no such archive)."""
+    """Re-publish an archived snapshot. Bad name → 400 (jailed), absent → 404."""
     actor = require_admin_cookie(request)
     try:
         stored = routing_budget.rollback_budget(body.archive_name, actor=actor or "admin")
@@ -132,11 +112,8 @@ def budget_rollback(body: BudgetRollbackRequest, request: Request):
     return {"ok": True, "version": stored.get("version"), "caps": _caps(stored)}
 
 
-# Notable policy fields surfaced in the effective view, in display order:
-# (dotted path, editable_where, danger). `danger` marks a break-glass knob that
-# is READ-ONLY in the structured Policy editor (it needs security_admin via the
-# raw Routing Harness > Policy tab). Kept in sync with routing_policy's
-# DANGER_ZONE_KEYS by value; the frontend renders danger rows read-only.
+# (dotted path, editable_where, danger). Danger rows are read-only in the
+# structured editor (need security_admin); keep in sync with DANGER_ZONE_KEYS.
 _POLICY_EFFECTIVE_FIELDS = [
     ("routingPolicyVersion", "Settings > Policy (server-owned)", False),
     ("verificationPolicyVersion", "Settings > Policy (server-owned)", False),
@@ -171,14 +148,10 @@ def _dotted(d: dict, path: str):
 
 @router.get("/effective")
 def effective(request: Request):
-    """Read-only 'what is actually in force' view across budget + policy. Each
-    item: name, value, source (the file/env it comes from), surface, danger
-    (a break-glass knob, read-only in the structured editor), editable (False
-    for danger/server-owned), editable_where.
+    """Read-only view of what is in force across budget + policy.
 
-    surface: 'runtime' (a save takes effect immediately) |
-             'needs_redeploy' (persisted, but some consumers pick it up only on
-             the next run/redeploy) | 'deploy_only' (set at deploy time)."""
+    surface: 'runtime' (immediate) | 'needs_redeploy' (some consumers pick it up
+    only on the next run/redeploy) | 'deploy_only'."""
     require_admin_cookie(request)
     cfg = load_budget_config()
     dr = config_store.data_root()
@@ -197,7 +170,6 @@ def effective(request: Request):
         item("budget.persisted", True, budget_live, editable=False,
              where="Settings > Budget — data/ volume, survives redeploy"),
     ]
-    # Full policy surface.
     for path, where, danger in _POLICY_EFFECTIVE_FIELDS:
         v = _dotted(policy, path)
         version_owned = path.endswith("Version")
@@ -216,7 +188,6 @@ def effective(request: Request):
 
 
 def setup_config_routes(app):
-    """Register the config router on the app (mirrors the harness setup call
-    site). Returns the router for callers/tests that prefer include_router."""
+    """Register the config router; returns it for callers that prefer include_router."""
     app.include_router(router)
     return router

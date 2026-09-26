@@ -1,4 +1,4 @@
-"""PS-605 — the production dispatch boundary, and its mutation controls.
+"""The production dispatch boundary, and its mutation controls.
 
 Two kinds of proof, and both matter:
 
@@ -33,10 +33,8 @@ from src.provider_capacity import (AuthorizationClass, CapacityState, Entitlemen
                                    make_capacity_receipt)
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
-#: Fixture profiles are "created" a little BEFORE the decision clock, so a declared
-#: receipt is genuinely fresh and a negative age stays a failure case rather than
-#: an accident of the fixture's date.
-# The seed follows the pinned decision clock, not the wall clock.
+#: Fixtures are seeded just BEFORE the pinned decision clock (not the wall clock),
+#: so declared receipts are fresh and a negative age stays a real failure case.
 SEEDED_AT = NOW.replace(tzinfo=None) - datetime.timedelta(minutes=30)
 
 
@@ -98,7 +96,7 @@ def _candidates(*profile_ids):
 
 
 class _FixtureCapabilityStore:
-    """Canonical PS-632 fixture store; never uses legacy qualification data."""
+    """Canonical fixture store; never uses legacy qualification data."""
 
     def current(self, profile_id):
         facts = {
@@ -150,7 +148,6 @@ def _invocation(profile_id="p-rtx", *, model="qwen3.8:27b",
     return dbd.InvocationIdentity(**values)
 
 
-# ============================================================= the decision ===
 def test_the_decision_is_resolved_over_the_real_estate():
     db = _db()
     task = _seed(db)
@@ -277,7 +274,7 @@ def test_a_stale_receipt_cannot_be_dispatched():
 
 
 def test_a_measured_receipt_can_require_what_declaration_cannot_evidence():
-    """The upgrade path PS-632 unlocks: context integrity must be MEASURED."""
+    """Context integrity must be MEASURED to unlock the upgrade path."""
     db = _db()
     task = _seed(db)
     with pytest.raises(dr.RoutingRefused) as err:
@@ -295,7 +292,6 @@ def test_a_measured_receipt_can_require_what_declaration_cannot_evidence():
                  receipt_overrides={"p-rtx": measured})
 
 
-# ============================================================== the pin guard ===
 def test_the_pin_guard_refuses_a_different_model_or_locality_before_dispatch():
     db = _db()
     task = _seed(db)
@@ -431,7 +427,6 @@ def test_an_attempt_cannot_be_bound_without_the_receipt_hash():
                             target_id="t", profile_id="p")
 
 
-# ====================================================== the sealed evidence ===
 def _sealed(bound, *, invocations=(), attempts=(), fixture=None):
     return dbd.seal_dispatch_evidence(
         bound, attempts=attempts, invocations=invocations,
@@ -524,10 +519,8 @@ def test_the_recorder_proves_a_local_only_dispatch_made_no_hosted_call():
         recorder.assert_no_hosted()
 
 
-# =================================================== capacity evidence (T7) ===
-# PS-640: capacity receipts must be part of the SEALED evidence, so removing or
-# tampering with the capacity fact the decision relied on is detectable — and the
-# capacity GATE (T1+T2) still refuses a hosted dispatch that has none.
+# Capacity receipts are part of the SEALED evidence, so tampering is detectable,
+# and the capacity gate still refuses a hosted dispatch that has none.
 
 HOSTED_PROFILE_ID = "clinepass-profile"
 HOSTED_MODEL = "cline-3.5-pro"
@@ -551,7 +544,7 @@ def _hosted_profile(**overrides):
 
 
 class _HostedCapabilityStore:
-    """A canonical PS-632 receipt whose locality is genuinely HOSTED.
+    """A canonical capability receipt whose locality is genuinely HOSTED.
 
     The default `TargetCapabilityReceipt.locality` is local-only, which would
     silently re-classify this profile as local and bypass the capacity gate —
@@ -636,7 +629,7 @@ def test_removing_capacity_receipts_invalidates_the_evidence():
 
 
 def test_hosted_dispatch_without_capacity_receipts_still_refuses():
-    # The gate from T1+T2 is exercised, not bypassed by the evidence layer.
+    # The capacity gate is exercised, not bypassed by the evidence layer.
     with pytest.raises(dr.RoutingRefused) as err:
         _hosted_bound(capacity_receipts=())
     assert err.value.code == dr.REFUSED_CAPACITY_MISSING
@@ -686,8 +679,7 @@ def test_hosted_evidence_rejects_disallowed_capacity_entitlement():
 
 def test_historical_hosted_evidence_uses_recorded_selection_time():
     bound = _hosted_bound(capacity_receipts=(_capacity_receipt(),))
-    # Test selection is pinned to NOW (2026-09-15); this receipt is stale by
-    # today's clock, but was usable at the time the recorded decision was made.
+    # Stale by today's clock, but usable at the recorded selection time (NOW).
     payload = _sealed(bound)
     ok, codes = dbd.validate_dispatch_evidence(payload)
     assert ok is True and codes == ()

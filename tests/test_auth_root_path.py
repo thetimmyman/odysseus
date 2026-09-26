@@ -1,14 +1,8 @@
-"""PS-602 / upstream #5807: auth evaluates the same path Starlette routes.
+"""Auth evaluates the same path Starlette routes.
 
-Two defects fixed together:
-1. ``_is_auth_exempt`` matched exempt prefixes with ``path.startswith(prefix)``,
-   so ``/staticfoo`` (or ``/something-static-y``) was treated as auth-exempt just
-   because it shares a string prefix with the ``/static`` mount. It now uses
-   segment-aware ``path_is_route_or_child``.
-2. ``AuthMiddleware`` used ``request.url.path`` (which carries the ASGI
-   ``root_path`` prefix when mounted) while Starlette routes on the stripped
-   path, so a deployment mount could change which policy applied. It now uses
-   ``get_application_route_path(request.scope)``.
+Exempt prefixes match by path segment, so ``/staticfoo`` is not covered by the
+``/static`` exemption, and the ASGI ``root_path`` is stripped before policy
+lookup so a deployment mount cannot change which policy applies.
 """
 import os
 import subprocess
@@ -66,9 +60,9 @@ def test_route_prefix_matching_is_segment_aware():
 
 
 def test_auth_exempt_prefix_is_segment_aware(tmp_path):
-    """Drive the real ``app._is_auth_exempt`` (in a subprocess so the heavy app
-    import never leaks into the main test process): a string-prefixed sibling
-    route must NOT match the ``/static`` exemption."""
+    """A string-prefixed sibling route must NOT match the ``/static`` exemption.
+
+    Runs in a subprocess so the heavy app import stays out of this process."""
     env = os.environ.copy()
     env.update({
         "AUTH_ENABLED": "true",

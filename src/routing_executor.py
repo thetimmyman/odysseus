@@ -1,17 +1,8 @@
-"""src/routing_executor.py — executes routing candidates for a task in scout
-mode: resolves each candidate's ModelEndpoint via
-endpoint_resolver.resolve_endpoint_by_id (auth/normalization already solved
-there, don't rebuild it), calls the model directly via
-llm_core.llm_call_with_usage (no agent/tool-calling loop -- passive routing
-has no file-editing tools), archives prompt/response to disk, and persists
-one RoutingModelRun row per attempt including failures/budget-blocks/skips.
+"""Execute routing candidates in scout mode, persisting a RoutingModelRun per attempt.
 
-Per architecture review: deliberately does NOT delegate to
-llm_call_with_fallback() -- that's stop-at-first-success failover semantics,
-but scout mode's job is fan-out-and-compare across the top-K candidates so
-Phase 2 scoring has multiple outputs to judge, and llm_call_with_fallback
-throws away per-attempt telemetry (including failures) that
-historical_score() needs."""
+Not llm_call_with_fallback(): scout mode fans out across the top-K candidates
+to compare them, and historical_score() needs every attempt's telemetry,
+including failures."""
 import hashlib
 import json
 import os
@@ -38,31 +29,23 @@ from src.routing_outcomes import export_after_commit
 
 
 def archive_root() -> str:
-    """data_root()/routing/runs — the per-run artifact archive. A function,
-    not a module constant (which this replaced), so the ODYSSEUS_DATA_DIR
-    override routing_workdir.data_root() honors is picked up per call: host
-    CLIs on the Framework must land artifacts under
-    /mnt/framework-data/odysseus-data, not the checkout's ./data."""
+    """Per-run artifact archive, resolved per call so ODYSSEUS_DATA_DIR applies."""
     return os.path.join(data_root(), "routing", "runs")
 
 _RATE_LIMIT_RE = re.compile(r"->\s*429\b")
 
 
 def _classify_llm_error(exc: Exception) -> dict:
-    """The only place an upstream HTTP status code survives is inside
-    llm_core's HTTPException-formatted message string
-    ("Upstream {url} -> {status}: ...") -- it isn't structured anywhere.
-    `refused` is deliberately absent here: a refusal is a normal 200 with
-    declining text, not detectable from an exception at all -- it stays
-    NULL on the RoutingModelRun row until Phase 2 manual scoring sets it."""
+    """Parse the status from llm_core's "Upstream {url} -> {status}" message.
+
+    `refused` is absent: a refusal is a normal 200 and is scored manually."""
     msg = str(exc)
     rate_limited = bool(_RATE_LIMIT_RE.search(msg))
     return {"rate_limited": rate_limited, "errored": not rate_limited, "error_message": msg[:2000]}
 
 
 def _git_head_sha(repo_path: str) -> str:
-    """Best-effort HEAD sha for the RunManifest. "" on ANY failure (no git,
-    not a repo, timeout) -- provenance recording must never block a run."""
+    """Best-effort HEAD sha; "" on any failure so provenance never blocks a run."""
     try:
         out = subprocess.run(
             ["git", "-C", repo_path, "rev-parse", "HEAD"],
@@ -78,12 +61,9 @@ def _sha256_hex(text: str) -> str:
 
 
 def _write_run_manifest(db, task, run_id: str, run_dir: str, bundle: dict) -> None:
-    """Spec Section 18 RunManifest: provenance snapshot written once per run,
-    both to the run's archive dir (survives DB loss) and as a
-    RunManifestRecord row (queryable next to the run). Prompt/response file
-    paths are per-ATTEMPT (one pair per candidate under run_dir), so the
-    manifest carries the run dir + a pointer note instead of a single pair;
-    the authoritative per-attempt paths live in RoutingModelRun.artifacts."""
+    """Write the run's provenance manifest to disk (survives DB loss) and the DB.
+
+    Per-attempt file paths live in RoutingModelRun.artifacts."""
     from core.database import RunManifestRecord
 
     constraints = json.loads(task.constraints) if task.constraints else []
@@ -107,8 +87,6 @@ def _write_run_manifest(db, task, run_id: str, run_dir: str, bundle: dict) -> No
         "policy": routing_policy.policy_versions(),
         "verificationMode": task.verification_mode or None,
         "dataSensitivity": task.data_sensitivity or "internal",
-        # Section 9: per-item ContextSource provenance (trust, redaction,
-        # injection risk, token counts) as built by routing_context.
         "context": {
             "sources": bundle.get("sources") or [],
             "redactionApplied": bool((bundle.get("metadata") or {}).get("redaction_applied")),
@@ -132,14 +110,7 @@ def _write_run_manifest(db, task, run_id: str, run_dir: str, bundle: dict) -> No
 
 
 def _role_for_profile(profile, task) -> str:
-    """Pick one representative role to render the prompt for. The TASK, not
-    the profile, determines which prompt template is appropriate -- a
-    bug_debug task needs the debugger prompt (asks for root cause + patch)
-    even from a profile that's also assigned "reviewer", so this first
-    tries ROLE_BY_TASK[task.task_type] (the same desired-roles list
-    route_task() scores candidates against) intersected with the profile's
-    own roles, before falling back to a fixed generic preference order for
-    task types with no strong role preference."""
+    """Pick the prompt role; the task's desired roles win over the profile's own."""
     roles = json.loads(profile.roles) if profile.roles else []
     for preferred in ROLE_BY_TASK.get(task.task_type, []):
         if preferred in roles:
@@ -151,10 +122,7 @@ def _role_for_profile(profile, task) -> str:
 
 
 def _skip(db, run_id, profile_id, model, status, reason, summaries, model_run_id=None):
-    """Persist a RoutingModelRun row for a candidate that never actually got
-    called (disabled/unresolvable/budget-blocked), so every candidate the
-    router considered leaves a trace -- not just the ones that made a real
-    API call."""
+    """Record a candidate that was never called, so every considered candidate leaves a trace."""
     from core.database import RoutingModelRun
 
     model_run_id = model_run_id or str(uuid.uuid4())
@@ -172,14 +140,9 @@ def _skip(db, run_id, profile_id, model, status, reason, summaries, model_run_id
 
 def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                         allow_premium_override: bool = False) -> dict:
-    """Fan out to the top `max_attempts` candidates from route_task()'s
-    ranked list, persisting a RoutingModelRun per attempt (including
-    failures/budget-blocks/skips). Returns a dict summarizing the RoutingRun
-    (also persisted to the DB).
+    """Fan out to the top `max_attempts` candidates and summarize the RoutingRun.
 
-    `allow_premium_override` bypasses ONLY the premium-specific budget caps
-    (check_premium_budget) -- the plain daily/weekly caps (check_general_budget)
-    always apply, to every candidate, regardless of this flag."""
+    `allow_premium_override` bypasses only the premium caps, never the general ones."""
     from core.database import RoutingModelProfile, RoutingRun
 
     run_id = str(uuid.uuid4())
@@ -196,21 +159,12 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
 
     try:
         bundle = build_context_bundle(task)
-        # Nested under run_id, not just task.id: the attempt counter restarts
-        # at 1 on every execute_candidates() call, so without this, re-running
-        # the same task_id (the exact "iterate and re-run" workflow
-        # load_or_replace_task exists to support) would silently overwrite a
-        # prior run's archived prompt/response/patch.diff files on disk --
-        # while old RoutingModelRun rows still point at that now-clobbered
-        # path via artifacts.response_text_path, corrupting the audit trail
-        # Phase 2 scoring depends on.
+        # Nested under run_id: attempt numbers restart per call, so a re-run
+        # would otherwise overwrite files that old rows still point at.
         run_dir = os.path.join(archive_root(), task.id, run_id)
         os.makedirs(run_dir, exist_ok=True)
 
-        # Section 18: manifest first, before any model is called -- a run that
-        # crashes mid-fan-out still has its provenance on disk and in the DB.
-        # A manifest failure propagates to the outer handler (fail-closed:
-        # no provenance record, no run).
+        # Manifest first, so a crash mid-fan-out keeps provenance; no manifest, no run.
         _write_run_manifest(db, task, run_id, run_dir, bundle)
 
         from src.promotional_dispatch import prefer_verified_free
@@ -333,11 +287,7 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                     headers=headers, timeout=120, bypass_cache=True,
                 )
                 inference_completed = True
-                # Some providers/models return a null `content` field (a genuine
-                # empty completion, not an HTTP error) -- record it as a real,
-                # scoreable "completed but empty" outcome rather than crashing on
-                # the file write below. A model that does this often should score
-                # poorly over time via historical_score(), not silently vanish.
+                # Null content is a scoreable empty completion, not an error.
                 response_text = response_text or ""
                 latency_ms = int((time.time() - t0) * 1000)
                 tokens_estimated = usage is None
@@ -370,9 +320,7 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                     artifacts["predicted_ceiling_exceeded"] = cost > Decimal(cash_quote["maximum_predicted_request_usd"])
                 patch_validation = None
                 patch_summary = None
-                # Phase 3 (extraction/shape-validation only -- no apply/verify/
-                # rollback, that's Phase 4): only meaningful for task types that
-                # would produce a patch at all.
+                # Patch extraction only; applies to patch-producing task types.
                 if task.task_type in _PATCH_SHAPED_TASK_TYPES:
                     diff_text = extract_diff(response_text)
                     patch_validation = validate_patch_shape(diff_text, task.repo_path)
@@ -438,10 +386,7 @@ def execute_candidates(db, task, candidates: List[dict], max_attempts: int,
                 break
 
     except Exception as e:
-        # Anything unexpected outside the per-candidate try/except (e.g.
-        # build_context_bundle itself raising on a malformed task) must still
-        # leave the RoutingRun in a terminal state -- otherwise it's stuck at
-        # status="running" forever with no way to detect or reconcile it.
+        # Always leave the RoutingRun terminal, never stuck at "running".
         run.status = "failed"
         run.spend_total_usd = spent_so_far
         run.spend_premium_usd = premium_spent

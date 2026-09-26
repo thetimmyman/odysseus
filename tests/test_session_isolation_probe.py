@@ -1,4 +1,4 @@
-"""Probe: does the fork leak messages between chats (#135/#267)?
+"""Probe: messages must not leak between chats.
 Tests RAM-level isolation of the fork's real Session model — no DB needed
 (Session.add_message only persists when a manager is set)."""
 from core.models import Session, ChatMessage
@@ -28,7 +28,7 @@ def test_many_sessions_no_shared_list_identity():
 
 
 def test_history_slicing_reassignment_isolated():
-    # mirrors chat_handler.py:295 / session_manager.py:287 truncation pattern
+    # mirrors the chat_handler / session_manager truncation pattern
     a, b = _s("a"), _s("b")
     for i in range(5):
         a.add_message(ChatMessage("user", f"a{i}"))
