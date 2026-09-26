@@ -100,7 +100,7 @@ def test_optional_offer_refs_roundtrip_and_tampering_invalidates_canonical_evide
         valid_from=(now-timedelta(hours=1)).isoformat(), valid_until=(now+timedelta(hours=1)).isoformat(),
         provenance=OfferProvenance("https://example.test", "a"*64, "fixture", stamp, 3600))
     quote = {"profile_id": "p-rtx", "provider": "ollama", "pool_id": capacity.pool_id,
-        "model": "qwen3.8:27b", "harness": "ollama", "chat_url": "http://192.168.1.130:11434/v1",
+        "model": "qwen3.8:27b", "harness": "ollama", "chat_url": "http://10.0.0.10:11434/v1",
         "usage_path": record.usage_path, "observed_at": stamp, "workload": WORK,
         "credential_sha256": "a" * 64, "endpoint_id": "ep-rtx", "transport_provider": "ollama", "account_identity": capacity.account_identity,
         "predicted_cash_usd": "0", "maximum_predicted_request_usd": "0", "offer_refs": [record.ref],

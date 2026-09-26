@@ -25,7 +25,7 @@ def prov(source="fixture", ref="fixture-1", ttl=3600, observed=NOW):
 
 
 def receipt(**overrides):
-    data = dict(provider="local", pool_id="local:rtx4500", account_identity="host:minipc",
+    data = dict(provider="local", pool_id="local:sim-gpu", account_identity="host:gpu-host",
                 authorization_class=AuthorizationClass.LOCAL_ENDPOINT, entitlement=Entitlement.LOCAL,
                 exposed_models=("qwen3.8:27b",), observed_at=NOW, ttl_seconds=300,
                 collector_id="test-collector", evidence_source="fixture", evidence_reference="local-1",
@@ -133,9 +133,9 @@ def test_registry_is_facts_only_and_keeps_separate_same_model_pools():
 
 def test_identity_aliases_are_rejected_instead_of_hashing_as_new_pools():
     with pytest.raises(CapacityError):
-        receipt(pool_id=" local:rtx4500")
+        receipt(pool_id=" local:sim-gpu")
     with pytest.raises(CapacityError):
-        receipt(account_identity="host:minipc ")
+        receipt(account_identity="host:gpu-host ")
     with pytest.raises(CapacityError):
         receipt(provider="provider name")
 
@@ -228,7 +228,7 @@ def test_torn_index_and_conflicting_active_history_fail_closed(tmp_path):
     store._append_line(first)
     store._append_line(second)
     with open(store.index_path, "w", encoding="utf-8") as handle:
-        handle.write("{\"local:rtx4500\":")
+        handle.write("{\"local:sim-gpu\":")
     with pytest.raises(CapacityStoreError): store.current(first.pool_id)
     with open(store.index_path, "w", encoding="utf-8") as handle:
         json.dump({first.pool_id: {"pool_id": first.pool_id, "receipt_hash": first.receipt_hash},
@@ -288,7 +288,7 @@ def test_concurrent_same_pool_writers_have_one_authoritative_winner(tmp_path):
     assert all(not process.is_alive() for process in processes)
     assert sorted(process.exitcode for process in processes) == [0, 1]
     store = ProviderCapacityStore(str(tmp_path))
-    assert store.current("local:rtx4500") is not None
+    assert store.current("local:sim-gpu") is not None
     assert store.verify()
 
 

@@ -352,9 +352,9 @@ def test_ollama_serving_context_reports_resident_window(monkeypatch):
     _patch_ps(monkeypatch, {"models": [{"model": "qwen3.8:27b", "context_length": 32768}]},
               record=calls)
     ctx = model_context._ollama_serving_context(
-        "http://192.168.1.130:11434/v1/chat/completions", "qwen3.8:27b")
+        "http://192.0.2.10:11434/v1/chat/completions", "qwen3.8:27b")
     assert ctx == 32768
-    assert calls == ["http://192.168.1.130:11434/api/ps"]
+    assert calls == ["http://192.0.2.10:11434/api/ps"]
 
 
 def test_ollama_serving_context_matches_on_name_field(monkeypatch):
@@ -368,7 +368,7 @@ def test_ollama_serving_context_none_when_model_not_resident(monkeypatch):
     """A cold model has no serving window — fall back, don't invent one."""
     _patch_ps(monkeypatch, {"models": [{"model": "some-other:8b", "context_length": 8192}]})
     assert model_context._ollama_serving_context(
-        "http://192.168.1.130:11434/v1", "qwen3.8:27b") is None
+        "http://192.0.2.10:11434/v1", "qwen3.8:27b") is None
 
 
 @pytest.mark.parametrize("payload,success", [
@@ -385,7 +385,7 @@ def test_ollama_serving_context_degrades_to_none(monkeypatch, payload, success):
     """Every malformed/unavailable shape returns None rather than raising."""
     _patch_ps(monkeypatch, payload, success)
     assert model_context._ollama_serving_context(
-        "http://192.168.1.130:11434/v1", "qwen3.8:27b") is None
+        "http://192.0.2.10:11434/v1", "qwen3.8:27b") is None
 
 
 def test_ollama_serving_context_survives_transport_error(monkeypatch):
@@ -394,7 +394,7 @@ def test_ollama_serving_context_survives_transport_error(monkeypatch):
 
     monkeypatch.setattr(model_context.httpx, "get", boom)
     assert model_context._ollama_serving_context(
-        "http://192.168.1.130:11434/v1", "qwen3.8:27b") is None
+        "http://192.0.2.10:11434/v1", "qwen3.8:27b") is None
 
 
 def test_query_context_length_prefers_serving_window_over_known_table(monkeypatch):
@@ -413,7 +413,7 @@ def test_query_context_length_prefers_serving_window_over_known_table(monkeypatc
 
     monkeypatch.setattr(model_context, "_ollama_serving_context", lambda u, m: 32768)
     assert model_context._query_context_length(
-        "http://192.168.1.130:11434/v1", "qwen3.8:27b") == (32768, True)
+        "http://192.0.2.10:11434/v1", "qwen3.8:27b") == (32768, True)
 
     monkeypatch.setattr(model_context, "_ollama_serving_context", lambda u, m: 262144)
     assert model_context._query_context_length(
@@ -431,5 +431,5 @@ def test_query_context_length_falls_back_to_known_when_cold(monkeypatch):
 
     monkeypatch.setattr(model_context.httpx, "get", fake_get)
     ctx, known = model_context._query_context_length(
-        "http://192.168.1.130:11434/v1", "qwen3.8:27b")
+        "http://192.0.2.10:11434/v1", "qwen3.8:27b")
     assert (ctx, known) == (131072, True)

@@ -26,13 +26,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src import bg_crossover  # noqa: E402
 
 
-# ── The two payloads actually observed in production ──────────────────────
+# ── Payloads matching the shapes observed in production ───────────────────
 
 # services/memory/memory_extractor.py::EXTRACT_SYSTEM_PROMPT contract.
 OBSERVED_MEMORY_EXTRACTION = (
     '[\n'
-    '  {"text": "The user\'s name is Timothy DeFreest.", "category": "identity"},\n'
-    '  {"text": "Career in defense business development, proposals, and pricing.", '
+    '  {"text": "The user\'s name is Alex Example.", "category": "identity"},\n'
+    '  {"text": "Works in logistics software, planning, and scheduling.", '
     '"category": "fact"}\n'
     ']'
 )

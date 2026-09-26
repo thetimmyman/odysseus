@@ -133,7 +133,7 @@
     "task": {
       "id": "fx-domain-03",
       "title": "k3s flannel iface drift",
-      "objective": "Diagnose the pod-network outage after the mini PC IP drift and pin by MAC",
+      "objective": "Diagnose a pod-network outage after a node IP change",
       "type": "ci_triage",
       "repoPath": ".",
       "risk": "high",

@@ -68,7 +68,7 @@ RECEIPT_FIXTURE = _load("ps638_receipt_pre_authority.json")
 DECISION_FIXTURE = _load("ps605_decision_pre_authority.json")
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
-PROFILE_ID = "rtx4500-ollama-qwen38-27b"
+PROFILE_ID = "sim-gpu-ollama-qwen38-27b"
 IMPLEMENTER_CAPS = frozenset({
     dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL, dr.CAP_EXACT_REFERENCE_SEMANTICS,
 })
@@ -79,24 +79,24 @@ def _decision_inputs():
     policy = dr.policy_snapshot(policy={"routingPolicyVersion": "1.2",
                                         "remoteSensitivityCeiling": "confidential"})
     profile = dr.make_target_profile(
-        target_id="local-rtx4500", profile_id=PROFILE_ID, provider="ollama",
-        host="minipc", runtime_kind="ollama", runtime_version="0.32.11",
+        target_id="local-sim-gpu", profile_id=PROFILE_ID, provider="ollama",
+        host="gpu-host", runtime_kind="ollama", runtime_version="0.32.11",
         model="qwen3.8:27b", model_digest="d94d9646", backend="cuda",
         endpoint_url="http://127.0.0.1:11434/v1", locality=dr.LOCALITY_LOCAL,
         roles=frozenset({dr.ROLE_IMPLEMENTER, dr.ROLE_REPAIR}),
-        tools=frozenset({"write_file"}), network_policy="tailnet-loopback",
+        tools=frozenset({"write_file"}), network_policy="private-loopback",
         budget_class="dev", cost_rank=0,
     )
     receipt = dr.make_legacy_capability_view(
-        receipt_id="cap-rtx-1", profile_id=PROFILE_ID, target_id="local-rtx4500",
+        receipt_id="cap-rtx-1", profile_id=PROFILE_ID, target_id="local-sim-gpu",
         capabilities=IMPLEMENTER_CAPS, exactness=dr.EXACTNESS_EXACT,
         observed_at="2026-09-15T11:00:00+00:00", ttl_s=86400, healthy=True,
-        host="minipc", runtime_version="0.32.11", model_digest="d94d9646",
+        host="gpu-host", runtime_version="0.32.11", model_digest="d94d9646",
     )
     request = dr.RoutingRequest(
         domain="general_swe", role=dr.ROLE_IMPLEMENTER, run_id="run-fixture-2",
         packet_id="P-fixture-2", execution_package_hash="pkg-hash-fixture-2",
-        required_tools=("write_file",), network_policy="tailnet-loopback",
+        required_tools=("write_file",), network_policy="private-loopback",
         budget_class="dev", write_scope=("src/thing.py",),
     )
     return request, profile, receipt, policy
@@ -110,11 +110,11 @@ def _select(**kwargs):
 
 
 AUTHORITY_BLOCK = {
-    "requesting_principal": "tim.defreest@gmail.com",
+    "requesting_principal": "alex@example.com",
     "acting_principal": "agent:package-b-worker",
     "action": "dispatch",
     "resource": "src/dispatch_routing.py",
-    "grant_id": "grant-ps664-f1",
+    "grant_id": "grant-test-1",
     "grant_expires_at": "2026-12-31T00:00:00+00:00",
 }
 
