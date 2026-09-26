@@ -123,7 +123,7 @@ PROFILES = [
     },
     # Placeholders from the source spec's Section 5 registry -- no API
     # key/endpoint registered for these yet, seeded disabled so
-    # routing_engine never routes to them until Tim adds real credentials.
+    # routing_engine never routes to them until an operator adds real credentials.
     {
         "id": "glm-5.2",
         "endpoint_name": None,
