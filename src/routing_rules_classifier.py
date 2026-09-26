@@ -1,18 +1,8 @@
-"""Arm 0 — deterministic routing classifier (no LLM).
+"""Deterministic rules + lexicon routing classifier (no LLM).
 
-A rules + lexicon classifier over the semi-structured `OdysseusTask` payload
-(fixture `task`), emitting a full, schema-valid `CoordinatorDecision` JSON
-(schemaVersion 0.5) that the pure `run_benchmark` engine can score. This is the
-NULL arm of the routing-coordinator benchmark (ROUTING-COORDINATOR-MODEL-RESEARCH.md
-§6.5): if it clears the hard gates, NO model is needed for routine triage.
-
-Design: deterministic only. Every field is a low-cardinality enum; the input is
-`{title, objective, type, repoPath, inputs.files[], inputs.logs[]/prompt}`. Signals
-are lexical (filenames + keywords). The policy gate is a HARD post-hoc rule: a
-`restricted`/`secret` (or "uncertain, possibly sensitive") classification is forced
-to a local backend, never remote, regardless of what the lexicon would otherwise
-recommend. Uncertain inputs get LOW confidence so `uncertainty_handling` passes
-via the existing "conf <= maxConfidenceForUncertain" path.
+The null arm of the coordinator benchmark: emits a schema-valid
+CoordinatorDecision from lexical signals. Restricted/secret or possibly
+sensitive tasks are always forced local. Uncertain inputs get low confidence.
 """
 
 import json
@@ -20,7 +10,7 @@ from typing import Any, Dict, List
 
 SCHEMA_VERSION = "0.5"
 
-# --- Lexicons (signals -> enum labels). Order matters: first hit wins. ---
+# Lexicon order matters: first hit wins.
 
 # filename / path fragments -> domain
 DOMAIN_SIGNALS: List[tuple] = [
@@ -71,9 +61,7 @@ VERIFMODE_SIGNALS: List[tuple] = [
 
 # keyword -> risk
 RISK_SIGNALS: List[tuple] = [
-    # Mostly a non-gating metadata field; real traffic is overwhelmingly 'low'.
-    # Raise only on unambiguous danger (release/security), never on 'poc'/'restricted'
-    # which are low-risk in practice (sensitivity is a SEPARATE field).
+    # Raise only on unambiguous danger; sensitivity is a separate field.
     (("sign off", "release readiness", "release_blocking", "v2", "ship",
       "auth bypass", "signing key", "token-signing", "vault unseal", "master key"),
      "release_blocking"),
@@ -88,7 +76,6 @@ BACKEND_LOCAL_ONLY = ("vault", "unseal", "signing", "secret", "token-signing")
 
 
 def _text(task: Dict[str, Any]) -> str:
-    """Concatenate all textual signal surface, lowercased."""
     parts = [
         str(task.get("title", "")),
         str(task.get("objective", "")),
@@ -114,13 +101,10 @@ def _first_hit(signals: List[tuple], text: str, default: str) -> str:
 
 
 def classify(task: Dict[str, Any]) -> Dict[str, Any]:
-    """Deterministic classify of one task payload -> decision dict."""
     text = _text(task)
 
-    # --- domain ---
     domain = _first_hit(DOMAIN_SIGNALS, text, "general_swe")
 
-    # --- dataSensitivity (the gate field) ---
     if any(k in text for k in SENSITIVITY_SECRET):
         sensitivity = "secret"
     elif any(k in text for k in SENSITIVITY_RESTRICTED):
@@ -130,19 +114,13 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
     elif any(k in text for k in SENSITIVITY_PUBLIC):
         sensitivity = "public"
     else:
-        # no signal -> conservative default. "internal" is the safe neutral here
-        # (not public); a genuinely ambiguous/secret-shaped input is caught by the
-        # keyword lexicons above, and the policy gate below still forces local.
+        # No signal: "internal" is the safe neutral default, not public.
         sensitivity = "internal"
 
     task_type = _first_hit(TASKTYPE_SIGNALS, text, "implementation")
     ver_mode = _first_hit(VERIFMODE_SIGNALS, text, "analysis_only")
 
-    # --- risk: key on the ACTION (task_type), not just the TOPIC ---
-    # Review/analysis/docs tasks are non-mutating => inherently low-risk even when
-    # the SUBJECT contains a scary phrase ("path traversal PoC verification" is a
-    # low-risk review, not a high-risk exploit). Only mutating types can be raised
-    # by danger keywords.
+    # Risk keys on the action: only mutating task types can be raised by danger keywords.
     non_mutating = task_type in ("diff_review", "feature_review", "feature_plan",
                                   "analysis_only") or ver_mode in ("analysis_only",)
     if non_mutating:
@@ -150,9 +128,8 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
     else:
         risk = _first_hit(RISK_SIGNALS, text, "low")
 
-    # --- backend + HARD policy gate ---
     if sensitivity in ("secret", "restricted"):
-        # NEVER remote. Force local even if a tacticus/token keyword is present.
+        # Never remote, whatever the keywords suggest.
         backend = "local_framework_coordinator_only"
     elif any(k in text for k in BACKEND_ABSIS):
         backend = "absis_tacticus_job_queue"
@@ -161,8 +138,7 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
     else:
         backend = "odysseus_general_swe"
 
-    # --- approval (deterministic rule): key on RISK/TASKTYPE/VERMODE, NOT sensitivity.
-    # The harness wants approval=False for analyze/review tasks on restricted data.
+    # Approval keys on risk/task type/verification mode, not sensitivity.
     approval_required = (
         risk == "release_blocking"
         or task_type == "release_readiness"
@@ -173,7 +149,6 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
         "admin" if approval_required else "none"
     )
 
-    # --- confidence: low on vagueness, so uncertainty_handling passes ---
     vague = len(text.strip()) < 24 or any(v in text for v in (
         "make it better", "look into", "weird thing", "improve", "later",
     ))
@@ -184,7 +159,6 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
         domain = "unknown"
         task_type = "unknown"
 
-    # --- lead role: scout on vague, else implementer/planner by type ---
     if vague:
         lead_role = "scout"
     elif task_type in ("diff_review", "feature_review", "analysis_only"):
@@ -216,9 +190,7 @@ def classify(task: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def decide(task_payload: Dict[str, Any]) -> str:
-    """decide_fn contract: task_payload -> raw_text (JSON string)."""
     decision = classify(task_payload)
-    # Ensure taskId echoes the payload id even if classify didn't resolve it.
     decision["taskId"] = task_payload.get("id", decision["taskId"])
     return json.dumps(decision)
 
@@ -232,7 +204,6 @@ if __name__ == "__main__":
         d = json.loads(decide(fx["task"]))
         c = d["classification"]
         exp = fx["expected"]
-        # count correct on the two highest-stakes fields
         ok_sens = c["dataSensitivity"] == exp.get("dataSensitivity")
         ok_backend = d["routeRecommendation"]["backend"] == exp.get("backend")
         if ok_sens and ok_backend:

@@ -1,25 +1,9 @@
-"""Probe #2: end-to-end SessionManager isolation on a temp DB — persistence
-+ reload across two owners. Covers the path the RAM-only probe didn't.
+"""End-to-end SessionManager isolation on a temp DB: persistence + reload
+across two owners.
 
-History (POS-AI-29, 2026-08-25 cross-stack audit): both tests here were
-marked `xfail(strict=False)` after failing a full-suite run with
-`no such table: sessions`. The recorded theory was "an earlier test module
-disposes or re-points the engine". The disposal half was wrong — there is no
-`.dispose()` call anywhere in this repository — and the re-pointing half was
-already handled by binding `create_all` to the live Session.
-
-The actual cause was the pool. `sqlite:///:memory:` (what conftest configures)
-does not live in a file; it lives inside a single DBAPI connection.
-SQLAlchemy's default pool for an in-memory SQLite URL is `SingletonThreadPool`,
-which hands out **one connection per thread** — so a table created on one
-thread is invisible from any other, and the query dies on
-`no such table: sessions`. `core.database` now selects `StaticPool` for
-in-memory SQLite (one shared connection), which is the supported way to make
-`:memory:` behave like a real database. See the comment at the engine
-construction in core/database.py.
-
-`test_schema_is_visible_across_threads` below is the regression guard for that
-root cause: it fails if the pooling choice ever regresses.
+`sqlite:///:memory:` lives inside one DBAPI connection, so `core.database` must
+use `StaticPool`; the default `SingletonThreadPool` gives each thread its own
+empty database. `test_schema_is_visible_across_threads` guards that choice.
 """
 import threading
 
@@ -63,7 +47,7 @@ def _fresh_mgr():
 
 
 def test_schema_is_visible_across_threads():
-    """Regression guard for the POS-AI-29 root cause.
+    """Guards the in-memory SQLite pool choice.
 
     With SingletonThreadPool (the default for `sqlite:///:memory:`) each thread
     gets its own empty database and this fails. The app is multi-threaded —

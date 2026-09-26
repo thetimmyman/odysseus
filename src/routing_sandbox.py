@@ -1,18 +1,9 @@
-"""src/routing_sandbox.py — Phase 3 sandboxed command execution (spec Section
-15): verification commands run inside a throwaway Docker container with
-network disabled, a filesystem allowlist of exactly ONE mount (the temp
-worktree at /work, rw) plus an ephemeral tmpfs /tmp, all capabilities
-dropped, no-new-privileges, CPU/memory/pids limits from policy, a wall-clock
-kill, and per-stream output-size truncation. No host secrets are mounted --
-the container sees only the worktree copy.
+"""Sandboxed verification commands in a throwaway Docker container.
 
-Commands are exec'd from an argv list (shlex.split, NO shell), must match the
-policy's sandbox.allowedCommands prefix allowlist, and shell metacharacters
-are rejected outright. Every invocation attempt -- including DENIED ones --
-is persisted as a ToolCallRecord row when a db session is provided, so the
-audit trail shows what a run *tried* to run, not just what policy let
-through. Nothing here can commit/merge/push: the container has no network,
-no credentials, and only the disposable worktree is writable."""
+No network, one rw mount (the temp worktree at /work), tmpfs /tmp, all
+capabilities dropped, resource and time limits, truncated output. Commands run
+without a shell and must match the allowlist. Every attempt, including denied
+ones, is recorded as a ToolCallRecord."""
 import hashlib
 import os
 import shlex
@@ -31,18 +22,10 @@ DEFAULT_SANDBOX = {
     "pidsLimit": 256,
     "wallClockSeconds": 600,
     "maxOutputBytes": 1048576,
-    # SELinux relabel for the worktree bind mount ("z" = shared, the same flag
-    # the compose volumes carry). Harmless on non-SELinux hosts (Docker ignores
-    # it). Set "" to disable.
+    # SELinux relabel for the bind mount; ignored elsewhere. "" disables.
     "mountLabel": "z",
-    # Run the container process as the HOST uid:gid instead of container-root.
-    # Required whenever --cap-drop ALL is in effect: dropping ALL removes
-    # CAP_DAC_OVERRIDE, so a container-root process can no longer bypass file
-    # permissions on the bind-mounted worktree (owned by the host user) and
-    # every write -- __pycache__, .pytest_cache, a .pyc -- fails EACCES. Also
-    # strictly safer (no root in the container) and keeps worktree files
-    # host-cleanable. Set False for environments where host-uid mapping does
-    # not apply (Docker Desktop / rootless with userns-remap).
+    # Run as the host uid:gid: with --cap-drop ALL, container-root can't write the
+    # host-owned worktree. Set False where uid mapping doesn't apply (rootless).
     "runAsHostUser": True,
     "allowedCommands": [
         "pytest",
@@ -57,22 +40,17 @@ DEFAULT_SANDBOX = {
     ],
 }
 
-# Rejected anywhere in a command string. Commands run WITHOUT a shell, so
-# none of these would expand anyway -- but rejecting them outright (rather
-# than letting e.g. `pytest; rm -rf /` reach pytest as literal args) keeps
-# the allowlist decision legible and fails obviously-hostile input closed.
+# No shell expands these, but rejecting them keeps hostile input failing closed.
 _SHELL_METACHARACTERS = (";", "|", "&", "`", "$(", ">", "<", "\n", "\r")
 
 
 def _utcnow() -> datetime:
-    """Naive UTC, matching core.database.utcnow_naive's convention for
-    DateTime columns (datetime.utcnow is deprecated on 3.12+)."""
+    """Naive UTC, matching core.database.utcnow_naive."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _sandbox_config(policy: Optional[dict] = None) -> dict:
-    """The effective sandbox config: policy["sandbox"] merged over defaults
-    (missing keys fall back per-key, so a partial policy stays safe)."""
+    """policy["sandbox"] merged per-key over defaults, so a partial policy stays safe."""
     if policy is None:
         policy = routing_policy.load_policy()
     overrides = policy.get("sandbox") or {}
@@ -82,9 +60,7 @@ def _sandbox_config(policy: Optional[dict] = None) -> dict:
 
 
 def is_command_allowed(cmd: str, policy: Optional[dict] = None) -> bool:
-    """True iff `cmd` carries no shell metacharacters and its normalized
-    prefix matches a sandbox.allowedCommands entry (entry == cmd, or cmd
-    starts with entry + " ")."""
+    """No shell metacharacters, and cmd equals an allowed entry or starts with entry + " "."""
     if not cmd or not cmd.strip():
         return False
     if any(meta in cmd for meta in _SHELL_METACHARACTERS):
@@ -99,8 +75,7 @@ def is_command_allowed(cmd: str, policy: Optional[dict] = None) -> bool:
 def _record_tool_call(db, *, run_id, cmd, worktree_path, allowed, started_at,
                       completed_at, exit_code, stdout_path, stderr_path,
                       policy_decision_id) -> Optional[str]:
-    """Persist one ToolCallRecord (spec Section 15 audit row). Returns the
-    row id, or None when no db session was provided."""
+    """Persist one ToolCallRecord; None when no db session was provided."""
     if db is None:
         return None
     from core.database import ToolCallRecord
@@ -134,19 +109,10 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
                    run_id: Optional[str] = None, db=None,
                    policy_decision_id: Optional[str] = None,
                    artifacts_dir: Optional[str] = None) -> dict:
-    """Run one allowlisted command inside the network-less container, the
-    worktree mounted rw at /work as the ONLY host mount. Returns a dict:
+    """Run one allowlisted command in the network-less container.
 
-        {"allowed", "exit_code", "timed_out", "error", "stdout_path",
-         "stderr_path", "stdout_truncated", "stderr_truncated",
-         "tool_call_record_id", "container_name", "cmd"}
-
-    exit_code is None when the command never produced one (denied / timed out
-    / docker missing). "error" == "docker_unavailable" means infrastructure
-    failure, NOT command failure -- callers must not score it against the
-    patch. stdout/stderr are truncated to sandbox.maxOutputBytes each and
-    written under `artifacts_dir` (the run's archive dir; defaults to
-    data_root()/routing/runs/_sandbox for ad-hoc calls)."""
+    "error" == "docker_unavailable" is an infrastructure failure, not a command
+    failure, and must not be scored against the patch."""
     cfg = _sandbox_config(policy)
     if policy_decision_id is None:
         policy_decision_id = _default_policy_decision_id()
@@ -160,7 +126,6 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
     }
 
     if not is_command_allowed(cmd, policy):
-        # Spec: DENIED attempts are recorded too, exit_code None.
         result["error"] = "command_not_allowed"
         result["tool_call_record_id"] = _record_tool_call(
             db, run_id=run_id, cmd=cmd, worktree_path=worktree_path,
@@ -191,9 +156,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         "--security-opt", "no-new-privileges",
     ]
     if cfg.get("runAsHostUser", True) and hasattr(os, "getuid"):
-        # Match the host owner of the bind-mounted worktree so writes succeed
-        # under --cap-drop ALL (no CAP_DAC_OVERRIDE). HOME=/tmp keeps tools
-        # that touch a home cache off the read-only container root.
+        # HOME=/tmp keeps home-cache writes off the read-only container root.
         argv += ["--user", f"{os.getuid()}:{os.getgid()}", "--env", "HOME=/tmp"]
     argv += [
         cfg["image"],
@@ -208,8 +171,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         stdout_bytes = proc.stdout or b""
         stderr_bytes = proc.stderr or b""
     except subprocess.TimeoutExpired as e:
-        # subprocess kills the docker CLIENT on expiry; the container itself
-        # keeps running unless explicitly killed by name.
+        # A timeout kills only the docker client; the container must be killed by name.
         result["timed_out"] = True
         result["error"] = f"wall clock limit of {cfg['wallClockSeconds']}s exceeded"
         stdout_bytes = e.stdout or b""

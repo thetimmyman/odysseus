@@ -1,13 +1,6 @@
-// static/js/devPreview.js — Dev Preview tool: pick an app under the repos root,
-// install deps, start its dev server inside the container, and preview it in an
-// iframe. Admin-only server-side. Mirrors crewPanel/terminal: a Tools overlay,
-// cookie _api, XSS-safe (_esc / textContent), polled status + logs.
-//
-// The dev server is published on the Framework's LOOPBACK only (127.0.0.1) — NOT
-// the LAN — so preview is over an SSH tunnel (this UI shows the command). The
-// status poll also reconciles ORPHANS: if the manager lost track of a server but
-// one is still listening, the backend reports it "unmanaged" and we surface a
-// Stop so the user can always reap it.
+// Dev Preview: install and run an app's dev server in the container and preview it.
+// The server listens on loopback only. An "unmanaged" orphan still listening
+// gets a Stop button so it can always be reaped.
 
 let API_BASE = '';
 let _open = false;
@@ -48,9 +41,7 @@ async function _api(path, opts) {
 function _post(path, body) {
   return _api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 }
-// PUT/DELETE for the masked env writes. The browser auto-attaches Origin +
-// Sec-Fetch-Site on these same-origin requests, satisfying the server's CSRF
-// guard; credentials:'same-origin' carries the admin cookie.
+// Same-origin requests carry Origin + Sec-Fetch-Site for the server's CSRF guard.
 function _put(path, body) {
   return _api(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 }
@@ -58,7 +49,6 @@ function _del(path) {
   return _api(path, { method: 'DELETE' });
 }
 
-// --- apps rail ---------------------------------------------------------------
 async function _loadApps() {
   const list = _el('preview-apps');
   if (!list) return;
@@ -104,7 +94,6 @@ async function _loadApps() {
       row.appendChild(meta);
       list.appendChild(row);
     }
-    // keep the selection's main panel fresh
     if (_selected) _renderMain();
   } catch (e) {
     if (e.status === 403) { list.innerHTML = '<div class="crew-empty">Dev Preview is admin-only — sign in on the desktop.</div>'; return; }
@@ -114,7 +103,6 @@ async function _loadApps() {
 
 function _selApp() { return _apps.find((a) => a.id === _selected) || null; }
 
-// --- main panel --------------------------------------------------------------
 function _renderMain() {
   const app = _selApp();
   const empty = _el('preview-empty');
@@ -130,7 +118,6 @@ function _renderMain() {
   if (app.remote) mbits.push(app.remote);
   meta.textContent = mbits.join('  ·  ');
 
-  // script selector (dev scripts only)
   const sel = _el('preview-script');
   const wantScripts = (app.dev_scripts && app.dev_scripts.length) ? app.dev_scripts : ['dev'];
   sel.innerHTML = '';
@@ -153,9 +140,7 @@ function _renderMain() {
   portEl.textContent = running ? (':' + app.port) : (':' + _previewPort);
   portEl.className = 'preview-port' + (running ? ' is-live' : '');
 
-  // The dev server is loopback-only; preview goes through the admin-gated
-  // in-Odysseus proxy on _proxyPort (same host, cookie carried cross-port),
-  // which strips frame headers so the app renders right here in an iframe.
+  // Preview goes through the admin-gated proxy, which strips frame headers.
   const frame = _el('preview-frame');
   const openBtn = _el('preview-open-btn');
   const fe = _el('preview-frame-empty');
@@ -181,9 +166,7 @@ function _renderMain() {
   _renderAppConfig();
 }
 
-// --- per-app config (read-only: install cmd, start scripts, env status) ------
-// Fetches /app/{id} (install command, env-file KEY status — never values) and
-// caches it; _renderAppConfig reads the cache so the poll loop stays cheap.
+// Env key status only, never values; cached so the poll loop stays cheap.
 async function _loadAppDetail(id) {
   if (!id) return;
   try {
@@ -301,8 +284,7 @@ function _envKeyRow(name, status, extra, editable) {
   tag.textContent = extra ? 'extra' : status;
   row.appendChild(tag);
   if (editable) {
-    // Vault-source button: only for mapped keys that aren't set yet. Fetches the
-    // value server-side (k3s/Vaultwarden via ssh) — never enters the browser.
+    // Values are sourced server-side and never enter the browser.
     const vsrc = _vaultKeys[name];
     if (vsrc && (status === 'missing' || status === 'blank')) {
       const v = document.createElement('button');
@@ -340,7 +322,7 @@ async function _envSourceVault(key) {
   }
 }
 
-// --- vault-map editor (manage key -> {source, locator}; LOCATORS only) --------
+// Vault map holds locators only, never values.
 async function _toggleVaultMap() {
   _vaultMapOpen = !_vaultMapOpen;
   const panel = _el('preview-vaultmap-panel');
@@ -453,7 +435,6 @@ async function _vaultMapRemove(key) {
   } catch (e) { _err('Remove failed: ' + (e.message || e)); }
 }
 
-// --- masked write: inline form, poll-protected (values never echoed) ---------
 const _ENV_KEY_RX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function _envBeginEdit(key, isAdd) {
@@ -473,8 +454,7 @@ function _envBeginEdit(key, isAdd) {
     form.appendChild(keyInput);
   }
   const val = document.createElement('input');
-  // masked, autofill-proofed — the password manager's save prompt is dodged by
-  // clearing + removing the node on submit/cancel.
+  // Clearing and removing the node on submit/cancel avoids password-manager save prompts.
   val.type = 'password'; val.placeholder = 'value (write-only)';
   val.className = 'preview-env-valinput';
   val.autocomplete = 'new-password'; val.spellcheck = false;
@@ -502,7 +482,6 @@ function _envBeginEdit(key, isAdd) {
 }
 
 function _envScrub(inputEl) {
-  // best-effort wipe of the value reference from the DOM input
   try { inputEl.value = ''; inputEl.remove(); } catch { /* noop */ }
 }
 
@@ -518,8 +497,7 @@ async function _envSubmit(key, valInput) {
     _toast('Saved ' + key);            // key name only — never the value
     await _loadAppDetail(app.id);
   } catch (e) {
-    // e.message is the server's STATIC reason (e.g. "value may not contain '$'")
-    // — it never contains the value.
+    // The server's reason is static and never contains the value.
     _err('Save failed: ' + (e.message || e));
   }
 }
@@ -561,7 +539,6 @@ function _selectApp(id) {
   _refreshLogs();
 }
 
-// --- actions -----------------------------------------------------------------
 async function _install() {
   const app = _selApp();
   if (!app) return;
@@ -604,7 +581,6 @@ async function _stop() {
   } catch (e) { _err('Stop failed: ' + (e.message || e)); }
 }
 
-// --- logs --------------------------------------------------------------------
 function _setLogsOpen(openIt) {
   const d = _el('preview-logs-wrap');
   if (d) d.style.display = openIt ? '' : 'none';
@@ -627,7 +603,6 @@ async function _refreshLogs() {
   } catch { /* noop */ }
 }
 
-// --- poll loop ---------------------------------------------------------------
 async function _tick() {
   if (!_open) return;
   try {
@@ -635,13 +610,10 @@ async function _tick() {
     _curRun = s.running;
     _renderUnmanaged(s.running);
   } catch { /* noop */ }
-  // cheap refresh of the rail (install/running flips) + logs
   await _loadApps();
   await _refreshLogs();
 }
 
-// An orphaned server (manager lost _running but the port is still live) — give
-// the user an authoritative Stop.
 function _renderUnmanaged(run) {
   const el = _el('preview-unmanaged');
   if (!el) return;
@@ -663,7 +635,6 @@ async function _stopUnmanaged() {
   }
 }
 
-// --- overlay -----------------------------------------------------------------
 function _openOverlay() {
   const ov = _el('preview-overlay');
   if (!ov) return;
@@ -683,7 +654,6 @@ function _closeOverlay() {
   if (frame) { frame.removeAttribute('src'); frame.dataset.url = ''; }
 }
 
-// --- read-only Settings + Security Status panel ------------------------------
 async function _toggleStatus() {
   _statusOpen = !_statusOpen;
   const panel = _el('preview-status-panel');
@@ -707,8 +677,7 @@ async function _loadStatusPanel() {
 }
 function _secRow(label, ok, note, kind) {
   const div = document.createElement('div');
-  // 'configured' items are a deploy-config fact this process can't verify live,
-  // so they get a neutral info marker — NOT a green ✓ that overstates proof.
+  // 'configured' can't be verified live, so it gets a neutral marker, not a ✓.
   const cls = kind === 'configured' ? 'is-cfg'
     : (ok === true ? 'is-ok' : ok === false ? 'is-bad' : 'is-na');
   div.className = 'preview-sec-row ' + cls;

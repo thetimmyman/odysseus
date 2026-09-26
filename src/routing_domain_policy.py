@@ -1,20 +1,9 @@
-"""src/routing_domain_policy.py — deterministic per-domain routing/privacy policy (PS-605).
+"""Deterministic, fail-closed per-domain routing and privacy policy.
 
-A routing decision is evaluated over (domain, role, model, provider, execution
-mode, permissions). This module owns the *domain* slice: which providers a
-domain permits, whether it may use hosted (remote) execution, and how fallback /
-model substitution behave. Declarative, centrally evaluated, fail-closed.
-
-The #1 rule: sensitive domains (personal / health / finance / taxes) default to
-LOCAL execution and deny hosted targets. There is no global
-``allow_unsafe_fallback`` switch — a missing local target is a typed
-:class:`PolicyDenied`, never a silent route of private content to a hosted
-service. Provider resilience is subordinate to privacy, budget and permissions.
-
-Pure and dependency-light on purpose: the routing engine and the coordinator can
-both import it without the DB/executor stack. Domain policies are
-operator-overridable via the versioned ``routing_policy.json`` ``domains`` key
-(read through ``src.routing_policy.load_policy``).
+Sensitive domains default to local execution and deny hosted targets; a missing
+local target raises :class:`PolicyDenied` rather than falling back to a hosted
+service. Kept dependency-light so the engine and coordinator can both import it.
+Operators override policies via the ``domains`` key of ``routing_policy.json``.
 """
 from __future__ import annotations
 
@@ -25,8 +14,7 @@ from datetime import datetime, timezone
 from typing import Dict, FrozenSet, List, Optional, Sequence
 from urllib.parse import urlparse
 
-# Providers that execute on the machine the data already lives on. Anything not
-# listed is treated as HOSTED (remote) — fail closed on the unknown.
+# Local providers; anything unlisted is treated as hosted (fail closed).
 LOCAL_PROVIDERS: FrozenSet[str] = frozenset({
     "ollama", "local", "vllm", "llama.cpp", "lmstudio", "framework", "absis",
 })
@@ -36,7 +24,6 @@ SENSITIVE_LOCAL_DOMAINS: FrozenSet[str] = frozenset({
     "personal", "health", "finance", "taxes",
 })
 
-#: Development / engineering domains — hosted execution is permitted by default.
 DEV_DOMAINS: FrozenSet[str] = frozenset({
     "dev", "general_swe", "tacticus_analytics", "infra", "data_analysis",
     "documentation",
@@ -67,7 +54,6 @@ class PolicyDenied(Exception):
 
 @dataclass(frozen=True)
 class DomainPolicy:
-    """Declarative per-domain rules."""
 
     domain: str
     local_only: bool = False
@@ -249,12 +235,7 @@ def select_route(
     sensitivity: str = "internal",
     policy: Optional[DomainPolicy] = None,
 ) -> RoutingDecision:
-    """Choose the first policy-approved provider; raise :class:`PolicyDenied` if none.
-
-    Fallback never escapes the domain's policy: every candidate is evaluated by
-    the SAME policy, and if all are refused the result is a typed failure, never
-    a downgrade to an unapproved provider.
-    """
+    """First policy-approved provider, else :class:`PolicyDenied`; never a downgrade."""
     pol = policy or domain_policy(domain)
     denials: List[str] = []
     for cand in candidates or []:

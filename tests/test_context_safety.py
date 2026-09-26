@@ -25,10 +25,6 @@ import pytest
 import src.context_safety as cs
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _collect(gen):
     async def _run():
         return [c async for c in gen]
@@ -148,10 +144,6 @@ def _patch_loop(monkeypatch, *, window, tool_result_chars, max_rounds,
     return run, checks, compact_state, model_calls
 
 
-# ---------------------------------------------------------------------------
-# Budget semantics / reserve (defect 2, 3, 4)
-# ---------------------------------------------------------------------------
-
 def test_max_tokens_4096_never_reserves_only_2048():
     """Defect 2: the old cap `min(max(max_tokens or 1024, 512), 2048)` reserved
     2048 while requesting max_tokens=4096 — self-defeating. The reserve must
@@ -221,10 +213,6 @@ def test_unknown_window_is_not_falsely_blocked():
     )
     assert result.state == cs.STATE_OK
 
-
-# ---------------------------------------------------------------------------
-# enforce_context_safety lifecycle (requirements 4-7)
-# ---------------------------------------------------------------------------
 
 def _enforce(messages, window, *, max_tokens=4096, compact_fn=None,
              **kwargs):
@@ -356,10 +344,6 @@ def test_context_blocked_reports_round_and_reason_for_telemetry():
     assert result.generation_reserve >= window
     assert result.reason
 
-
-# ---------------------------------------------------------------------------
-# Multi-round agent-loop wiring (defect 1, requirements 1/2/7/8)
-# ---------------------------------------------------------------------------
 
 def test_context_is_checked_on_every_round_not_just_round_1(monkeypatch):
     """Defect 1 / requirement 2: context maintenance runs before EVERY model

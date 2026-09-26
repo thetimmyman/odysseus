@@ -1,21 +1,8 @@
-"""src/routing_coordinator_decide.py — server-side coordinator decision
-generation (spec Phase 8, closing the coordinator loop).
+"""Server-side coordinator decision generation.
 
-The /coordinator/wrap route only WRAPS a decision that was produced elsewhere
-(external provider). This module produces one FROM the resident coordinator
-endpoint and runs it through the exact same deterministic wrapper + audit
-archive path, so an LLM-generated decision that is malformed or policy-illegal
-falls back truthfully and is audited identically to a pasted one.
-
-Consumed by:
-  - routes.routing_harness_routes POST /api/harness/coordinator/decide
-  - scripts/odysseus-coordinator decide  (host-side)
-
-Both build a CoordinatorClient.from_policy(policy); this module DOES NOT rewrite
-that client — it consumes decide()/repair_fn(). Endpoint DB/network failures
-degrade to the deterministic tier (never a 500): decide() raising is caught and
-turned into empty raw output, which the wrapper treats as a parse failure and
-routes down the fallback chain.
+A generated decision goes through the same wrapper and audit path as a pasted
+one. Endpoint failures become empty raw output, which falls down the fallback
+chain instead of returning a 500.
 """
 from __future__ import annotations
 
@@ -31,17 +18,11 @@ from src.routing_coordinator import (
 
 
 class ExternalProviderError(RuntimeError):
-    """coordinator.provider is 'external' — decisions arrive via /coordinator/wrap,
-    not generated here. The route maps this to a 400; the CLI to a nonzero exit."""
+    """coordinator.provider is 'external', so decisions are not generated here."""
 
 
 def _redact_obj(obj):
-    """Deep-redact every string value in a JSON-ish structure via
-    routing_redaction.redact_text, preserving shape. Applied to the OUTBOUND
-    coordinator payload so a credential that slipped into a task's title /
-    objective / inputs / constraints is masked before it is transmitted to the
-    coordinator model — the same pre-prompt scrub routing_context does before
-    any remote-eligible worker prompt (spec Section 9)."""
+    """Deep-redact every string, so a credential in task fields never reaches the model."""
     from src.routing_redaction import redact_text
 
     if isinstance(obj, str):
@@ -54,14 +35,8 @@ def _redact_obj(obj):
 
 
 def coordinator_endpoint_permits_sensitivity(task, client) -> bool:
-    """Section 9 data-locality gate for the coordinator seat: a task whose
-    data_sensitivity ranks ABOVE the policy's remoteSensitivityCeiling may only
-    have its payload sent to a LOCAL coordinator endpoint. Mirrors exactly the
-    hard filter routing_engine.route_task applies to worker endpoints — the
-    /coordinator/decide path is a new surface that ships task content to a
-    model, so it must honour the same fail-closed boundary. An unresolvable
-    endpoint URL (client._chat_url is None) is NOT local, so restricted/secret
-    data is never sent to an unverifiable destination."""
+    """Data above remoteSensitivityCeiling may go only to a local coordinator,
+    matching the worker filter. An unresolvable URL is not local."""
     from src.routing_engine import (
         _SENSITIVITY_RANK,
         _endpoint_is_local,
@@ -76,11 +51,8 @@ def coordinator_endpoint_permits_sensitivity(task, client) -> bool:
 
 
 def build_deterministic_route(db, task) -> Optional[Dict[str, Any]]:
-    """Section 8 tier-2 fallback route builder: shape routing_engine.route_task()'s
-    top candidates like a validated coordinator final route so downstream
-    consumers see one route schema regardless of which tier produced it. Shared
-    by the /coordinator/wrap and /coordinator/decide paths (single source of
-    truth — imported by routes.routing_harness_routes)."""
+    """Shape route_task() candidates like a coordinator final route, so every tier
+    yields one schema."""
     from src.routing_context import build_context_bundle
     from src.routing_engine import ROLE_BY_TASK, route_task
 
@@ -113,9 +85,7 @@ def build_deterministic_route(db, task) -> Optional[Dict[str, Any]]:
 
 def _persist_audit(db, task_id: str, raw_output: str, result, policy_versions: dict):
     # Returns (audit_id, redacted_raw, redaction_applied).
-    """Archive a generated decision identically to /coordinator/wrap: redact
-    BEFORE storage, HMAC the redacted text, stamp policy versions + parsed_ok +
-    fallback_path (WP6 observability reads exactly these columns)."""
+    """Archive like /coordinator/wrap: redact before storage, then HMAC the redacted text."""
     from core.database import CoordinatorAudit
     from src.routing_redaction import redact_text
     from src.secret_storage import hmac_sign
@@ -151,23 +121,11 @@ def generate_and_wrap_decision(
     approval_satisfied: bool = False,
     sandbox_ok: bool = True,
 ) -> Dict[str, Any]:
-    """Generate a coordinator decision for `task` from the resident endpoint,
-    wrap it through the deterministic gates + fallback chain, and archive it.
+    """Generate, wrap and archive a decision from an endpoint-backed client.
 
-    `client` must be an endpoint-backed CoordinatorClient (is_llm_backed()); the
-    caller enforces that and maps ExternalProviderError to 400/nonzero. Returns
-    the same shape as /coordinator/wrap plus `generatedRaw` (REDACTED — never the
-    verbatim model text) and `decideError` (set when the endpoint call itself
-    failed and we degraded to the fallback chain). Never raises on an endpoint
-    failure — that degrades to deterministic/safe_scout.
-
-    Section 9 data-locality gate: if the task's sensitivity ranks above the
-    policy's remote ceiling AND the coordinator endpoint is not local, the
-    payload is NEVER transmitted — we skip the model call and degrade to the
-    deterministic (local-only) router, mirroring the hard filter
-    routing_engine.route_task applies to worker endpoints. The outbound payload
-    is also credential-redacted before it leaves the process (defense in depth
-    for a secret that slipped into a non-secret task)."""
+    Returns the /coordinator/wrap shape plus redacted `generatedRaw` and
+    `decideError`. Endpoint failures degrade rather than raise. Over-ceiling
+    data is never sent to a non-local endpoint, and the payload is redacted."""
     from src import routing_policy
     from src.routing_redaction import redact_text
     from src.routing_task_io import task_payload_from_row
@@ -181,9 +139,7 @@ def generate_and_wrap_decision(
     decide_error: Optional[str] = None
     locality_blocked = not coordinator_endpoint_permits_sensitivity(task, client)
     if locality_blocked:
-        # Fail closed: over-ceiling data must not reach a non-local coordinator.
-        # Skip the model call entirely and let the wrapper fall to the
-        # deterministic (local-only) tier; record why in the audit trail.
+        # Over-ceiling data must not reach a non-local coordinator: skip the call.
         raw = ""
         decide_error = (
             "coordinator_remote_blocked: task data_sensitivity "
@@ -210,20 +166,13 @@ def generate_and_wrap_decision(
         sandbox_ok=sandbox_ok,
         task_id=task.id,
     )
-    # When the endpoint was locality-blocked, do NOT wire repair_fn: the schema
-    # repair tier would call that same excluded remote endpoint (with the schema
-    # + validation errors — not the task payload, so not a data leak, but a
-    # pointless network call to an endpoint we just decided must not serve this
-    # task). Go straight to the deterministic local tier.
+    # A locality-blocked endpoint must not serve repair either.
     repair_fn = None if locality_blocked else client.repair_fn
     result = wrap_coordinator_output(
         raw, gctx, repair_fn=repair_fn, deterministic_fn=deterministic_fn
     )
-    # Redact BEFORE store/return: validationErrors/auditNotes can carry
-    # model-controlled fragments (parse_decision interpolates offending enum
-    # values) and decide_error can echo an endpoint's error body — neither goes
-    # through the raw_output redaction path, so scrub them here to keep the
-    # redact-before-store bar for every persisted/returned field.
+    # validationErrors/auditNotes/decide_error can echo model or endpoint text,
+    # so redact them before storing or returning.
     if decide_error:
         red_err = redact_text(decide_error)[0]
         result.auditNotes = list(result.auditNotes) + [f"decide_failed:{red_err}"]

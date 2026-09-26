@@ -1,12 +1,9 @@
 
 """
-routing_escalation.py — Escalation policy (Section 11) and Emergency override /
-break-glass path (Section 14) for the v0.5 Model Routing Harness.
+Premium escalation policy and the emergency break-glass override (pure logic).
 
-Premium escalation is allowed ONLY when all five conditions in Section 11 hold.
-The emergency override is deliberately narrow, security-admin approved, TTL-
-bounded, and fully audited. This module is pure policy logic; persistence and
-HTTP concerns live in routes/routing_harness_routes.py and core/database.py.
+Escalation needs all five conditions. The override is narrow, security-admin
+approved, TTL-bounded and audited.
 """
 from __future__ import annotations
 
@@ -28,7 +25,7 @@ DEFAULT_EMERGENCY_TTL_MINUTES = 60
 
 @dataclass
 class EscalationSignal:
-    """Objective signals that indicate unresolved risk (Section 11.2)."""
+    """Objective signals that indicate unresolved risk."""
     tests_still_fail: bool = False
     safe_patching_failed: bool = False
     cheap_models_disagree: bool = False
@@ -68,12 +65,12 @@ class EscalationVerdict:
 
 
 def evaluate_escalation(ctx: EscalationContext) -> EscalationVerdict:
-    """Section 11: premium escalation allowed only when ALL conditions hold."""
+    """Premium escalation is allowed only when all conditions hold."""
     reasons: List[str] = []
 
     cheaper_attempts_exhausted = ctx.cheaper_attempts >= ctx.max_cheaper_attempts
 
-    # Condition 1: high-risk / release-blocking / unresolved after N cheap attempts.
+    # High-risk, release-blocking, or unresolved after N cheap attempts.
     c1 = (
         ctx.risk in (Risk.HIGH, Risk.RELEASE_BLOCKING)
         or cheaper_attempts_exhausted
@@ -84,17 +81,12 @@ def evaluate_escalation(ctx: EscalationContext) -> EscalationVerdict:
             f"({ctx.cheaper_attempts}) < {ctx.max_cheaper_attempts}"
         )
 
-    # Condition 2: at least one objective unresolved-risk signal (Section 11.2:
-    # tests still fail, safe patching failed, cheap models disagree on root
-    # cause, best cheap run below threshold, or reviewer requests escalation).
-    # NOTE: exhausting the configured cheaper attempts satisfies Section 11.1's
-    # condition 1, but is NOT one of the §11.2 objective signals -- the gates
-    # are independent.
+    # At least one objective risk signal; exhausted cheap attempts don't count here.
     c2 = ctx.signal.any()
     if not c2:
         reasons.append("condition2_unmet: no unresolved-risk signal")
 
-    # Condition 3: estimated premium cost within budget or manually approved.
+    # Cost within budget or manually approved.
     c3 = ctx.approval_satisfied
     if ctx.budget_remaining_usd is not None:
         if ctx.est_premium_cost_usd <= ctx.budget_remaining_usd:
@@ -104,12 +96,12 @@ def evaluate_escalation(ctx: EscalationContext) -> EscalationVerdict:
     if not c3:
         reasons.append("condition3_unmet: premium cost over remaining budget and not approved")
 
-    # Condition 4: data policy allows the selected premium provider.
+    # Data policy allows the premium provider.
     c4 = ctx.data_policy_allows_premium
     if not c4:
         reasons.append("condition4_unmet: data policy forbids premium provider")
 
-    # Condition 5: required human approval gate satisfied.
+    # Required human approval satisfied.
     c5 = ctx.approval_satisfied
     if not c5:
         reasons.append("condition5_unmet: approval gate unsatisfied")
@@ -122,7 +114,6 @@ def evaluate_escalation(ctx: EscalationContext) -> EscalationVerdict:
     )
 
 
-# --- Emergency override / break-glass (Section 14) ---
 @dataclass
 class EmergencyOverride:
     requested_by: str
@@ -165,9 +156,8 @@ def build_emergency_override(
     forced_backend: ExecutionBackend = ExecutionBackend.HUMAN_ONLY_EMERGENCY,
 ) -> EmergencyOverride:
     """
-    Build an emergency override. The caller MUST have verified that
-    `approved_by` holds the security_admin role before persisting/activating.
-    TTL is capped at DEFAULT_EMERGENCY_TTL_MINUTES by policy.
+    Build an emergency override; the caller must verify `approved_by` is a
+    security_admin. TTL is capped at DEFAULT_EMERGENCY_TTL_MINUTES.
     """
     now = now or datetime.now(timezone.utc)
     ttl = max(1, min(int(ttl_minutes), DEFAULT_EMERGENCY_TTL_MINUTES))

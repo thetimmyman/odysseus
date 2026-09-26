@@ -1,30 +1,15 @@
-"""src/target_capability_store.py — durable persistence for PS-632 receipts.
+"""Durable store for `src.local_targets.TargetCapabilityReceipt`.
 
-This is the STORE for `src.local_targets.TargetCapabilityReceipt`, not a second
-registry and not a second evidence ledger:
-
-* the registry (`src/local_targets.py`) MEASURES and defines what a receipt is;
-* this module only keeps those receipts and answers one question for routing:
-  *which receipt does this profile currently have, and is it still valid?*
-* PS-638's evidence layer REFERS to a receipt hash; it never reads these files, and
-  nothing here writes execution evidence.
+It only answers which receipt a profile currently has and whether it is valid.
 
 Layout, under `<data_root>/target_capabilities/`:
 
     receipts.jsonl   append-only, one canonical JSON receipt per line
     current.json     deterministic index: profile_id -> {receipt_hash, ...}
 
-Both files are written atomically (temp file + ``os.replace`` for the index, append
-+ ``fsync`` for the ledger) and every line carries its own hash, so:
-
-* **history is never overwritten** — a superseded receipt stays readable;
-* **the current receipt is deterministic** — newest ``observed_at`` wins, ties go to
-  the later line, and the choice is recorded in the index rather than inferred from
-  file order by each reader;
-* **corruption fails closed** — an unparseable line, a hash that does not cover its
-  own content, or an index entry whose receipt is absent makes ``current()`` raise
-  instead of quietly returning nothing. A store that silently skips a bad line is how
-  "the capability was not measured" becomes "route anyway".
+Writes are atomic and every line carries its own hash. History is never
+overwritten, the current receipt is recorded in the index, and any corruption
+makes ``current()`` raise rather than silently skip a line.
 """
 from __future__ import annotations
 
@@ -42,8 +27,7 @@ from src.routing_workdir import data_root
 STORE_DIRNAME = "target_capabilities"
 RECEIPTS_FILENAME = "receipts.jsonl"
 INDEX_FILENAME = "current.json"
-#: An explicit override, so a test or a harness can point at a throwaway store
-#: without touching the operator's real capability history.
+#: Override so tests can use a throwaway store.
 STORE_ENV = "PS632_CAPABILITY_STORE"
 
 
@@ -63,7 +47,6 @@ class TargetCapabilityStore:
         self.receipts_path = os.path.join(self.directory, RECEIPTS_FILENAME)
         self.index_path = os.path.join(self.directory, INDEX_FILENAME)
 
-    # ------------------------------------------------------------- reading ---
     def entries(self) -> Tuple[TargetCapabilityReceipt, ...]:
         """Every stored receipt, oldest first. Corrupt content raises."""
         if not os.path.exists(self.receipts_path):
@@ -106,12 +89,7 @@ class TargetCapabilityStore:
         return tuple(r for r in self.entries() if r.host_id == host_id)
 
     def current(self, profile_id: str) -> Optional[TargetCapabilityReceipt]:
-        """The newest receipt for a profile, verified against the index.
-
-        The index is how a reader learns WHICH receipt routing used without
-        re-deriving "newest" from a file that may have grown since. An index entry
-        whose receipt is missing from the ledger is corruption, not absence.
-        """
+        """The indexed receipt for a profile; an entry missing from the ledger is corruption."""
         index = self._read_index()
         wanted = str(index.get(profile_id, {}).get("receipt_hash") or "")
         receipts = self.entries()
@@ -168,15 +146,9 @@ class TargetCapabilityStore:
         return report
 
 
-    # ------------------------------------------------------------- writing ---
     def append(self, receipt: TargetCapabilityReceipt,
                *, supersedes: str = "") -> Dict[str, Any]:
-        """Store a receipt and make it current for its profile. Never overwrites.
-
-        ``supersedes`` is recorded for audit: a reader can see that a profile's
-        qualification was REPLACED (and by what) instead of merely observing that
-        the newest line changed.
-        """
+        """Append a receipt and make it current; ``supersedes`` records what it replaced."""
         history = self.entries()
         existing = self.current(receipt.profile_id) if history else None
         if existing is not None and existing.receipt_hash != receipt.receipt_hash and not supersedes:
@@ -233,12 +205,7 @@ class TargetCapabilityStore:
 
     def mark_invalidated(self, profile_id: str, reason: str,
                          *, now_iso: str = "") -> TargetCapabilityReceipt:
-        """Record that a profile's current qualification no longer applies.
-
-        Nothing is deleted and no new capability is invented: the store appends a
-        receipt carrying the typed invalidation reason, so routing refuses on
-        EVIDENCE rather than on the absence of a file.
-        """
+        """Append an invalidation receipt, so routing refuses on evidence, not a missing file."""
         current = self.current(profile_id)
         if current is None:
             raise CapabilityStoreError(f"no receipt for profile {profile_id!r}")
@@ -249,7 +216,6 @@ class TargetCapabilityStore:
         self.append(invalidated, supersedes=current.receipt_hash)
         return invalidated
 
-    # ------------------------------------------------------------ internals ---
     def _read_index(self) -> Dict[str, Dict[str, Any]]:
         if not os.path.exists(self.index_path):
             return {}

@@ -1,6 +1,5 @@
-"""Verifies the fork's #4335 port: MCP email owner-scoping in
-mcp_servers/email_server.py. Focused unit test (monkeypatches the DB reader)
-covering both directions — isolation AND legacy/single-user pass-through."""
+"""MCP email owner-scoping in mcp_servers/email_server.py: isolation AND
+legacy/single-user pass-through."""
 import pytest
 import mcp_servers.email_server as es
 

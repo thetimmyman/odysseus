@@ -1,28 +1,16 @@
-"""src/evidence_package.py — sealed EvidencePackage + fail-closed validator (PS-638).
+"""Sealed EvidencePackage and fail-closed validator.
 
-The last stage of the chain: a package that binds intent, dispatch provenance,
-attempts, deterministic verifications and requirement closure into one
-content-addressed envelope, plus a validator that decides VERIFIED or not.
+Binds intent, dispatch provenance, attempts, verifications and requirement
+closure into one content-addressed envelope, and decides VERIFIED or not.
 
-Design rules this module enforces, each of which exists because the alternative
-was measured somewhere in this project:
-
-* **Fail closed, and say WHY.** The validator returns named reason codes, never a
-  bare ``False``. A rejection a human cannot act on is a rejection that gets
-  weakened the next time it fires.
-* **Recompute, do not read.** ``outcome``, requirement states and hashes are all
-  recomputed from the raw fields. Anything recorded is compared against the
-  recomputation, so a package whose summary disagrees with its receipts is
-  rejected rather than believed.
-* **No requirement, no VERIFIED.** Mandatory requirements that are UNRESOLVED,
-  FAILED, or BLOCKED-when-BLOCKED-is-not-allowed stop the package. A package
-  cannot become VERIFIED while mandatory proof is missing.
-* **Trends are evidence.** Attempt numbers must be contiguous from 1 and every
-  receipt hash must verify, so an earlier red cannot be dropped to make a final
-  green look cleaner.
-* **Provenance is compared.** A PASS carried by worker-authored proof cannot
-  close a requirement that demands independence, even when the receipt is
-  genuine.
+* Fail closed with named reason codes, never a bare ``False``.
+* Recompute, don't read: outcomes, states and hashes are recomputed and any
+  recorded summary that disagrees is rejected.
+* Mandatory requirements that are UNRESOLVED, FAILED or disallowed-BLOCKED
+  prevent VERIFIED.
+* Attempts must be contiguous from 1 with verified hashes, so an earlier red
+  can't be dropped.
+* Worker-authored PASS can't close a requirement demanding independence.
 """
 from __future__ import annotations
 
@@ -56,7 +44,6 @@ from src.source_snapshot import snapshot_digest_is_valid
 
 EVIDENCE_PACKAGE_SCHEMA_VERSION = 1
 
-# ------------------------------------------------------------------ reasons ---
 # Structural integrity
 EVIDENCE_PACKAGE_HASH_MISMATCH = "evidence_package_hash_mismatch"
 EXECUTION_PACKAGE_HASH_MISMATCH = "execution_package_hash_mismatch"
@@ -108,9 +95,8 @@ KNOWN_REASONS = frozenset({
     REQUIREMENT_FAILED, REQUIREMENT_BLOCKED_NOT_ALLOWED, MALFORMED_RECORD,
 })
 
-#: Secret-shaped strings. Deliberately conservative: these are shapes that
-#: should never appear in a packet, projection or package payload at all, so a
-#: hit is a defect in how the fixture was authored, not a tuning problem.
+#: Secret shapes that should never appear in any payload; a hit is an
+#: authoring defect, not a tuning problem.
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),
     re.compile(r"\bghp_[A-Za-z0-9]{20,}"),
@@ -141,11 +127,8 @@ def utc_now() -> str:
 
 
 def find_secret_shaped(payload: object, *, prefix: str = "") -> Tuple[str, ...]:
-    """Paths whose value looks like a credential. Walks dicts, lists and strings.
-
-    Returning PATHS rather than matches matters: the report must not repeat the
-    secret it is complaining about into a log or a Jira comment.
-    """
+    """Paths whose value looks like a credential (walks dicts, lists, strings).
+    Returns paths, not matches, so reports never repeat the secret."""
     hits = []
     if isinstance(payload, Mapping):
         for key, value in payload.items():
@@ -210,7 +193,6 @@ class ValidationResult:
         return tuple(issue.code for issue in self.issues)
 
     def has(self, code: str) -> bool:
-        """True when a specific named reason was raised."""
         return code in self.codes
 
     def explain(self) -> str:
@@ -223,16 +205,10 @@ class ValidationResult:
                 "requirement_states": [s.to_dict() for s in self.requirement_states]}
 
 
-# ------------------------------------------------------------ the package ---
 @dataclass(frozen=True)
 class EvidencePackage:
-    """A sealed, content-addressed envelope.
-
-    Sub-records are held in their SERIALIZED form, not as live objects. That is
-    deliberate: the package is what gets written down and validated later, and
-    validating a re-serialized object graph would let a field that fails to
-    survive serialization pass in memory and fail on disk.
-    """
+    """A sealed, content-addressed envelope. Sub-records are kept serialized, so
+    validation sees exactly what is written to disk."""
 
     evidence_package_id: str
     execution_package: Mapping[str, Any]
@@ -323,12 +299,9 @@ def seal_evidence_package(
     seals: Sequence[Mapping[str, Any]] = (),
     sealed_at: str = "",
 ) -> EvidencePackage:
-    """Seal a package, COMPUTING requirement closure from the receipts.
-
-    Closure is computed here rather than accepted as an argument, so a caller
-    cannot hand in a favourable set of states. ``waivers`` is the only way to
-    reach NOT_APPLICABLE, and it requires a reason per requirement.
-    """
+    """Seal a package, computing closure from the receipts so callers can't
+    supply favourable states. ``waivers`` (with reasons) is the only route to
+    NOT_APPLICABLE."""
     if not hasattr(execution_package, "to_dict"):
         raise EvidencePackageError(
             "execution_package must be an ExecutionPackage (or expose to_dict())")
@@ -364,18 +337,10 @@ def _seal_evidence(**core) -> EvidencePackage:
 
 
 def reseal_evidence_payload(payload: Mapping[str, Any]) -> dict:
-    """Recompute the package hash after an INTENTIONAL, recorded edit.
-
-    For migrations and for fixtures that deliberately model a mis-authored
-    package: it makes a payload internally consistent so a rejection names the
-    semantic rule instead of the hash. It confers no legitimacy on the edit — a
-    package resealed here is still invalid for whatever reason the edit created.
-
-    Note the deliberate consequence: receipts already inside the payload keep
-    citing the OLD package hash, so a resealed package also reports them as
-    detached. Nothing here silently re-points them, because a receipt that
-    followed its package around a change would not be evidence of anything. A
-    real migration re-emits the receipts.
+    """Recompute the package hash after an intentional recorded edit (migrations,
+    mis-authored fixtures), so rejections name the semantic rule instead of the
+    hash. Confers no legitimacy: embedded receipts still cite the old hash and
+    are reported detached; a real migration re-emits them.
     """
     from src.execution_package import compute_package_hash
 
@@ -390,7 +355,6 @@ def reseal_evidence_payload(payload: Mapping[str, Any]) -> dict:
     return result
 
 
-# ---------------------------------------------------------------- validator ---
 def _load(loader, ref: Mapping[str, Any]) -> Optional[bytes]:
     try:
         return loader(ref)
@@ -418,12 +382,8 @@ def _iter_artifact_refs(payload: Mapping[str, Any]
 
 def _check_artifacts(payload: Mapping[str, Any], extensions: Mapping[str, bytes],
                      issues: list) -> None:
-    """Every declared artifact must be loadable and hash-correct.
-
-    Extensions lets a caller supply bytes the package references but that live
-    only in memory during the run (a ledger that has been rotated, say). Sealed
-    evidence that cannot produce its own bytes is not evidence, so an
-    unloadable reference is a rejection, not a warning.
+    """Every declared artifact must load and hash correctly; an unloadable
+    reference is a rejection. ``extensions`` supplies in-memory-only bytes.
     """
     for label, ref in _iter_artifact_refs(payload):
         digest = str(ref.get("sha256") or "")
@@ -444,8 +404,7 @@ def _check_artifacts(payload: Mapping[str, Any], extensions: Mapping[str, bytes]
                 "loaded bytes do not match the declared sha256",
                 subject=label))
             continue
-        # A projection is part of the package's evidence even though its bytes
-        # live in a file, so it is scanned here rather than only in the payload.
+        # Projections are evidence even though their bytes live in a file.
         text = data.decode("utf-8", "replace")
         leaked = find_secret_shaped(text, prefix=label)
         if leaked:
@@ -627,13 +586,8 @@ def _recompute_closure(payload: Mapping[str, Any], package: Mapping[str, Any]):
 
 
 def _recomputed_outcome(receipt: Mapping[str, Any]) -> str:
-    """The verdict DERIVED from exit code and capture completeness.
-
-    Delegates to ``src.attempt_receipt.recompute_outcome`` so there is ONE
-    definition. A validator with its own copy could drift from the receipt's own
-    verdict, and the drift would be invisible in exactly the case that matters —
-    a receipt whose recorded outcome disagrees with its exit code.
-    """
+    """The derived verdict, delegating to ``src.attempt_receipt.recompute_outcome``
+    so there is one definition that can't drift from the receipt's own."""
     from src.attempt_receipt import recompute_outcome
 
     return recompute_outcome(receipt)
@@ -641,21 +595,12 @@ def _recomputed_outcome(receipt: Mapping[str, Any]) -> str:
 
 def _check_verifications(payload: Mapping[str, Any], package: Mapping[str, Any],
                          source_digest: str, issues: list) -> None:
-    """Verify identity, verdict honesty, and WHICH TREE each receipt ran against.
+    """Verify identity, verdict honesty, and which tree each receipt ran against.
 
-    Source rule, and the reason it is not "receipt must equal the package":
-
-    a writable run changes the tree BY DESIGN. The package's ``source`` is the
-    INPUT identity sealed before dispatch; verification necessarily happens after
-    the worker wrote, so the two legitimately differ. Requiring equality would
-    either be unsatisfiable on every real run or push authors into recording the
-    input digest on a receipt that measured something else — a lie that would
-    then look like evidence.
-
-    So the rule is: the receipts must agree with EACH OTHER, the caller's
-    ``current_source`` must agree with them, and a verified tree that differs
-    from the sealed input must be EXPLAINED by a recorded write. An unexplained
-    difference is rejected.
+    A writable run changes the tree by design, so receipts needn't match the
+    sealed input ``source``. Instead receipts must agree with each other and
+    with ``current_source``, and any difference from the sealed input must be
+    explained by a recorded write.
     """
     verification = package.get("verification") or {}
     planned_id = str(verification.get("verifier_id") or "")
@@ -754,14 +699,8 @@ def _baseline_classification(receipt: Mapping[str, Any]) -> str:
 
 def _check_context_projection(payload: Mapping[str, Any], package: Mapping[str, Any],
                               extensions: Mapping[str, bytes], issues: list) -> None:
-    """The sealed interface must be VISIBLE in every worker context.
-
-    This is the check that makes a declared interface non-decorative. It runs
-    against every attempt, not just the first, because PS-638 requires a repair
-    attempt to carry the same immutable interface — a repair context that drops
-    or paraphrases it would reintroduce the exact failure this contract exists to
-    prevent.
-    """
+    """The sealed interface must be visible in every worker context, including
+    repairs, which must carry the same immutable interface."""
     interface = [str(line) for line in (package.get("interface") or ())]
     for index, attempt in enumerate(payload.get("attempt_receipts") or ()):
         label = f"attempt_receipts[{index}]"
@@ -871,10 +810,9 @@ def validate_evidence_package(
 ) -> ValidationResult:
     """Decide VERIFIED or not, with a named reason for every rejection.
 
-    ``current_source`` is how "the source changed after verification" becomes
-    checkable: pass a fresh snapshot measured NOW, and evidence sealed against a
-    different tree is invalidated rather than silently reused. ``artifact_
-    extensions`` supplies bytes for artifacts referenced by a non-file URI.
+    ``current_source`` is a snapshot taken now, so evidence sealed against a
+    different tree is invalidated. ``artifact_extensions`` supplies bytes for
+    non-file URIs.
     """
     issues: list = []
     extensions = dict(artifact_extensions or {})

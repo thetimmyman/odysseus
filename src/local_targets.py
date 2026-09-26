@@ -1,69 +1,27 @@
-"""src/local_targets.py — measured local-Qwen target registry (PS-632).
+"""Measured local-model target registry.
 
-The defect this module exists to prevent:
+A shared model tag is not a capability record: hosts differ in runtime
+version, quantization, memory path, served context and tool support, so each
+target is identified and measured separately.
 
-    the control plane represented local capacity as ONE thing.
+* The declared capability list is not authoritative in either direction (a
+  node advertising no ``tools`` may make correct tool calls), so
+  ``native_tools`` is set only from a proven call.
+* The declared context length is not the served window; ``safe_working_context``
+  stays ``None`` until measured.
 
-Until now every local route in this stack was spelled ``ollama`` + ``qwen3.8:27b``
-(or worse, ``local_qwen``), a label that says nothing about WHICH host, WHICH
-runtime version, WHICH quantization, HOW MUCH context actually fits, or whether
-the target can call a tool at all. Those are not cosmetic differences. Measured
-2026-09-14 (PS-632 probe; both nodes reachable via ssh-to-loopback):
+Rules:
 
-  local-rtx4500  RTX PRO 4500 Blackwell 32GB  ollama 0.32.11  qwen3.8:27b 17.56GB
-                 x86_64 i9-12900H, 31.1GB RAM, driver 595.84
-                 declared caps ["completion","vision"]        <- NO tools declared
-                 proven native tool call: YES (add_numbers a=17 b=25, correct)
-                 serving context (from /api/ps): 32768; cold load 53.2s
-  local-msr1     MINISFORUM MS-R1   aarch64 12-core 62.3GB   ollama 0.33.3
-                 qwen3.8:27b 16.52GB Q4_K_M (parent qwen3.8:27b-q4_K_M)
-                 declared caps ["completion","tools","thinking","vision"]
-                 proven native tool call: YES (same call, correct)
-                 served entirely from system RAM (size_vram 0); cold load 29.0s
+1. ``target_id`` is a stable identity recorded on every pinned run.
+2. Capability is measured; declared-but-unproven tools are recorded as
+   ``tools_declared_but_unproven`` and never route agent work.
+3. Selection fails closed with :class:`LocalTargetUnavailable`, never
+   downgrading or falling through to a hosted provider.
+4. A target holding a write scope is never selected for a second one.
+5. The registry is pure; the live probe sits behind :class:`OllamaInspector`.
 
-Two lessons, both of which changed this module's design:
-
-1. **The declared capability list is NOT authoritative, in EITHER direction.**
-   The RTX node advertises no ``tools`` capability and nonetheless emitted a
-   correct native tool call; a probe that trusted ``capabilities`` would have
-   written off the fastest node in the fleet. So ``native_tools`` is set only
-   from a proven call, and the declared list is recorded as a hint, never as
-   authority.
-2. **The same model tag is not the same capability record.** The healthy-but-
-   unprobed assumption that these nodes are interchangeable is what let a single
-   ``local_qwen`` label stand in for two machines whose runtime versions,
-   quantization, memory path and cold-load latency all differ.
-
-A third measured fact that routing must respect: the *declared* context length
-(262144) is not the *serving* window. ``/api/ps`` reported 32768 for the loaded
-model on the RTX node. A packet sized from the declared number would be
-dispatched into a window that does not exist, so ``safe_working_context`` stays
-``None`` until it is measured and is never inferred from the declared maximum.
-
-Design rules, all load-bearing:
-
-1. **Every target has a stable identity.** ``target_id`` is explicit and is
-   recorded on the pinned execution identity of any run dispatched to it, so
-   evidence names the actual host/model/runtime used.
-2. **Capability is measured, never assumed, and declaration is not proof.**
-   ``native_tools`` is True only from a PROVEN native tool call. A runtime that
-   *declares* ``tools`` but fails the probe is recorded with
-   ``tools_declared_but_unproven`` — declared-only never routes agent work.
-3. **Selection fails closed.** A requirement that no healthy target satisfies
-   raises :class:`LocalTargetUnavailable`; it never downgrades to a target
-   missing a required capability, and never falls through to a hosted provider.
-4. **Two writers never share a worktree.** ``write_scope`` is part of a
-   dispatch requirement and a target already holding a write scope is not
-   selected for a second one (PS-632 collision control).
-5. **The registry is pure and transport-injectable**, so the routing rules are
-   deterministic and testable without a live node, while the live probe lives
-   behind one small interface (:class:`OllamaInspector`).
-
-Node availability is *not* an assumption either: ``local-framework``
-(Framework/Strix Halo) is registered but marked unreachable when a probe cannot
-reach it, and selection then routes only to a policy-allowed healthy target or
-refuses. It is never silently dropped from the fleet snapshot — a missing node
-must be visible, because an invisible node looks like a fleet with nothing to do.
+Unreachable nodes stay in the fleet snapshot, marked unreachable, so a missing
+node is visible.
 """
 from __future__ import annotations
 
@@ -76,68 +34,53 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from src.endpoint_identity import canonical_endpoint_identity
 
-# --------------------------------------------------------------- constants ---
 
-#: Stable target IDs. These are the identity strings that appear in RunState /
-#: evidence. A generic ``local_qwen`` label is explicitly NOT sufficient.
+#: Stable target IDs recorded in RunState/evidence.
 TARGET_RTX_4500 = "local-rtx4500"
 TARGET_MSR1 = "local-msr1"
 TARGET_FRAMEWORK = "local-framework"
 
-#: Transports. Both reachable targets bind ollama to loopback and are therefore
-#: only addressable over ssh; a target that later exposes a routable endpoint
-#: uses ``http`` and nothing else in this module changes.
+#: Ollama binds loopback on current nodes, so they're reached over ssh; a
+#: routable endpoint would use ``http``.
 TRANSPORT_SSH = "ssh"
 TRANSPORT_HTTP = "http"
 
-#: Measured health states. ``unreachable`` and ``degraded`` are DIFFERENT from
-#: ``unhealthy`` on purpose: the first means we could not ask, the second means
-#: we asked and did not like the answer. Conflating them hides a network fault
-#: behind a model-quality judgment.
+#: ``unreachable``/``degraded`` differ from ``unhealthy``: couldn't ask vs didn't
+#: like the answer. Conflating them hides network faults as model quality.
 HEALTH_HEALTHY = "healthy"
 HEALTH_DEGRADED = "degraded"
 HEALTH_UNREACHABLE = "unreachable"
 HEALTH_UNKNOWN = "unknown"
 
-#: Capabilities a packet can REQUIRE of a local target. Requirements are checked
-#: against PROVEN capability; unknown requirement names fail closed.
+#: Capabilities a packet can require, checked against proven capability;
+#: unknown names fail closed.
 CAP_NATIVE_TOOLS = "native_tools"
 CAP_READONLY_ANALYSIS = "readonly_analysis"
 CAP_STREAMING = "streaming"
 
 KNOWN_CAPABILITIES = frozenset({CAP_NATIVE_TOOLS, CAP_READONLY_ANALYSIS, CAP_STREAMING})
 
-#: Privacy class for every target in this registry. Local-inference targets are
-#: the ONLY class sensitive-domain policy may fall back to, so the class is
-#: carried on the record rather than re-derived at each call site.
+#: Local inference is the only class sensitive-domain policy may fall back to;
+#: carried on the record rather than re-derived.
 PRIVACY_LOCAL_ONLY = "local-only"
-#: Network reachability class. Both reachable nodes are tailnet/loopback-only.
+#: Network reachability class; current nodes are tailnet/loopback-only.
 NETWORK_TAILNET = "tailnet-loopback"
 
-#: Roles a profile may serve. Inference is the ONE that makes a target a worker;
-#: everything else is a different kind of compute on the same fleet.
+#: Roles a profile may serve; only inference makes a target a worker.
 ROLE_INFERENCE = "inference"
 ROLE_VERIFIER = "deterministic_verifier"
 ROLE_GOVERNANCE = "governance_ci"
 ROLE_ARM64_CI = "arm64_ci"
 
-#: Concurrency the operator may safely run per target before throughput is
-#: contended. Bounded by measurement, not by hope: the RTX target shares an
-#: i9-12900H host with other workloads and the MS-R1 decodes on 12 ARM cores.
+#: Safe per-target concurrency before throughput is contended, from measurement.
 DEFAULT_MAX_CONCURRENCY = 1
 
 
-# ------------------------------------------------------------------- specs ---
-
 @dataclass(frozen=True)
 class LocalTargetSpec:
-    """A dispatchable local target: WHERE it is, over WHICH transport.
-
-    This half of the record is configuration (stable, operator-visible); the
-    measured half is :class:`LocalTargetCapability`. Keeping them apart is what
-    makes the probe re-runnable: identity does not change because a node
-    rebooted, and a measurement does not silently become configuration.
-    """
+    """A dispatchable target's configuration: where it is and over which
+    transport. Kept apart from the measured :class:`LocalTargetCapability` so
+    probes are re-runnable and measurements never become configuration."""
 
     target_id: str
     label: str
@@ -148,24 +91,16 @@ class LocalTargetSpec:
     privacy_class: str = PRIVACY_LOCAL_ONLY
     network_class: str = NETWORK_TAILNET
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY
-    #: Roles this host may serve. A host is not automatically an inference target:
-    #: MS-R1's Qwen role is retired (PS-637) and Framework is inference ONLY through
-    #: an independently qualified profile, so the role list is registry policy and
-    #: the routing seam enforces it.
+    #: Roles this host may serve (registry policy enforced by the routing seam);
+    #: a host isn't automatically an inference target.
     roles: Tuple[str, ...] = ()
-    #: The qualification behind this host's routability: a PS-624 profile id, a
-    #: PS-632 measured receipt, or "" when nothing qualifies it. Empty means NOT
-    #: ROUTABLE, and research/Phase-0 metadata never fills this in.
+    #: The qualification behind routability (a profile id or measured receipt);
+    #: empty means not routable.
     qualification_ref: str = ""
 
     @property
     def transport(self) -> str:
-        """``http`` only when the endpoint is routable from the control plane.
-
-        An empty ``ssh_host`` means the node is addressable directly; anything
-        else must be tunnelled, and pretending otherwise produces a target that
-        probes "unreachable" for the wrong reason.
-        """
+        """``http`` only when directly routable; any ``ssh_host`` means tunnelled."""
         return TRANSPORT_HTTP if not self.ssh_host else TRANSPORT_SSH
 
     def to_dict(self) -> dict:
@@ -185,10 +120,8 @@ class LocalTargetSpec:
         }
 
 
-#: The registered fleet. Order is NOT dispatch priority — selection is by
-#: measured fitness (see :func:`select_local_target`); this order is only the
-#: stable presentation order of a fleet snapshot. All three entries share the
-#: qwen3.8:27b tag and are still three different machines.
+#: The registered fleet. Order is presentation only; selection is by measured
+#: fitness (:func:`select_local_target`).
 DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
     LocalTargetSpec(
         target_id=TARGET_RTX_4500,
@@ -197,7 +130,7 @@ DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
         endpoint="http://127.0.0.1:11434",
         model="qwen3.8:27b",
         roles=(ROLE_INFERENCE, ROLE_VERIFIER),
-        # Qualified by its own MEASURED receipt (PS-632); see the receipt store.
+        # Qualified by its own measured receipt.
         qualification_ref="ps632-measured:local-rtx4500",
     ),
     LocalTargetSpec(
@@ -206,9 +139,8 @@ DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
         ssh_host="msr1",
         endpoint="http://127.0.0.1:11434",
         model="qwen3.8:27b",
-        # PS-637: MS-R1's Qwen/inference role is RETIRED. It is registered for
-        # deterministic verification and ARM64 governance CI only, and it carries
-        # no inference role, so no routing request can select it for generation.
+        # No inference role: deterministic verification and ARM64 CI only, so it
+        # can never be selected for generation.
         roles=(ROLE_VERIFIER, ROLE_GOVERNANCE, ROLE_ARM64_CI),
         qualification_ref="ps637-verifier-role",
     ),
@@ -218,10 +150,8 @@ DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
         ssh_host="framework",
         endpoint="http://127.0.0.1:11434",
         model="qwen3.8:27b",
-        # Inference ONLY through a profile PS-624 has independently qualified.
-        # Until then this host has no qualification reference, so it cannot be
-        # selected: research/Phase-0 metadata is not qualification, and there is
-        # deliberately no generic "framework" capability.
+        # Inference only through an independently qualified profile; until then
+        # it has no qualification ref and can't be selected.
         roles=(ROLE_INFERENCE,),
         qualification_ref="",
     ),
@@ -241,22 +171,18 @@ def target_by_id(target_id: str) -> Optional[LocalTargetSpec]:
     return None
 
 
-# ------------------------------------------------------- measured capability ---
-
 @dataclass
 class LocalTargetCapability:
-    """The measured half of a target record: what this node can actually do.
+    """What this node can actually do.
 
-    ``native_tools`` is deliberately ``Optional[bool]``. Three states matter and
-    two of them are not "no":
+    ``native_tools`` is tri-state:
 
       ``True``   proven by a native tool call that returned ``tool_calls``;
-      ``False``  asked and refused/incapable — a real negative;
-      ``None``   UNPROVEN. Never treat "we did not check" as "it cannot".
+      ``False``  asked and refused/incapable;
+      ``None``   unproven.
 
-    A requirement check treats ``None`` exactly like ``False`` (fail closed) but
-    the distinction is preserved on the record so an unprobed node is not
-    mistaken for a measured one.
+    Requirement checks treat ``None`` like ``False`` (fail closed), but the record
+    keeps the distinction.
     """
 
     spec: LocalTargetSpec
@@ -264,18 +190,14 @@ class LocalTargetCapability:
     model_id: str = ""
     quantization: str = ""
     declared_context: Optional[int] = None
-    #: The context window the runtime is ACTUALLY serving, read from the
-    #: resident-model entry in ``/api/ps``. Distinct from ``declared_context``
-    #: (the model's maximum): measured 2026-09-14, the RTX node declares 262144
-    #: and serves 32768. Sizing a packet from the declared number puts it in a
-    #: window that does not exist.
+    #: The window actually served (from ``/api/ps``), distinct from
+    #: ``declared_context``; sizing from the declared maximum overflows.
     served_context: Optional[int] = None
     #: Empirically safe working context. Set only from measurement; ``None``
     #: means "not yet established" and callers must not invent a number.
     safe_working_context: Optional[int] = None
     declared_capabilities: Tuple[str, ...] = ()
-    #: The exact artifact digest, first-class. Reaching into ``evidence`` for it
-    #: (as the routing seam had to) is how a receipt ends up describing a tag.
+    #: The exact artifact digest, first-class so receipts never describe a tag.
     model_digest: str = ""
     model_family: str = ""
     size_bytes: int = 0
@@ -296,8 +218,7 @@ class LocalTargetCapability:
     cold_load_s: Optional[float] = None
     size_vram_bytes: Optional[int] = None
     failure_classes: Tuple[str, ...] = ()
-    #: The raw observation the record was derived from, kept so a disputed
-    #: number can be re-read instead of re-run.
+    #: Raw observation, so a disputed number can be re-read instead of re-run.
     evidence: dict = field(default_factory=dict)
 
     @property
@@ -311,19 +232,14 @@ class LocalTargetCapability:
             caps.append(CAP_NATIVE_TOOLS)
         if self.streaming is True:
             caps.append(CAP_STREAMING)
-        # Read-only analysis needs no tool channel at all — a completion-only
-        # runtime can summarize, classify and review prose. That is exactly why
-        # a tool-less target stays USEFUL here instead of being written off.
+        # Read-only analysis needs no tool channel, so tool-less targets stay useful.
         if self.health == HEALTH_HEALTHY:
             caps.append(CAP_READONLY_ANALYSIS)
         return tuple(caps)
 
     def satisfies(self, required: Iterable[str]) -> bool:
-        """True only when every requirement is in :meth:`proven_capabilities`.
-
-        Unknown requirement names are a caller bug, not a policy event, so they
-        raise rather than quietly matching nothing.
-        """
+        """True only when every requirement is proven. Unknown names are a caller
+        bug and raise."""
         supplied = set(self.proven_capabilities())
         for cap in required:
             if cap not in KNOWN_CAPABILITIES:
@@ -364,19 +280,16 @@ class LocalTargetCapability:
         }
 
 
-# ============================================================ capability receipt ===
 #: Bump when the receipt shape changes in a way a reader must know about.
 CAPABILITY_RECEIPT_SCHEMA_VERSION = 1
 
-#: Provenance classes. A receipt records HOW each capability became known, and
-#: routing may require a stronger class than "the runtime said so".
+#: Provenance classes; routing may require a stronger class than declared.
 PROV_MEASURED = "measured"   # this probe observed it on this exact profile
 PROV_DETECTED = "detected"   # the runtime reported a fact about its own state now
 PROV_DECLARED = "declared"   # the artifact/config advertises it
 
-#: How many seconds a SEMANTIC qualification stays valid by default. A semantic
-#: qualification is expensive to prove (recall ladders, tool proofs), so it is not
-#: re-earned on every heartbeat; it expires so a drifted profile cannot inherit it.
+#: Default validity of a semantic qualification: expensive to prove, so not
+#: re-earned per heartbeat, but it expires so drift can't inherit it.
 DEFAULT_QUALIFICATION_TTL_S = 7 * 24 * 3600
 #: Short-lived liveness. Cheap to re-check and cheap to expire.
 DEFAULT_HEALTH_TTL_S = 300
@@ -391,7 +304,7 @@ INVALIDATED_SAFE_CONTEXT_UNMEASURED = "safe_working_context_unmeasured"
 
 
 def _canonical_bytes(payload: object) -> bytes:
-    """Deterministic canonical form (the same rule PS-638 uses for its hashes)."""
+    """Deterministic canonical form (same rule as receipt hashes)."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, default=str).encode("utf-8")
 
@@ -453,12 +366,8 @@ class ModelIdentity:
 
 @dataclass(frozen=True)
 class ContextProfile:
-    """Configured, served, demonstrated, verified, and safe context are distinct.
-
-    The declared 262144 a model advertises is not a context anyone has run; the
-    served window is what the runtime actually hands out; the safe working context
-    is the largest one a measurement passed. Only the last is a capability.
-    """
+    """Configured, served, demonstrated, verified and safe context are distinct;
+    only the measured safe working context is a capability."""
 
     configured_context: int = 0
     #: Effective per-request limit when it is a deterministic configuration fact.
@@ -487,13 +396,8 @@ class ContextProfile:
 
 @dataclass(frozen=True)
 class CapabilityEvidence:
-    """What this profile can do, split by HOW it became known.
-
-    The split is the point: a runtime reporting ``tools`` in its capability list is
-    DECLARED, and a validated 32768 context window on a specific artifact is
-    MEASURED, and routing may require the stronger class. Collapsing them would let
-    a declaration satisfy a proof.
-    """
+    """Capabilities split by how they became known (declared vs measured), so a
+    declaration can never satisfy a required proof."""
 
     measured: Tuple[str, ...] = ()
     detected: Tuple[str, ...] = ()
@@ -537,12 +441,8 @@ class CapabilityLimits:
 
 @dataclass(frozen=True)
 class HostBaseline:
-    """The material host identity a host-sensitive profile depends on.
-
-    Empty means NOT COLLECTED — never "stable". A ROCm/profile qualification that
-    cannot name its kernel/firmware/ROCm build is not reproducible, so the fields
-    exist even where the current ollama profile does not need them.
-    """
+    """Material host identity a host-sensitive profile depends on. Empty means
+    not collected, never "stable"."""
 
     host_id: str = ""
     label: str = ""
@@ -566,13 +466,8 @@ class HostBaseline:
 
 
 class LocalTargetUnavailable(Exception):
-    """Typed refusal: no healthy target satisfies the dispatch requirement.
-
-    Raised instead of a downgrade. There is deliberately NO hosted-provider
-    fallback here: these targets are the local-only privacy class, and borrowing
-    capacity from a hosted provider would move content out of the domain whose
-    policy put it here in the first place (PS-605).
-    """
+    """Typed refusal: no healthy target satisfies the requirement. There is no
+    hosted fallback: these targets are the local-only privacy class."""
 
     def __init__(self, requirement: dict, reasons: Sequence[str]):
         self.requirement = dict(requirement)
@@ -586,25 +481,17 @@ def _utc_iso() -> str:
 
 
 class OllamaInspector:
-    """Default live inspector: read one ollama node over its transport.
+    """Default live inspector for one ollama node:
+      * ``/api/version`` — runtime present and build;
+      * ``/api/tags``    — model identity, quant and declared caps;
+      * ``/api/ps``      — what is resident now;
+      * one tool call    — the only evidence that counts for native tools.
 
-    It answers four cheap questions and nothing more:
-      * ``/api/version`` — is a runtime there at all, and which build;
-      * ``/api/tags``    — the model's real identity, quant and declared caps;
-      * ``/api/ps``      — what is resident now, i.e. current load;
-      * one tool call    — the ONLY evidence that counts for native tools.
-
-    Timing is NOT measured here. A cold 27B load on the ARM node costs minutes,
-    and a registry probe that silently spends them gets switched off within a
-    day — which would leave the fleet with no measurements at all. Perf numbers
-    arrive from the evaluation harness via the observation's ``timings`` key.
-
-    Node inventory is never a cached guess: the whole point of the probe is that
-    "what is installed" and "what is loaded" are observed, not configured.
+    Timing is not measured here (cold loads can take minutes); perf numbers
+    arrive from the evaluation harness via ``timings``.
     """
 
-    #: A tool-required packet is only ever offered a target that answered this
-    #: prompt with a real ``tool_calls`` array.
+    #: Tool-required packets only go to targets that answered this with ``tool_calls``.
     TOOL_PROMPT = (
         "Call the add_numbers tool with a=17 and b=25. "
         "Do not answer in prose. Use the tool."
@@ -627,12 +514,8 @@ class OllamaInspector:
         self.probe_tools = probe_tools
 
     def api(self, spec: LocalTargetSpec, path: str, body: Optional[dict] = None) -> dict:
-        """One API call, returning ``{'ok', 'http', 'body', 'err'}``.
-
-        Failure is a value, never an exception: a probe that raises on a dead
-        node cannot report the fleet, and an unreported dead node is
-        indistinguishable from a node that was never registered.
-        """
+        """One API call returning ``{'ok', 'http', 'body', 'err'}``. Failure is a
+        value, so a dead node is still reported."""
         url = f"{spec.endpoint.rstrip('/')}{path}"
         if spec.transport == TRANSPORT_HTTP:
             import urllib.request
@@ -720,10 +603,8 @@ class OllamaInspector:
         if self.probe_tools:
             proof = self._tool_question(spec, with_think_key=True)
             if not proof["ok"]:
-                # A runtime predating the `think` key must not be scored as
-                # tool-less for a VERSION reason; ask the same question again
-                # without it so a runtime difference cannot masquerade as a
-                # capability difference.
+                # Retry without `think` so an older runtime isn't scored tool-less
+                # for a version reason.
                 proof = self._tool_question(spec, with_think_key=False)
             msg = (proof["body"].get("message") or {}) if proof["ok"] else {}
             raw["tool_proof"] = {
@@ -734,11 +615,8 @@ class OllamaInspector:
         return raw
 
 def _apply_timings(rec: LocalTargetCapability, timings: dict) -> LocalTargetCapability:
-    """Merge measured timing fields onto a record. Only MEASURED keys are set.
-
-    A missing key never overwrites an existing value with ``None``: "we did not
-    measure TTFT this pass" must not erase a TTFT we did measure earlier.
-    """
+    """Merge measured timing fields onto a record; missing keys never erase
+    earlier measurements."""
     if not timings:
         return rec
     for name in ("ttft_s", "prefill_tok_s", "decode_tok_s", "cold_load_s"):
@@ -749,17 +627,9 @@ def _apply_timings(rec: LocalTargetCapability, timings: dict) -> LocalTargetCapa
 
 
 def apply_timings(rec: LocalTargetCapability, timings: dict) -> LocalTargetCapability:
-    """Public form of :func:`_apply_timings`, for an evidence harness.
-
-    The registry probe deliberately does NOT time anything (a cold 27B load on
-    the ARM node costs minutes and a probe that expensive gets switched off).
-    So the measured numbers necessarily arrive from an evaluation harness, and
-    they must land in the SAME record that routing reads — otherwise selection
-    ranks on fields nobody ever filled in. Measured 2026-09-14: with no timings
-    the fitness tie-break falls through to ``target_id`` and picks the 2.83
-    tok/s ARM node over the 37.1 tok/s GPU node, which is exactly the failure
-    this function exists to prevent.
-    """
+    """Public :func:`_apply_timings` for the evaluation harness. Timings must land
+    in the records routing reads, or the fitness tie-break falls to target_id
+    and can pick a far slower node."""
     return _apply_timings(rec, timings)
 
 
@@ -770,12 +640,8 @@ def build_capability(
     *,
     probed_at: str = "",
 ) -> LocalTargetCapability:
-    """Pure derivation: raw observation -> measured capability record.
-
-    Pure and total on purpose. Every field is a function of the observation, so
-    the same observation always produces the same record and a disputed number
-    can be re-derived from stored evidence without touching a live node.
-    """
+    """Pure derivation: raw observation -> measured capability record, so numbers
+    can be re-derived from stored evidence."""
     rec = LocalTargetCapability(
         spec=spec,
         last_probe=probed_at or _utc_iso(),
@@ -807,8 +673,7 @@ def build_capability(
     rec.declared_capabilities = declared
     rec.runtime_options = dict(raw.get("runtime_options") or {})
     rec.auxiliary_artifacts = tuple(raw.get("auxiliary_artifacts") or ())
-    # Declared-only flags: informational. They never satisfy a requirement on
-    # their own (see proven_capabilities).
+    # Declared-only flags are informational; they never satisfy a requirement.
     rec.thinking = "thinking" in declared
     rec.vision = "vision" in declared
 
@@ -818,15 +683,13 @@ def build_capability(
     resident = next((m for m in loaded if m.get("name") in (rec.model_id, spec.model)), None)
     if resident:
         rec.size_vram_bytes = resident.get("size_vram")
-        # The window actually being served, not the one the model advertises.
         served = resident.get("context_length")
         if isinstance(served, int) and served > 0:
             rec.served_context = served
 
     proof = raw.get("tool_proof")
     if proof is None:
-        # Not asked (or not askable). UNPROVEN, not incapable — the distinction
-        # is what stops "we did not check" from being read as a measurement.
+        # Not asked: unproven, not incapable.
         rec.native_tools = None
         failures.append("tools_unproven")
     elif proof.get("ok"):
@@ -842,9 +705,7 @@ def build_capability(
 
     timings = raw.get("timings") or {}
     _apply_timings(rec, timings)
-    # A safe working context is a MEASUREMENT. It is never inferred from the
-    # declared maximum, because the declared number is precisely the one that
-    # does not survive contact with a real prompt.
+    # Safe working context is measured, never inferred from the declared maximum.
     rec.safe_working_context = raw.get("safe_working_context")
 
     rec.health = HEALTH_HEALTHY
@@ -869,16 +730,9 @@ def probe_fleet(
     inspector: Optional[OllamaInspector] = None,
     timings_by_target: Optional[Dict[str, dict]] = None,
 ) -> Tuple[LocalTargetCapability, ...]:
-    """Measure every registered target, including the ones that fail.
-
-    A node that cannot be reached must still appear in the snapshot. Dropping it
-    would make "the fleet is down" and "there is nothing to do" look identical,
-    which is how a blocked target silently becomes a scheduling policy.
-
-    ``timings_by_target`` lets an evaluation harness attach the throughput it
-    measured (keyed by ``target_id``) so the same records the router reads carry
-    real fitness numbers. Without it the records are capability-complete but
-    fitness-blind, and selection falls back to a deterministic ID tie-break.
+    """Measure every registered target, including failing ones, so "fleet down"
+    never looks like "nothing to do". ``timings_by_target`` attaches measured
+    throughput; without it selection falls back to an ID tie-break.
     """
     inspector = inspector or OllamaInspector()
     timings = dict(timings_by_target or {})
@@ -888,13 +742,11 @@ def probe_fleet(
     )
 
 def _fitness_key(record: LocalTargetCapability) -> tuple:
-    """Deterministic dispatch order among equally-eligible targets.
+    """Deterministic order among equally eligible targets:
 
-    1. lower live queue depth (prefer idle capacity, not a fixed host order);
-    2. higher measured decode throughput — an unmeasured node scores 0.0 and so
-       never outranks a measured one on a claim nobody has tested;
-    3. target_id ascending, so a tie is stable across runs and two concurrent
-       schedulers make the SAME choice instead of racing.
+    1. lower live queue depth;
+    2. higher measured decode throughput (unmeasured scores 0.0);
+    3. target_id ascending, so concurrent schedulers agree.
     """
     return (record.queue_depth, -(record.decode_tok_s or 0.0), record.target_id)
 
@@ -910,17 +762,12 @@ def select_local_target(
     write_scope: str = "",
     held_write_scopes: Optional[Dict[str, str]] = None,
 ) -> LocalTargetCapability:
-    """Choose one healthy target that PROVABLY satisfies ``required``.
+    """Choose one healthy target that provably satisfies ``required``, returning
+    the full record so the run can name what actually executed.
 
-    Returns the full capability record — identity plus measurement — because the
-    caller must be able to record which host/model/runtime actually ran the
-    packet (a generic ``local_qwen`` label is not sufficient evidence).
-
-    Refusals are typed (:class:`LocalTargetUnavailable`) and carry a per-target
-    reason, so a refusal can be told apart from a bug. Nothing here falls back to
-    a hosted provider or to a weaker local target: an unmet requirement is a
-    refusal, never a downgrade — privacy class, capability and health are all
-    hard boundaries.
+    Refusals are typed (:class:`LocalTargetUnavailable`) with per-target reasons.
+    No hosted or weaker fallback: privacy class, capability and health are hard
+    boundaries.
     """
     for cap in required:
         if cap not in KNOWN_CAPABILITIES:
@@ -952,9 +799,7 @@ def select_local_target(
             reasons.append(f"{rec.target_id}: missing proven capability {'/'.join(missing)}")
             continue
         if write_scope and held.get(rec.target_id) == write_scope:
-            # Two writers must never share a write scope. An idle node is not
-            # permission to collide: the second writer would edit the first
-            # writer's worktree and produce a merge nobody owns.
+            # Two writers must never share a write scope.
             reasons.append(f"{rec.target_id}: already holds write scope {write_scope!r}")
             continue
         eligible.append(rec)
@@ -970,12 +815,8 @@ def fleet_snapshot(
     *,
     generated_at: str = "",
 ) -> dict:
-    """JSON-serializable registry snapshot naming every registered target.
-
-    This is the artifact PS-632 asks for: readable by a human or a router
-    without re-running the probe, and recording an unreachable node as an
-    unreachable NODE rather than as absent capacity.
-    """
+    """JSON-serializable snapshot of every registered target, readable without
+    re-probing; unreachable nodes appear as unreachable."""
     return {
         "generated_at": generated_at or _utc_iso(),
         "fleet_size": len(records),
@@ -985,7 +826,6 @@ def fleet_snapshot(
         "targets": [r.to_dict() for r in records],
     }
 
-# ===================================================== canonical capability receipt ===
 def _parse_utc(value: str) -> Optional[datetime]:
     """Parse an ISO timestamp, or None when it cannot be trusted as a time."""
     text = str(value or "").strip()
@@ -1000,18 +840,13 @@ def _parse_utc(value: str) -> Optional[datetime]:
 
 @dataclass(frozen=True)
 class TargetCapabilityReceipt:
-    """The canonical, hashable, freshness-bound capability record (PS-632).
+    """The canonical, hashable, freshness-bound capability record.
 
-    Identity is deliberately TWO-level: ``host_id`` is the stable machine
-    (``local-rtx4500``), and ``profile_id`` is one exact execution profile on it
-    (runtime + backend + artifact digest + quantisation + context). Two profiles on
-    one host — the Strix Halo Vulkan and HIP builds, say — are DIFFERENT profiles,
-    and neither inherits the other's qualification.
-
-    A receipt is what routing consumes INSTEAD OF a host name or a config
-    declaration: it carries the evidence class of every capability, its own
-    observation time and TTL, and a material-identity digest that a changed
-    runtime/model/context breaks, so old qualification cannot survive drift.
+    Two-level identity: ``host_id`` is the machine, ``profile_id`` one exact
+    execution profile on it (runtime + backend + digest + quant + context).
+    Profiles never inherit each other's qualification. Routing consumes this
+    instead of host names: per-capability evidence class, observation time and
+    TTL, and an identity digest that drift breaks.
     """
 
     host_id: str
@@ -1032,7 +867,7 @@ class TargetCapabilityReceipt:
     health_ttl_s: int = DEFAULT_HEALTH_TTL_S
     #: Roles this profile may serve (registry policy, not a measurement).
     roles: Tuple[str, ...] = ()
-    #: What qualifies this profile to be routable at all, e.g. a PS-624 profile id.
+    #: What qualifies this profile to be routable at all (e.g. a profile id).
     qualification_ref: str = ""
     invalidation_reason: str = ""
     supersedes: str = ""
@@ -1050,12 +885,9 @@ class TargetCapabilityReceipt:
                 {"receipt": "ttl_s"}, ["a routable receipt needs a positive TTL"])
 
     def material_identity(self) -> dict:
-        """Fields a change to which MUST invalidate prior qualification.
-
-        Runtime, artifact, quantisation, backend, the configured/safe context and the
-        host baseline all change what a qualified result MEANS. Timing, health and
-        load do not: they are re-measured every heartbeat and never carried.
-        """
+        """Fields whose change must invalidate prior qualification (runtime,
+        artifact, quant, backend, context, host baseline). Timing, health and load
+        are re-measured and never carried."""
         return self.execution_profile_material()
 
     def execution_profile_material(self) -> dict:
@@ -1095,7 +927,7 @@ class TargetCapabilityReceipt:
 
     def qualification_state(self, *, now: Optional[datetime] = None,
                             current_identity_digest: str = "") -> str:
-        """``valid``, or the typed reason it is not — a refusal that explains itself."""
+        """``valid``, or the typed reason it is not."""
         moment = now or datetime.now(timezone.utc)
         observed = _parse_utc(self.observed_at)
         if observed is None:
@@ -1120,11 +952,7 @@ class TargetCapabilityReceipt:
             now=now, current_identity_digest=current_identity_digest) == "valid"
 
     def health_state(self, *, now: Optional[datetime] = None) -> str:
-        """Short-lived liveness, separate from the longer semantic qualification.
-
-        A heartbeat refresh must not re-earn a semantic qualification, and it must
-        not extend one either: the two clocks are independent on purpose.
-        """
+        """Short-lived liveness, on a clock independent of semantic qualification."""
         moment = now or datetime.now(timezone.utc)
         checked = _parse_utc(self.health_checked_at or self.observed_at)
         if self.health != HEALTH_HEALTHY:
@@ -1138,7 +966,7 @@ class TargetCapabilityReceipt:
         return "live"
 
     def measured_capabilities(self) -> Tuple[str, ...]:
-        """Only the MEASURED class: a declared tool claim is never in here."""
+        """Only the measured class; declared tool claims never appear."""
         return tuple(self.capabilities.measured)
 
     def to_dict(self) -> dict:
@@ -1189,9 +1017,8 @@ def make_target_capability_receipt(**kwargs: Any) -> TargetCapabilityReceipt:
     from dataclasses import fields as _fields
 
     known = {f.name for f in _fields(TargetCapabilityReceipt)}
-    # receipt_hash and identity_digest are DERIVED: they appear in to_dict()/core()
-    # for audit and are recomputed on the way in, so a JSON round-trip rebuilds the
-    # same receipt instead of tripping the unknown-field gate.
+    # receipt_hash and identity_digest are derived and recomputed on the way in,
+    # so a JSON round-trip rebuilds the same receipt.
     derived = {"receipt_hash", "identity_digest"}
     unknown = set(kwargs) - known - derived
     if unknown:
@@ -1209,9 +1036,8 @@ def make_target_capability_receipt(**kwargs: Any) -> TargetCapabilityReceipt:
             payload[name] = kind(**value)
     if payload.get("roles") is not None:
         payload["roles"] = tuple(payload["roles"])
-    # profile_id is DERIVED, not carried: it is recomputed from the receipt's own
-    # runtime/model/context so an edited identity cannot keep an old profile id and
-    # quietly inherit that profile's qualification.
+    # profile_id is recomputed, so an edited identity can't keep an old
+    # profile's qualification.
     if payload.get("host_id") and payload.get("observed_at"):
         runtime = payload.get("runtime") or RuntimeIdentity()
         model = payload.get("model") or ModelIdentity()
@@ -1253,12 +1079,8 @@ def execution_profile_id(*, host_id: str, runtime_kind: str, backend: str,
                          configured_context: int = 0,
                          configured_served_context: int = 0,
                          ) -> str:
-    """Identity of execution CONFIGURATION, excluding qualification observations.
-
-    Safe/demonstrated/semantic context and observation timestamps belong to the
-    PS-632 receipt, not this identity. Runtime build identifiers are included when
-    exposed; empty values are deterministic UNKNOWN.
-    """
+    """Identity of execution configuration, excluding qualification observations.
+    Empty build identifiers are deterministic UNKNOWN."""
     config = {
         "provider": str(provider or "").strip(),
         "runtime_kind": str(runtime_kind or "").strip(),
@@ -1307,13 +1129,9 @@ def receipt_from_capability(
     limits: Optional[CapabilityLimits] = None,
     notes: str = "",
 ) -> TargetCapabilityReceipt:
-    """One measured record -> the canonical receipt routing consumes.
-
-    ``safe_working_context`` is a MEASUREMENT, not a field copy: if the caller does
-    not supply one (or supplies 0), the receipt is built unqualified rather than
-    inheriting the model's declared window. That is the difference between "the
-    artifact advertises 262144" and "we have run 32768 on this exact profile".
-    """
+    """One measured record -> the canonical receipt. Without a supplied
+    ``safe_working_context`` the receipt is unqualified, never inheriting the
+    declared window."""
     spec = record.spec
     digest = str(record.model_digest or "")
     declared = tuple(record.declared_capabilities or ())

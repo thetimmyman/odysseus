@@ -83,13 +83,11 @@ async def wait_terminal(runtime, execution_id, timeout=25.0):
     return runtime.status(execution_id)
 
 
-# --- event mapping ---------------------------------------------------------
 def test_agent_settled_maps_to_run_settled():
     mapped = pem.map_pi_event({"type": "agent_settled", "messages": [{"role": "assistant"}]})
     assert [m["type"] for m in mapped] == [pem.RUN_SETTLED]
 
 
-# --- Node 22 launcher determinism -----------------------------------------
 def test_pi_environment_prepends_pi_launch_dir(monkeypatch):
     # An absolute pi binary (as the adapter uses for the stub, and as an
     # operator may set for a Nix/wrapper install) pins its own directory first,
@@ -102,7 +100,6 @@ def test_pi_environment_prepends_pi_launch_dir(monkeypatch):
     assert env["PATH"].split(os.pathsep)[1:3] == ["/mise/node20/bin", "/usr/bin"]
 
 
-# --- A: 0.85.1 success -----------------------------------------------------
 async def test_a_pi_085_success_settles_completed(repo, worktree, pi_env):
     configure(worktree, session_id="stub-settle-a", settle=True, linger=True)
     runtime = PiRuntime()
@@ -115,7 +112,6 @@ async def test_a_pi_085_success_settles_completed(repo, worktree, pi_env):
     assert pem.RUN_SETTLED in events
 
 
-# --- B: retry then success -------------------------------------------------
 async def test_b_pi_085_retry_then_success_is_completed(repo, worktree, pi_env):
     configure(worktree, session_id="stub-settle-b", scenario="retry_then_ok",
               settle=True, linger=True)
@@ -129,7 +125,6 @@ async def test_b_pi_085_retry_then_success_is_completed(repo, worktree, pi_env):
     assert pem.COMPLETION in events
 
 
-# --- C: retry exhaustion ---------------------------------------------------
 async def test_c_pi_085_retry_exhaustion_is_provider_failure(repo, worktree, pi_env):
     configure(worktree, session_id="stub-settle-c", scenario="retry_exhausted",
               attempts=3, settle=True, linger=True, exit_code=0)
@@ -142,7 +137,6 @@ async def test_c_pi_085_retry_exhaustion_is_provider_failure(repo, worktree, pi_
     assert not runtime.result(record["execution_id"])["final_text"]
 
 
-# --- D: dead endpoint / invalid model shape --------------------------------
 async def test_d_settled_rc0_without_output_is_never_completed(repo, worktree, pi_env):
     # Exact bug shape: agent_end per attempt + auto_retry_start + agent_settled,
     # process exits rc=0, no assistant output. Must fail closed.
@@ -155,7 +149,6 @@ async def test_d_settled_rc0_without_output_is_never_completed(repo, worktree, p
     assert final["failure_class"] == "provider_failure"
 
 
-# --- E: 0.74.2 legacy ------------------------------------------------------
 async def test_e_pi_074_legacy_success_is_completed(repo, worktree, pi_env):
     # No agent_settled and immediate exit: agent_end / rc=0 ends the run.
     configure(worktree, session_id="stub-settle-e", settle=False)
@@ -167,7 +160,6 @@ async def test_e_pi_074_legacy_success_is_completed(repo, worktree, pi_env):
     assert pem.RUN_SETTLED not in events
 
 
-# --- F: cancel -------------------------------------------------------------
 async def test_f_cancel_still_cancelled(repo, worktree, pi_env):
     configure(worktree, session_id="stub-settle-f", scenario="slow")
     runtime = PiRuntime()
@@ -178,7 +170,6 @@ async def test_f_cancel_still_cancelled(repo, worktree, pi_env):
     assert final["status"] == pe.STATUS_CANCELLED
 
 
-# --- G: resume -------------------------------------------------------------
 async def test_g_resume_after_settled_run(repo, worktree, pi_env):
     configure(worktree, session_id="stub-settle-g", settle=True, linger=True)
     runtime = PiRuntime()
@@ -196,7 +187,6 @@ async def test_g_resume_after_settled_run(repo, worktree, pi_env):
     assert terminal["worktree_verified"] is True
 
 
-# --- D2/D3: invalid-model shape (silent settle, no retry, no output) -------
 async def test_d2_silent_settle_noop_is_not_completed(repo, worktree, pi_env):
     # No retry event, no output, no tool call, settles and exits 0. Still fails.
     configure(worktree, session_id="stub-noop-d2", scenario="settle_noop",

@@ -1,22 +1,10 @@
-"""src/routing_coordinator_client.py — coordinator invocation interface.
+"""Coordinator invocation, selected by coordinator.provider.
 
-Two providers, selected by routing_policy's coordinator.provider:
+"external" (default): decisions are POSTed to /api/harness/coordinator/wrap;
+decide() and repair are unavailable. "endpoint": a named ModelEndpoint decides
+via llm_call; not the default, so no tokens are spent until one is chosen.
 
-  "external" (default): the coordinator LLM runs OUTSIDE this process (a
-    Claude/Codex session, a human, a script) and POSTs its decision to
-    /api/harness/coordinator/wrap — decide() is deliberately unimplemented
-    and repair is unavailable, so the deterministic wrapper falls straight
-    to the deterministic router on a bad decision.
-
-  "endpoint": a registered ModelEndpoint (resolved BY NAME from the policy)
-    produces the decision via llm_call. Wired but DELIBERATELY not the
-    default: the Phase 8 benchmark selects which model earns the coordinator
-    seat — until then nothing should silently start spending tokens on
-    coordination just because an endpoint exists.
-
-Endpoint DB/network failures never crash the wrap path: repair_fn returns
-None and decide() raises a clear RuntimeError, both of which the route layer
-treats as fallback-to-deterministic.
+Endpoint failures never crash the wrap path; they fall back to deterministic.
 """
 import json
 import logging
@@ -42,9 +30,7 @@ def _enum_values(enum_cls) -> str:
 
 
 def _schema_description() -> str:
-    """Compact CoordinatorDecision v0.5 schema for the system prompt. The
-    allowed-value lists are built from the routing_coordinator enums at call
-    time so prompt and validator can never drift apart."""
+    """Schema for the system prompt, built from the enums so it can't drift from the validator."""
     return (
         "Schema (all fields shown; schemaVersion/taskId/classification/routeRecommendation required):\n"
         "{\n"
@@ -98,12 +84,8 @@ class CoordinatorClient:
     def is_llm_backed(self) -> bool:
         return self.provider == "endpoint"
 
-    # -- endpoint provider plumbing ------------------------------------------
     def _resolve_endpoint(self) -> None:
-        """Resolve coordinator.endpointName to a chat URL + auth headers.
-        Failure is recorded, not raised: construction happens on the wrap
-        request path, where a misconfigured coordinator must degrade to the
-        deterministic tier rather than 500 the whole endpoint."""
+        """Resolve the endpoint; failure is recorded, not raised, so wrap degrades instead of 500ing."""
         name = self._coord.get("endpointName")
         if not name:
             self._resolve_error = "policy coordinator.endpointName is not set"
@@ -144,10 +126,8 @@ class CoordinatorClient:
             bypass_cache=True,
         )
 
-    # -- public interface ------------------------------------------------------
     def decide(self, task_payload: dict) -> str:
-        """Ask the coordinator model for a raw decision (unvalidated text —
-        wrap_coordinator_output owns validation and fallback)."""
+        """Raw, unvalidated decision text; wrap_coordinator_output validates it."""
         if self.provider != "endpoint":
             raise NotImplementedError("external provider receives decisions via API")
         system = _SYSTEM_PROMPT_PREFIX + _schema_description()
@@ -165,10 +145,8 @@ class CoordinatorClient:
             raise RuntimeError(f"coordinator decide() call failed: {e}") from e
 
     def repair_fn(self, raw_text: str, errors: List[str]) -> Optional[str]:
-        """One schema-repair retry (Section 8 tier 1). Endpoint provider only;
-        temperature 0 because this is transcription-to-schema, not judgement.
-        Returns None on any failure so the wrapper walks on to the
-        deterministic tier."""
+        """One schema-repair retry at temperature 0 (transcription, not judgement);
+        None on failure."""
         if self.provider != "endpoint":
             return None
         system = (

@@ -1,8 +1,7 @@
-"""PS-640: provider capacity and entitlement facts.
+"""Provider capacity and entitlement facts.
 
-This module is deliberately a facts layer.  It does not select a model,
-route, retry, or apply privacy policy.  A receipt describes one independently
-consumable pool and is only eligible while the relevant observations are fresh.
+A facts layer only: it never selects, routes, retries or applies policy. A
+receipt describes one consumable pool and is eligible only while fresh.
 """
 from __future__ import annotations
 
@@ -418,7 +417,7 @@ class ProviderCapacityReceipt:
         return True
 
     def has_usable_capacity_facts(self, *, now: Optional[datetime] = None) -> bool:
-        """Facts-only usability; PS-605 still decides policy permission."""
+        """Facts-only usability; dispatch policy still decides permission."""
         known_capacity = (not _is_unknown(self.concurrency_remaining) or
                           any(not _is_unknown(q.remaining) for q in self.quotas))
         return (self.is_operationally_available(now=now) and known_capacity and
@@ -568,7 +567,7 @@ class CapacityRegistry:
 
     def eligible_capacity_for(self, target: str, *, now: Optional[datetime] = None
                               ) -> Tuple[ProviderCapacityReceipt, ...]:
-        """Return all structurally available pools; PS-605 applies policy facts."""
+        """Return all structurally available pools; dispatch policy applies later."""
         return tuple(sorted((r for r in self._receipts if target in r.exposed_models and
                              r.has_usable_capacity_facts(now=now)),
                             key=lambda r: (r.provider, r.pool_id, r.receipt_hash)))

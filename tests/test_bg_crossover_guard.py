@@ -1,21 +1,9 @@
-"""Regression tests for POS-AI-23 — background-call output reaching a user chat.
+"""Background-call output must never be persisted as a user chat reply.
 
-Two background completions were persisted as the assistant's reply in live
-sessions on 2026-08-24/25:
-
-* ``8670f5ae`` — the memory extractor's ``[{"text": ..., "category": ...}]``
-  array, answering "yes install whatever we need to make this work";
-* ``2c490607`` — the skill extractor's literal ``null`` decline token,
-  answering a FizzBuzz coding request.
-
-Both were written by the ordinary chat finaliser with ordinary chat metadata,
-so nothing downstream could tell them apart from a real reply. These tests lock
-in the three things that now make that impossible to happen silently:
-
-1. the two observed payloads are recognised;
-2. ordinary replies are NOT (the guard must not eat real answers);
-3. background and interactive model calls are structurally separated — different
-   connection pools, different response-cache namespaces.
+Background extractor payloads (a memory ``[{"text": ..., "category": ...}]``
+array, a skill ``null`` decline) are recognised, ordinary replies are not, and
+background and interactive model calls use separate connection pools and
+response-cache namespaces.
 """
 
 import sys
@@ -25,8 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import bg_crossover  # noqa: E402
 
-
-# ── The two payloads actually observed in production ──────────────────────
 
 # services/memory/memory_extractor.py::EXTRACT_SYSTEM_PROMPT contract.
 OBSERVED_MEMORY_EXTRACTION = (
@@ -73,8 +59,6 @@ def test_detects_decline_token_behind_reasoning():
     assert bg_crossover.detect("<think>lots of deliberation</think>\nnull") == "bare-sentinel"
 
 
-# ── Real replies must survive untouched ───────────────────────────────────
-
 def test_ignores_ordinary_reply():
     assert bg_crossover.detect("Done — fizzbuzz.py is fixed and prints 1..15.") is None
 
@@ -100,8 +84,6 @@ def test_ignores_json_array_of_unrelated_objects():
     assert bg_crossover.detect('[{"name": "a", "qty": 2}]') is None
 
 
-# ── The guard replaces, logs and reports ──────────────────────────────────
-
 def test_guard_replaces_crossover_with_a_user_facing_notice():
     content, reason = bg_crossover.guard_user_reply(
         OBSERVED_SKILL_DECLINE, session_id="2c490607", where="chat-finalize",
@@ -123,8 +105,6 @@ def test_guard_logs_an_alertable_marker(caplog):
         bg_crossover.guard_user_reply(OBSERVED_MEMORY_EXTRACTION, session_id="8670f5ae")
     assert any("[bg-crossover]" in r.getMessage() for r in caplog.records)
 
-
-# ── Structural isolation: lanes ───────────────────────────────────────────
 
 def test_background_and_interactive_calls_never_share_a_cache_entry():
     """The response cache is process-wide and keyed on the request. Identical

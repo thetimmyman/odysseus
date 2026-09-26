@@ -71,7 +71,6 @@ def _draft(db, **kw):
     return create_draft(db, **kw)
 
 
-# ---------- evidence-required creation ----------
 def test_create_requires_nonempty_evidence():
     db = _db()
     for bad in (None, [], "not-a-list", {}):
@@ -94,7 +93,6 @@ def test_create_requires_title_and_body():
         create_draft(db, title="t", body="", evidence=list(EVIDENCE))
 
 
-# ---------- lifecycle: legal transitions ----------
 def test_draft_validate_records_actor():
     db = _db()
     row = validate_entry(db, _draft(db).id, "tim")
@@ -150,7 +148,6 @@ def test_expired_revalidate_only_with_explicit_flag():
     assert "re-validated from expired by tim" in row.audit_log
 
 
-# ---------- lifecycle: illegal transitions ----------
 def test_illegal_transition_matrix():
     """Every non-legal (status, action) pair raises KnowledgeTransitionError.
     Legal set: draft->validate, draft->reject, validated->supersede,
@@ -213,7 +210,6 @@ def test_supersede_replacement_must_exist_and_differ():
     assert row.status == "validated"
 
 
-# ---------- retrieval: validated-only, advisory-labeled ----------
 def test_retrieve_validated_only_and_advisory_labeled():
     db = _db()
     validated = validate_entry(db, _draft(db, title="keep", category="bug_debug").id, "tim")
@@ -250,7 +246,6 @@ def test_retrieve_filters_category_tag_task_type():
     assert retrieve_validated(db, task_type="ci_triage") == []
 
 
-# ---------- draft_from_run ----------
 def _seed_model_run(db, *, scores=None, artifacts=None, with_manifest=True,
                     lesson_history=None):
     db.add(cdb.RoutingModelProfile(
@@ -339,7 +334,6 @@ def test_draft_from_run_without_verification_or_manifest():
     assert "not yet scored" in row.body
 
 
-# ---------- routes ----------
 class _StubAuthManager:
     is_configured = True
 
@@ -485,7 +479,6 @@ def test_routes_draft_from_run():
     assert any(e.get("type") == "model_run" for e in d["evidence"])
 
 
-# ---------- auth gating (AUTH_ENABLED=true, real gate code) ----------
 class TestKnowledgeAuthGating:
     def setup_method(self):
         os.environ["AUTH_ENABLED"] = "true"
@@ -523,7 +516,6 @@ class TestKnowledgeAuthGating:
         assert client.get("/api/harness/knowledge/retrieve", headers=ADMIN).status_code == 200
 
 
-# ---------- the advisory-only invariant ----------
 def test_kb_retrieval_cannot_flip_routing_or_verification():
     """Knowledge is context, never policy. Two teeth:
 

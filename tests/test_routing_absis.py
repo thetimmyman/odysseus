@@ -37,8 +37,6 @@ ROOT = Path(__file__).resolve().parents[1]
 KUBECTL_PREFIX = "sudo kubectl exec -n tacticus deploy/absis-orchestrator --"
 
 
-# --- helpers -----------------------------------------------------------------
-
 class FakeTransport:
     """Scripted transport: returns canned results per call, records scripts."""
 
@@ -55,8 +53,6 @@ def _worker(worker_id="w1", worker_class="llm_inference", capabilities=()):
     return {"worker_id": worker_id, "worker_class": worker_class,
             "capabilities": list(capabilities)}
 
-
-# --- wire format -------------------------------------------------------------
 
 EXPECTED_WIRE_FIELDS = {
     "scenario_id", "required_worker_class", "required_capabilities",
@@ -113,8 +109,6 @@ def test_spec_defaults_match_job_defaults():
     assert job["payload"] == {}
 
 
-# --- input validation (reject, never escape) ----------------------------------
-
 @pytest.mark.parametrize("bad", [
     'scen"ario', "scen'ario", "scen\\ario", "scen\nario", "scen\rario",
     "scenario with space", "", "scen`ario", "scen$ario",
@@ -153,8 +147,6 @@ def test_job_id_injection_rejected(bad):
     with pytest.raises(AbsisValidationError):
         get_status(FakeTransport([]), bad)
 
-
-# --- ssh argv / remote-script construction ------------------------------------
 
 def test_ssh_argv_construction(monkeypatch):
     calls = []
@@ -278,8 +270,6 @@ def test_scan_script_targets_worker_keys():
     assert 'os.environ["REDIS_URL"]' in script
 
 
-# --- check_availability -------------------------------------------------------
-
 def test_availability_no_workers():
     t = FakeTransport([{"registered_workers": []}])
     out = check_availability(t, "llm_inference")
@@ -328,8 +318,6 @@ def test_availability_tolerates_malformed_worker_records():
     assert len(out["workers"]) == 1
 
 
-# --- enqueue gating -----------------------------------------------------------
-
 def test_enqueue_refuses_without_matching_worker():
     t = FakeTransport([{"registered_workers": []}])
     spec = AbsisJobSpec(scenario_id="s1", required_worker_class="llm_inference")
@@ -367,8 +355,6 @@ def test_enqueue_proceeds_when_worker_available():
     assert len(t.scripts) == 2
 
 
-# --- status / wait ------------------------------------------------------------
-
 def test_get_status_found_and_not_found():
     job = {"job_id": "0f8fad5b-d9cb-469f-a165-70867728950e", "status": "running"}
     t = FakeTransport([{"found": True, "job": job}])
@@ -403,8 +389,6 @@ def test_wait_for_terminal_times_out(monkeypatch):
     assert out["last_status"] == "running"
 
 
-# --- map_job_to_model_run -----------------------------------------------------
-
 def test_map_completed_job():
     out = map_job_to_model_run({
         "job_id": "j1", "status": "completed", "attempts": 1,
@@ -433,8 +417,6 @@ def test_map_running_job_is_neither_completed_nor_errored():
     assert out["completed"] is False and out["errored"] is False
     assert out["artifacts"] == {"absis_payload": {}}
 
-
-# --- CLI ----------------------------------------------------------------------
 
 def _load_cli():
     path = ROOT / "scripts" / "odysseus-absis"

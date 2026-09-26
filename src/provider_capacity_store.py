@@ -1,4 +1,4 @@
-"""Authoritative append-only persistence for PS-640 capacity receipts."""
+"""Authoritative append-only persistence for capacity receipts."""
 
 from __future__ import annotations
 
@@ -29,9 +29,7 @@ class CapacityStoreError(RuntimeError):
     """The persisted capacity authority cannot be trusted."""
 
 
-#: Default store location, mirroring the PS-632 target capability store.
-#: ``data/provider_capacity`` under the routing workdir; overridable by env so an
-#: operator (or a test) can point at a throwaway store.
+#: Default store under the routing workdir; env-overridable for tests.
 STORE_ENV = "PS640_CAPACITY_STORE"
 STORE_DIRNAME = "provider_capacity"
 
@@ -50,7 +48,7 @@ def _json_no_duplicate_pairs(pairs):
 
 
 def default_store_dir() -> str:
-    """PS-644 env-var override, mirroring ``target_capability_store``."""
+    """Env-var override, mirroring ``target_capability_store``."""
     return os.environ.get(STORE_ENV) or os.path.join(data_root(), STORE_DIRNAME)
 
 
@@ -142,10 +140,8 @@ class ProviderCapacityStore:
             chain = self._indexed_chain(existing, index, receipt.pool_id)
             successors = self._uncommitted_successors(existing, chain, receipt.pool_id)
             if successors:
-                # Durable history holds a successor the committed index does not
-                # represent (interrupted commit). Authority is ambiguous; the only
-                # valid supersession target is the durable leaf — the explicit
-                # administrative recovery move that commits that history.
+                # An interrupted commit left an unindexed successor; only the
+                # durable leaf is a valid supersession target (explicit recovery).
                 leaf = self._successor_leaf(existing, chain, receipt.pool_id)
                 if supersedes != leaf.receipt_hash:
                     raise CapacityStoreError(
@@ -287,11 +283,7 @@ class ProviderCapacityStore:
         chain: Iterable[ProviderCapacityReceipt],
         pool_id: str,
     ) -> tuple[ProviderCapacityReceipt, ...]:
-        """Durable same-pool successors claiming to supersede the committed chain.
-
-        These are rows the committed current index does not represent; their mere
-        existence makes the pool's authority ambiguous unless an explicit recovery
-        commits them."""
+        """Unindexed same-pool successors; any makes authority ambiguous until recovered."""
         chain_hashes = {r.receipt_hash for r in chain}
         return tuple(
             r
@@ -307,10 +299,7 @@ class ProviderCapacityStore:
         chain: Iterable[ProviderCapacityReceipt],
         pool_id: str,
     ) -> ProviderCapacityReceipt:
-        """The unique durable successor-maximal receipt stemming from the chain.
-
-        Raises fail-closed when multiple competing uncommitted leaves exist (an
-        externally tampered history) rather than silently choosing one."""
+        """The unique uncommitted leaf of the chain; raises if several compete."""
         chain_hashes = {r.receipt_hash for r in chain}
         by_hash = {r.receipt_hash: r for r in entries if r.pool_id == pool_id}
         children: dict[str, list[str]] = {}
@@ -341,12 +330,8 @@ class ProviderCapacityStore:
         entries: Iterable[ProviderCapacityReceipt],
         index: Mapping[str, Mapping[str, str]],
     ) -> dict[str, ProviderCapacityReceipt]:
-        """Single authority-resolution primitive (fail closed on ambiguity).
-
-        The committed index is authority. If durable history contains a valid
-        successor of any member of the indexed chain that the index does not
-        represent, authority is ambiguous: no receipt is exposed as current and
-        the caller must fail closed until an explicit recovery commits the history."""
+        """Resolve authority from the committed index; an unindexed successor in
+        history makes it ambiguous, so nothing is exposed as current."""
         entries = tuple(entries)
         active: dict[str, ProviderCapacityReceipt] = {}
         for pool_id in index:
@@ -360,15 +345,10 @@ class ProviderCapacityStore:
         return active
 
     def authoritative_current_receipts(self) -> tuple[ProviderCapacityReceipt, ...]:
-        """Canonical read seam: the authoritative receipt set for registry use.
+        """Every receipt in committed chains, so ``CapacityRegistry`` can check ancestry.
 
-        Returns every receipt belonging to a committed supersession chain, so a
-        consumer (``CapacityRegistry``) can validate each chain's ancestry. Heads
-        alone are not sufficient: a head still carries ``supersedes``.
-
-        Raises CapacityStoreError when the index is missing/corrupt or when durable
-        history contains an uncommitted successor (ambiguous authority). Orphan rows
-        that do not supersede the indexed chain never invalidate the result."""
+        Raises CapacityStoreError on a missing/corrupt index or an uncommitted
+        successor. Orphan rows never invalidate the result."""
         if not os.path.exists(self.receipts_path):
             if os.path.exists(self.index_path):
                 raise CapacityStoreError("current index exists without receipt history")
@@ -503,5 +483,4 @@ class ProviderCapacityStore:
 
 
 def store_from_env() -> ProviderCapacityStore:
-    """The operator's configured store (env override, else the default dir)."""
     return ProviderCapacityStore()

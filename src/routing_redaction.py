@@ -1,13 +1,7 @@
-"""src/routing_redaction.py — credential redaction for coordinator audit rows
-and anything harness-side that may leave the machine (spec Section 9/18).
+"""Best-effort credential redaction for audit rows and outbound harness text.
 
-Pattern-based, pure stdlib `re`, deliberately dependency-free: this runs on
-every /coordinator/wrap call before the raw output is archived, so it must
-never pull in a model, a network call, or a heavyweight parser. It is a
-best-effort scrubber for the COMMON credential shapes, complementing (not
-replacing) routing_context's secret-FILE denylist — that one stops secrets
-from being read into prompts, this one stops ones that slipped through (or
-were pasted into a coordinator reply) from being persisted verbatim.
+Stdlib-only because it runs on every /coordinator/wrap call. It complements
+routing_context's secret-file denylist by scrubbing secrets that slipped through.
 """
 import re
 from typing import List, Pattern, Tuple
@@ -41,11 +35,7 @@ _ASSIGNMENT_PATTERN = re.compile(
 
 
 def redact_text(text: str) -> Tuple[str, bool]:
-    """Replace credential-shaped substrings with [REDACTED].
-
-    Returns (redacted_text, applied_any). `applied_any` is what lands on
-    CoordinatorAudit.redaction_applied, so reviewers can tell a clean archive
-    from a scrubbed one without diffing."""
+    """Replace credential-shaped substrings with [REDACTED]; returns (text, applied_any)."""
     if not text:
         return text or "", False
     applied = 0
@@ -54,9 +44,7 @@ def redact_text(text: str) -> Tuple[str, bool]:
         nonlocal applied
         applied += n
 
-    # Specific token shapes first: the assignment pattern's \S{8,} value would
-    # otherwise swallow a recognizable sk-/ghp- token into a generic mask and
-    # lose the (harmless, useful-for-triage) surrounding context.
+    # Specific shapes first, or the generic assignment pattern swallows them.
     for pattern in SECRET_PATTERNS:
         text, n = pattern.subn(REDACTED, text)
         _count(n)

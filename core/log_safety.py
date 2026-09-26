@@ -1,23 +1,10 @@
-"""Helpers for keeping sensitive data out of logs.
-
-Endpoint URLs configured by admins can embed credentials in the userinfo
-(``https://user:pass@host``) or query string (``?api_key=...``). Logging them
-raw leaks those secrets, so route/diagnostic logs run URLs through
-``redact_url`` first. Reconstructing the URL without userinfo/query/fragment
-also doubles as a sanitizer barrier for CodeQL's clear-text-logging query.
-
-Imported for PS-602 from upstream Odysseus #4750 (CodeQL
-py/clear-text-logging-sensitive-data).
-"""
+"""Keep credentials in admin-configured URLs (userinfo, query) out of logs."""
 
 from urllib.parse import urlparse, urlunparse
 
 
 def redact_url(url: str) -> str:
-    """Return a URL safe for logs by removing userinfo and query/fragment.
-
-    Keeps scheme, host, port and path so logs stay useful for debugging.
-    """
+    """Return *url* without userinfo, query or fragment; keeps scheme, host, port, path."""
     try:
         parsed = urlparse(url or "")
         host = parsed.hostname or ""

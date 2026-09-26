@@ -97,12 +97,7 @@ def _patch_basics(monkeypatch, settings=None):
 
 
 def _patch_stream(monkeypatch, script):
-    """Stub ``al.stream_llm_with_fallback`` and record every invocation.
-
-    ``script(call_index, candidates, messages, kwargs)`` returns the SSE chunks
-    for that invocation. Returns the ``calls`` list, each entry carrying the
-    exact candidate chain the loop asked for plus a snapshot of the messages.
-    """
+    """Stub ``al.stream_llm_with_fallback``; ``script`` returns each call's SSE chunks."""
     calls = []
 
     async def _fake_stream(candidates, messages, **kwargs):
@@ -140,10 +135,6 @@ def _run(messages=None, **kwargs):
     return _events(_collect(gen))
 
 
-# ---------------------------------------------------------------------------
-# Test A — same target across rounds
-# ---------------------------------------------------------------------------
-
 def test_a_same_execution_identity_across_rounds(monkeypatch):
     _patch_basics(monkeypatch)
 
@@ -154,8 +145,7 @@ def test_a_same_execution_identity_across_rounds(monkeypatch):
     events = _run()
     assert len(calls) == 3, calls
     assert set(_routes(calls)) == {_PRIMARY}, _routes(calls)
-    # ... and never a multi-candidate chain (that is what allowed the silent
-    # per-round reroute this patch removes).
+    # A multi-candidate chain would allow a silent per-round reroute.
     assert all(len(c["candidates"]) == 1 for c in calls), calls
 
     targets = _of_type(events, "execution_target")
@@ -168,10 +158,6 @@ def test_a_same_execution_identity_across_rounds(monkeypatch):
     assert len(steps) == 3, steps
     assert {s.get("execution_id") for s in steps} == {eid}
 
-
-# ---------------------------------------------------------------------------
-# Test B — tool continuation
-# ---------------------------------------------------------------------------
 
 def test_b_tool_continuation_reuses_pinned_target(monkeypatch):
     _patch_basics(monkeypatch)
@@ -195,10 +181,6 @@ def test_b_tool_continuation_reuses_pinned_target(monkeypatch):
     ids = {s.get("execution_id") for s in _of_type(events, "agent_step")}
     assert len(ids) == 1 and None not in ids
 
-
-# ---------------------------------------------------------------------------
-# Test C — retry identity
-# ---------------------------------------------------------------------------
 
 def test_c_transient_retry_reuses_same_target(monkeypatch):
     _patch_basics(monkeypatch)
@@ -228,10 +210,6 @@ def test_c_transient_retry_reuses_same_target(monkeypatch):
     assert metrics["executions"][0]["rounds"] == [1, 2]
     assert metrics["provider_failures"] == []
 
-
-# ---------------------------------------------------------------------------
-# Test D — no hidden rerouting
-# ---------------------------------------------------------------------------
 
 def test_d_normal_round_never_reroutes(monkeypatch):
     _patch_basics(monkeypatch)
@@ -266,10 +244,6 @@ def test_d_normal_round_never_reroutes(monkeypatch):
     assert len(metrics["executions"]) == 1
     assert metrics["execution_id"] == metrics["executions"][0]["execution_id"]
 
-
-# ---------------------------------------------------------------------------
-# Test E — explicit fallback transition
-# ---------------------------------------------------------------------------
 
 def test_e_explicit_fallback_creates_new_execution(monkeypatch):
     _patch_basics(monkeypatch)
@@ -321,10 +295,6 @@ def test_e_explicit_fallback_creates_new_execution(monkeypatch):
     assert metrics["provider_failures"][0]["failure_class"] == "provider_permanent"
 
 
-# ---------------------------------------------------------------------------
-# Test F — failed provider without fallback
-# ---------------------------------------------------------------------------
-
 def test_f_primary_failure_without_fallback_fails_explicitly(monkeypatch):
     _patch_basics(monkeypatch)
 
@@ -356,10 +326,6 @@ def test_f_primary_failure_without_fallback_fails_explicitly(monkeypatch):
     metrics = _of_type(events, "metrics")[0]["data"]
     assert len(metrics["executions"]) == 1
     assert metrics["provider_failures"][0]["failure_class"] == "provider_transient"
-
-# ---------------------------------------------------------------------------
-# Test G — context/tool assumptions stay with the pinned target
-# ---------------------------------------------------------------------------
 
 def test_g_context_and_tool_profile_pinned(monkeypatch):
     _patch_basics(monkeypatch)
@@ -398,10 +364,6 @@ def test_g_context_and_tool_profile_pinned(monkeypatch):
     assert pinned["context_window"] == target["context_window"]
     assert pinned["tool_profile"] == target["tool_profile"]
 
-
-# ---------------------------------------------------------------------------
-# Test H — auditability (which rounds ran under which target)
-# ---------------------------------------------------------------------------
 
 def test_h_telemetry_maps_rounds_to_targets(monkeypatch):
     _patch_basics(monkeypatch)
@@ -442,10 +404,6 @@ def test_h_telemetry_maps_rounds_to_targets(monkeypatch):
     assert execs[target["execution_id"]]["rounds"] == [1]
     assert execs[new_id]["rounds"] == [1, 2, 3]
     assert metrics["execution_id"] == new_id
-
-# ---------------------------------------------------------------------------
-# Unit tests for the pinned-execution helpers
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("chunk,expected", [
     ('event: error\ndata: {"status": 503, "text": "down"}\n\n', ae.FAILURE_TRANSIENT),
@@ -520,10 +478,6 @@ def test_build_execution_target_is_immutable_and_records_transitions():
     import dataclasses
     with pytest.raises(dataclasses.FrozenInstanceError):
         first.model = "something-else"
-
-# ---------------------------------------------------------------------------
-# Completion criterion — a realistic multi-round Qwen agent stays pinned
-# ---------------------------------------------------------------------------
 
 def test_realistic_multi_round_qwen_run_stays_pinned(monkeypatch):
     """local / qwen3.8-27b / one endpoint: test -> fix -> test -> finish.

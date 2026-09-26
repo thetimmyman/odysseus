@@ -1,13 +1,9 @@
 """Cross-tenant access control for legacy owner-less email accounts.
 
-`email_accounts` is the one owner-scoped table left out of the legacy-owner
-migration backfill (core/database.py), so rows with owner NULL/"" persist on a
-multi-user deploy — e.g. an account configured while auth was disabled, or an
-imported legacy row. The HTTP route guards (`_assert_owns_account` and the
-explicit-account_id path in `_get_email_config`) must scope such rows to a
-mailbox match, exactly like the `_owner_or_matching_legacy_account` fallback and
-the MCP `_account_visible_to_owner` gate. Otherwise any authenticated user can
-read/send/update-credentials/delete another tenant's imported mailbox.
+`email_accounts` is not backfilled by the legacy-owner migration, so owner-less
+rows persist on multi-user deploys. The HTTP route guards must scope them to a
+mailbox match, like the MCP `_account_visible_to_owner` gate, or any user can
+act on another tenant's mailbox.
 """
 
 from unittest import mock
@@ -49,8 +45,7 @@ def _make_account(Factory, account_id, owner, imap_user, from_address="", is_def
 
 
 def test_assert_owns_account_rejects_ownerless_account_for_other_tenant():
-    """The core regression: a legacy owner-less mailbox is NOT accessible to an
-    authenticated caller whose own mailbox does not match it."""
+    """A legacy owner-less mailbox is NOT accessible to a non-matching caller."""
     from routes.email_helpers import _assert_owns_account
     Factory = _make_db()
     # owner="" (created while auth was disabled); mailbox belongs to victim.
@@ -81,7 +76,7 @@ def test_assert_owns_account_allows_ownerless_account_on_mailbox_match():
 
 
 def test_assert_owns_account_noop_for_single_user_mode():
-    """owner == "" (unconfigured / single-user) accepts any account, unchanged."""
+    """owner == "" (unconfigured / single-user) accepts any account."""
     from routes.email_helpers import _assert_owns_account
     Factory = _make_db()
     _make_account(Factory, "acct-legacy", owner="", imap_user="whoever@corp.com")

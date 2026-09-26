@@ -128,7 +128,6 @@ def test_rollback_missing_archive_raises_filenotfound():
                               validate_fn=_validate_positive)
 
 
-# ---------- validate_budget ----------
 _GOOD = {
     "daily_max_usd": 10.0, "weekly_max_usd": 50.0, "monthly_max_usd": 150.0,
     "premium_daily_max_usd": 5.0, "premium_weekly_max_usd": 20.0,
@@ -171,7 +170,6 @@ def test_validate_budget_rejects_non_finite(bad_val):
     assert any("daily_max_usd" in r for r in validate_budget(bad))
 
 
-# ---------- review fix #1/#2: atomic write + publish serialization ----------
 def test_publish_is_atomic_no_tmp_litter_and_complete_file():
     for i in range(3):
         config_store.publish("dom", {"x": i + 1, "version": f"1.{i}"}, actor="a",
@@ -198,10 +196,8 @@ def test_atomic_write_leaves_config_world_readable():
 
 
 def test_concurrent_publishes_no_corrupt_archives_or_lost_live(_data_dir):
-    # Review fix #2: concurrent publishes on one domain used to interleave the
-    # read-archive-write, losing updates and leaving torn archives. With the
-    # publish lock + atomic write, the live file stays valid and no archive is
-    # corrupt no matter how they race.
+    # The publish lock + atomic write keep the live file valid and archives
+    # intact however concurrent publishes race.
     config_store.publish("dom", {"x": 1, "version": "1.0"}, actor="seed",
                          validate_fn=_validate_positive)
 
@@ -223,7 +219,6 @@ def test_concurrent_publishes_no_corrupt_archives_or_lost_live(_data_dir):
             json.load(f)  # every archive is complete JSON (none torn)
 
 
-# ---------- review fix #1: budget must never fail OPEN (upward) ----------
 def test_budget_unreadable_live_file_holds_last_known_good(_data_dir, monkeypatch):
     # Admin tightens the daily cap below the baked default, then the live file
     # becomes unreadable. load_budget_config must HOLD the tightened cap, not

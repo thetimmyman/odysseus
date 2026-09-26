@@ -1,11 +1,8 @@
-"""PS-602 / upstream #6048: the session cookie's Secure flag follows the request.
+"""The session cookie's Secure flag follows the request.
 
-Before this fix the login cookie was marked Secure only when SECURE_COOKIES was
-explicitly true. An HTTPS install that never set it — and every container the
-old docker-compose pinned to ``false`` — handed out a session cookie the browser
-is happy to send back in cleartext. Unset now derives the flag from the request
-scheme (or ``X-Forwarded-Proto``), an explicit true still forces it on, and an
-explicit false still forces it off. Strictly more Secure flags than before.
+With SECURE_COOKIES unset the flag derives from the request scheme (or
+``X-Forwarded-Proto``), so HTTPS installs never hand out a cleartext-sendable
+cookie; an explicit true/false still forces it.
 
 Drives the real ``/api/auth/login`` endpoint from ``setup_auth_routes`` with a
 capturing response, so the assertion is on the cookie actually set.
@@ -71,8 +68,6 @@ def _login_secure_flag(scheme, forwarded_proto=None):
     return response.cookie_kwargs["secure"]
 
 
-# --- the fix: unset derives from the request --------------------------------
-
 def test_https_login_marks_cookie_secure_without_config(monkeypatch):
     monkeypatch.delenv("SECURE_COOKIES", raising=False)
 
@@ -115,8 +110,6 @@ def test_forwarded_proto_http_does_not_downgrade_https_scheme(monkeypatch):
     assert _login_secure_flag("https", forwarded_proto="http") is True
     assert _login_secure_flag("http", forwarded_proto="http") is False
 
-
-# --- equivalence: the explicit knob stays authoritative ----------------------
 
 def test_explicit_true_forces_secure_even_on_plain_http(monkeypatch):
     monkeypatch.setenv("SECURE_COOKIES", "true")

@@ -1,20 +1,9 @@
-"""Authenticated in-Odysseus preview proxy.
+"""Admin-gated proxy serving the loopback-only dev server at the root of a
+separate origin (PROXY_PORT) so the Dev Preview iframe can embed it.
 
-Serves the LOOPBACK-ONLY dev server (127.0.0.1:DEV_PORT, never published) at the
-ROOT of a SEPARATE admin-cookie-gated origin (PROXY_PORT), so the Dev Preview
-iframe can embed it. Mirrors how the app is already proxied in Codespaces
-(origin-root, no basePath). Security:
-
-  * ADMIN COOKIE ONLY — every request (HTTP + WS) must carry a valid
-    `odysseus_session` admin cookie. Bearer/Authorization, the internal-tool
-    loopback header, and missing/non-admin cookies are all rejected. No bypass.
-  * FIXED UPSTREAM — always forwards to 127.0.0.1:DEV_PORT (the single active
-    manager dev server). Never an arbitrary URL. 503 when nothing is running.
-  * FRAME-UNBLOCK ONLY — strips `X-Frame-Options` and the CSP `frame-ancestors`
-    directive (and nothing else) so Odysseus can iframe it; the rest of the
-    app's CSP is preserved.
-  * HTTP + WebSocket/HMR, redirects, Set-Cookie (multi), request bodies,
-    /_next assets, app /api routes — all proxied faithfully.
+  * Admin cookie only, on every HTTP and WS request; no bearer or internal-tool.
+  * Fixed upstream 127.0.0.1:DEV_PORT; 503 when nothing is running.
+  * Strips only X-Frame-Options and CSP frame-ancestors; the rest is preserved.
 """
 
 import asyncio
@@ -49,8 +38,7 @@ def _internal_tool_header():
 
 
 def _admin_ok(headers, cookies) -> bool:
-    """Cookie-only admin gate — rejects bearer + internal-tool, requires a valid
-    admin `odysseus_session`. `headers` is a Starlette Headers (case-insensitive)."""
+    """Cookie-only admin gate; rejects bearer and internal-tool."""
     if headers.get("authorization"):
         return False
     ith = _internal_tool_header()
@@ -75,9 +63,8 @@ def _active() -> bool:
 
 
 def _same_site(headers, host_header) -> bool:
-    """CSRF guard for a 0.0.0.0-exposed origin: reject CROSS-SITE requests.
-    Prefers Fetch-Metadata (Sec-Fetch-Site); falls back to an Origin/Host match.
-    Absent both (curl, same-origin GET that omits Origin) => allow."""
+    """Reject cross-site requests via Sec-Fetch-Site, else Origin/Host match;
+    allow when both are absent (curl, same-origin GET)."""
     sfs = (headers.get("sec-fetch-site") or "").lower()
     if sfs:
         return sfs in ("same-origin", "same-site", "none")
@@ -95,8 +82,7 @@ def _strip_frame_ancestors(csp: str) -> str:
 
 
 def _filter_response_headers(resp: httpx.Response):
-    """Faithful pass-through MINUS hop-by-hop + the frame blockers; preserves
-    multiple Set-Cookie, content-encoding, content-length, Location, etc."""
+    """Pass-through minus hop-by-hop and frame-blocking headers (keeps multi Set-Cookie)."""
     out = []
     for k, v in resp.headers.multi_items():
         lk = k.lower()
@@ -137,8 +123,7 @@ async def _http(request):
         status_code=upstream.status_code,
         background=BackgroundTask(upstream.aclose),
     )
-    # Replace Starlette's computed headers with the faithful, frame-unblocked
-    # upstream set (preserves multi Set-Cookie, content-encoding, Location, …).
+    # Use the upstream header set (multi Set-Cookie etc.) instead of Starlette's.
     resp.raw_headers = _filter_response_headers(upstream)
     return resp
 
@@ -217,7 +202,6 @@ def make_app(auth_manager, dev_port: int):
 
 
 async def serve(auth_manager, dev_port: int, host: str = "0.0.0.0", port: int = 7100):
-    """Run the gated proxy server (a second uvicorn) alongside Odysseus."""
     import uvicorn
     app = make_app(auth_manager, dev_port)
     config = uvicorn.Config(app, host=host, port=port, log_level="warning",

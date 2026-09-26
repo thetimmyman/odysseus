@@ -1,10 +1,7 @@
 """audit_memories must rebuild the vector index from ALL owners\' memories.
 
-The JSON store correctly preserves other owners (save(final + other)), but
-the vector index was rebuilt from final_entries (only the audited owner),
-so every other owner was wiped from the shared semantic-search collection
-until they ran their own audit. The rebuild must use the same full set that
-was saved.
+The index is shared, so rebuilding from only the audited owner's entries would
+wipe every other owner from semantic search.
 """
 import asyncio
 

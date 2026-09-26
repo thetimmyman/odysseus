@@ -1,9 +1,8 @@
-"""PS-645 — hosted provider-capacity collector for the ChatGPT Subscription pool.
+"""Hosted provider-capacity collector for the ChatGPT Subscription pool.
 
-The slice has to prove the collector is an observer, not a router: it mints
-a PS-640 receipt from provider facts, persists it through the append-only
-store, and feeds the freshest-wins gate — while its failure modes are
-negative controls:
+The collector is an observer, not a router: it mints a capacity receipt from
+provider facts, persists it through the append-only store, and feeds the
+freshest-wins gate. Its failure modes are negative controls:
 
   * a 429 from the usage endpoint is a FACT (rate_limited + reset), never a
     transport error and never ``None``;
@@ -15,7 +14,7 @@ negative controls:
   * an explicit limit (429 / limit_reached / allowed=false) outranks spend
     control, which outranks a depleted window, which outranks ``available``;
   * the entitlement class is ``third_party_harness`` — never ``agent_sdk``,
-    which is what turns the gate (PS-641) off for this pool by design;
+    which is what turns the entitlement gate off for this pool by design;
   * the freshest receipt wins per pool regardless of state, and only
     in-TTL receipts reach the gate.
 """
@@ -120,7 +119,6 @@ def _collect_live(db, monkeypatch, fetch_usage) -> pc.ProviderCapacityReceipt | 
     return cc.collect("auth1")
 
 
-# ---------------------------------------------------------------- the pool
 def test_pool_identity_is_session_scoped():
     assert cc.hosted_pool_id("auth1") == "chatgpt-subscription:session:auth1"
     assert cc.account_identity_for("sam@example.com", "auth1") == "sam@example.com"
@@ -128,7 +126,6 @@ def test_pool_identity_is_session_scoped():
     assert cc.account_identity_for("  ", "auth9") == "auth:auth9"
 
 
-# ------------------------------------------------------------- happy path
 def test_available_receipt_carries_windows_plan_and_no_bearer(monkeypatch):
     SessionLocal = _mem_db(monkeypatch)
     db = SessionLocal()
@@ -142,8 +139,7 @@ def test_available_receipt_carries_windows_plan_and_no_bearer(monkeypatch):
     assert receipt.pool_id == "chatgpt-subscription:session:auth1"
     assert receipt.account_identity == "sam@example.com"
     assert receipt.authorization_class is pc.AuthorizationClass.OAUTH_CLI
-    # The PS-641 eligibility question: this pool is a third-party harness,
-    # not the Agent SDK — so the runtime gate stays OFF by design.
+    # A third-party harness, not the Agent SDK, so the runtime gate stays OFF.
     assert receipt.entitlement is pc.Entitlement.THIRD_PARTY_HARNESS
     assert receipt.state is pc.CapacityState.AVAILABLE
     assert tuple(q.name for q in receipt.quotas) == ("primary", "secondary")
@@ -162,7 +158,6 @@ def test_available_receipt_carries_windows_plan_and_no_bearer(monkeypatch):
     assert "wham/usage" in payload
 
 
-# --------------------------------------------------------------- the states
 def test_429_is_a_fact_not_a_failure(monkeypatch):
     SessionLocal = _mem_db(monkeypatch)
     db = SessionLocal()
@@ -264,7 +259,6 @@ def test_strict_booleans_only(monkeypatch):
     assert receipt.rate_limit is None
 
 
-# ------------------------------------------------------------ fail closed
 def test_unknown_auth_returns_none(monkeypatch):
     _mem_db(monkeypatch)
     assert cc.collect("no-such-auth") is None
@@ -295,7 +289,6 @@ def test_usage_transport_failure_is_not_a_pool_fact(monkeypatch):
     assert _collect_live(db, monkeypatch, _fetch) is None
 
 
-# ------------------------------------------------------------------- store
 def test_sync_appends_and_supersedes_through_the_store(monkeypatch, tmp_path):
     SessionLocal = _mem_db(monkeypatch)
     db = SessionLocal()
@@ -372,7 +365,6 @@ def test_store_env_override(monkeypatch, tmp_path):
     assert cc.store_from_env().directory
 
 
-# -------------------------------------------------------------------- gate
 def test_freshest_wins_per_pool_and_gate_sees_only_fresh(monkeypatch, tmp_path):
     SessionLocal = _mem_db(monkeypatch)
     db = SessionLocal()
@@ -415,9 +407,8 @@ def test_freshest_wins_per_pool_and_gate_sees_only_fresh(monkeypatch, tmp_path):
     assert cc.fresh_hosted_capacity_receipts(store, now=stale_now) == {}
 
 
-# --------------------------------------------------------------- PS-641 seam
 def test_collect_receipts_drive_the_real_hosted_gate(monkeypatch):
-    """The deliverable: dispatch's hosted gate consumes collector-minted
+    """Dispatch's hosted gate consumes collector-minted
     receipts. A fresh available third-party pool remains refused by entitlement
     policy; stale / missing / rate-limited pools carry their documented reasons."""
     import datetime as dt
@@ -446,22 +437,22 @@ def test_collect_receipts_drive_the_real_hosted_gate(monkeypatch):
     profile = replace(profile, endpoint_url=receipts[0].endpoint_url, credential_sha256=receipts[0].credential_sha256)
     assert receipts[0] is not None and receipts[0].state is pc.CapacityState.AVAILABLE
 
-    # 1) observed capacity stays reportable, but third-party entitlement is not a policy grant.
+    # observed capacity stays reportable, but third-party entitlement is not a policy grant.
     ok, _refs, rule, _why = dr.classify_capacity_for(profile, receipts)
     assert ok is False and rule == dr.REFUSED_CAPACITY_UNUSABLE
 
-    # 2) no receipts at all -> missing (fail closed).
+    # no receipts at all -> missing (fail closed).
     ok, _refs, rule, _why = dr.classify_capacity_for(profile, ())
     assert ok is False and rule == dr.REFUSED_CAPACITY_MISSING
 
-    # 3) a receipt that has aged past its TTL -> stale, never selected.
+    # a receipt that has aged past its TTL -> stale, never selected.
     stale_now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
         seconds=cc.DEF_TTL_SECONDS + 1
     )
     ok, _refs, rule, _why = dr.classify_capacity_for(profile, receipts, now=stale_now)
     assert ok is False and rule == dr.REFUSED_CAPACITY_STALE
 
-    # 4) a genuinely rate-limited pool stays fresh but unusable.
+    # a genuinely rate-limited pool stays fresh but unusable.
     limited = dict(usage_body())
     limited["rate_limit"] = {
         "primary_window": dict(PRIMARY),
@@ -473,7 +464,7 @@ def test_collect_receipts_drive_the_real_hosted_gate(monkeypatch):
     ok, _refs, rule, _why = dr.classify_capacity_for(profile, [rl])
     assert ok is False and rule == dr.REFUSED_CAPACITY_UNUSABLE
 
-    # 5) a profile for a model the pool never exposed -> missing, not stale.
+    # a profile for a model the pool never exposed -> missing, not stale.
     other = dr.ExecutionTargetProfile(
         target_id="tg-2",
         profile_id="prof-2",

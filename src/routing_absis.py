@@ -1,43 +1,16 @@
-"""src/routing_absis.py — Phase 7 ABSIS integration (routing harness v0.5 §7).
+"""Dispatcher for the ``absis_tacticus_job_queue`` execution backend.
 
-Standalone dispatcher for the ``absis_tacticus_job_queue`` execution backend
-(routing_coordinator.ExecutionBackend.ABSIS_TACTICUS_JOB_QUEUE). ABSIS is the
-conformance job queue in github.com/thetimmyman/tacticus-analytics
-(modules/absis-infra): jobs are JSON blobs on a Redis LIST, workers RPOP and
-report state back through per-job STRING keys.
+It only submits jobs to the ABSIS Redis queue and reads their state back, so
+oracle/evidence gates stay intact; routing to this backend is decided upstream.
+The queue has no HTTP API and is not reachable from the host, so every
+operation runs as a one-shot python script inside the orchestrator pod over
+ssh + kubectl exec, keeping the Redis secret in the cluster.
 
-Spec §7 guardrail: this dispatcher PRESERVES the existing oracle/evidence
-gates — it only SUBMITS jobs to the ABSIS queue and reads job state back. It
-never bypasses oracle_runner validation (results still flow through ABSIS's
-own worker/oracle pipeline), and the decision to route a
-domain=tacticus_analytics task to this backend is made upstream by the
-coordinator + deterministic router (routing_coordinator), never here.
+An unclaimable job is requeued and FAILED within seconds, so ``enqueue``
+refuses unless ``check_availability`` finds a matching worker.
 
-Transport reality (verified 2026-07-08):
-  * ABSIS has NO HTTP submission API. The queue lives in Redis at
-    redis.tacticus.svc.cluster.local:6379 DB 2, ClusterIP-only (unreachable
-    from the Framework host), password in k8s Secret tacticus-secrets.
-  * So the dispatcher runs HOST-side (like the other odysseus-* CLIs) and
-    tunnels every operation as a one-shot python script executed INSIDE the
-    orchestrator pod:  ssh <target> "<kubectl exec prefix> python -c '...'".
-    The pod already has absis_infra + a configured REDIS_URL env var, so no
-    secret ever leaves the cluster.
-  * Enqueue is exactly the orchestrator's three ops: LPUSH conformance:jobs,
-    SET conformance:job:<id>, PUBLISH conformance:status (all the same JSON).
-
-Operational guard: as of 2026-07-08 ZERO llm_inference/oracle_runner workers
-are deployed. The orchestrator requeues an unclaimable job up to 5 attempts
-and marks it FAILED within seconds — so ``enqueue`` refuses to submit unless
-``check_availability`` sees a matching registered worker (or force=True for
-testing). ``check_availability``'s ``available`` flag is what the harness's
-GateContext.backend_available gate should consume for this backend.
-
-Everything embedded in a remote script goes through json.dumps (a JSON
-string/object literal produced with ensure_ascii=True is also a valid Python
-literal), and the whole script is shlex.quote()d into the ssh argv. On top of
-that, identifiers (scenario_id, capabilities, job_id) are whitelist-validated
-and anything containing quotes/backslashes/newlines is rejected outright —
-we refuse rather than escape.
+Embedded values go through json.dumps (valid Python literals) and the script is
+shlex.quote()d; identifiers are whitelist-validated and rejected, never escaped.
 """
 from __future__ import annotations
 
@@ -55,8 +28,7 @@ WORKER_CLASSES = ("llm_inference", "oracle_runner")
 # Terminal job statuses in the ABSIS lifecycle (queued→assigned→running→…).
 TERMINAL_STATUSES = ("completed", "failed")
 
-# Whitelists. Rejecting is the policy for anything outside these — never try
-# to escape quotes/backslashes/newlines out of user-supplied identifiers.
+# Anything outside these whitelists is rejected, never escaped.
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
 _SAFE_JOB_ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
 
@@ -82,9 +54,8 @@ class AbsisTransportError(RuntimeError):
 
 
 def load_absis_policy() -> dict:
-    """The 'absis' section of config/routing_policy.json merged over
-    DEFAULT_ABSIS_POLICY (so a policy file that predates this section still
-    yields a complete — and disabled — config)."""
+    """The policy's 'absis' section over DEFAULT_ABSIS_POLICY, so an older file
+    still yields a complete, disabled config."""
     from src.routing_policy import load_policy
 
     cfg = dict(DEFAULT_ABSIS_POLICY)
@@ -111,10 +82,8 @@ def _validate_job_id(job_id: Any) -> str:
 
 @dataclass
 class AbsisJobSpec:
-    """Client-side spec for one ABSIS job. ``to_job_dict``/``to_job_json``
-    reproduce absis_infra.schemas.Job's wire format exactly:
-    json.dumps(asdict(job), sort_keys=True) with enums as .value strings and
-    the same defaults (priority=0 — stored but the queue is strict FIFO)."""
+    """Client-side ABSIS job spec whose serialization must match
+    absis_infra.schemas.Job's wire format exactly (sort_keys, enum values)."""
 
     scenario_id: str
     required_worker_class: str
@@ -139,8 +108,7 @@ class AbsisJobSpec:
             raise AbsisValidationError("payload must be a dict")
 
     def to_job_dict(self) -> Dict[str, Any]:
-        """A fresh Job dict with the same auto-filled defaults the real
-        dataclass applies. Each call mints a new job_id/created_at."""
+        """A fresh Job dict with the real defaults; mints a new job_id/created_at."""
         try:
             payload = json.loads(json.dumps(self.payload))  # must be JSON-serializable
         except (TypeError, ValueError) as e:
@@ -161,13 +129,11 @@ class AbsisJobSpec:
         }
 
     def to_job_json(self) -> str:
-        """The exact wire string ABSIS puts on the queue."""
         return json.dumps(self.to_job_dict(), sort_keys=True)
 
 
-# --- remote one-shot scripts -------------------------------------------------
-# Each script prints EXACTLY one JSON line as its result. Values are embedded
-# via json.dumps() literals — never string concatenation of raw input.
+# Each remote script prints exactly one JSON line; values are embedded only as
+# json.dumps() literals.
 
 _SCAN_WORKERS_SCRIPT = """\
 import json, os
@@ -192,16 +158,12 @@ print(json.dumps({"registered_workers": workers}, sort_keys=True, default=str))
 
 
 def build_scan_workers_script() -> str:
-    """SCAN conformance:worker:* inside the pod; prints {"registered_workers": [...]}.
-    Worker keys are heartbeat STRINGs with a 30s TTL, so whatever SCAN sees is
-    the currently-live worker set."""
+    """SCAN worker heartbeat keys (30s TTL), so the result is the live worker set."""
     return _SCAN_WORKERS_SCRIPT
 
 
 def build_enqueue_script(wire_json: str) -> str:
-    """The orchestrator's three enqueue ops for one already-serialized job.
-    ``wire_json`` is embedded as a json.dumps string literal (valid Python
-    literal), then parsed remotely — no raw interpolation of user fields."""
+    """LPUSH + SET + PUBLISH for one job; ``wire_json`` is embedded as a literal."""
     if not isinstance(wire_json, str):
         raise AbsisValidationError("wire_json must be a str")
     job = json.loads(wire_json)  # must be valid JSON with a job_id before we ship it
@@ -220,7 +182,6 @@ def build_enqueue_script(wire_json: str) -> str:
 
 
 def build_get_status_script(job_id: str) -> str:
-    """GET conformance:job:<id>; prints {"found": bool, "job": {...}|null}."""
     _validate_job_id(job_id)
     return (
         "import json, os\n"
@@ -235,16 +196,11 @@ def build_get_status_script(job_id: str) -> str:
     )
 
 
-# --- transport ---------------------------------------------------------------
-
 class AbsisTransport:
-    """Runs a python one-shot INSIDE the orchestrator pod via
-    ``ssh <target> "<kubectl exec prefix> python -c <quoted script>"``.
+    """Runs a python one-shot inside the orchestrator pod over ssh + kubectl exec.
 
-    The argv is a list (never shell=True locally); the remote command string
-    embeds the script through shlex.quote so the remote shell sees exactly
-    one argument. Config comes from policy (load_absis_policy) so tests can
-    stub the subprocess layer and ops can retarget without code changes."""
+    Local argv is a list (no shell=True); the script is shlex.quote()d so the
+    remote shell sees one argument."""
 
     def __init__(self, ssh_target: str = "minipc",
                  kubectl_exec_prefix: str = DEFAULT_ABSIS_POLICY["kubectlExecPrefix"],
@@ -267,9 +223,7 @@ class AbsisTransport:
         return ["ssh", self.ssh_target, remote_cmd]
 
     def run_remote_python(self, script: str) -> dict:
-        """Execute the script in-pod; parse its single JSON result line
-        (the last non-empty stdout line, so stray kubectl chatter upstream
-        of the result can't break parsing)."""
+        """Parse the last non-empty stdout line, so kubectl chatter can't break parsing."""
         argv = self.build_argv(script)
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout_s)
@@ -293,11 +247,7 @@ class AbsisTransport:
         return result
 
 
-# --- operations --------------------------------------------------------------
-
 def list_registered_workers(transport: AbsisTransport) -> List[dict]:
-    """Currently-live workers (heartbeat keys), normalized to
-    {worker_id, worker_class, capabilities}."""
     result = transport.run_remote_python(build_scan_workers_script())
     workers = []
     for w in result.get("registered_workers") or []:
@@ -321,14 +271,9 @@ def _matching_workers(workers: Sequence[dict], worker_class: str,
 
 def check_availability(transport: AbsisTransport, worker_class: str,
                        capabilities: Optional[Sequence[str]] = None) -> dict:
-    """Is there a live worker that can claim this job class right now?
+    """True when a live worker matches the class and covers the capabilities.
 
-    available == any registered worker whose worker_class matches AND whose
-    capabilities are a superset of the required ones. This is the value the
-    harness's GateContext.backend_available gate consumes for the
-    absis_tacticus_job_queue backend — with zero workers deployed the
-    orchestrator fails unclaimable jobs within seconds (5 requeues), so the
-    backend must be reported unavailable rather than accepting the job."""
+    Feeds GateContext.backend_available: unclaimable jobs fail within seconds."""
     if worker_class not in WORKER_CLASSES:
         raise AbsisValidationError(
             f"worker_class must be one of {WORKER_CLASSES} (got {worker_class!r})")
@@ -346,12 +291,7 @@ def check_availability(transport: AbsisTransport, worker_class: str,
 
 
 def enqueue(transport: AbsisTransport, spec: AbsisJobSpec, force: bool = False) -> dict:
-    """Submit one job (LPUSH + SET + PUBLISH, all inside the pod).
-
-    REFUSES when check_availability reports no matching worker: an
-    unclaimable job is requeued up to 5 times and FAILED within seconds,
-    polluting the queue for nothing. force=True bypasses the gate (testing
-    only — e.g. exercising the orchestrator's requeue/fail path itself)."""
+    """Submit one job; refuses without a matching worker. force=True is for tests."""
     if not force:
         avail = check_availability(transport, spec.required_worker_class,
                                    spec.required_capabilities)
@@ -377,10 +317,7 @@ def get_status(transport: AbsisTransport, job_id: str) -> dict:
 
 def wait_for_terminal(transport: AbsisTransport, job_id: str, timeout_s: int,
                       poll_interval: float = 5) -> dict:
-    """Poll GET conformance:job:<id> until completed/failed or timeout.
-    (Pub/sub on conformance:status would be nicer, but a persistent
-    subscription isn't worth it over ssh one-shots.) Returns the final job
-    dict, or {"error": "timeout", ...} with the last observed status."""
+    """Poll until completed/failed; on timeout return the last observed status."""
     _validate_job_id(job_id)
     deadline = time.monotonic() + max(0, timeout_s)
     last_status = None
@@ -397,11 +334,8 @@ def wait_for_terminal(transport: AbsisTransport, job_id: str, timeout_s: int,
 
 
 def map_job_to_model_run(job: dict) -> dict:
-    """Translate a terminal (or in-flight) ABSIS job into the harness's
-    RoutingModelRun-shaped outcome. Pure function; the future executor wiring
-    consumes this — this module deliberately does NOT modify routing_executor.
-    Results only exist in the job payload dict + status (ABSIS has no
-    result-key convention), hence artifacts.absis_payload."""
+    """Pure mapping of an ABSIS job to a RoutingModelRun-shaped outcome; results
+    live only in the job payload, hence artifacts.absis_payload."""
     status = job.get("status")
     job_id = job.get("job_id")
     notes = (f"absis job {job_id} status={status} "

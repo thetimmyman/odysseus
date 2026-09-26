@@ -1,27 +1,13 @@
-"""src/pi_event_map.py — map Pi runtime events into Odysseus execution events.
+"""Pure translation of Pi RPC events into Odysseus execution events (no I/O, no policy).
 
-Pi's RPC mode (verified against the installed ``@earendil-works/pi-coding-agent``
-0.74.2 protocol) streams JSON events on stdout:
-
-    agent_start, agent_end, turn_start, turn_end, message_start, message_update,
-    message_end, tool_execution_start, tool_execution_update, tool_execution_end,
-    queue_update, compaction_start, compaction_end, auto_retry_start,
-    auto_retry_end, extension_error
-
-This module is a pure translation layer — no I/O, no policy. It exists so the
-operator can see *what the Pi agent is doing* in Odysseus terms without Odysseus
-reaching into Pi's inner loop (Pi owns reasoning rounds, tool lifecycle and
-compaction; see the architectural boundary).
-
-Mapping is intentionally not one-to-one: an ``agent_end`` may carry several
-messages, and a ``message_end`` may carry both prose and tool calls.
+Mapping is not one-to-one: an ``agent_end`` may carry several messages, and a
+``message_end`` may carry both prose and tool calls.
 """
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional
 
-# --- Odysseus-side event vocabulary ----------------------------------------
 EXECUTION_STARTED = "execution_started"
 MODEL_TURN = "model_turn"
 MODEL_TURN_END = "model_turn_end"
@@ -35,9 +21,8 @@ CONTEXT_EVENT = "context_event"
 FAILURE = "failure"
 COMPLETION = "completion"
 MESSAGE_DELTA = "message_delta"
-#: Pi 0.85.1 emits ``agent_settled`` once, after any auto-retries are exhausted,
-#: to mark the definitive end of a run. Older Pi (0.74.2) has no such event --
-#: there ``agent_end`` alone is the run end.
+#: Newer Pi emits ``agent_settled`` once after retries are exhausted; older Pi
+#: lacks it, so there ``agent_end`` alone is the run end.
 RUN_SETTLED = "run_settled"
 
 #: Destructive/notification-free classification of Pi's built-in tools.
@@ -54,7 +39,6 @@ _TEST_CMD_RE = re.compile(
 
 
 def is_test_command(command: str) -> bool:
-    """True when a shell command looks like a test/verification run."""
     return bool(_TEST_CMD_RE.search(command or ""))
 
 
@@ -194,7 +178,6 @@ def map_pi_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
         }]
 
     if kind == "agent_settled":
-        # Pi 0.85.1: the definitive end of the run, after retries are exhausted.
         messages = event.get("messages")
         return [{
             "type": RUN_SETTLED,

@@ -1,15 +1,11 @@
-"""src/routing_scoring.py — Phase 2: weighted scoring + historical performance
-lookup for the model routing harness. See routing_engine.py (consumer) and
-scripts/odysseus-score (writer of RoutingModelRun.scores)."""
+"""Weighted run scoring and historical performance lookup for routing."""
 import json
 import logging
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Score-field weights by task type, ported from the routing harness spec
-# Section 13. Falls back to a generic hallucination/convention/test/plan mix
-# for any task_type not explicitly listed.
+# Unlisted task types fall back to a generic weight mix.
 SCORE_WEIGHTS: Dict[str, List[Tuple[str, float]]] = {
     "known_bug_reproduction": [
         ("root_cause_accuracy", 0.40), ("patch_correctness", 0.25), ("minimality", 0.15),
@@ -59,18 +55,8 @@ ALL_SCORE_FIELDS = [
     "adversarial_review_quality",
 ]
 
-# --- Phase 5 (WP6) split: task-performance vs lesson-generation fields ---
-# The spec requires task-performance stats and lesson-generation stats to be
-# SEPARATE aggregates, and routing fitness may ONLY consume task-performance.
-#
-# TASK_PERF_SCORE_FIELDS rate how well the model executed the code task
-# itself (diagnosis, patch, scope discipline, conventions, groundedness).
-# LESSON_GEN_SCORE_FIELDS rate the quality of the explanatory/analytical
-# prose artifacts the model produced (plans, adversarial reviews) — the
-# closest existing proxy for "would this model write a good lesson/summary
-# for the knowledge base" until WP7 adds dedicated lesson-quality scoring.
-# The two sets are DISJOINT and together partition ALL_SCORE_FIELDS
-# (unit-tested), so no human score can leak into both aggregates.
+# Task-performance and lesson-generation fields partition ALL_SCORE_FIELDS
+# (unit-tested). Routing fitness may only consume task-performance fields.
 TASK_PERF_SCORE_FIELDS = [
     "root_cause_accuracy", "patch_correctness", "minimality", "test_awareness",
     "repo_convention_fit", "hallucination_control",
@@ -79,10 +65,7 @@ LESSON_GEN_SCORE_FIELDS = ["plan_quality", "adversarial_review_quality"]
 
 
 def _weighted_average(scores: Dict[str, Optional[float]], weights: List[Tuple[str, float]]) -> Optional[float]:
-    """Weighted average over whatever score fields are actually present (not
-    None) — renormalizes over the available subset rather than treating a
-    missing field as 0, since Phase 2 scoring is often partial (a reviewer
-    may not fill in every field). Returns None if nothing is scored yet."""
+    """Weighted average renormalized over present fields (missing is not 0); None if unscored."""
     present = [(scores.get(field), weight) for field, weight in weights if scores.get(field) is not None]
     if not present:
         return None
@@ -93,13 +76,7 @@ def _weighted_average(scores: Dict[str, Optional[float]], weights: List[Tuple[st
 
 
 def score_run(scores: Dict[str, Optional[float]], task_type: str) -> Optional[float]:
-    """Weighted 0-5 score for one RoutingModelRun.scores dict, given the task
-    type it was run against, over ALL score fields (task-perf AND lesson-gen)
-    — the human-facing display score used by `odysseus-score show` and the
-    legacy `odysseus-stats by-model/by-task-type` views. Routing fitness must
-    NOT use this (it mixes lesson-gen fields in); it uses
-    task_perf_score_run() via historical_score(). Returns None if `scores` is
-    empty/unscored."""
+    """Display score over all fields; routing fitness must not use it (it mixes in lesson-gen)."""
     if not scores:
         return None
     weights = SCORE_WEIGHTS.get(task_type, _DEFAULT_WEIGHTS)
@@ -107,16 +84,9 @@ def score_run(scores: Dict[str, Optional[float]], task_type: str) -> Optional[fl
 
 
 def task_perf_score_run(scores: Dict[str, Optional[float]], task_type: str) -> Optional[float]:
-    """Task-PERFORMANCE-only weighted 0-5 score for one run: the task-type
-    weights restricted to TASK_PERF_SCORE_FIELDS, renormalized over whatever
-    subset is present (same partial-scoring semantics as score_run). This is
-    the ONLY human-score signal routing fitness may consume (spec Phase 5:
-    "routing fitness may only consume task-perf") — lesson-gen fields
-    (plan_quality, adversarial_review_quality) are excluded here even for
-    task types whose Section 13 weights mention them, so a model that writes
-    beautiful plans/reviews but lands bad patches can't ride that prose
-    skill into code-task routing. Returns None when no task-perf field is
-    scored yet."""
+    """Task-performance-only score, the only human signal routing fitness may use.
+
+    Lesson-gen fields are excluded so good prose can't lift bad patches."""
     if not scores:
         return None
     weights = [(f, w) for f, w in SCORE_WEIGHTS.get(task_type, _DEFAULT_WEIGHTS)
@@ -125,12 +95,7 @@ def task_perf_score_run(scores: Dict[str, Optional[float]], task_type: str) -> O
 
 
 def lesson_gen_score_run(scores: Dict[str, Optional[float]]) -> Optional[float]:
-    """LESSON-GENERATION-only 0-5 score for one run: the plain mean of the
-    LESSON_GEN_SCORE_FIELDS that are present. Deliberately task-type-agnostic
-    (explanatory-artifact quality is the same skill regardless of task type)
-    and deliberately NOT consumed by routing fitness — it exists for WP7's
-    lesson-generator selection / KB ranking. Returns None when no lesson-gen
-    field is scored yet."""
+    """Plain mean of present lesson-gen fields; never consumed by routing fitness."""
     if not scores:
         return None
     values = [scores[f] for f in LESSON_GEN_SCORE_FIELDS if scores.get(f) is not None]
@@ -140,17 +105,10 @@ def lesson_gen_score_run(scores: Dict[str, Optional[float]]) -> Optional[float]:
 
 
 def historical_score(db, model_profile_id: str, task_type: str) -> Optional[float]:
-    """Average task_perf_score_run() across this model's past scored runs for
-    this task type — the routing-fitness aggregate routing_engine.route_task()
-    consumes. Per spec Phase 5 this consumes ONLY task-performance fields
-    (TASK_PERF_SCORE_FIELDS): lesson-gen scores (plan_quality,
-    adversarial_review_quality) never move routing fitness, for any task type
-    (unit-tested in tests/test_routing_stats_split.py). Returns None (not a
-    neutral default) when there's no scored history yet —
-    routing_engine.route_task() should skip the historical bonus term
-    entirely in that case, matching the source spec's own
-    `if (typeof historicalScore === "number")` conditional, rather than
-    silently boosting or penalizing an untested model."""
+    """Mean task_perf_score_run() over past runs for this task type.
+
+    None without history, so route_task skips the bonus instead of biasing an
+    untested model."""
     from core.database import RoutingModelRun, RoutingRun, RoutingTask
 
     rows = (
@@ -178,13 +136,10 @@ def historical_score(db, model_profile_id: str, task_type: str) -> Optional[floa
     return sum(values) / len(values)
 
 
-# --- Phase 5 split aggregates (computed queries, never materialized) ---
+# Split aggregates are computed on the fly, never materialized.
 def _iter_model_runs(db, model_profile_id: Optional[str] = None,
                      task_type: Optional[str] = None):
-    """(RoutingModelRun, task_type, model_label) tuples for every attempt,
-    joined through runs/tasks and outer-joined to the profile for a display
-    label. Shared by both split-aggregate builders so they can never drift
-    onto different row populations."""
+    """(RoutingModelRun, task_type, model_label) rows, shared so both aggregates use one population."""
     from core.database import RoutingModelProfile, RoutingModelRun, RoutingRun, RoutingTask
 
     q = (
@@ -214,15 +169,9 @@ def _parse_scores(model_run) -> Optional[dict]:
 
 def model_task_perf_by_task(db, model_profile_id: Optional[str] = None,
                             task_type: Optional[str] = None) -> List[dict]:
-    """TASK-PERFORMANCE aggregate per (model_profile, task_type): completion/
-    error/rate-limit outcomes, verification outcomes persisted by WP5
-    (scores["verification"].passed / .patch_accepted), and the human
-    task-quality scores restricted to TASK_PERF_SCORE_FIELDS (via
-    task_perf_score_run). This is the ONLY aggregate family routing fitness
-    (historical_score -> route_task) is allowed to consume; lesson-gen fields
-    never enter any number returned here. Computed on the fly from
-    RoutingModelRun rows — never materialized (spec: aggregates must stay
-    derivable)."""
+    """Task-performance aggregate per (model_profile, task_type).
+
+    The only aggregate routing fitness may consume; no lesson-gen field enters it."""
     from collections import defaultdict
 
     buckets: Dict[tuple, dict] = defaultdict(lambda: {
@@ -280,13 +229,7 @@ def model_task_perf_by_task(db, model_profile_id: Optional[str] = None,
 
 def model_lesson_gen_by_task(db, model_profile_id: Optional[str] = None,
                              task_type: Optional[str] = None) -> List[dict]:
-    """LESSON-GENERATION aggregate per (model_profile, task_type): ONLY the
-    LESSON_GEN_SCORE_FIELDS (plan_quality, adversarial_review_quality) — no
-    completion/verification outcomes, no task-perf fields. Exposed for WP7's
-    lesson-generator selection and KB ranking; routing fitness NEVER consumes
-    this aggregate (spec Phase 5), which is unit-tested by asserting
-    route_task ordering is invariant under lesson-gen-only score changes.
-    Computed on the fly — never materialized."""
+    """Lesson-gen aggregate per (model_profile, task_type); never used by routing fitness."""
     from collections import defaultdict
 
     buckets: Dict[tuple, dict] = defaultdict(lambda: {
@@ -327,9 +270,7 @@ def model_lesson_gen_by_task(db, model_profile_id: Optional[str] = None,
 
 
 def record_manual_score(db, model_run_id: str, new_scores: Dict[str, float]) -> dict:
-    """Merge `new_scores` (any subset of ALL_SCORE_FIELDS) into a
-    RoutingModelRun's existing scores and persist. Returns the updated
-    scores dict."""
+    """Merge `new_scores` into the run's scores, persist, and return them."""
     from core.database import RoutingModelRun
 
     row = db.get(RoutingModelRun, model_run_id)

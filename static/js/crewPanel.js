@@ -1,17 +1,7 @@
-// static/js/crewPanel.js — the Argo voyage-log panel (roadmap Tier 2).
-//
-// A live + historical view of agent-crew "voyages": launch a read-only or
-// write-mode quest, watch Athena + the Argonauts stream as a multi-agent
-// timeline, reconnect to an in-flight run, stop it, and answer the Oracle's
-// seal (the async approval gate) right here.
-//
-// Mirrors gitPanel.js / terminal.js: a sidebar section that opens an overlay,
-// talks only to /api/crew/* (admin-cookie + owner-scoped server-side), and is
-// XSS-safe (textContent / _esc for every server/model string). The crew SSE is
-// consumed with fetch()+ReadableStream (POST can't use EventSource); the
-// historical log reads the DB via GET (the SSE buffer is evicted after 180s).
-//
-// Contract: homelab/odysseus CREW-EVENT-CONTRACT.md.
+// Crew voyage panel: launch, stream, reconnect, stop and approve crew runs.
+// Render server/model strings with textContent / _esc only. The SSE uses
+// fetch()+ReadableStream because POST can't use EventSource; finished runs are
+// read from the DB since the SSE buffer is evicted after 180s.
 
 let API_BASE = '';
 let _curSession = null;
@@ -21,7 +11,6 @@ let _streamGen = 0;        // generation token; a stale reader checks this and b
 let _voyage = null;        // current in-view voyage state
 let _runsTimer = null;     // poll timer for the runs list
 
-// --- helpers -----------------------------------------------------------------
 function _esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -63,7 +52,6 @@ async function _api(path, opts) {
   return r.json();
 }
 
-// --- SSE frame parser (data: {json}\n\n, plus event: error\ndata: ... form) --
 function _parseFrames(buf, onEvent) {
   let idx;
   while ((idx = buf.indexOf('\n\n')) >= 0) {
@@ -86,7 +74,6 @@ function _parseFrames(buf, onEvent) {
   return buf;
 }
 
-// --- voyage state ------------------------------------------------------------
 function _newVoyage(runId, writeMode, prompt) {
   return {
     runId, writeMode: !!writeMode, prompt: prompt || '',
@@ -106,7 +93,6 @@ function _statusBadge(status) {
   return `<span class="crew-badge ${cls}">${_esc(label)}</span>`;
 }
 
-// --- timeline rendering ------------------------------------------------------
 function _timeline() { return _el('crew-timeline'); }
 
 function _autoscroll() {
@@ -152,7 +138,6 @@ function _ensureLane(agentId, role, roleKind) {
   sub.style.display = 'none';
   card.appendChild(sub);
 
-  // collapsible reasoning (thinking:true deltas)
   const think = document.createElement('details');
   think.className = 'crew-thinking';
   think.style.display = 'none';
@@ -209,8 +194,7 @@ function _onDelta(ev) {
 }
 
 function _onAgentStart(ev) {
-  // The athena start carries the unguessable crew_run_id — capture it so Stop,
-  // approvals, and the runs-list selection can target this voyage.
+  // Athena's start event carries crew_run_id, which Stop and approvals target.
   if (ev.crew_run_id && _voyage && !_voyage.runId) {
     _voyage.runId = ev.crew_run_id;
     _updateRunControls();
@@ -343,18 +327,16 @@ function _onDone(ev) {
   }
   _updateRunControls();
   _autoscroll();
-  // Refresh the runs list so the new voyage's terminal status shows.
   _loadRuns();
 }
 
-// --- approvals (the Oracle's seal) -------------------------------------------
 function _approvalsBox() { return _el('crew-approvals'); }
 
 async function _onApprovalRequest(ev) {
   if (!_voyage) return;
   if (_voyage.approvals.has(ev.approval_id)) return;
   _voyage.approvals.set(ev.approval_id, { tool: ev.tool, risk: ev.risk, resolved: false });
-  // The SSE event omits action_args (redacted-at-rest in the DB) — fetch them.
+  // The SSE event omits action_args, so fetch them.
   let args = null;
   try {
     const j = await _api(`/api/crew/run/${encodeURIComponent(_voyage.runId)}/approvals`);
@@ -422,7 +404,6 @@ async function _decide(approvalId, decision, card) {
     tag.className = 'crew-approval-outcome';
     tag.textContent = decision === 'approved' ? 'Sealed ✓' : 'Refused ✕';
     card.appendChild(tag);
-    // Hide the box once nothing is pending.
     setTimeout(() => {
       card.remove();
       const box = _approvalsBox();
@@ -436,7 +417,6 @@ async function _decide(approvalId, decision, card) {
   }
 }
 
-// --- stream dispatch ---------------------------------------------------------
 function _dispatch(ev) {
   if (ev.__done) return;
   const t = ev.type;
@@ -501,7 +481,6 @@ async function _consume(resp, gen) {
   if (gen === _streamGen) _updateRunControls();
 }
 
-// --- launch / reconnect / historical -----------------------------------------
 function _resetTimeline(prompt, writeMode) {
   const tl = _timeline();
   if (tl) tl.innerHTML = '';
@@ -541,8 +520,7 @@ async function _launch() {
       if (r.status === 403) detail = 'Launching a voyage needs the desktop admin session.';
       throw new Error(detail);
     }
-    // The crew_run_id arrives in the first crew_agent_start (athena) event and
-    // is captured in _onAgentStart via ev.crew_run_id.
+    // crew_run_id is captured later, in _onAgentStart.
     if (ta) ta.value = '';
     await _consume(r, gen);
   } catch (e) {
@@ -591,7 +569,6 @@ async function _openHistorical(runId) {
     _voyage.writeMode = false;
     const banner = _el('crew-voyage-prompt');
     if (banner) { banner.textContent = d.prompt || ''; banner.style.display = d.prompt ? '' : 'none'; }
-    // Athena lane: plan + synthesis.
     const ath = _ensureLane('athena', 'Athena', 'planner');
     if (ath) {
       _setLaneStatus(ath, d.status);
@@ -599,7 +576,6 @@ async function _openHistorical(runId) {
         _onPlan({ subtasks: d.plan.map((p) => (p && (p.title || p)) || '') });
       }
     }
-    // Worker lanes from CrewAgentRun rows.
     for (const a of (d.agents || [])) {
       const lane = _ensureLane(a.agent_id, a.role || a.agent_id, a.role && /planner/i.test(a.role) ? 'planner' : 'worker');
       if (!lane) continue;
@@ -614,7 +590,6 @@ async function _openHistorical(runId) {
       if (a.model) fb.push(a.model);
       if (fb.length) { lane.foot.textContent = fb.join(' · '); lane.foot.style.display = ''; }
     }
-    // Synthesis / error.
     if (ath) {
       if (d.result) _onDone({ status: d.status, result: d.result });
       else if (d.error) { const e = document.createElement('div'); e.className = 'crew-blocked'; e.textContent = 'Error: ' + d.error; ath.out.appendChild(e); }
@@ -640,7 +615,6 @@ async function _stop() {
   }
 }
 
-// --- runs list (left rail) ---------------------------------------------------
 async function _loadRuns() {
   const list = _el('crew-runs');
   if (!list) return;
@@ -682,7 +656,6 @@ async function _loadRuns() {
   }
 }
 
-// --- controls / overlay ------------------------------------------------------
 function _setLaunchBusy(busy) {
   const btn = _el('crew-launch');
   if (btn) { btn.disabled = busy; btn.textContent = busy ? 'Sailing…' : 'Launch voyage'; }
@@ -711,10 +684,8 @@ function _closeOverlay() {
   if (_runsTimer) { clearInterval(_runsTimer); _runsTimer = null; }
 }
 
-// --- public ------------------------------------------------------------------
 function refresh(sessionId) {
-  // The Argo opens from the Tools menu now — just track the active session so a
-  // launched voyage inherits its project_root.
+  // Track the active session so a launched voyage inherits its project_root.
   _curSession = sessionId;
 }
 
@@ -729,11 +700,9 @@ function init(apiBase) {
     const row = e.target.closest('.crew-run-row');
     if (row) _openRun(row.dataset.runId, row.dataset.status);
   });
-  // Ctrl/Cmd+Enter in the composer launches.
   _el('crew-prompt')?.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); _launch(); }
   });
-  // Esc closes the overlay.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && _open) _closeOverlay();
   });

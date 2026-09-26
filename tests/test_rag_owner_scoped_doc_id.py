@@ -1,11 +1,8 @@
-"""Regression guard for #1662 — RAG doc ids must be owner-namespaced.
+"""RAG doc ids must be owner-namespaced.
 
-_generate_doc_id hashed the text only, and add_document / add_documents_batch
-early-return on an existing id. So when two owners indexed byte-identical text,
-the second owner's chunk collided with the first's id, was skipped, and never
-appeared in the second owner's owner-scoped search. The id now includes the
-owner; owner=None keeps the legacy content-only id, so existing rows and
-shared/legacy chunks are unchanged and need no re-index.
+Adds skip existing ids, so a content-only id would drop a second owner's copy of
+identical text from their search. owner=None keeps the legacy content-only id so
+existing rows need no re-index.
 """
 import hashlib
 import os
@@ -31,7 +28,6 @@ def test_distinct_owners_get_distinct_ids_for_same_text():
     shared = _generate_doc_id("hello", None)
     assert a != b
     assert a != shared and b != shared
-    # Deterministic per (owner, text).
     assert a == _generate_doc_id("hello", "alice")
 
 
@@ -66,8 +62,7 @@ class _FakeLane:
 def _make_rag():
     rag = VectorRAG.__new__(VectorRAG)  # skip Chroma connect
     fake = _FakeCollection()
-    # VectorRAG is lane-based since #3046: add_documents_batch iterates
-    # self._lanes and healthy checks bool(self._lanes).
+    # add_documents_batch iterates self._lanes; healthy checks bool(self._lanes).
     rag._lanes = [_FakeLane(fake)]
     rag._collection = fake
     rag._healthy = True
@@ -83,7 +78,7 @@ def test_two_owners_identical_text_both_indexed():
     rows = rag._collection.rows
     assert len(rows) == 2, "both owners' identical chunk must be stored"
     owners = sorted(m["owner"] for (_, m) in rows.values())
-    assert owners == ["alice", "bob"]  # was just ["alice"] before the fix
+    assert owners == ["alice", "bob"]  # bob's identical text is not dropped
 
 
 def test_same_owner_same_text_still_deduped():

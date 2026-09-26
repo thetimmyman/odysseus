@@ -1,16 +1,7 @@
-"""src/source_snapshot.py — deterministic SOURCE identity for evidence (PS-638).
+"""Deterministic source identity for evidence.
 
-Why a SHA is not enough.
-
-PS-638's second hardening item is explicit: ``base_sha`` / ``head_sha`` are
-insufficient if a worktree has uncommitted or untracked inputs, and a clean git
-SHA must never be allowed to imply a clean execution tree. That is not a
-hypothetical here. In this very lane, ``git status`` was clean at ``2d88004c``
-while a worker artifact sat *uncommitted* in the tree, and the two states are
-different evidence: one is "the run read the committed tree", the other is "the
-run read the committed tree plus an uncommitted file that no SHA names".
-
-So a snapshot records, deterministically:
+A SHA alone cannot prove a clean execution tree: uncommitted or untracked
+inputs are different evidence. So a snapshot records, deterministically:
 
   * the repo, its base SHA, its current head SHA, branch/worktree identity;
   * the STAGED / UNSTAGED / UNTRACKED disposition as explicit path lists;
@@ -21,23 +12,11 @@ So a snapshot records, deterministically:
     "this fixture changed";
   * one ``snapshot_digest`` over all of the above.
 
-Determinism
------------
-Every git invocation runs with a fixed, minimal environment and explicit flags
-(``--no-ext-diff``, ``--no-color``, ``-z``), so the identity does not depend on
-the operator's git config, locale, pager, or on rename detection heuristics
-beyond git's own defaults. Paths are sorted and NUL-split, never
-whitespace-split: a path containing a space or a newline is a path, not three
-paths.
+Git runs with a fixed environment and explicit flags so user config cannot
+change the identity; paths are NUL-split, never whitespace-split.
 
-Bounding
---------
-Untracked content is hashed with a per-file byte cap. A path whose content
-exceeds the cap is recorded in ``truncated_paths`` and is *stale-able*: the
-snapshot is still usable, but ``is_complete`` is False and the validator treats
-an incomplete snapshot as ambiguity rather than as clean. Silently hashing only
-the first N bytes and calling it identity would be the same class of error as a
-truncated log used to prove an absence.
+Content over a byte cap is recorded in ``truncated_paths`` and makes
+``is_complete`` False, which the validator treats as ambiguity, not clean.
 """
 from __future__ import annotations
 
@@ -53,9 +32,7 @@ SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
 #: Per-file cap for untracked content hashing.
 DEFAULT_MAX_HASH_BYTES = 8 * 1024 * 1024
 
-#: Bound on the tracked diff fed to the digest. A diff larger than this is
-#: recorded as truncated, which makes the snapshot incomplete rather than
-#: pretending the first N bytes identify the tree.
+#: A larger tracked diff makes the snapshot incomplete, not a prefix hash.
 DEFAULT_MAX_DIFF_BYTES = 32 * 1024 * 1024
 
 _GIT_TIMEOUT_S = 60
@@ -76,13 +53,7 @@ def _canonical(payload: object) -> bytes:
 
 
 def _git_env() -> dict:
-    """A fixed git environment.
-
-    ``GIT_CONFIG_GLOBAL``/``NOSYSTEM`` are pointed at /dev/null so a user-level
-    ``diff.noprefix``, ``core.quotepath`` or an alias cannot change what the
-    digest covers. ``GIT_TERMINAL_PROMPT=0`` keeps a missing credential from
-    turning an identity read into a hang.
-    """
+    """Fixed git env: no user/system config can change the digest, and no prompt can hang."""
     env = dict(os.environ)
     env.update({
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -97,7 +68,6 @@ def _git_env() -> dict:
 
 
 def _git(worktree: str, args: Sequence[str], *, text: bool = True):
-    """Run one git command in ``worktree``. Returns (returncode, out, err)."""
     cmd = ["git", "-C", worktree, "-c", "core.quotepath=false"] + list(args)
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=_GIT_TIMEOUT_S,
@@ -115,13 +85,7 @@ def _git(worktree: str, args: Sequence[str], *, text: bool = True):
 
 
 def _porcelain(worktree: str) -> bytes:
-    """``git status --porcelain -z -uall`` as raw bytes, or raise.
-
-    ``-z`` is load-bearing. The whitespace form quotes and escapes paths that
-    contain special characters, so a file legitimately named ``a b.py`` and one
-    named ``"a b.py"`` become indistinguishable — a source identity that cannot
-    tell two paths apart is not an identity.
-    """
+    """``git status --porcelain -z -uall`` bytes; ``-z`` keeps quoted and unquoted names distinct."""
     rc, out, err = _git(worktree, ["status", "--porcelain=v1", "-z",
                                    "--untracked-files=all", "--no-renames"],
                         text=False)
@@ -132,10 +96,9 @@ def _porcelain(worktree: str) -> bytes:
 
 
 def parse_porcelain(raw: bytes) -> Tuple[List[str], List[str], List[str]]:
-    """Split porcelain ``-z`` output into (staged, unstaged, untracked) paths.
+    """Split porcelain ``-z`` output into sorted (staged, unstaged, untracked) paths.
 
-    ``--no-renames`` guarantees one path per record, so this is a straight
-    NUL-split with no lookahead. Sorted and de-duplicated for stable ordering.
+    ``--no-renames`` guarantees one path per record.
     """
     staged: set = set()
     unstaged: set = set()
@@ -160,18 +123,11 @@ def parse_porcelain(raw: bytes) -> Tuple[List[str], List[str], List[str]]:
 
 def _tracked_diff_digest(worktree: str, base_ref: str, *,
                          max_bytes: int) -> Tuple[str, bool]:
-    """Digest of ``git diff <base_ref>`` (staged + unstaged, i.e. tree vs base).
-
-    Returns (digest, complete). ``complete`` is False when the diff exceeded the
-    byte cap, which makes the snapshot incomplete instead of quietly hashing a
-    prefix.
-    """
+    """(digest, complete) of ``git diff <base_ref>``; incomplete when over the byte cap."""
     rc, out, err = _git(worktree, ["diff", "--no-ext-diff", "--no-color",
                                    "--binary", base_ref, "--"], text=False)
     if rc != 0:
-        # An empty repository, or a ref that does not exist yet (the very first
-        # commit). Both are real states; neither is a clean tree, so they are
-        # represented rather than raised.
+        # Empty repo or missing base ref: represented, not raised, and not clean.
         note = err.strip()[:120].encode()
         return _sha256_hex(b"<no-diff-base:" + note + b">"), True
     complete = len(out) <= max_bytes
@@ -180,13 +136,7 @@ def _tracked_diff_digest(worktree: str, base_ref: str, *,
 
 def _hash_paths(worktree: str, paths: Iterable[str], *, max_bytes: int
                 ) -> Tuple[Tuple[Tuple[str, str], ...], Tuple[str, ...]]:
-    """Per-path sha256 for the named paths. Missing paths hash as ``<absent>``.
-
-    A missing write-scope file is not an error: a packet whose artifact does not
-    exist yet is the normal first-attempt shape, and recording ``<absent>`` is
-    what makes "the worker created it" and "it was already there" different
-    evidence.
-    """
+    """Per-path sha256; missing paths record ``<absent>`` so creation is visible evidence."""
     digests: List[Tuple[str, str]] = []
     truncated: List[str] = []
     for rel in sorted(set(paths)):
@@ -209,11 +159,7 @@ def _hash_paths(worktree: str, paths: Iterable[str], *, max_bytes: int
 
 @dataclass(frozen=True)
 class SourceSnapshotIdentity:
-    """What the run actually read, not merely what HEAD claimed.
-
-    Frozen and content-addressed: ``snapshot_digest`` covers every field below it,
-    so mutating the identity after sealing is detectable rather than invisible.
-    """
+    """What the run actually read; ``snapshot_digest`` covers every field, so tampering shows."""
 
     repo_root: str
     head_sha: str
@@ -233,7 +179,6 @@ class SourceSnapshotIdentity:
     schema_version: int = SOURCE_SNAPSHOT_SCHEMA_VERSION
     snapshot_digest: str = ""
 
-    # ------------------------------------------------------------- identity ---
     @property
     def is_clean(self) -> bool:
         """True only when NOTHING is staged, unstaged or untracked."""
@@ -246,11 +191,7 @@ class SourceSnapshotIdentity:
         return not self.truncated_paths and not self.diff_truncated
 
     def disposition(self) -> str:
-        """"clean" / "dirty" / "clean-but-incomplete" — one visible word.
-
-        The third value exists so that "we could not hash all of it" never reads
-        as "all of it was clean".
-        """
+        """"clean" / "dirty" / "clean-but-incomplete", so partial hashing never reads as clean."""
         if not self.is_clean:
             return "dirty"
         return "clean" if self.is_complete else "clean-but-incomplete"
@@ -295,12 +236,7 @@ class SourceSnapshotIdentity:
 
 
 def _finalize(core: dict) -> SourceSnapshotIdentity:
-    """Build the frozen identity and seal its digest over ``core``.
-
-    Two passes on purpose: the digest must cover every field, and the dataclass
-    is frozen, so the hashed form and the returned form are constructed
-    separately and provably agree.
-    """
+    """Build the frozen identity and seal its digest over ``core``."""
     fields = dict(core)
     fields["staged_paths"] = tuple(fields.get("staged_paths") or ())
     fields["unstaged_paths"] = tuple(fields.get("unstaged_paths") or ())
@@ -320,13 +256,8 @@ def take_source_snapshot(worktree: str, *, base_sha: str = "",
                          ) -> SourceSnapshotIdentity:
     """Measure the source identity of ``worktree`` deterministically.
 
-    ``base_sha`` is the ref the tracked diff is measured AGAINST — normally the
-    run's declared base, not HEAD, because "what changed since we started" and
-    "what is uncommitted right now" are different questions and both matter.
-
-    ``relevant_paths`` are the files execution depends on (write scope, verifier
-    artifacts, fixtures). They are hashed individually so a later validation can
-    say *which* input moved, not merely that the snapshot differs.
+    ``base_sha`` is normally the run's declared base, not HEAD. ``relevant_paths``
+    are hashed individually so validation can say which input moved.
     """
     if not worktree:
         raise SourceSnapshotError("worktree path must be non-empty")
@@ -387,12 +318,9 @@ def take_source_snapshot(worktree: str, *, base_sha: str = "",
 
 
 def source_snapshot_from_dict(payload: dict) -> SourceSnapshotIdentity:
-    """Rebuild an identity from its dict form and RE-SEAL the digest.
+    """Rebuild an identity and re-seal its digest; this alone proves nothing.
 
-    The returned digest is recomputed from the fields, so a payload whose
-    recorded ``snapshot_digest`` was edited no longer matches the identity that
-    was actually measured. Use :func:`snapshot_digest_is_valid` to tell the two
-    apart; this function alone proves nothing.
+    Use :func:`snapshot_digest_is_valid` to detect an edited digest.
     """
     if not isinstance(payload, dict):
         raise SourceSnapshotError(

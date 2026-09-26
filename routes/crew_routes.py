@@ -1,32 +1,13 @@
-"""Argo agent-crew routes — the network-facing surface for the crew MVP.
+"""Argo agent-crew routes: crew CRUD, voyage launch/stream/stop, approval gate.
 
-These endpoints define/list/update an Argo crew, launch a crew "voyage"
-(``run_crew``), stream/reconnect/stop it, and drive the async human-approval
-gate (the Oracle's seal).
-
-SECURITY MODEL (multi-user, network-exposed app — Tier-1 admin-owner only):
-  * OWNER-SCOPE EVERYTHING. Every row this router touches (Crew, CrewRun,
-    CrewApproval) is loaded and its ``owner`` compared to
-    ``effective_user(request)``. A cross-owner (or missing) row 404s — we
-    NEVER 403-leak the existence of another owner's object.
-  * agent_runs.subscribe(key) has NO owner check (it fans the run buffer to any
-    subscriber, agent_runs.py:158). The crew_run_id IS that key. So EVERY
-    endpoint that calls ``agent_runs.subscribe(crew_run_id)`` FIRST loads the
-    CrewRun row and asserts ``row.owner == effective_user`` (404 otherwise) —
-    otherwise another owner's full transcript (prompts, worker output, approval
-    cards, Mnemosyne digests) would replay. crew_run_id is an unguessable uuid4.
-  * MUTATING + APPROVAL routes require an ADMIN COOKIE session
-    (``require_admin_cookie`` — rejects bearer/api/internal-tool, Decision A /
-    hardening fix #4). Read-only listing/status/stream are owner-scoped only.
-  * The per-run session is owner-stamped; a client-supplied session_id is
-    ownership-verified (cross-owner 404) and rejected if it has owner=None
-    (a legacy/shared session would otherwise resolve a project_root for the
-    wrong principal — tool_execution._get_session_project_root only refuses
-    cross-owner when BOTH owners are non-None).
-
-Mirrors routes/git_routes.py for the setup_*_routes()->APIRouter shape, the
-_require_admin/effective_user owner gate, and the _owner_root owner-compare;
-mirrors routes/chat_routes.py for StreamingResponse(agent_runs.subscribe(...)).
+Security:
+  * Every row (Crew, CrewRun, CrewApproval) is owner-checked; cross-owner or
+    missing rows 404 so existence never leaks.
+  * agent_runs.subscribe(key) has no owner check, so every endpoint loads the
+    CrewRun and asserts ownership before subscribing.
+  * Mutating and approval routes require an admin cookie; reads are owner-scoped.
+  * A client-supplied session_id must be owned by the caller and not owner=None,
+    since _get_session_project_root only refuses cross-owner when both are set.
 """
 
 import json
@@ -44,7 +25,6 @@ from src.auth_helpers import effective_user, require_admin_cookie
 logger = logging.getLogger(__name__)
 
 
-# --- request bodies ---------------------------------------------------------
 class _RoleBody(BaseModel):
     name: str
     role_kind: Optional[str] = None        # "planner" | "worker" | "critic"
@@ -90,10 +70,8 @@ class _ApproveBody(BaseModel):
 def setup_crew_routes() -> APIRouter:
     router = APIRouter(prefix="/api/crew", tags=["crew"])
 
-    # ── owner-compare helpers ────────────────────────────────────────────────
     def _load_crew_owned(db, crew_id: str, owner: str):
-        """Load a Crew the caller owns, or 404. Never reveals cross-owner
-        existence (same 404 for missing and wrong-owner)."""
+        """Load a Crew the caller owns, or 404 (same for missing and cross-owner)."""
         from core.database import Crew
         row = db.query(Crew).filter(Crew.id == crew_id).first()
         if row is None or row.owner != owner:
@@ -101,8 +79,7 @@ def setup_crew_routes() -> APIRouter:
         return row
 
     def _load_run_owned(db, run_id: str, owner: str):
-        """Load a CrewRun the caller owns, or 404. MUST be called before any
-        agent_runs.subscribe(run_id) — subscribe has no owner check."""
+        """Load a CrewRun the caller owns, or 404. Call before agent_runs.subscribe."""
         from core.database import CrewRun
         row = db.query(CrewRun).filter(CrewRun.id == run_id).first()
         if row is None or row.owner != owner:
@@ -121,11 +98,9 @@ def setup_crew_routes() -> APIRouter:
             "wall_clock_s": c.wall_clock_s,
         }
 
-    # ── crew CRUD ────────────────────────────────────────────────────────────
     @router.post("")
     def create_crew(request: Request, body: _CrewBody):
-        """Define a crew + its roles (as crew_id-stamped CrewMembers).
-        Admin-cookie only (Tier-1 admin-owner) + owner-stamped."""
+        """Define a crew and its roles. Admin-cookie only, owner-stamped."""
         require_admin_cookie(request)
         owner = effective_user(request)
         if not owner:
@@ -183,7 +158,6 @@ def setup_crew_routes() -> APIRouter:
 
     @router.get("")
     def list_crews(request: Request):
-        """List the caller's own crews (owner-scoped)."""
         owner = effective_user(request)
         if not owner:
             raise HTTPException(403, "Authentication required")
@@ -200,7 +174,7 @@ def setup_crew_routes() -> APIRouter:
 
     @router.put("/{crew_id}")
     def update_crew(request: Request, crew_id: str, body: _CrewUpdateBody):
-        """Update a crew. Admin-cookie only + owner-compare (404 cross-owner)."""
+        """Update a crew. Admin-cookie only; 404 cross-owner."""
         require_admin_cookie(request)
         owner = effective_user(request)
         if not owner:
@@ -227,14 +201,9 @@ def setup_crew_routes() -> APIRouter:
         finally:
             db.close()
 
-    # ── run a voyage ─────────────────────────────────────────────────────────
     @router.post("/run")
     async def run_crew_route(request: Request, body: _RunBody):
-        """Launch a crew voyage and stream the multiplexed SSE.
-
-        Admin-cookie only. Mints an UNGUESSABLE crew_run_id, resolves an
-        owner-stamped per-run session, owner-verifies the crew (if any), starts
-        the run, then OWNER-COMPARES the CrewRun before subscribing."""
+        """Launch a crew voyage and stream the multiplexed SSE (admin-cookie only)."""
         require_admin_cookie(request)
         owner = effective_user(request)
         if not owner:
@@ -247,7 +216,6 @@ def setup_crew_routes() -> APIRouter:
         from core.database import SessionLocal, Crew, CrewMember
         from src.crew_orchestrator import run_crew, CrewBudget
 
-        # Owner-verify the crew (if one is named) + gather its roles.
         roles: List[dict] = []
         budget_kwargs: dict = {}
         crew_id = body.crew_id
@@ -285,21 +253,15 @@ def setup_crew_routes() -> APIRouter:
             finally:
                 db.close()
 
-        # Resolve / mint the owner-stamped per-run session that confines the run.
         session_id = _resolve_run_session(request, owner, body.session_id)
 
-        # Unguessable parent-stream key.
         crew_run_id = uuid.uuid4().hex
 
         budget = CrewBudget(**budget_kwargs) if budget_kwargs else None
 
-        # Persist the owner-stamped CrewRun row SYNCHRONOUSLY, before we hand
-        # the generator to agent_runs.start(). run_crew()'s body (which would
-        # otherwise be the first writer of this row) only executes inside the
-        # scheduled task — which has NOT run yet at the point we owner-compare
-        # below — so without this synchronous INSERT _load_run_owned() would
-        # 404 deterministically. The orchestrator's _persist_crew_run() is a
-        # GET-OR-UPDATE (no duplicate insert) and will continue from this row.
+        # Persist the CrewRun synchronously: run_crew() only writes it once the
+        # task is scheduled, so the owner check below would otherwise 404.
+        # _persist_crew_run() is get-or-update and continues from this row.
         from datetime import datetime as _dt
         db = SessionLocal()
         try:
@@ -325,9 +287,7 @@ def setup_crew_routes() -> APIRouter:
         )
         agent_runs.start(crew_run_id, merged)
 
-        # Owner-compare the CrewRun row we persisted above BEFORE we subscribe
-        # (subscribe has no owner check). The row now exists synchronously, so
-        # this no longer 404s before streaming. 404 on any mismatch.
+        # subscribe has no owner check, so verify ownership first.
         db = SessionLocal()
         try:
             _load_run_owned(db, crew_run_id, owner)
@@ -339,10 +299,7 @@ def setup_crew_routes() -> APIRouter:
 
     @router.get("/run/{run_id}/stream")
     async def run_stream(request: Request, run_id: str):
-        """Authenticated reconnect to a live/finished crew run.
-
-        FIRST load the CrewRun and assert owner == effective_user (404), THEN
-        subscribe — agent_runs.subscribe has NO owner check."""
+        """Reconnect to a crew run; owner-checked before subscribing."""
         owner = effective_user(request)
         if not owner:
             raise HTTPException(403, "Authentication required")
@@ -357,12 +314,8 @@ def setup_crew_routes() -> APIRouter:
 
     @router.post("/run/{run_id}/stop")
     def run_stop(request: Request, run_id: str):
-        """Stop a crew run: owner-compare the CrewRun, then cancel the run and
-        kill any background jobs spawned under its session.
-
-        Admin-cookie only — stop is a MUTATING action, so it is desktop-admin
-        gated for consistency with /approve (fix #5b), in addition to the
-        owner-compare below."""
+        """Stop a crew run and kill background jobs spawned under its session.
+        Admin-cookie only, owner-checked."""
         require_admin_cookie(request)
         owner = effective_user(request)
         if not owner:
@@ -385,8 +338,7 @@ def setup_crew_routes() -> APIRouter:
 
     @router.get("/run/{run_id}/approvals")
     def run_approvals(request: Request, run_id: str):
-        """List pending approvals for a run (owner-scoped). Used for phone /
-        reconnect pickup of the Oracle's seal."""
+        """List pending approvals for a run (owner-scoped)."""
         owner = effective_user(request)
         if not owner:
             raise HTTPException(403, "Authentication required")
@@ -413,11 +365,8 @@ def setup_crew_routes() -> APIRouter:
 
     @router.post("/approve")
     async def approve(request: Request, body: _ApproveBody):
-        """Decide a parked approval (the Oracle's seal).
-
-        Admin-cookie only (Decision A / fix #4 — bearer rejected). Owner-compare
-        the approval's parent CrewRun (404 cross-owner), then resolve the gate
-        atomically: 409 if already terminal, 404 if the row vanished."""
+        """Decide a parked approval. Admin-cookie only; owner-checked via the
+        parent CrewRun. 409 if already terminal, 404 if the row vanished."""
         admin_user = require_admin_cookie(request)
         owner = effective_user(request)
         if not owner:
@@ -433,8 +382,7 @@ def setup_crew_routes() -> APIRouter:
         from core.database import SessionLocal, CrewApproval, CrewRun
         from src.crew_approvals import resolve_gate
 
-        # Owner-compare via the approval's parent CrewRun. 404 (never 403-leak)
-        # on a missing approval, a missing run, or a cross-owner run.
+        # Owner-check via the parent CrewRun; 404 (never 403) on any miss.
         db = SessionLocal()
         try:
             appr = (db.query(CrewApproval)
@@ -455,14 +403,10 @@ def setup_crew_routes() -> APIRouter:
             raise HTTPException(409, "Approval is no longer decidable")
         return {"ok": True, "approval_id": approval_id, "decision": outcome}
 
-    # ── voyage log (DB-backed history; the SSE buffer is evicted after 180s) ──
     @router.get("/runs")
     def list_runs(request: Request, limit: int = 30):
-        """List the caller's recent crew voyages (owner-scoped, newest first).
-
-        The voyage LOG. agent_runs evicts a finished run's in-memory replay
-        buffer 180s after the last subscriber leaves (_EVICT_GRACE_S), so the
-        history must come from the persisted CrewRun rows, never the SSE buffer."""
+        """List the caller's recent voyages, newest first, from persisted rows
+        (the in-memory SSE buffer is evicted 180s after the last subscriber)."""
         owner = effective_user(request)
         if not owner:
             raise HTTPException(403, "Authentication required")
@@ -497,9 +441,7 @@ def setup_crew_routes() -> APIRouter:
 
     @router.get("/run/{run_id}")
     def run_detail(request: Request, run_id: str):
-        """Full stored detail for one voyage (owner-scoped). Renders a finished
-        or evicted run statically — the live SSE buffer is gone after 180s.
-        Joins the per-agent CrewAgentRun rows for the Argonaut result cards."""
+        """Stored detail for one voyage (owner-scoped), with per-agent results."""
         owner = effective_user(request)
         if not owner:
             raise HTTPException(403, "Authentication required")
@@ -546,16 +488,13 @@ def setup_crew_routes() -> APIRouter:
     return router
 
 
-# ── per-run session resolution (owner-stamped) ──────────────────────────────
 def _resolve_run_session(request: Request, owner: str,
                          session_id: Optional[str]) -> str:
-    """Return an owner-stamped session_id that will confine the crew run.
+    """Return an owner-stamped session_id to confine the crew run.
 
-    If the client supplied one, ownership-verify it (cross-owner 404) AND reject
-    a None-owner (legacy/shared) session — _get_session_project_root only refuses
-    cross-owner when BOTH owners are non-None, so a None-owner target would
-    otherwise resolve a project_root for the wrong principal. If none supplied,
-    mint a fresh owner-stamped session."""
+    A supplied session must be owned by the caller and not owner=None (such a
+    session would resolve a project_root for the wrong principal). Otherwise
+    mint a fresh one."""
     from core.database import SessionLocal, Session as DbSession
 
     if session_id and str(session_id).strip():
@@ -573,7 +512,6 @@ def _resolve_run_session(request: Request, owner: str,
             raise HTTPException(404, "Session not found")
         return session_id
 
-    # Mint a fresh, owner-stamped per-run session.
     from core.models import _session_manager as sm
     if sm is None:
         raise HTTPException(503, "Session manager unavailable")

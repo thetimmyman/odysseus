@@ -1,23 +1,14 @@
 """The abandoned-task auto-continue must not fire on a finished read-only task.
 
-Regression for a live defect: `_effectful_used` only flips for write/edit/create
-tools, so on a read-only task (summarize, inspect, compare, explain) it is never
-set. The abandon check read that as "made tool calls but never did the work" and
-nudged the model to continue — so a correctly-finished turn restated its own
-answer once per allowed continue.
-
-Observed on the deployed box 2026-08-25 (qwen3.8:27b, framework): the answer was
-complete at round 3 after 2m21s; rounds 4 and 5 were nudge-driven restatements
-that took the turn to 4m14s. 45% of the user's wait was the loop asking an
-already-finished model to keep going.
+`_effectful_used` never flips on a read-only task, so the abandon check must not
+read that as unfinished work and nudge a completed answer into restating itself.
 """
 
 import pytest
 
 from src.agent_loop import SUBSTANTIVE_ANSWER_CHARS, is_substantive_answer
 
-# Lengths of the three tool-free rounds from the 2026-08-25 turn. Round 3 was the
-# real answer; 4 and 5 were the redundant restatements the nudge produced.
+# Three tool-free rounds: the real answer, then two redundant restatements.
 _ROUND_3_ANSWER = 910
 _ROUND_4_RESTATEMENT = 948
 _ROUND_5_RESTATEMENT = 601
@@ -55,11 +46,7 @@ def test_whitespace_padding_does_not_manufacture_an_answer():
 
 
 def test_abandon_check_requires_a_non_substantive_answer():
-    """Guard the wiring, not just the helper.
-
-    The predicate is only useful if the auto-continue condition actually consults
-    it — the original defect was a missing guard, not a wrong one.
-    """
+    """The auto-continue condition must actually consult the predicate."""
     from pathlib import Path
 
     src = (Path(__file__).resolve().parent.parent / "src" / "agent_loop.py").read_text()
