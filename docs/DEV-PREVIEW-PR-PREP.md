@@ -1,8 +1,8 @@
 # Dev Preview — fork/PR productization plan (shape for review)
 
-**Status: planning.** The feature works end-to-end on the Framework today (loopback dev server +
+**Status: planning.** The feature works end-to-end on a single dev host today (loopback dev server +
 admin-gated proxy + iframe preview, DB-backed routes live). This doc is the *shape* of the work to turn
-it from "Tim's Framework setup" into a clean, configurable, documented feature suitable for a fork/PR —
+it from a single-host setup into a clean, configurable, documented feature suitable for a fork/PR —
 to be reviewed **before** any settings/secrets UI is built. Order (agreed): docs/plan → read-only
 Settings + Security Status → app config → masked env editor (separate focused pass).
 
@@ -73,7 +73,7 @@ Rules, non-negotiable:
 
 ## 7. De-hardcode checklist (cleanup before PR)
 - Compose bind mount → `${REPOS_HOST_DIR:-./repos}:/app/work` — **generic default is `./repos`** (repo-relative,
-  PR-clean). A deployment overrides it in `.env`; this Framework one sets `REPOS_HOST_DIR=/mnt/framework-data/repos`.
+  PR-clean). A deployment overrides it in `.env` (`REPOS_HOST_DIR=/path/to/repos`).
   The *container* path `/app/work` stays the `DEV_PREVIEW_ROOT` default (distinct from the host dir — see §3).
 - Confirm no Tacticus-specific copy in generic UI (today: none — "tacticus" only appears as a *detected
   app*). Keep it that way.

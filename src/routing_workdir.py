@@ -12,9 +12,8 @@ commit is a HUMAN action, outside this harness.
 
 data_root() is the single place the harness resolves its data directory. It
 honors an ODYSSEUS_DATA_DIR env override -- read at CALL time, not import
-time, so host CLIs on the Framework can target /mnt/framework-data/
-odysseus-data instead of the checkout's ./data, and tests can monkeypatch the
-env -- falling back to the same repo-root "data" dir routing_executor's
+time, so host CLIs can target the deployment's data directory instead of
+the checkout's ./data, and tests can monkeypatch the env -- falling back to the same repo-root "data" dir routing_executor's
 ARCHIVE_ROOT historically hardcoded. routing_executor imports it from here so
 both resolve identically."""
 import os

@@ -1,48 +1,41 @@
 services:
   odysseus:
-    # WI: host OOM 2026-08-23 (then on the Framework). The container can run
-    # repo test suites (npm ci / vitest) against /app/work, which is uncapped
-    # by default and can take the whole host down. Hard ceiling here; a host
-    # overlay (e.g. /srv/odysseus/docker-compose.minipc.yml) may cap lower.
+    # The container can run repo test suites (npm ci / vitest) against
+    # /app/work, which is uncapped by default and can take the whole host
+    # down. Hard ceiling here; a host-specific overlay may cap lower.
     mem_limit: 24g
     memswap_limit: 24g
     # markitdown (.docx/.pptx/.xlsx extraction) lives in
     # requirements-optional.txt behind this build arg. Without it every
     # Office attachment silently degrades to a "[Attached document: ...]"
-    # banner — the model never sees the content (2026-08-23 resume
-    # sessions, POS-AI-17).
+    # banner and the model never sees the content.
     build:
       context: .
       args:
         INSTALL_OPTIONAL: "true"
-    # POS-SEC-05 (2026-08-25) / minipc move (2026-09-24). Both published
-    # ports are pinned explicitly here because one variable used to govern
-    # both and APP_BIND=0.0.0.0 exposed the Dev Preview admin proxy (7100) to
-    # the whole LAN.
+    # Both published ports are pinned explicitly so that no single variable
+    # governs both: APP_BIND=0.0.0.0 must never expose the Dev Preview admin
+    # proxy (7100) to the LAN.
     #
     # 7000 follows APP_BIND and defaults to loopback, matching .env.example.
-    # The live deployment (minipc, /srv/odysseus) is tailnet-only: tailscale
-    # serve fronts 127.0.0.1:7000 at tacticusanalytics-1.tail1bd33c.ts.net:8443.
+    # Front it with a reverse proxy (e.g. tailscale serve) for remote access.
     # Set APP_BIND=0.0.0.0 in .env only if LAN clients genuinely need it --
     # Odysseus authenticates (AUTH_ENABLED=true, LOCALHOST_BYPASS=false), but
     # loopback is the default posture.
     #
     # 7100 -> always loopback. It is admin-gated dev tooling, not a user
-    # surface; tailscale serve fronts it (:8445 on the minipc).
+    # surface; front it with the same reverse proxy if needed.
     ports: !override
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
       - "127.0.0.1:${DEV_PREVIEW_PROXY_PORT:-7100}:${DEV_PREVIEW_PROXY_PORT:-7100}"
-    # POS-SEC-05 (2026-08-25): remount the SSH identity dir read-only. The
-    # security track's key review keeps both keys (id_minipc_vault is pinned
-    # to a forced-command broker on the mini PC; id_eyeofterror is the deploy
-    # key agent mode uses daily), but with rw a compromised container could
-    # plant or rewrite keys. Runtime writes are not needed: both Host blocks
-    # in .ssh/config set StrictHostKeyChecking yes with a pinned
-    # UserKnownHostsFile (strict mode never adds host keys — it matches or
-    # fails), and known_hosts already covers the hostnames actually dialed
-    # (github.com, 192.168.1.130). Known cost: the dormant Cookbook
-    # "generate a remote-server key here" path would fail with a clear
-    # read-only error — remount rw for that one operation if ever wanted.
+    # The SSH identity dir is mounted read-only: with rw a compromised
+    # container could plant or rewrite keys. Runtime writes are not needed
+    # as long as every Host block in .ssh/config sets StrictHostKeyChecking
+    # yes with a pinned UserKnownHostsFile (strict mode never adds host keys;
+    # it matches or fails) and known_hosts already covers every host dialed.
+    # Known cost: the Cookbook "generate a remote-server key here" path fails
+    # with a clear read-only error; remount rw for that one operation if
+    # ever wanted.
     volumes:
       - ${ODYSSEUS_DATA_DIR:-./data}/ssh:/app/.ssh:ro,z
     environment:

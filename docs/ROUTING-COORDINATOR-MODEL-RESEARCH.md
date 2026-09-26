@@ -77,19 +77,19 @@ must ABSTAIN and leave the gap visible rather than be filled.
 - **No off-the-shelf model is pre-trained for THIS 12-dimension routing + policy gate.** The
   "fine-tuned expert" must be *created* from our 27 labeled fixtures (they are the fine-tuning seed).
 - **Zero-shot candidates** are the only thing measurable *today* (no fine-tuned tier-2 specialist
-  yet). The CURRENT Qwen family (Tim-provided, live-verified 2026-09-22) is the natural pick because
+  yet). The CURRENT Qwen family (live-verified) is the natural pick because
   the fixed generalists are qwen3.8 — use the same-family small siblings for a clean escalation path.
 - **The deciding capability is JSON-schema/gbnf-constrained decoding**, not size. The harness
   already states: plain sampling on a small model misses `schema_validity ≥ 0.98`; the endpoint
   MUST constrain output to `CoordinatorDecision` (GBNF / `json_schema` response_format).
-- **The generalist arm is FIXED and OUT OF SCOPE for selection** (Tim 2026-09-22):
-  **qwen3.8 flash** (Framework, via halogen) and **qwen3.8 27b** (RTX 4500). These are the two
+- **The generalist arm is FIXED and OUT OF SCOPE for selection** (operator decision):
+  **qwen3.8 flash** (local inference host) and **qwen3.8 27b** (RTX 4500). These are the two
   fixed general-purpose providers. The benchmark no longer asks "which generalist" — it asks
   whether a **dedicated micro-classifier on the 2080 Ti (or CPU)** is worth its keep for triage.
 
 ### Verified candidate matrix (CURRENT models — live HF, 2026-09-22)
 
-Fixed providers (Tim): **Qwen3.8-Flash-Next** (Framework/halogen) and **Qwen3.8-27B** (RTX 4500).
+Fixed providers (operator decision): **Qwen3.8-Flash-Next** (local inference host) and **Qwen3.8-27B** (RTX 4500).
 
 Micro-tier candidates (small Qwen3.5 siblings — the natural companions to qwen3.8):
 

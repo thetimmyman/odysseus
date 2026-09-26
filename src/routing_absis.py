@@ -1,10 +1,9 @@
 """src/routing_absis.py — Phase 7 ABSIS integration (routing harness v0.5 §7).
 
 Standalone dispatcher for the ``absis_tacticus_job_queue`` execution backend
-(routing_coordinator.ExecutionBackend.ABSIS_TACTICUS_JOB_QUEUE). ABSIS is the
-conformance job queue in github.com/thetimmyman/tacticus-analytics
-(modules/absis-infra): jobs are JSON blobs on a Redis LIST, workers RPOP and
-report state back through per-job STRING keys.
+(routing_coordinator.ExecutionBackend.ABSIS_TACTICUS_JOB_QUEUE). ABSIS is an
+external conformance job queue: jobs are JSON blobs on a Redis LIST, workers
+RPOP and report state back through per-job STRING keys.
 
 Spec §7 guardrail: this dispatcher PRESERVES the existing oracle/evidence
 gates — it only SUBMITS jobs to the ABSIS queue and reads job state back. It
@@ -13,24 +12,25 @@ own worker/oracle pipeline), and the decision to route a
 domain=tacticus_analytics task to this backend is made upstream by the
 coordinator + deterministic router (routing_coordinator), never here.
 
-Transport reality (verified 2026-07-08):
-  * ABSIS has NO HTTP submission API. The queue lives in Redis at
-    redis.tacticus.svc.cluster.local:6379 DB 2, ClusterIP-only (unreachable
-    from the Framework host), password in k8s Secret tacticus-secrets.
+Transport:
+  * ABSIS has NO HTTP submission API, and its Redis is reachable only from
+    inside the cluster.
   * So the dispatcher runs HOST-side (like the other odysseus-* CLIs) and
     tunnels every operation as a one-shot python script executed INSIDE the
     orchestrator pod:  ssh <target> "<kubectl exec prefix> python -c '...'".
     The pod already has absis_infra + a configured REDIS_URL env var, so no
-    secret ever leaves the cluster.
+    secret ever leaves the cluster. The ssh target and exec prefix come from
+    the "absis" section of the live routing policy; the committed defaults
+    are placeholders.
   * Enqueue is exactly the orchestrator's three ops: LPUSH conformance:jobs,
     SET conformance:job:<id>, PUBLISH conformance:status (all the same JSON).
 
-Operational guard: as of 2026-07-08 ZERO llm_inference/oracle_runner workers
-are deployed. The orchestrator requeues an unclaimable job up to 5 attempts
-and marks it FAILED within seconds — so ``enqueue`` refuses to submit unless
-``check_availability`` sees a matching registered worker (or force=True for
-testing). ``check_availability``'s ``available`` flag is what the harness's
-GateContext.backend_available gate should consume for this backend.
+Operational guard: the orchestrator requeues an unclaimable job up to 5
+attempts and marks it FAILED within seconds — so ``enqueue`` refuses to
+submit unless ``check_availability`` sees a matching registered worker (or
+force=True for testing). ``check_availability``'s ``available`` flag is what
+the harness's GateContext.backend_available gate should consume for this
+backend.
 
 Everything embedded in a remote script goes through json.dumps (a JSON
 string/object literal produced with ensure_ascii=True is also a valid Python
@@ -65,10 +65,10 @@ _SAFE_JOB_ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
 DEFAULT_ABSIS_POLICY = {
     "enabled": False,
     "sshTarget": "minipc",
-    "kubectlExecPrefix": "sudo kubectl exec -n tacticus deploy/absis-orchestrator --",
+    "kubectlExecPrefix": "kubectl exec -n app deploy/orchestrator --",
     "transportTimeoutSeconds": 30,
-    "note": ("no llm_inference/oracle_runner workers deployed as of 2026-07-08; "
-             "enable after workers exist in tacticus-analytics"),
+    "note": ("keep disabled until llm_inference/oracle_runner workers are deployed; "
+             "set sshTarget/kubectlExecPrefix in the live data-volume policy"),
 }
 
 

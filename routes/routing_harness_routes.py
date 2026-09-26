@@ -484,7 +484,7 @@ def setup_routing_harness_routes():
         gates, and persist a CoordinatorBenchmarkRun. This calls the LLM
         (fixtures * replays) times, so replays is capped at MAX_REPLAYS. An
         unresolvable endpoint returns a clear 400 (never a 500). REPORTS the
-        gate verdict — never flips coordinator.provider (Tim's decision)."""
+        gate verdict — never flips coordinator.provider (an operator decision)."""
         require_admin_cookie(request)
         policy = routing_policy.load_policy()
         replays = req.replays if req.replays is not None else default_replays(policy)
