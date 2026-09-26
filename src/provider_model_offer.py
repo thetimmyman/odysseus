@@ -1,14 +1,9 @@
-"""PS-679 immutable provider/model offer evidence (contract slice only).
+"""Immutable provider/model offer evidence.
 
-An offer binds one native model on one exact provider pool and usage path to a
-time-bounded tariff observation. It is descriptive evidence: this module does
-not persist receipts, rank offers, decide legality, debit quotas, or dispatch.
-PS-640 remains capacity authority and PS-605 remains the only dispatch
-eligibility/selection authority. Outcomes belong to PS-642/PS-638 evidence.
-
-Unknown prices and effects are explicit and never treated as zero or savings.
-An offer is usable only when its scope matches the requested pool/capacity
-receipt/path/model and every time fact is known, current, and within validity.
+An offer binds one model on one exact pool and usage path to a time-bounded
+tariff. It is descriptive only: no persistence, ranking, legality or dispatch.
+Unknown prices are never treated as zero. An offer is usable only when its
+scope matches exactly and every time fact is known and current.
 """
 from __future__ import annotations
 
@@ -253,7 +248,7 @@ class ProviderModelOfferReceipt:
     def is_eligible(self, *, now: Optional[datetime] = None,
                     provider: str, pool_id: str, capacity_receipt_ref: str, harness: str,
                     usage_path: str, native_model: str) -> bool:
-        """Freshness and exact-scope predicate only; caller still asks PS-605."""
+        """Freshness and exact-scope predicate only; dispatch policy still decides."""
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             raise OfferReceiptError("now must include a timezone")

@@ -1,17 +1,9 @@
-"""PS-602 / upstream #4965: email style, integration, and MCP descriptions are
-untrusted data, not system instructions.
+"""Email style, integration, and MCP descriptions are untrusted data, not
+system instructions.
 
-Three user/externally-controlled surfaces were concatenated straight into the
-trusted system role in src/agent_loop.py: the user-editable
-``email_writing_style``, integration descriptions (editable through the
-integrations API), and MCP tool descriptions (sourced from external MCP
-servers). Any of them could carry prompt-injection text ("ignore prior
-instructions ...") that the model reads as a system-level instruction.
-
-The fix moves all three into ``untrusted_context_message()`` user-role messages
-(metadata.trusted=False), matching the existing treatment of active documents,
-skills, and tool output. This test pins the invariant for each surface, and
-that each description still reaches the model as data.
+All three are user/externally controlled, so they go in
+``untrusted_context_message()`` user-role messages (metadata.trusted=False),
+never the system role. Each must still reach the model as data.
 """
 import sys
 from unittest.mock import MagicMock
@@ -53,8 +45,6 @@ def _untrusted_with(out, needle, source):
     ]
 
 
-# --- integration descriptions ----------------------------------------------
-
 def test_integration_description_never_lands_in_system_role(monkeypatch):
     _bust_cache()
     import src.integrations as _integ
@@ -94,8 +84,6 @@ def test_integration_description_still_reaches_the_model(monkeypatch):
     assert _untrusted_with(out, "read my books", "integrations")
 
 
-# --- MCP tool descriptions --------------------------------------------------
-
 def test_mcp_description_never_lands_in_system_role():
     _bust_cache()
     mcp = MagicMock()
@@ -113,8 +101,6 @@ def test_mcp_description_never_lands_in_system_role():
     )
     assert _untrusted_with(out, INJECTION, "MCP tools")
 
-
-# --- email writing style ----------------------------------------------------
 
 def test_email_style_text_is_untrusted_but_identity_rules_stay_trusted(monkeypatch):
     _bust_cache()

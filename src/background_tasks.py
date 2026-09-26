@@ -1,24 +1,12 @@
 """Fire-and-forget background task registry.
 
-Two jobs:
+1. Keep a strong reference: asyncio holds only a weak one, so a discarded task
+   can be garbage-collected mid-await and skip its async cleanup (e.g. httpx
+   connection teardown).
+2. Run the task in the background LLM lane (``src.llm_lane``) so its model calls
+   use the background connection pool and cache namespace.
 
-1. **Keep a strong reference.** ``asyncio`` only holds a *weak* reference to a
-   running task (see the ``asyncio.create_task`` docs: "Save a reference to the
-   result of this function, to avoid a task disappearing mid-execution"). Every
-   background LLM task in Odysseus was started as a bare
-   ``asyncio.create_task(...)`` with the return value discarded, so the garbage
-   collector was free to finalize it mid-``await``. A task finalized that way
-   cannot run its async cleanup — ``httpx``'s connection teardown included —
-   which leaves the shared connection pool in a state nobody reasoned about.
-   Registering the task here removes that whole failure mode.
-
-2. **Put the task in the background LLM lane** (``src.llm_lane``) so every model
-   call it makes, however deeply nested, uses the background connection pool and
-   the background response-cache namespace instead of the interactive ones.
-
-Exceptions are logged rather than swallowed silently — an un-awaited task that
-raises used to produce only a "Task exception was never retrieved" warning at
-GC time, long after the context that would explain it was gone.
+Exceptions are logged rather than surfacing only as a GC-time warning.
 """
 
 from __future__ import annotations
@@ -31,8 +19,7 @@ from src.llm_lane import BACKGROUND, lane_scope
 
 logger = logging.getLogger(__name__)
 
-# Strong references to in-flight background tasks. Entries are removed by the
-# done-callback, so this stays bounded by actual concurrency, not by history.
+# Removed by the done-callback, so bounded by concurrency, not history.
 _TASKS: Set[asyncio.Task] = set()
 
 
@@ -54,11 +41,7 @@ async def _run_in_lane(coro: Awaitable[Any]) -> Any:
 
 
 def spawn(coro: Awaitable[Any], *, name: Optional[str] = None) -> asyncio.Task:
-    """Start ``coro`` as a tracked background task in the background LLM lane.
-
-    Drop-in replacement for ``asyncio.create_task`` at fire-and-forget call
-    sites. Returns the task so tests (and callers that want to await it) can.
-    """
+    """Drop-in for ``asyncio.create_task`` at fire-and-forget sites; returns the task."""
     task = asyncio.ensure_future(_run_in_lane(coro))
     if name:
         try:

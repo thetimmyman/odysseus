@@ -1,10 +1,8 @@
 """The searxng settings template must stay re-renderable and keep a working engine set.
 
-The upstream default engines (brave / duckduckgo / startpage) return
-CAPTCHA or rate-limit pages from the deployment host, which left every default
-query with zero results (2026-09-24). The template enables engines verified to
-answer, and carries a version marker the compose entrypoint uses to re-render
-an existing named volume when the template changes.
+The upstream default engines return CAPTCHA or rate-limit pages from the
+deployment host, so the template enables engines verified to answer. Its version
+marker lets the compose entrypoint re-render an existing volume on change.
 """
 from pathlib import Path
 

@@ -1,19 +1,7 @@
-"""src/pi_executions.py — Odysseus-side execution records for Pi runs.
+"""Odysseus-side execution records for Pi runs, mapping run id to Pi session.
 
-Odysseus remains the source of truth for task routing and lifecycle; Pi's own
-session id is *execution-runtime state*. This module keeps the mapping between
-the two plus everything an operator needs to audit a delegated run:
-
-    odysseus_run_id, task_id, jira_ticket, worktree, repo_path, base_commit,
-    branch, model, provider, runtime, pi_session_id, pi_session_file,
-    started_at, ended_at, status, failure_class, failure_reason, result,
-    files_changed, tests_run
-
-Storage is file-based under ``<DATA_DIR>/pi/executions/`` (one JSON record per
-execution plus an append-only JSONL event ledger), matching the routing harness'
-per-run artifact-archive convention rather than adding a schema migration to the
-core DB. Records contain no credentials: the environment Pi runs under is built
-by :mod:`src.pi_config` and is never persisted here.
+File-based under ``<DATA_DIR>/pi/executions/``: one JSON record plus an
+append-only JSONL event ledger per execution. Records never hold credentials.
 """
 from __future__ import annotations
 
@@ -27,7 +15,7 @@ from core.atomic_io import atomic_write_json
 
 from src.pi_config import data_root
 
-# --- lifecycle states (section 14: distinct, never silently rerouted) -------
+# Lifecycle states are distinct and never silently rerouted.
 STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_CANCELLED = "cancelled"
@@ -36,9 +24,7 @@ STATUS_PROVIDER_FAILURE = "provider_failure"
 STATUS_TOOL_FAILURE = "tool_failure"
 STATUS_TASK_FAILURE = "task_failure"
 STATUS_INPUT_REQUIRED = "input_required"
-#: Pi could not be bound to the worktree Odysseus assigned (its process cwd, or
-#: its remembered session cwd, pointed somewhere else). Fail-closed outcome: the
-#: task prompt was NOT sent.
+#: Pi's cwd or session cwd was not the assigned worktree; the prompt was not sent.
 STATUS_WORKTREE_MISMATCH = "worktree_mismatch"
 
 TERMINAL_STATUSES = frozenset({
@@ -47,10 +33,8 @@ TERMINAL_STATUSES = frozenset({
     STATUS_INPUT_REQUIRED, STATUS_WORKTREE_MISMATCH,
 })
 
-#: Failure class -> terminal status. Provider timeouts/outages are NOT model
-#: quality evidence and are kept separate from task failure, matching
-#: ``src/agent_execution.py``'s failure taxonomy. ``worktree_mismatch`` is an
-#: assignment/governance failure, never a model or reasoning signal.
+#: Failure class -> terminal status. Provider outages and ``worktree_mismatch``
+#: are not model-quality evidence, so they stay separate from task failure.
 FAILURE_STATUS = {
     "provider_failure": STATUS_PROVIDER_FAILURE,
     "provider_transient": STATUS_PROVIDER_FAILURE,
@@ -109,7 +93,6 @@ def create_execution(
     constraints: Optional[List[str]] = None,
     execution_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create and persist a new execution record in ``running`` state."""
     eid = execution_id or new_execution_id()
     assigned = os.path.realpath(worktree) if worktree else None
     record: Dict[str, Any] = {
@@ -119,10 +102,8 @@ def create_execution(
         "jira_ticket": jira_ticket,
         "task": task or "",
         "constraints": list(constraints or []),
-        # --- worktree assignment: Odysseus owns this, Pi may only operate here ---
         "worktree": assigned,
-        #: The path Odysseus explicitly assigned (kept separate from ``worktree``
-        #: so a later mismatch can never be mistaken for the assignment).
+        #: Kept separate from ``worktree`` so a mismatch is never taken as the assignment.
         "assigned_worktree": assigned,
         "repo": os.path.realpath(repo_path) if repo_path else assigned,
         "repo_path": os.path.realpath(repo_path) if repo_path else assigned,
@@ -134,12 +115,11 @@ def create_execution(
         "worktree_verified": False,
         "actual_worktree": None,
         "verification": {},
-        #: Every fail-closed worktree refusal for this execution (with phase).
         "refusals": [],
         "previous_status": None,
         "model": model,
         "provider": provider,
-        # Dispatch binding fields (PS638_ATTEMPT_BINDING_FIELDS; model above).
+        # Dispatch binding fields (see PS638_ATTEMPT_BINDING_FIELDS).
         "run_id": run_id,
         "packet_id": packet_id,
         "attempt": attempt,
@@ -197,7 +177,6 @@ def list_executions(limit: int = 50) -> List[Dict[str, Any]]:
 
 
 def update_execution(execution_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
-    """Merge ``fields`` into a stored record and persist it atomically."""
     record = get_execution(execution_id)
     if record is None:
         return None
@@ -207,11 +186,7 @@ def update_execution(execution_id: str, **fields: Any) -> Optional[Dict[str, Any
 
 
 def append_event(execution_id: str, event: Dict[str, Any]) -> None:
-    """Append one mapped event to the execution's JSONL ledger.
-
-    Append-only and flushed immediately so an operator can watch a live run;
-    it is also the record that survives a hard runtime crash.
-    """
+    """Append one event to the JSONL ledger, flushed so it survives a runtime crash."""
     path = events_path(execution_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     line = json.dumps({**event, "recorded_at": _utc_iso()}, default=str)

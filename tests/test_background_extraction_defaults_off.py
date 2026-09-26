@@ -1,15 +1,7 @@
 """Absence of a background-extraction preference must not mean "on".
 
-Both gates used to be ``uprefs.get(key, True)``, so every account that had
-never touched the Settings toggle ran the extractor — including every account
-created afterwards. That is what made the POS-AI-23 interim containment
-partial:
-
-* ``auto_skills`` was set to ``False`` on **one of four** live accounts;
-* ``auto_memory`` was set on **none of four** — and it is the subsystem whose
-  output contract was persisted as an assistant reply in session ``8670f5ae``.
-
-These tests pin the resolution order — explicit user pref, then the operator's
+A default of on would run the extractors for every account that never touched
+the Settings toggle. These tests pin the resolution order — explicit user pref, then the operator's
 system-level setting, then off — and prove neither extractor is dispatched for
 a user with no preference at all.
 """
@@ -31,8 +23,6 @@ RESOLVERS = {
     "auto_skills": auto_skills_enabled_for,
 }
 
-
-# ── the resolution order ─────────────────────────────────────────────────── #
 
 def test_both_gates_are_declared_together():
     """A third background-extraction gate should not be able to appear without
@@ -104,8 +94,6 @@ def test_falsy_and_truthy_pref_values_are_coerced(monkeypatch, key):
     assert RESOLVERS[key]({key: 1}) is True
 
 
-# ── the gates, end to end ────────────────────────────────────────────────── #
-
 class _FakeSession:
     """Minimum surface run_post_response_tasks touches."""
 
@@ -129,8 +117,7 @@ async def _run(monkeypatch, uprefs, *, history_len, agent_rounds, system_default
 
     Patches the extractor coroutines themselves rather than the task spawner,
     so these tests do not encode *how* a coroutine is scheduled
-    (`asyncio.create_task` on dev, `src.background_tasks.spawn` after the
-    POS-AI-23 lane-isolation work lands).
+    (`asyncio.create_task` or `src.background_tasks.spawn`).
 
     `history_len` and `agent_rounds` select which gate is even reachable:
     memory extraction needs `len(history) >= 4 and % 4 == 0`, skill extraction

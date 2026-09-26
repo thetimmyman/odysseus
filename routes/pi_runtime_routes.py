@@ -1,13 +1,6 @@
-"""Pi execution runtime routes — operator control/observability for delegated runs.
-
-The architectural boundary: Odysseus decides what work happens, who does it and
-under what policy/budget; Pi executes. These endpoints expose exactly the
-adapter contract for operators — start, observe (events), status, send,
-cancel, resume, result — and nothing that would let a caller (or Pi) change
-routing policy, budgets or governance.
-
-Admin-only, same gate as git review / shell exec: launching a coding agent that
-edits a worktree is a powerful, operator-level action.
+"""Operator routes for delegated Pi runs: start, events, status, send, cancel,
+resume, result. Nothing here lets a caller change routing policy, budgets or
+governance. Admin-only, since it launches an agent that edits a worktree.
 """
 from __future__ import annotations
 
@@ -45,7 +38,7 @@ class ResumeBody(BaseModel):
 
 
 def _require_admin(request: Request) -> None:
-    """Reject non-admin callers (mirrors routes/git_routes._require_admin)."""
+    """Reject non-admin callers."""
     auth_manager = getattr(request.app.state, "auth_manager", None)
     if not auth_manager:
         return  # no auth configured: trusted localhost dev only
@@ -59,7 +52,6 @@ def _require_admin(request: Request) -> None:
 
 
 def _which(binary: str) -> Optional[str]:
-    """Minimal PATH lookup for the Pi executable."""
     if not binary:
         return None
     for entry in (os.environ.get("PATH") or "").split(os.pathsep):
@@ -167,8 +159,7 @@ def setup_pi_runtime_routes() -> APIRouter:
         try:
             status = await get_pi_runtime().resume(execution_id, message=body.message)
         except WorktreeMismatch as exc:
-            # Resuming into a different worktree than the execution was assigned
-            # is refused, never silently honored.
+            # A resume into a worktree other than the assigned one is refused.
             raise HTTPException(
                 409,
                 {"error": "worktree_mismatch", "reason": exc.reason,

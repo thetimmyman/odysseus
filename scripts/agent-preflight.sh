@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Always operate from the canonical repo root, regardless of caller's CWD.
 cd /app/work/odysseus
 
 EXPECTED_TOP="/app/work/odysseus"

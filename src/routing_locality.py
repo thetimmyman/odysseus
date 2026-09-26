@@ -1,15 +1,9 @@
-"""src/routing_locality.py — the PS-605 public contract for endpoint locality, data-sensitivity
-ceilings and task→role vocabulary, owned by the routing-selector seam.
+"""Endpoint locality, data-sensitivity ceilings and task->role vocabulary.
 
-Moved here from src/routing_engine.py (TMOS M2-RETIRE-legacy-routing-harness, Stage A). The new
-selector seam (src/dispatch_boundary.py, src/dispatch_routing.py) must not import the Section-9
-legacy harness (constitution forbid `routing-selector -> legacy-routing-harness`, TMOS I8); these
-three functions were the last import edge in that direction. The legacy engine now imports them
-from here (legacy -> selector is the allowed direction; routing_engine already consumed
-src.routing_budget the same way), so `src.routing_engine.endpoint_is_local` etc. keep resolving for
-the Section-9 modules and their tests until Stage B retires them.
+Lives in the selector seam because the selector must not import the legacy
+routing harness; the legacy engine imports from here instead.
 
-Contract (unchanged): one shared vocabulary for locality and sensitivity rules —
+Contract:
   endpoint_is_local(url)                    loopback / RFC1918 / bare LAN hostname => local; missing => NOT local
   sensitivity_requires_local_only(level)    level ranks above the policy's remoteSensitivityCeiling
   roles_for_task_type(task_type)            preference-ordered roles for the task vocabulary
@@ -31,9 +25,7 @@ ROLE_BY_TASK: Dict[str, List[str]] = {
 }
 _DEFAULT_ROLES = ["scout"]
 
-# Sensitivity rank order for the Section 9 hard filter. A task whose
-# data_sensitivity ranks ABOVE the policy's remoteSensitivityCeiling may only
-# route to endpoints on loopback/private networks.
+# Data ranked above remoteSensitivityCeiling may only go to loopback/private endpoints.
 _SENSITIVITY_RANK = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3, "secret": 4}
 
 _PRIVATE_HOST_RE = re.compile(
@@ -45,10 +37,7 @@ _PRIVATE_HOST_RE = re.compile(
 
 
 def _endpoint_is_local(url: Optional[str]) -> bool:
-    """True when the endpoint host is loopback / RFC1918 / a bare LAN hostname.
-    Anything else (openrouter.ai, api.*, cloud hosts) counts as remote for the
-    data-sensitivity hard filter. A missing URL is NOT local — an unverifiable
-    destination must never receive restricted data (fail closed)."""
+    """True for loopback / RFC1918 / bare LAN hosts; a missing URL is not local."""
     if not url:
         return False
     host = urlparse(url).hostname or ""
@@ -64,19 +53,14 @@ def _remote_ceiling_rank() -> int:
     return _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK["confidential"])
 
 
-# ------------------------------------------------------- public contract (PS-605) ---
-# dispatch_boundary and the registry seam consume these functions rather than
-# private helpers, so locality and sensitivity rules have one shared vocabulary.
+# Public contract: callers use these, not the private helpers.
 def endpoint_is_local(url: Optional[str]) -> bool:
-    """True when an endpoint URL is loopback/private/LAN."""
     return _endpoint_is_local(url)
 
 
 def sensitivity_requires_local_only(sensitivity: Optional[str]) -> bool:
-    """True when sensitivity exceeds the configured remote ceiling."""
     return _SENSITIVITY_RANK.get(str(sensitivity or "internal"), 1) > _remote_ceiling_rank()
 
 
 def roles_for_task_type(task_type: Optional[str]) -> List[str]:
-    """Preference-ordered roles for the task vocabulary."""
     return list(ROLE_BY_TASK.get(str(task_type or ""), _DEFAULT_ROLES))

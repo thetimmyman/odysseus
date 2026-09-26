@@ -1,10 +1,7 @@
-"""Tests for core.log_safety.redact_url (PS-602 / upstream #4750).
+"""Tests for core.log_safety.redact_url.
 
-A negative/equivalence control for the credential-logging fix: the redactor must
-strip EVERY credential-bearing component (userinfo, query, fragment) while
-keeping the diagnostic parts (scheme/host/port/path), and must never echo a
-secret. This is the vulnerability-specific control -- the old code logged the
-raw URL, which is exactly what these assertions forbid.
+It must strip every credential-bearing part (userinfo, query, fragment), keep
+scheme/host/port/path, and never echo a secret.
 """
 
 import pytest

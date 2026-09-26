@@ -1,45 +1,26 @@
-"""src/dispatch_boundary.py — the production dispatch boundary (PS-605).
-
-`src/dispatch_routing.py` decides; this module makes that decision the thing the
-real dispatcher consumes. It is the seam between "the router chose" and "a model
-was called":
+"""Production dispatch boundary: makes the dispatch_routing decision the thing
+the real dispatcher consumes.
 
     RoutingTask + candidate rows  ->  RoutingRequest        (intent, from data)
     candidates + endpoint rows    ->  profiles + receipts   (the estate)
     profiles/receipts + policy    ->  DispatchDecision      (selection authority)
     decision + candidates         ->  execution ORDER       (what may be attempted)
     resolved endpoint + decision  ->  pin check             (invocation guard)
-    invocation + decision         ->  AttemptBinding        (PS-638 identity)
+    invocation + decision         ->  AttemptBinding        (attempt identity)
     all of the above              ->  sealed evidence       (re-checkable proof)
 
-Four properties, all structural:
+Structural properties:
 
-**1. There is no post-decision chooser.** The dispatcher iterates the order this
-module returns; a candidate the decision did not find eligible is never attempted,
-and an invocation whose resolved endpoint/model does not match the pinned identity
-is REFUSED before the network call (:func:`verify_invocation`). A runtime adapter
-can report facts and failures; it cannot substitute a target, because the only
-identity it is handed is the one the decision pinned.
-
-**2. Declaration is labelled, measurement is not.** A capability receipt carries
-its provenance: ``measured`` (PS-632's job), ``detected`` (an endpoint flag the
-system actually probed, e.g. ``ModelEndpoint.supports_tools``), or ``declared``
-(what the row says about itself). "Unknown" is never a capability — a NULL
-``supports_tools`` grants nothing — and a request may require measured-only
-capabilities, which no declared receipt can satisfy. The decision records the
-provenance it relied on, so the strength of the claim is visible in the evidence.
-
-**3. A refusal stops the run.** When PS-605 refuses, the boundary raises and the
-dispatcher records the refusal and attempts nothing: a local-only packet with no
-eligible local profile produces ZERO invocations, not a quiet downgrade.
-
-**4. Evidence is checkable, and tampering is detectable.** :func:`seal_dispatch_
-evidence` binds the execution-package identity, policy revision AND content hash,
-the full candidate set with per-candidate reasons, capability receipt ids and
-freshness, the budget/resource snapshot actually used, the pinned identity, the
-invocation record and the attempt binding into one content-addressed payload, and
-:func:`validate_dispatch_evidence` re-derives every one of them — so changing the
-selected target, a receipt, or the policy revision after sealing invalidates it.
+1. No post-decision chooser: only eligible candidates are attempted, and an
+   invocation not matching the pinned identity is refused before the network
+   call (:func:`verify_invocation`).
+2. Receipts carry provenance (``measured``, ``detected``, ``declared``);
+   unknown is never a capability, and a request may demand measured-only.
+3. A refusal stops the run: a local-only packet with no eligible local profile
+   makes zero invocations, never a quiet downgrade.
+4. :func:`seal_dispatch_evidence` binds every input and outcome into one
+   content-addressed payload that :func:`validate_dispatch_evidence` re-derives,
+   so any post-seal change invalidates it.
 """
 from __future__ import annotations
 
@@ -50,9 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple)
 
-# The dispatch_routing names below are RE-EXPORTED on purpose: this module is the
-# boundary's public face, so a caller (or a test) asking for the routing vocabulary
-# gets it from one import instead of two.
+# Re-exported so callers get the routing vocabulary from one import.
 from src.dispatch_routing import (
     CAP_DETERMINISTIC_VERIFICATION,
     CAP_EXACT_REFERENCE_SEMANTICS,
@@ -93,10 +72,8 @@ from src.dispatch_routing import (
 
 SCHEMA_VERSION = 1
 
-#: Capabilities a DECLARED receipt may evidence: things a profile row can honestly
-#: claim about a text model. Tool-call and context-integrity capabilities are NOT
-#: here on purpose — those need a detection or a measurement, and "the row says it
-#: is a good model" is exactly the reduction the ticket forbids.
+#: Capabilities a declared receipt may evidence. Tool-call and context-integrity
+#: capabilities need detection or measurement, never a row's self-description.
 DECLARABLE_CAPABILITIES: Tuple[str, ...] = (
     CAP_TEXT_GENERATION, CAP_EXACT_REFERENCE_SEMANTICS, CAP_REASONING_FRAMING,
 )
@@ -107,16 +84,14 @@ DETECTABLE_CAPABILITIES: Tuple[str, ...] = (
     CAP_SINGLE_TOOL_CALL,
 )
 
-#: Roles that make a profile an INFERENCE target. A profile declaring none of these
-#: (MS-R1's governance_ci / verifier only) is deterministic and must never be
-#: selected for generation work.
+#: Roles that make a profile an inference target; profiles with none are
+#: deterministic (e.g. governance/verifier) and never selected for generation.
 INFERENCE_ROLE_NAMES: FrozenSet[str] = frozenset({
     ROLE_IMPLEMENTER, ROLE_IMPLEMENTER_ROUTER, ROLE_REPAIR, ROLE_PLANNER,
     ROLE_SCOUT, ROLE_SCOUT_ROUTER, ROLE_DEBUGGER, ROLE_REVIEWER, ROLE_ESCALATION,
 })
 
 
-# ------------------------------------------------------------- refusal codes ---
 BOUNDARY_REFUSED_NO_PROFILES = "no_dispatchable_profiles"
 BOUNDARY_REFUSED_NO_ENDPOINT = "candidate_has_no_enabled_endpoint"
 PIN_TARGET_MISMATCH = "pin_target_mismatch"
@@ -150,12 +125,8 @@ class DispatchBoundaryError(RuntimeError):
 
 
 class DispatchPinViolation(DispatchBoundaryError):
-    """The invocation does not match the decision's pin: refused BEFORE dispatch.
-
-    Raised instead of calling the model. This is the "runtime executes on a target
-    different from the receipt" control, and it fires before the network call so a
-    mismatch costs nothing and cannot half-happen.
-    """
+    """The invocation doesn't match the decision's pin; raised before the network
+    call so a mismatch costs nothing and can't half-happen."""
 
     def __init__(self, code: str, reason: str, *, decision_id: str = ""):
         self.code = code
@@ -173,7 +144,7 @@ def _utc_now() -> str:
 
 
 def _canonical(payload: object) -> bytes:
-    """PS-638's canonical form, byte-for-byte (see dispatch_routing._canonical)."""
+    """Canonical form, byte-for-byte (see dispatch_routing._canonical)."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, default=str).encode("utf-8")
 
@@ -233,7 +204,7 @@ def _profile_execution_material(profile: Any) -> dict:
 
 
 def _canonical_profile_from_receipt(profile: Any, receipt: Any) -> Any:
-    """Rebuild the execution portion of a profile from PS-632 evidence."""
+    """Rebuild the execution portion of a profile from capability evidence."""
     from src.local_targets import PRIVACY_LOCAL_ONLY
 
     from src.subscription_capacity import subscription_endpoint_identity
@@ -259,16 +230,10 @@ def _canonical_profile_from_receipt(profile: Any, receipt: Any) -> Any:
         locality=locality)
 
 
-# ------------------------------------------------------------ the estate ---
 @dataclass(frozen=True)
 class TargetEstate:
-    """The candidate estate as PS-605 sees it: profiles + their receipts + notes.
-
-    ``provenance`` lives on each receipt, so a mixed estate (one measured profile,
-    the rest declared) is representable and the decision records which one it
-    relied on. ``skipped`` names candidates that could not become profiles at all,
-    so a dropped candidate is visible instead of merely absent.
-    """
+    """The candidate estate: profiles, their receipts and notes. Provenance is per
+    receipt; ``skipped`` makes dropped candidates visible instead of absent."""
 
     profiles: Tuple[Any, ...] = ()
     receipts: Tuple[Any, ...] = ()
@@ -314,15 +279,11 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
                              network_classes: Optional[Mapping[str, str]] = None,
                              capability_store: Any = None
                              ) -> TargetEstate:
-    """Project DB rows + candidate dicts into PS-605 profiles and receipts.
+    """Project DB rows and candidates into profiles and receipts.
 
-    A candidate whose profile row is missing/disabled, or whose endpoint is absent,
-    is SKIPPED and recorded — it cannot be a candidate, and silently dropping it
-    would make the decision's candidate list disagree with the estate it decided on.
-
-    Production callers must provide ``capability_store``. Database rows are only
-    discovery. There is deliberately no fixture escape hatch here: tests must
-    create canonical PS-632 receipts in a test store.
+    Candidates with a missing/disabled profile or absent endpoint are skipped
+    and recorded. ``capability_store`` is required; DB rows are only discovery,
+    and tests must create canonical receipts in a test store.
     """
     from core.database import ModelEndpoint, RoutingModelProfile
     from src.routing_locality import endpoint_is_local
@@ -360,16 +321,13 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
             host=_host_of(base_url),
             runtime_kind=str(getattr(endpoint, "endpoint_kind", "") or "openai_compatible"),
             model=str(row.model or ""), locality=locality, roles=roles,
-            # The URL matters: the domain layer decides locality from the endpoint
-            # AND the provider, so omitting it silently marks every target remote.
+            # Locality depends on URL and provider; omitting it marks every target remote.
             endpoint_url=base_url,
             endpoint_type=str(getattr(endpoint, "endpoint_kind", "") or ""),
             # Silence is not a grant: supports_tools NULL/False grants no tools.
             tools=frozenset({"write_file"}) if supports_tools else frozenset(),
-            # A registry that already names the network class (PS-632's
-            # ``NETWORK_TAILNET``) wins: the packet, the profile and the receipt must
-            # agree on one string, and inventing a second spelling here is how a
-            # constraint silently stops matching.
+            # Prefer the registry's network class spelling so packet, profile and
+            # receipt constraints keep matching.
             network_policy=(dict(network_classes or {}).get(row.id)
                             or ("local-network" if locality == LOCALITY_LOCAL
                                 else "hosted-egress")),
@@ -411,8 +369,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
                             "reason": "unqualified_candidate"})
             continue
         from src.local_target_routing import _legacy_view_from_receipt
-        # The qualified receipt, not the mutable discovery row, supplies the
-        # exact execution identity pinned into the decision.
+        # The qualified receipt, not the mutable row, supplies the pinned identity.
         profile = _canonical_profile_from_receipt(profile, canonical)
         if profile.locality == LOCALITY_HOSTED:
             from src.endpoint_resolver import resolve_endpoint_runtime, build_chat_url, build_headers
@@ -442,12 +399,7 @@ def _sensitivity_local_only(task: Any) -> bool:
 
 
 def execution_package_hash(task: Any) -> str:
-    """Content identity of the routing intent, from the task's OWN fields.
-
-    PS-638's ExecutionPackage owns the full envelope; that package does not exist on
-    this branch, so the binding is over exactly the task fields the request was
-    derived from — a stable, re-derivable digest rather than a placeholder string.
-    """
+    """Stable content digest of the task fields the routing request is derived from."""
     fields = {name: getattr(task, name, None) for name in (
         "id", "work_item_id", "title", "objective", "task_type", "repo_path",
         "branch_name", "risk", "constraints", "inputs", "data_sensitivity",
@@ -467,14 +419,11 @@ def route_request_from_task(task: Any, *, role: str,
                             packet_id: str = "",
                             execution_package_hash_: str = "",
                             run_id: str = "") -> RoutingRequest:
-    """Build the PS-605 request from a RoutingTask row (its OWN fields, not args).
+    """Build the routing request from a RoutingTask's own fields.
 
-    ``local_only`` comes from the task's ``data_sensitivity`` and the policy's
-    remote ceiling — the same rule the existing hard filter applies, now expressed
-    as an INPUT to the routing decision instead of as a parallel filter beside it.
-    ``max_cost_rank`` defaults to what the task's own allow_free/paid/premium flags
-    permit, so a free-only task cannot be routed to a paid profile no matter who
-    calls this function.
+    ``local_only`` comes from ``data_sensitivity`` vs the policy's remote
+    ceiling, as a decision input rather than a parallel filter. ``max_cost_rank``
+    follows the task's allow flags, so a free-only task never reaches a paid profile.
     """
     if max_cost_rank is None:
         if getattr(task, "allow_premium_models", False):
@@ -487,9 +436,7 @@ def route_request_from_task(task: Any, *, role: str,
         domain=str(domain or "general_swe"), role=role,
         packet_id=packet_id or str(getattr(task, "id", "") or ""),
         run_id=run_id,
-        # A caller that already sealed a PS-638 ExecutionPackage passes ITS hash:
-        # the receipt must bind the package that will actually carry it, not a
-        # digest re-derived from task columns.
+        # Bind the caller's sealed package hash, not a digest of task columns.
         execution_package_hash=(execution_package_hash_
                                 or execution_package_hash(task)),
         capabilities=tuple(capabilities), exactness=exactness,
@@ -500,16 +447,10 @@ def route_request_from_task(task: Any, *, role: str,
         preferred_profile_ids=tuple(preferred_profile_ids))
 
 
-# --------------------------------------------------- the bound dispatch ---
 @dataclass(frozen=True)
 class BoundDispatch:
-    """A decision together with the estate and request it was made from.
-
-    The dispatcher needs all three: the REQUEST (what the work needs), the ESTATE
-    (what exists, with provenance and skips) and the DECISION (what may run). They
-    travel as one value so a caller cannot pair a decision with a different
-    candidate list by accident.
-    """
+    """A decision with the estate and request it was made from, kept together
+    so a decision can't be paired with a different candidate list."""
 
     request: RoutingRequest
     estate: TargetEstate
@@ -521,12 +462,7 @@ class BoundDispatch:
     def execution_order(self,
                         candidates: Sequence[Mapping[str, Any]]
                         ) -> List[Mapping[str, Any]]:
-        """The candidates a dispatcher may attempt, in the decision's order.
-
-        Members only: a candidate the decision did not find eligible is not
-        attempted at all, so there is no point after the decision at which the
-        dispatcher could choose a target the decision refused.
-        """
+        """Eligible candidates in decision order; nothing else is ever attempted."""
         by_profile = {str(c.get("profile_id")): c for c in candidates or ()}
         ordered: List[Mapping[str, Any]] = []
         for assessment in self.decision.candidates:
@@ -585,14 +521,8 @@ class BoundDispatch:
 
 def role_for_task(task: Any, estate: "TargetEstate",
                   available_roles: Sequence[str] = ()) -> str:
-    """The role the run is routed as: the task's FIRST supported preference.
-
-    Uses the routing layer's public role-preference contract
-    (``routing_locality.roles_for_task_type``) and the estate's declared roles, so the
-    request asks for what the task MEANS rather than for what happens
-    to be available — the difference matters when nothing supports it, which is a
-    refusal rather than a downgrade.
-    """
+    """The task's first supported role preference, so an unsupported need is a
+    refusal rather than a downgrade."""
     from src.routing_locality import roles_for_task_type
 
     declared: set = set(available_roles)
@@ -628,11 +558,8 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
                      offer_identity: Optional[Mapping[str, Any]] = None,
                      now: Optional[datetime] = None,
                      decision_id: str = "") -> BoundDispatch:
-    """Resolve the routing decision the dispatcher must obey. Raises on refusal.
-
-    Raises :class:`RoutingRefused` (carrying the per-candidate reasons) when no
-    candidate survives, and :class:`DispatchBoundaryError` when there is nothing to
-    decide over at all. Both are fail-closed: the caller must not dispatch.
+    """Resolve the decision the dispatcher must obey. Raises RoutingRefused (with
+    reasons) or DispatchBoundaryError; either way, do not dispatch.
     """
     snapshot = policy or policy_snapshot()
     estate = profiles_from_candidates(
@@ -651,8 +578,7 @@ def resolve_dispatch(db: Any, task: Any, candidates: Sequence[Mapping[str, Any]]
         network_policy=network_policy, preferred_profile_ids=preferred_profile_ids,
         max_cost_rank=max_cost_rank, execution_package_hash_=execution_package_hash_,
         run_id=run_id, packet_id=packet_id)
-    # One selection path: the DB-backed resolver binds through the same function a
-    # registry-backed caller uses, so there is exactly one place selection happens.
+    # One selection path, shared with registry-backed callers.
     return resolve_from_estate(estate, request, capability_store=capability_store,
                                network_classes=network_classes,
                                policy=snapshot, resources=resources,
@@ -671,11 +597,8 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                         offer_identity: Optional[Mapping[str, Any]] = None,
                         now: Optional[datetime] = None,
                         decision_id: str = "") -> BoundDispatch:
-    """Bind an already-built estate + request to a decision: no DB, no task row.
-
-    The DB-backed :func:`resolve_dispatch` is one caller of this; a caller whose
-    estate comes from somewhere else (PS-632's measured fleet, a fixture, a replay)
-    uses this directly rather than fabricating a task row to satisfy the other.
+    """Bind an estate and request to a decision without DB or task row, for
+    callers whose estate comes from elsewhere (measured fleet, fixture, replay).
     """
     if capability_store is None:
         raise DispatchBoundaryError(
@@ -776,12 +699,9 @@ class InvocationIdentity:
 
 def verify_invocation(bound: BoundDispatch, *,
                       invocation: InvocationIdentity) -> Mapping[str, Any]:
-    """Refuse an invocation that does not match the decision. Call BEFORE dispatch.
-
-    Three ways to fail, each with its own code: the profile is not in the decision's
-    eligible set, the resolved MODEL is not the pinned model, or the resolved
-    endpoint's LOCALITY contradicts the pinned locality (a local pin resolving to a
-    remote URL is precisely the failure this exists to stop).
+    """Refuse an invocation that doesn't match the decision; call before dispatch.
+    Fails if the profile isn't eligible, the model isn't the pinned model, or
+    the endpoint's locality contradicts the pin.
     """
     from src.endpoint_identity import canonical_endpoint_identity, EndpointIdentityError
     from src.routing_locality import endpoint_is_local
@@ -876,10 +796,7 @@ def verify_invocation(bound: BoundDispatch, *,
     return pin
 
 
-# --------------------------------------------------------- attempt binding ---
-#: The AttemptReceipt fields PS-638 requires that carry the routing identity. A
-#: receipt missing any of these cannot be tied to a decision, so the tuple is
-#: asserted by the tests as a contract rather than described in prose.
+#: AttemptReceipt fields that carry routing identity; asserted as a contract by tests.
 PS638_ATTEMPT_BINDING_FIELDS: Tuple[str, ...] = (
     "run_id", "packet_id", "attempt", "execution_package_hash",
     "dispatch_receipt_hash", "target_id", "host", "model", "runtime_kind",
@@ -929,7 +846,6 @@ class DispatchAttempt:
 def attempt_for(bound: BoundDispatch, *, attempt: int, profile_id: str,
                 run_id: str = "", host: str = "", model: str = "",
                 runtime_kind: str = "", model_digest: str = "") -> DispatchAttempt:
-    """Build the attempt record for one candidate, bound to the decision's receipt."""
     profile = bound.estate.profile_for(profile_id)
     if profile is None:
         raise DispatchPinViolation(
@@ -949,11 +865,8 @@ def attempt_for(bound: BoundDispatch, *, attempt: int, profile_id: str,
 
 
 class InvocationRecorder:
-    """Records every invocation the dispatcher actually performed.
-
-    The point is the negative: a local-only dispatch must show ZERO hosted
-    invocations, and that is only checkable if something wrote down every attempt.
-    Adapters report here; nothing else does.
+    """Records every invocation the dispatcher performed, so a local-only run can
+    be shown to have made zero hosted invocations. Only adapters report here.
     """
 
     def __init__(self) -> None:
@@ -986,7 +899,6 @@ class InvocationRecorder:
                 f"invocation(s): {hosted}")
 
 
-# ------------------------------------------------------------- the evidence ---
 def seal_dispatch_evidence(bound: BoundDispatch, *,
                            attempts: Sequence[DispatchAttempt],
                            invocations: Sequence[Mapping[str, Any]],
@@ -994,12 +906,8 @@ def seal_dispatch_evidence(bound: BoundDispatch, *,
                            resource_snapshot: Optional[Mapping[str, Any]] = None,
                            fixture: Optional[Mapping[str, Any]] = None,
                            sealed_at: str = "") -> Dict[str, Any]:
-    """Seal one dispatch into a content-addressed, re-checkable payload.
-
-    Everything the decision was made from is in here, so the payload is not a
-    summary of the decision — it is the inputs and the outcome together, which is
-    what makes "change the selected target and the evidence is invalid" detectable
-    rather than a matter of trust.
+    """Seal one dispatch into a content-addressed, re-checkable payload holding
+    all inputs and the outcome, so changing the selected target is detectable.
     """
     decision = bound.decision
     payload: Dict[str, Any] = {
@@ -1042,17 +950,13 @@ def seal_dispatch_evidence(bound: BoundDispatch, *,
 
 
 def evidence_core(payload: Mapping[str, Any]) -> Dict[str, Any]:
-    """The payload without its seal — what the seal hashes over."""
+    """The payload without its seal (what the seal hashes)."""
     return {k: v for k, v in dict(payload).items() if k != "seal"}
 
 
 def _receipt_hash_of(recorded: Mapping[str, Any]) -> str:
-    """Re-derive a recorded receipt's content hash from its OWN fields.
-
-    This is what makes "the capability receipt was changed" detectable from the
-    payload alone: the hash is recomputed from what is written down, so editing
-    capabilities (or freshness, or health) without re-sealing breaks the link
-    between the receipt and the hash the decision cited.
+    """Re-derive a recorded receipt's hash from its own fields, so edits made
+    without re-sealing break the link to the hash the decision cited.
     """
     from src.dispatch_routing import make_legacy_capability_view
 
@@ -1081,11 +985,8 @@ def _receipt_hash_of(recorded: Mapping[str, Any]) -> str:
 def validate_dispatch_evidence(payload: Mapping[str, Any]
                                ) -> Tuple[bool, Tuple[str, ...]]:
     """Re-derive every claim in a sealed payload. Returns (ok, (codes,)).
-
-    Each check corresponds to a mutation that must NOT survive: a changed selected
-    target, a changed capability receipt, a changed policy revision, an attempt
-    bound to a different receipt, an invocation outside the decision, or a hosted
-    invocation for local-only work.
+    Catches changed targets, receipts or policy revisions, mis-bound attempts,
+    invocations outside the decision, and hosted calls for local-only work.
     """
     codes: List[str] = []
     from src import provider_capacity
@@ -1099,19 +1000,15 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     policy = dict(body.get("policy") or {})
     receipts = list(body.get("capability_receipts") or ())
 
-    # 1. the seal itself
     if seal.get("evidence_hash") != _sha256_hex(_canonical(body)):
         codes.append(EVIDENCE_HASH_MISMATCH)
 
-    # 2. the decision's receipt hash must be what PS-638 computes from the receipt
-    #    fields recorded beside it: RE-DERIVED, not trusted.
+    # The decision's receipt hash must re-derive from the recorded fields.
     if seal.get("dispatch_receipt_hash") != ps638_receipt_hash(receipt):
         codes.append(EVIDENCE_DECISION_MISMATCH)
 
-    # 3. the pin must still agree in ALL THREE places that record it: the seal, the
-    #    PS-638 receipt, and the full decision. `selected_target_id` is not part of
-    #    the receipt's core hash, so this agreement (not the hash) is what makes a
-    #    changed pin detectable in a payload with no attempts.
+    # The pin must agree in the seal, the receipt and the decision;
+    # `selected_target_id` isn't in the core hash, so this catches a changed pin.
     selected = str(receipt.get("selected_target_id") or "")
     decision_profile = str(dict(decision.get("selected_profile") or {})
                            .get("profile_id") or "")
@@ -1123,7 +1020,7 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
             != str(seal.get("dispatch_receipt_hash") or "")):
         codes.append(EVIDENCE_PIN_CHANGED)
 
-    # 4. every attempt binds THIS receipt, and the attempts agree with the pin.
+    # Every attempt binds this receipt and agrees with the pin.
     for attempt in attempts:
         if attempt.get("dispatch_receipt_hash") != seal.get("dispatch_receipt_hash"):
             codes.append(EVIDENCE_ATTEMPT_UNBOUND)
@@ -1131,8 +1028,7 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     if attempts and str(attempts[0].get("target_id") or "") != selected:
         codes.append(EVIDENCE_TARGET_MISMATCH)
 
-    # 5. invocations must be inside the decision's eligible set and respect the
-    #    locality the decision required.
+    # Invocations must be eligible and respect the required locality.
     candidates = list(decision.get("candidates") or ())
     eligible = {str(c.get("target_id")) for c in candidates if c.get("eligible")}
     local_only = bool(request.get("local_only"))
@@ -1142,9 +1038,8 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
         if local_only and invocation.get("locality") == LOCALITY_HOSTED:
             codes.append(EVIDENCE_HOSTED_FOR_LOCAL_ONLY)
 
-    # 6. capability receipts must still be the ones the decision relied on, and
-    #    their CONTENT must still hash to what the payload recorded: mutating a
-    #    receipt's fields is caught by re-deriving its hash, not only by the seal.
+    # Capability receipts must be the ones relied on, and their content must
+    # still hash to what was recorded.
     by_profile = {str(r.get("profile_id")): r for r in receipts}
     known_hashes = {str(r.get("receipt_hash")) for r in receipts}
     for ref in (receipt.get("capability_receipt_refs") or ()):
@@ -1165,8 +1060,8 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
             break
 
 
-    # 7. capacity receipts (PS-640) must still hash to their recorded content, and
-    #    every ref the decision cited must be present among the valid receipts.
+    # Capacity receipts must still hash to their content, and every cited ref
+    # must be among the valid receipts.
     valid_capacity_refs: set = set()
     capacity_by_ref: Dict[str, Mapping[str, Any]] = {}
     for recorded in (body.get("capacity_receipts") or ()):
@@ -1192,8 +1087,7 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
             codes.append(EVIDENCE_CAPACITY_CHANGED)
             break
     if selected_is_hosted and decision_capacity_refs:
-        # Use the recorded selection instant, not current wall time. A historical
-        # evidence review must not reject a receipt merely because it expired later.
+        # Use the recorded selection instant so later expiry doesn't fail a review.
         try:
             selected_at_text = str(decision.get("observed_at") or receipt.get("decided_at") or "")
             selected_at = datetime.fromisoformat(selected_at_text.replace("Z", "+00:00"))
@@ -1229,8 +1123,8 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
                 codes.append(EVIDENCE_CAPACITY_CHANGED)
                 break
 
-    # Offer receipts are optional for legacy dispatches, but binding is strict
-    # whenever present. Recompute quotes at the recorded observation time.
+    # Offer receipts are optional for legacy dispatches but strict when present;
+    # quotes are recomputed at the recorded observation time.
     from src.offer_economics import comparable_cash, quote_digest
     from src.provider_model_offer import provider_model_offer_from_dict
     valid_offer_refs = set()
@@ -1273,7 +1167,7 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     if list(receipt.get("offer_quote_digests") or ()) != quote_digests:
         codes.append("offer_quote_changed")
 
-    # 8. the policy revision AND its content hash must still match the ref.
+    # The policy revision and content hash must still match.
     policy_ref = str(receipt.get("policy_ref") or "")
     if policy_ref != str(policy.get("policy_ref") or ""):
         codes.append(EVIDENCE_POLICY_CHANGED)
@@ -1291,13 +1185,8 @@ def seal_recorded_dispatch(*, record: Mapping[str, Any],
                            resource_snapshot: Optional[Mapping[str, Any]] = None,
                            fixture: Optional[Mapping[str, Any]] = None,
                            sealed_at: str = "") -> Dict[str, Any]:
-    """Seal the dispatch RECORD a production run wrote to disk.
-
-    `routing_executor` writes ``dispatch_receipt.json`` (the full PS-605 dispatch
-    under ``dispatch``, the PS-638 receipt fields under ``dispatch_receipt``, the
-    attempt bindings and the invocation log) next to each run. This turns that
-    artifact into the same sealed payload `seal_dispatch_evidence` produces, so the
-    production record — not a re-derivation of it — is what gets validated.
+    """Seal the dispatch_receipt.json that routing_executor wrote for a run, so
+    the production record itself is what gets validated.
     """
     dispatch = dict(record.get("dispatch") or {})
     decision = dict(dispatch.get("decision") or {})
@@ -1340,7 +1229,6 @@ def seal_recorded_dispatch(*, record: Mapping[str, Any],
 
 
 def write_dispatch_evidence(path: str, payload: Mapping[str, Any]) -> str:
-    """Write a sealed payload to disk, creating parent directories."""
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:

@@ -1,6 +1,6 @@
-"""PS-632 — local Qwen worker pool: target registry + measured capability.
+"""Local Qwen worker pool: target registry + measured capability.
 
-Proves the four things PS-632 actually asks for, each with a negative control:
+Each property has a negative control:
 
 1. the fleet is THREE distinctly-identified targets, not one ``local_qwen``;
 2. capability is MEASURED, and a declared tool capability is not proof;
@@ -13,8 +13,6 @@ import pytest
 
 from src import local_targets as lt
 
-
-# ------------------------------------------------------------------ fixtures ---
 
 def _model(*, name="qwen3.8:27b", quant="Q4_K_M", ctx=262144, caps=("completion",)):
     return {
@@ -60,8 +58,8 @@ def _raw(*, reachable=True, version="0.33.3", model=True, tool_calls=1,
 def _records(**overrides):
     """Measured records for the two REACHABLE targets, keyed by target_id.
 
-    Defaults mirror what the live probe actually found on 2026-09-14: the RTX
-    target is healthy but has NO tool capability, the MS-R1 target has tools.
+    Defaults mirror a real probe: the RTX target is healthy but has NO tool
+    capability, the MS-R1 target has tools.
     """
     rtx = lt.build_capability(
         lt.target_by_id(lt.TARGET_RTX_4500),
@@ -76,8 +74,6 @@ def _records(**overrides):
         got[tid] = lt.build_capability(lt.target_by_id(tid), _raw(**kwargs))
     return got
 
-
-# ------------------------------------------------------- registry / identity ---
 
 def test_fleet_is_three_distinct_targets_not_one_label():
     specs = lt.registered_targets()
@@ -114,10 +110,8 @@ def test_transport_is_ssh_when_the_endpoint_is_loopback_only():
 
 
 
-# --------------------------------------------------- capability is measured ---
-
 def test_declared_tools_without_a_proven_tool_call_is_not_proven():
-    """NEGATIVE CONTROL: the exact defect PS-632 names.
+    """NEGATIVE CONTROL: declared tools are not proven tools.
 
     A runtime that advertises ``tools`` in its capability list but answers the
     tool question without emitting ``tool_calls`` must NOT be treated as
@@ -193,7 +187,7 @@ def test_queue_depth_and_resident_vram_are_read_from_ps():
 
 
 def test_served_context_is_read_from_ps_and_is_not_the_declared_maximum():
-    """MEASURED 2026-09-14: the RTX node declares 262144 and SERVES 32768.
+    """Measured: the RTX node declares 262144 and SERVES 32768.
 
     A packet sized from the declared number would be dispatched into a window
     that does not exist, so the two must never be conflated.
@@ -241,8 +235,6 @@ def test_snapshot_is_json_serializable():
     assert json.loads(json.dumps(snap))["fleet_size"] == 2
 
 
-
-# --------------------------------------------------------------- selection ---
 
 def test_tool_required_packet_never_selects_a_tool_less_target():
     """CAPABILITY NEGATIVE. Both nodes healthy; only one can call a tool."""
@@ -405,8 +397,6 @@ def test_caller_can_exclude_a_target_explicitly():
 
 
 
-# ------------------------------------------------------- live inspector path ---
-
 class _FakeInspector(lt.OllamaInspector):
     """Canned API replies, so the inspector's own logic is tested with no node.
 
@@ -540,12 +530,10 @@ def test_probe_fleet_keeps_a_dead_node_in_the_snapshot():
     }
 
 
-# ------------------------------------------------------- measured timings ---
-
 def test_applied_timings_make_selection_fitness_driven():
     """The load-bearing reason apply_timings exists.
 
-    Measured 2026-09-14: with no throughput recorded, the fitness tie-break
+    Measured: with no throughput recorded, the fitness tie-break
     falls through to ``target_id`` and a tool-required packet selects the
     2.83 tok/s ARM node over the 37.1 tok/s GPU node. Feeding the harness's
     measured decode rates back in must flip that choice — and the flip must be

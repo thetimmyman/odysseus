@@ -1,18 +1,9 @@
-"""Regression for issue #1496 — the Documents editor line-number gutter stops
-scrolling with the content near the bottom of long files (reported: a ~1250-line
-file froze the counter at row 1229).
+"""The Documents line-number gutter must keep scrolling to the bottom of long files.
 
-Root cause: the gutter uses `white-space: pre` (one row per logical line) while
-the textarea uses `white-space: pre-wrap` (long lines wrap onto extra rows), so
-the textarea's scrollable height exceeds the gutter's the moment anything wraps.
-`syncGutterScroll` used to do `gutter.scrollTop = textarea.scrollTop`, which the
-browser clamps at the gutter's smaller maximum — the numbers freeze for the whole
-final stretch. The fix maps the textarea's scroll *ratio* onto the gutter's own
-range (static/js/docGutterSync.js).
-
-`document.js` pulls in browser-only modules so it can't load under node; the pure
-mapping lives in docGutterSync.js, which is portable and tested directly here —
-same approach as tests/test_compare_js.py.
+The gutter doesn't wrap but the textarea does, so their scroll ranges differ;
+docGutterSync.js maps the textarea's scroll *ratio* onto the gutter's range
+rather than copying scrollTop (which the browser clamps). It is tested directly
+because document.js needs browser-only modules and can't load under node.
 """
 
 import json
@@ -67,10 +58,8 @@ def test_no_wrap_is_identity(node_available):
 
 
 def test_wrapped_gutter_reaches_bottom_and_never_freezes(node_available):
-    """The #1496 case: lines wrap, so the gutter range (gMax) is smaller than the
-    textarea range (taMax). The mapping must (a) reach the gutter's own bottom
-    exactly when the textarea is at its bottom, and (b) keep moving across the
-    final stretch instead of pinning early like the old raw copy did."""
+    """Wrapped lines: gMax < taMax. The gutter must reach its bottom exactly when
+    the textarea does, and keep moving across the final stretch."""
     script = textwrap.dedent("""
         const { gutterScrollTop } = await import('./static/js/docGutterSync.js');
         // textarea range 5000 (content wraps), gutter range only 4000.

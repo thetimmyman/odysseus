@@ -131,7 +131,6 @@ def _make_app_and_client():
     return app, client
 
 
-# ---------- coordinator wrap + audit ----------
 def test_coordinator_wrap_happy_path_audits_with_hmac():
     _app, client = _make_app_and_client()
     r = client.post(
@@ -229,7 +228,6 @@ def test_coordinator_audit_list_and_get_roundtrip():
     assert missing.status_code == 404
 
 
-# ---------- previews ----------
 def test_route_preview_inline_task_returns_candidates_without_persisting():
     _app, client = _make_app_and_client()
     r = client.post("/api/harness/route/preview", headers=ADMIN, json={"task": INLINE_TASK})
@@ -273,7 +271,6 @@ def test_budget_summary_shapes_periods_with_caps():
     assert body["periods"]["daily"]["premium_cap_usd"] is not None
 
 
-# ---------- policy lifecycle ----------
 def _policy(version):
     return {
         "routingPolicyVersion": version,
@@ -352,7 +349,6 @@ def test_policy_rollback_rejects_traversal(tmp_path, monkeypatch):
     assert r.status_code == 400
 
 
-# ---------- policy persistence fix (live file on the data volume) ----------
 def test_policy_seeded_from_baked_default_onto_data_volume(tmp_path, monkeypatch):
     """First read seeds the data-volume live file from the baked default; a
     later publish writes THAT file (not the baked one), so an edit persists
@@ -387,7 +383,6 @@ def test_policy_data_root_honors_env_override(tmp_path, monkeypatch):
     assert rp.data_root().endswith("/data")
 
 
-# ---------- policy validation hardening (spec PR-A) ----------
 def _valid_policy():
     """A full, valid policy (version keys only — the merge fills the rest from
     DEFAULT_POLICY); callers tweak one field to make it invalid."""
@@ -463,7 +458,6 @@ def test_policy_publish_preserves_code_only_sandbox_defaults(tmp_path, monkeypat
     assert stored["cpus"] == 2  # full sandbox shape filled from defaults
 
 
-# ---------- danger-zone gating (AUTH_ENABLED=true, real gate logic) ----------
 class TestPolicyDangerZoneGating:
     """security_admin gating on danger-zone policy edits. Runs with auth ON so
     require_security_admin/require_admin_cookie enforce for real (the disjoint
@@ -515,10 +509,8 @@ class TestPolicyDangerZoneGating:
         assert "ModelEndpoint" in r.json()["detail"]
 
     def test_rollback_to_danger_archive_forbidden_for_plain_admin(self, tmp_path, monkeypatch):
-        """Review fix #3 (HIGH): the danger-zone gate must cover ROLLBACK too. A
-        plain admin must not be able to re-instate a security_admin-gated policy
-        by rolling back to an archived snapshot of it (the gate previously lived
-        only in publish, so /policy/rollback under the admin cookie defeated it)."""
+        """The danger-zone gate must cover ROLLBACK too: a plain admin must not
+        re-instate a security_admin-gated policy from an archived snapshot."""
         _isolate_policy_paths(tmp_path, monkeypatch)
         _app, client = _make_app_and_client()
         # security_admin publishes a dangerous sandbox image, then tightens back
@@ -552,7 +544,6 @@ class TestPolicyDangerZoneGating:
         assert rb2.json()["policy"]["sandbox"]["image"] == "evil/backdoor:latest"
 
 
-# ---------- registry CRUD ----------
 def test_registry_crud_roundtrip():
     _app, client = _make_app_and_client()
 
@@ -606,7 +597,6 @@ def test_registry_delete_refused_when_runs_reference_profile():
     assert "disable" in delete.json()["detail"]
 
 
-# ---------- emergency + escalation + reliability (existing surface) ----------
 def test_emergency_override_lifecycle():
     # AUTH_ENABLED=false: require_security_admin no-ops, but the admin-cookie
     # gate still applies (exercised for real in TestAuthEnabledGating).
@@ -671,7 +661,6 @@ def test_workflow_reliability_signal_stored():
     assert len(rows) == 1
 
 
-# ---------- auth gating (AUTH_ENABLED=true, real gate code paths) ----------
 class TestAuthEnabledGating:
     """require_admin_cookie + require_security_admin run their REAL logic here:
     AUTH_ENABLED=true, stub auth_manager, header-stamped request.state."""

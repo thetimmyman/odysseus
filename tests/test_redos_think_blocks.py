@@ -1,14 +1,7 @@
 """Regression tests for ReDoS in agent_loop's `<think>...</think>` stripping.
 
-Imported for PS-602 (security subset of PS-595) from upstream Odysseus #4877,
-which fixed CodeQL `py/polynomial-redos` on the lazy `<think>.*?</think>`
-pattern in `src/agent_loop.py`. Our fork carried one compiled `_THINK_RE` plus
-an inline copy, applied with `re.sub` over a whole model response. When the
-closing delimiter is missing, the engine rescans to end-of-string from every
-`<think>` opener -> O(n^2) on attacker-influenced input.
-
-The fix replaces the regex with `_strip_think_blocks`, a forward-only linear
-scan that is byte-for-byte equivalent to the original
+A lazy `<think>.*?</think>` regex is O(n^2) when the closer is missing, so
+`_strip_think_blocks` is a forward-only linear scan, byte-for-byte equivalent to
 `re.sub(r'<think>.*?</think>', '', text, flags=DOTALL|IGNORECASE)`.
 """
 

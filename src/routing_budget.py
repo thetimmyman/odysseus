@@ -1,10 +1,7 @@
-"""src/routing_budget.py — cost estimation and hard budget-block checks for
-the model routing harness. Per architecture review: no approval-gate
-machinery for Phase 1/2 (crew_approvals.py's gate is built around pausing a
-live streaming session for a human click, which doesn't exist for a CLI
-invocation with nothing destructive to gate yet) -- both ceilings below are
-hard blocks, bypassable only via an explicit CLI override flag
-(`--allow-premium`, wired in routing_executor.py)."""
+"""Cost estimation and hard budget blocks for the routing harness.
+
+Caps are hard blocks, not approval gates; only the premium caps can be bypassed,
+via `--allow-premium`."""
 import json
 import logging
 import math
@@ -16,16 +13,10 @@ from src import config_store
 
 _log = logging.getLogger(__name__)
 
-# Last successfully-loaded caps for THIS process. Used only to avoid silently
-# raising the effective spend ceiling when the live file becomes unreadable
-# after we've already read a good one (see load_budget_config).
+# Last good caps, held so an unreadable live file never raises the ceiling.
 _last_good_caps: Optional[dict] = None
 
-# The BAKED default (tracked, human-diffable). The LIVE file no longer lives
-# here — it's seeded from this into config_store.live_path("routing_budget")
-# under the data/ volume so an in-app budget save survives a redeploy
-# (previously an edit written back to config/ was silently reverted on the
-# next image rebuild). _CONFIG_PATH is kept as the seed source only.
+# Baked seed only; the live file sits on the data/ volume so saves survive redeploys.
 _DOMAIN = "routing_budget"
 _CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "routing_budget.json"
@@ -39,10 +30,8 @@ DEFAULT_BUDGET_CONFIG = {
     "premium_weekly_max_usd": 20.0,
 }
 
-# The five caps the versioned editor owns. daily/weekly are the non-overridable
-# general ceilings; premium_* are the --allow-premium-bypassable ones;
-# monthly_max_usd is ADVISORY (validated as positive but never enforced by a
-# check_* function — the UX labels it "not enforced").
+# daily/weekly are never overridable; premium_* yield to --allow-premium;
+# monthly_max_usd is advisory and never enforced.
 _CAP_KEYS = (
     "daily_max_usd",
     "weekly_max_usd",
@@ -51,32 +40,15 @@ _CAP_KEYS = (
     "premium_weekly_max_usd",
 )
 
-# Shared with routing_engine.py's cost-based scoring so the estimate used to
-# RANK a candidate matches the actual generation cap used at call time
-# (routing_executor.py passes profile.max_output_tokens or this same
-# fallback to llm_call_with_usage) -- keeping one constant means a future
-# change to the default can't silently make ranking under- or
-# over-estimate true worst-case spend.
+# Shared by ranking and execution so estimated and actual worst-case spend agree.
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
 
 
 def load_budget_config() -> dict:
-    """Reads the LIVE budget file from the data/ volume
-    (config_store.live_path("routing_budget")), seeded on first read from the
-    baked config/routing_budget.json. Re-reads every call (no cache — the
-    versioned editor must see a publish immediately). The DEFAULT overlay
-    guarantees every cap key is present even if the live file is partial.
+    """Read the live budget file on every call (no cache), seeding it if missing.
 
-    Fail-SAFE direction (spec PR-A review, HIGH): a spend cap must never be
-    silently RAISED. DEFAULT_BUDGET_CONFIG is higher than any cap an admin
-    tightened below it, so degrading an *unreadable-but-present* live file to
-    DEFAULT would silently authorize spend the admin blocked. So:
-      - missing file  -> seed + DEFAULT (true first boot; the intended baseline).
-      - readable file -> its caps (remembered as last-known-good).
-      - present-but-unreadable -> HOLD last-known-good if this process has one;
-        only fall back to DEFAULT when we never had a good read, and log loudly.
-    The atomic writes in config_store make 'present-but-unreadable' essentially
-    external (corruption / an unmounted data volume), not self-inflicted."""
+    A spend cap must never be silently raised, so a present-but-unreadable file
+    holds the last good caps and only falls back to DEFAULT without one."""
     global _last_good_caps
     config_store.seed_if_missing(_DOMAIN, baked_default_path=_CONFIG_PATH,
                                  default_dict=DEFAULT_BUDGET_CONFIG)
@@ -98,14 +70,10 @@ def load_budget_config() -> dict:
 
 
 def validate_budget(d: dict) -> list:
-    """Fail-safe validator for a published budget. Returns [] when valid, else
-    a list of human-readable reasons (config_store.publish turns a non-empty
-    list into ValueError, which the route maps to HTTP 400 {detail:[...]}).
+    """Return reasons a budget is invalid ([] when valid).
 
-    Rules: every cap is a positive number; premium_daily <= daily and
-    premium_weekly <= weekly (a premium sub-cap above its general cap can never
-    bind); monthly is ADVISORY — validated as positive but not enforced by any
-    check_* function (the editor labels it "not enforced")."""
+    Every cap is positive, and premium caps may not exceed their general caps
+    (they could never bind)."""
     if not isinstance(d, dict):
         return ["budget config must be a JSON object"]
     reasons = []
@@ -116,10 +84,7 @@ def validate_budget(d: dict) -> list:
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             reasons.append(f"{k} must be a number")
             continue
-        # Reject NaN/Infinity: JSON allows the bare NaN/Infinity literals, and
-        # an infinite cap would make `spend >= cap` never fire (a spend cap that
-        # never blocks = fail-open). NaN is caught by `not (v > 0)` below, but
-        # +inf passes that, so screen non-finite explicitly.
+        # An infinite cap never fires, and +inf passes `v > 0`, so reject it here.
         if not math.isfinite(v):
             reasons.append(f"{k} must be a finite number")
             continue
@@ -137,9 +102,7 @@ def validate_budget(d: dict) -> list:
 
 
 def _bump_version(current) -> str:
-    """Auto-bump the server-owned version (never trust a client-supplied one):
-    increment the last dotted component of the current version, else fall back
-    to a UTC timestamp stamp."""
+    """Server-owned version bump; a client-supplied version is never trusted."""
     try:
         parts = str(current).split(".")
         parts[-1] = str(int(parts[-1]) + 1)
@@ -149,10 +112,8 @@ def _bump_version(current) -> str:
 
 
 def publish_budget(d: dict, actor: str) -> dict:
-    """Publish a new budget: take ONLY the five caps from the caller, stamp a
-    freshly server-bumped version (client version is ignored), and delegate to
-    config_store with validate_budget. Raises ValueError(reasons) on invalid
-    caps before any write. Returns the written dict."""
+    """Publish only the five caps with a server-bumped version; invalid caps raise
+    ValueError before any write."""
     current_version = load_budget_config().get("version", "1.0")
     new = {k: d.get(k) for k in _CAP_KEYS}
     new["version"] = _bump_version(current_version)
@@ -160,15 +121,11 @@ def publish_budget(d: dict, actor: str) -> dict:
 
 
 def list_budget_versions() -> list:
-    """Archived budget snapshots newest-first ([{archive_name, version, ts,
-    actor}]), for the editor's version-history list."""
     return config_store.list_versions(_DOMAIN)
 
 
 def rollback_budget(archive_name: str, actor: str) -> dict:
-    """Re-publish an archived budget snapshot (itself a logged publish).
-    Traversal-jailed inside the versions dir by config_store.rollback; the
-    republish is re-validated so a hand-corrupted archive can't go live."""
+    """Re-publish an archived snapshot, re-validated so a corrupted archive can't go live."""
     return config_store.rollback(_DOMAIN, archive_name, actor=actor,
                                  validate_fn=validate_budget)
 
@@ -194,10 +151,7 @@ def _period_spend(db, since: datetime, premium_only: bool = False) -> float:
 
 
 def check_general_budget(db, config: Optional[dict] = None) -> dict:
-    """Hard-block check against the plain daily/weekly caps -- applies to
-    EVERY candidate regardless of free/paid/premium tier, and is never
-    overridable (unlike check_premium_budget below). Returns
-    {"allowed": bool, "reason": str|None}."""
+    """Daily/weekly caps for every candidate; never overridable."""
     cfg = config or load_budget_config()
     now = datetime.utcnow()
     day_start = now - timedelta(hours=24)
@@ -215,10 +169,7 @@ def check_general_budget(db, config: Optional[dict] = None) -> dict:
 
 
 def check_premium_budget(db, config: Optional[dict] = None) -> dict:
-    """Hard-block check against the premium-specific daily/weekly caps only.
-    This is the check `--allow-premium` is meant to bypass -- callers must
-    still always call check_general_budget() too, since that one is never
-    overridable."""
+    """Premium caps only; `--allow-premium` bypasses this, never check_general_budget."""
     cfg = config or load_budget_config()
     now = datetime.utcnow()
     day_start = now - timedelta(hours=24)
@@ -235,10 +186,7 @@ def check_premium_budget(db, config: Optional[dict] = None) -> dict:
 
 
 def check_global_budget(db, profile, config: Optional[dict] = None) -> dict:
-    """Convenience wrapper combining both checks unconditionally (general
-    caps always apply; premium caps apply only when `profile.is_premium`).
-    routing_executor.py does NOT use this directly -- it calls the two
-    checks separately so `--allow-premium` can skip only the premium one."""
+    """Both checks; the executor calls them separately so it can skip only premium."""
     general = check_general_budget(db, config)
     if not general["allowed"]:
         return general
@@ -248,9 +196,7 @@ def check_global_budget(db, profile, config: Optional[dict] = None) -> dict:
 
 
 def check_task_budget(db, task, spent_so_far: float, next_estimated_cost: float) -> dict:
-    """Per-task hard-block check against RoutingTask.max_cost_usd. NULL
-    max_cost_usd means no explicit per-task cap (still subject to the
-    global/period budget in check_global_budget)."""
+    """Per-task cap from RoutingTask.max_cost_usd; NULL means no per-task cap."""
     if task.max_cost_usd is None:
         return {"allowed": True, "reason": None}
     from decimal import Decimal
@@ -264,7 +210,6 @@ def check_task_budget(db, task, spent_so_far: float, next_estimated_cost: float)
 
 
 def spend_summary(db, since: Optional[datetime] = None) -> dict:
-    """Used by `odysseus budget status` / `odysseus summarize`."""
     cfg = load_budget_config()
     now = datetime.utcnow()
     day_start = now - timedelta(hours=24)

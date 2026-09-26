@@ -25,16 +25,11 @@ class _WriteBody(BaseModel):
 
 
 def _confined(request: Request, session_id: Optional[str], raw_path=None):
-    """Return (owner, root, target_realpath). target == root when raw_path is None.
-
-    Owner-checked (effective_user, bearer-aware) + cross-owner 404
-    (_verify_session_owner) + root-confined via the agent's own _resolve_tool_path.
-    """
+    """Return (owner, root, target_realpath); target == root when raw_path is None."""
     if not session_id or not str(session_id).strip():
         raise HTTPException(400, "session_id is required")
     owner = effective_user(request)                          # bearer-aware owner
-    # PersonalOS (2026-06-10): the file explorer is a developer surface - gate on
-    # the same "developer tools" privilege as bash/edit_file (admins always pass).
+    # The file explorer is a developer surface: same privilege as bash/edit_file.
     require_privilege(request, "can_use_bash")
     _verify_session_owner(request, session_id)               # 404 cross-owner (DB + ghost)
     root = _get_session_project_root(session_id, owner)      # None on missing/cross-owner/not-dir
@@ -52,8 +47,7 @@ def _confined(request: Request, session_id: Optional[str], raw_path=None):
 def setup_project_files_routes():
     router = APIRouter(prefix="/api/project-files", tags=["project-files"])
 
-    # NOTE: `def` (sync), not `async def` — os.scandir / file IO is blocking and
-    # FastAPI offloads sync routes to a threadpool (root may be an NFS mount).
+    # Sync `def`: file IO blocks, so FastAPI runs this in a threadpool.
     @router.get("/tree")
     def project_files_tree(
         request: Request,
@@ -109,9 +103,8 @@ def setup_project_files_routes():
         if os.path.isdir(resolved):
             raise HTTPException(400, "Path is a directory")
         try:
-            # Single open + fstat + bounded read: the fd pins one inode, so a
-            # concurrent /write os.replace() can't swap the file under us (no
-            # TOCTOU), and we never read more than MAX_READ_BYTES.
+            # One fd + fstat + bounded read: pins the inode against a concurrent
+            # os.replace() and never reads more than MAX_READ_BYTES.
             with open(resolved, "rb") as f:
                 if os.fstat(f.fileno()).st_size > MAX_READ_BYTES:
                     raise HTTPException(413, "File too large to open in the editor")

@@ -1,10 +1,7 @@
 """vCard parsing must unfold RFC 6350 folded lines.
 
-CardDAV servers fold logical lines longer than 75 octets onto continuation
-lines that begin with a space/tab. _parse_vcards split on raw newlines
-without unfolding, so a folded EMAIL/FN line lost its continuation (a long
-address like ...@exampledomain<fold>.com was stored as ...@exampledomain),
-silently corrupting the contact.
+CardDAV servers fold lines longer than 75 octets onto continuation lines that
+begin with a space/tab; splitting on raw newlines would truncate EMAIL/FN values.
 """
 from routes.contacts_routes import _parse_vcards
 
