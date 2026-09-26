@@ -65,9 +65,9 @@ READY_MARKERS = ("ready in", "ready -", "✓ ready", "started server", "compiled
 # Default-DENY env for the previewed child. A previewed repo runs UNTRUSTED code
 # (its next.config.js, build scripts, and process.env are all readable by repo
 # code), so the child env is an explicit ALLOWLIST — never a denylist. A denylist
-# that misses a prefix leaks live secrets: the 2026-06-05 security review found
-# DATA_BRAVE_API_KEY/GOOGLE_API_KEY/SERPER_API_KEY/TAVILY_API_KEY/HUGGING_FACE_HUB_TOKEN
-# all slipped past the old prefix list. next/npm need only PATH+HOME+a few locale
+# that misses a prefix leaks live secrets (keys such as DATA_BRAVE_API_KEY,
+# GOOGLE_API_KEY, SERPER_API_KEY, TAVILY_API_KEY and HUGGING_FACE_HUB_TOKEN do not
+# share a common prefix). next/npm need only PATH+HOME+a few locale
 # vars; the app reads its own NEXT_PUBLIC_*/secrets from its .env* files on disk.
 _ENV_ALLOWLIST = {
     "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM",
@@ -576,7 +576,7 @@ def app_detail(app_id: str) -> dict:
 
 
 # --- masked .env.local editor (WRITE-ONLY; values never returned or logged) --
-# THREAT MODEL (red-teamed 2026-06-05): the previewed app runs as the SAME uid as
+# THREAT MODEL: the previewed app runs as the SAME uid as
 # this process, in the very directory we write. It is therefore an ACTIVE
 # adversary that can swap d/.env.local for a symlink (to /app/.env, a sibling
 # app's .env.local, ~/.ssh, ...) at any instant. So the entire read-modify-write
@@ -756,6 +756,9 @@ def env_clear(app_id: str, key: str) -> dict:
 # only LOCATORS (k3s ns/secret/key or a Vaultwarden item id/field) — never values.
 _SSH_MINIPC = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "minipc"]
 _VAULT_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")   # injection-safe locator token
+# Placeholder path of the Vaultwarden fetch helper on the ssh target; a real
+# deployment overrides it with DEV_PREVIEW_VW_HELPER.
+_DEFAULT_VW_HELPER = "/usr/local/bin/dev-preview-vault-fetch"
 
 
 def _vault_map(app_id: str) -> dict:
@@ -825,9 +828,10 @@ def _fetch_vaultwarden(loc: dict) -> str:
     if not _VAULT_TOKEN_RE.match(item) or not _VAULT_TOKEN_RE.match(field):
         raise ValueError("invalid vaultwarden locator (item_id/field)")
     # Fixed ABSOLUTE remote path — no `$HOME`/`~` (no reliance on remote shell
-    # expansion). An operator override must be a plain absolute path with NO shell
-    # metacharacters, so the helper invocation can't be turned into injection.
-    helper = os.environ.get("DEV_PREVIEW_VW_HELPER", "/home/timmyman/dev-preview-vault-fetch.sh")
+    # expansion). The operator sets the real path via DEV_PREVIEW_VW_HELPER; it
+    # must be a plain absolute path with NO shell metacharacters, so the helper
+    # invocation can't be turned into injection.
+    helper = os.environ.get("DEV_PREVIEW_VW_HELPER") or _DEFAULT_VW_HELPER
     if not re.match(r"^/[A-Za-z0-9._/-]+$", helper):
         raise ValueError("invalid DEV_PREVIEW_VW_HELPER path")
     val = _ssh_fetch(f"{helper} {item} {field}")

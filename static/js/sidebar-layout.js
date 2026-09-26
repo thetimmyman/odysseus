@@ -566,8 +566,8 @@ function _initChatSwipeToOpenSidebar() {
   document.addEventListener('touchcancel', reset, { passive: true, capture: true });
 }
 
-// DISABLED (PersonalOS, 2026-07-09): the swipe-from-screen-edge gesture that
-// opened the sidebar fought iOS Safari's back-swipe and fired accidentally.
-// Left defined but no longer wired, per Tim's request. The sidebar still opens
-// via the hamburger + icon rail; swipe-to-CLOSE an open sidebar is unaffected.
+// DISABLED: the swipe-from-screen-edge gesture that opened the sidebar fights
+// iOS Safari's back-swipe and fires accidentally. Left defined but not wired.
+// The sidebar still opens via the hamburger + icon rail; swipe-to-CLOSE an
+// open sidebar is unaffected.
 void _initChatSwipeToOpenSidebar;
