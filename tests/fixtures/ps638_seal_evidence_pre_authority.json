@@ -1,7 +1,7 @@
 {
   "captured_from_sha": "7afd55bad7034d789c98be4ee6e9ebcfcc97cdba",
   "decision_receipt_has_authority_key": false,
-  "decision_receipt_hash": "2dad20bf04caf297dada29dfd82719d168722b2ec8de52f2e7fada77a6332796",
-  "note": "Captured from a CLEAN checkout of thetimmyman/odysseus origin/main @ 7afd55bad7034d789c98be4ee6e9ebcfcc97cdba (BEFORE the PS-664 / DR-01+DR-09 'authority' field existed anywhere), using the repo's own tests/test_dispatch_boundary.py _db/_seed/_resolve/_sealed helpers unmodified, exactly as PS-664 review round 2 (F-1) required. Used by tests/test_ps638_authority_hash_stability.py to pin seal.evidence_hash for an authority-free dispatch: it must be byte-identical after the fix, proving the fix does not merely move the defect around, only removes it.",
-  "seal_evidence_hash": "e855bcd0c80b44eb8205d19e235d233a1b4d87315cdeddb1318181c98bd3fb1e"
+  "decision_receipt_hash": "6f7fe4b277f2a2a3b11bf825376ea57502d54b4f216e94447d6b43c537063ca7",
+  "note": "Frozen output captured from a clean checkout of origin/main @ 7afd55bad7034d789c98be4ee6e9ebcfcc97cdba (before the 'authority' field existed anywhere), using the repo's own tests/test_dispatch_boundary.py _db/_seed/_resolve/_sealed helpers with synthetic endpoint values. Used by tests/test_ps638_authority_hash_stability.py to pin seal.evidence_hash for an authority-free dispatch: it must stay byte-identical, proving an absent authority block does not move the sealed evidence hash.",
+  "seal_evidence_hash": "ad9a3013209ab8991cfd6d8da2703be17b71626cb2bc329e99e3d9cde92cda37"
 }

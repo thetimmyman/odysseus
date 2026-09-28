@@ -29,7 +29,7 @@ from src.provider_capacity import (AuthorizationClass, CapacityState, Entitlemen
                                    make_capacity_receipt)
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
-PROFILE_ID = "rtx4500-ollama-qwen38-27b"
+PROFILE_ID = "sim-gpu-ollama-qwen38-27b"
 POLICY = dr.policy_snapshot(policy={"routingPolicyVersion": "1.2",
                                     "remoteSensitivityCeiling": "confidential"})
 
@@ -40,13 +40,13 @@ IMPLEMENTER_CAPS = frozenset({
 
 def profile(**overrides) -> dr.ExecutionTargetProfile:
     fields = {
-        "target_id": "local-rtx4500", "profile_id": PROFILE_ID, "provider": "ollama",
-        "host": "minipc", "runtime_kind": "ollama", "runtime_version": "0.32.11",
+        "target_id": "local-sim-gpu", "profile_id": PROFILE_ID, "provider": "ollama",
+        "host": "gpu-host", "runtime_kind": "ollama", "runtime_version": "0.32.11",
         "model": "qwen3.8:27b", "model_digest": "d94d9646", "backend": "cuda",
         "endpoint_url": "http://127.0.0.1:11434/v1",
         "locality": dr.LOCALITY_LOCAL,
         "roles": frozenset({dr.ROLE_IMPLEMENTER, dr.ROLE_REPAIR}),
-        "tools": frozenset({"write_file"}), "network_policy": "tailnet-loopback",
+        "tools": frozenset({"write_file"}), "network_policy": "private-loopback",
         "budget_class": "dev", "cost_rank": 0,
     }
     fields.update(overrides)
@@ -56,9 +56,9 @@ def profile(**overrides) -> dr.ExecutionTargetProfile:
 def receipt(**overrides) -> dr.LegacyCapabilityView:
     fields = {
         "receipt_id": "cap-rtx-1", "profile_id": PROFILE_ID,
-        "target_id": "local-rtx4500", "capabilities": IMPLEMENTER_CAPS,
+        "target_id": "local-sim-gpu", "capabilities": IMPLEMENTER_CAPS,
         "exactness": dr.EXACTNESS_EXACT, "observed_at": "2026-09-15T11:00:00+00:00",
-        "ttl_s": 86400, "healthy": True, "host": "minipc",
+        "ttl_s": 86400, "healthy": True, "host": "gpu-host",
         "runtime_version": "0.32.11", "model_digest": "d94d9646",
     }
     fields.update(overrides)
@@ -85,7 +85,7 @@ def request(**overrides) -> dr.RoutingRequest:
     fields = {
         "domain": "general_swe", "role": dr.ROLE_IMPLEMENTER, "run_id": "run-1",
         "packet_id": "P-1", "execution_package_hash": "pkg-hash-1",
-        "required_tools": ("write_file",), "network_policy": "tailnet-loopback",
+        "required_tools": ("write_file",), "network_policy": "private-loopback",
         "budget_class": "dev", "write_scope": ("src/thing.py",),
     }
     fields.update(overrides)
@@ -209,8 +209,8 @@ def test_the_receipt_carries_everything_the_ticket_requires():
     assert set(kwargs["requested_capabilities"]) == IMPLEMENTER_CAPS
     assert kwargs["policy_ref"].startswith("routing_policy@1.2+sha256:")
     assert kwargs["decided_by"] == dr.DECIDED_BY_POLICY == "ps605_policy"
-    assert kwargs["selected_target_id"] == "local-rtx4500"
-    assert kwargs["selected_host"] == "minipc"
+    assert kwargs["selected_target_id"] == "local-sim-gpu"
+    assert kwargs["selected_host"] == "gpu-host"
     assert kwargs["selected_model"] == "qwen3.8:27b"
     assert kwargs["selected_runtime_kind"] == "ollama"
     assert kwargs["selected_runtime_version"] == "0.32.11"
@@ -218,7 +218,7 @@ def test_the_receipt_carries_everything_the_ticket_requires():
     assert kwargs["selected_backend"] == "cuda"
     assert kwargs["granted_tools"] == ("write_file",)
     assert kwargs["granted_write_scope"] == ("src/thing.py",)
-    assert kwargs["network_policy"] == "tailnet-loopback"
+    assert kwargs["network_policy"] == "private-loopback"
     assert kwargs["decided_at"] == NOW.isoformat()
     assert kwargs["reason"].startswith(dr.REASON_SELECTED_DETERMINISTIC)
     assert kwargs["capability_receipt_refs"] == (receipt().receipt_hash,)
@@ -285,7 +285,7 @@ def test_the_same_inputs_produce_the_same_decision_hash():
     assert first.decision_hash == second.decision_hash
     # Same candidate SET, reversed input order: the record is canonical, so the
     # hash and the chosen profile are identical.
-    other = profile(target_id="local-rtx4500-b", profile_id="rtx4500-b-vulkan",
+    other = profile(target_id="local-sim-gpu-b", profile_id="sim-gpu-b-vulkan",
                     backend="vulkan", cost_rank=1)
     other_receipt = receipt(receipt_id="cap-rtx-b", profile_id=other.profile_id,
                             target_id=other.target_id)
@@ -343,7 +343,7 @@ def test_the_selected_target_is_pinned_and_the_pin_is_complete():
                              profile()],
                    receipts=[receipt()], decision_id="dec-1")
     assert other.selected_profile.profile_id == PROFILE_ID
-    assert decision.pin()["target_id"] == "local-rtx4500"
+    assert decision.pin()["target_id"] == "local-sim-gpu"
 
 
 def test_sensitive_local_only_work_fails_closed_to_hosted():
@@ -394,7 +394,7 @@ def test_ms_r1_can_never_route_as_an_inference_target():
 
 
 def test_an_approximate_profile_cannot_satisfy_exact_intent():
-    approx = profile(profile_id="rtx4500-qwen-ream-60pct",
+    approx = profile(profile_id="sim-gpu-qwen-ream-60pct",
                      exactness=dr.EXACTNESS_APPROXIMATE)
     with pytest.raises(dr.RoutingRefused) as err:
         select(profiles=[approx],
@@ -431,12 +431,12 @@ def test_stale_and_unhealthy_receipts_are_ineligible():
 
 def test_a_receipt_must_belong_to_the_profile_it_qualifies():
     """A receipt for the SAME target but a different PROFILE is not a receipt."""
-    other_profile = profile(profile_id="rtx4500-vulkan-qwen38-27b",
+    other_profile = profile(profile_id="sim-gpu-vulkan-qwen38-27b",
                             backend="vulkan")
     with pytest.raises(dr.RoutingRefused) as err:
         select(profiles=[other_profile],
                receipts=[receipt(profile_id=PROFILE_ID,
-                                 target_id="local-rtx4500")])
+                                 target_id="local-sim-gpu")])
     assert err.value.code == dr.REFUSED_RECEIPT_MISMATCH
     assert err.value.assessments[0].rule == dr.REFUSED_RECEIPT_MISMATCH
     # A receipt for a different TARGET entirely is simply absent.
@@ -471,7 +471,7 @@ def test_tool_network_budget_and_resource_filters_bind():
         select(profiles=[profile(cost_rank=3)])
     assert err.value.code == dr.REFUSED_BUDGET
     with pytest.raises(dr.RoutingRefused) as err:
-        select(resources={"local-rtx4500": {"available": False,
+        select(resources={"local-sim-gpu": {"available": False,
                                             "reason": "gtt is held by load"}})
     assert err.value.code == dr.REFUSED_RESOURCE
 
@@ -485,7 +485,7 @@ def test_a_fallback_must_satisfy_the_same_policy_as_the_preferred_candidate():
                      endpoint_url="https://openrouter.ai/api/v1", credential_sha256="a" * 64,
                      roles=frozenset({dr.ROLE_IMPLEMENTER}),
                      tools=frozenset({"write_file"}),
-                     network_policy="tailnet-loopback")
+                     network_policy="private-loopback")
     hosted_receipt = receipt(receipt_id="cap-or-1", profile_id="or-v4pro",
                              target_id="openrouter-v4pro", host="api.openrouter.ai")
     # The preferred local candidate's receipt is stale, so it is ineligible.
@@ -519,7 +519,7 @@ def test_a_local_only_request_cannot_fall_back_to_hosted():
                      provider="openrouter", host="api.openrouter.ai",
                      locality=dr.LOCALITY_HOSTED, budget_class="sensitive",
                      cost_rank=1, tools=frozenset({"write_file"}),
-                     network_policy="tailnet-loopback")
+                     network_policy="private-loopback")
     stale = receipt(observed_at="2026-09-13T00:00:00+00:00", ttl_s=3600)
     with pytest.raises(dr.RoutingRefused) as err:
         select(request(domain="finance", budget_class="sensitive"),

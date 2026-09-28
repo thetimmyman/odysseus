@@ -95,7 +95,7 @@ def test_universal_wrapper_instructs_untrusted_handling():
     ("http://127.0.0.1:8080/v1", True),
     ("http://localhost:11434", True),
     ("http://host.docker.internal:11434", True),
-    ("http://192.168.1.130:9000/v1", True),
+    ("http://10.0.0.10:9000/v1", True),
     ("http://framework:8080/v1", True),
     ("https://openrouter.ai/api/v1", False),
     ("https://api.anthropic.com/v1", False),
