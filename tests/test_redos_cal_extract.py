@@ -1,14 +1,8 @@
 r"""Regression test for ReDoS in the calendar-extract fallback regex.
 
-CodeQL `py/redos` (#198) flagged the inline array-matcher in
-`email_pollers.py` that recovers a `[{"action": ...}, ...]` JSON array from
-raw LLM output (influenced by attacker-supplied email bodies). The original
-pattern used `[^[\]]*?` lazy runs inside a `(...)*` repetition, which
-backtracks *exponentially* on inputs like `[{"action"},{` + `}},{{` * N.
-
-The regex is now a module-level constant so it can be pinned here. These tests
-assert it (a) still extracts well-formed action arrays and (b) returns
-promptly on the adversarial input that hung the old pattern.
+The `email_pollers.py` array matcher runs over LLM output influenced by
+attacker-supplied email bodies. It must still extract well-formed action arrays
+and stay linear on nested-repetition adversarial input.
 """
 
 import time
@@ -35,14 +29,13 @@ def test_no_array_returns_no_match():
 
 
 def test_bracket_in_string_value_still_extracts():
-    # The old `[^[\]]` class bailed on a '[' inside a value and matched nothing;
-    # the linear `[^{}]` form correctly recovers the array.
+    # A '[' inside a value must not stop the `[^{}]` form recovering the array.
     s = '[{"action":"add","title":"Meeting [urgent]","start":"x"}]'
     assert _matches(s) == [s]
 
 
 def test_adversarial_input_is_fast():
-    evil = '[{"action"},{' + '}},{{' * 100_000  # exploded the old exponential pattern
+    evil = '[{"action"},{' + '}},{{' * 100_000  # exponential for a nested-lazy pattern
     start = time.perf_counter()
     _CAL_ACTION_ARRAY_RE.search(evil)
     dt = time.perf_counter() - start

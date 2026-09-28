@@ -1,13 +1,8 @@
-"""PS-638 — EvidencePackage validator: the 15 required fail-closed rejections.
+"""EvidencePackage validator: the required fail-closed rejections.
 
-Each negative case is expressed as a realistic MIS-AUTHORING — a package built
-the way a careless producer would build it — and then sealed properly. That
-ordering matters: a case that only trips the package hash would prove the hash
-works, not that the rule works. So every fixture below is internally consistent
-and still rejected for one specific, named reason.
-
-``test_the_positive_fixture_is_verified`` is the control: without it, a validator
-that rejected everything would pass this file.
+Each negative case is a realistic mis-authoring that is then sealed properly, so
+it is rejected by the named semantic rule rather than by the package hash.
+``test_the_positive_fixture_is_verified`` is the control.
 """
 import hashlib
 import subprocess
@@ -248,7 +243,6 @@ def _apply_edits(payload, package_payload, opts):
     return payload
 
 
-# =============================================================== the control ===
 def test_the_positive_fixture_is_verified(repo):
     """Without this, a validator that rejected everything would pass this file."""
     payload, _source = make_run(repo)
@@ -270,8 +264,6 @@ def test_the_positive_fixture_is_verified_against_its_own_source(repo):
     assert result.ok is True, result.explain()
 
 
-# ==================================================== the 15 required cases ===
-# 1. missing / ambiguous source identity
 def test_missing_source_base_sha_is_rejected(repo):
     payload, _ = make_run(repo, drop_base_sha=True)
     result = validate_evidence_package(payload)
@@ -279,7 +271,6 @@ def test_missing_source_base_sha_is_rejected(repo):
     assert result.has(SOURCE_IDENTITY_MISSING_OR_AMBIGUOUS), result.explain()
 
 
-# 2. writable package missing interface
 def test_a_writable_package_with_no_interface_is_rejected(repo):
     payload, _ = make_run(repo, drop_interface=True)
     result = validate_evidence_package(payload)
@@ -287,7 +278,6 @@ def test_a_writable_package_with_no_interface_is_rejected(repo):
     assert result.has(WRITABLE_PACKAGE_MISSING_INTERFACE), result.explain()
 
 
-# 3. interface changed after packet sealing
 def test_an_interface_changed_after_sealing_is_rejected(repo):
     payload, _ = make_run(repo, bend_interface=True)
     result = validate_evidence_package(payload)
@@ -295,7 +285,6 @@ def test_an_interface_changed_after_sealing_is_rejected(repo):
     assert result.has(INTERFACE_CHANGED_AFTER_SEALING), result.explain()
 
 
-# 4. context projection does not contain the sealed interface
 def test_a_context_without_the_sealed_interface_is_rejected(repo):
     payload, _ = make_run(repo, interface_in_context=False)
     result = validate_evidence_package(payload)
@@ -320,7 +309,6 @@ def test_an_attempt_with_no_rendered_context_is_rejected(repo):
     assert result.has(RENDERED_CONTEXT_MISSING), result.explain()
 
 
-# 5. artifact hash mismatch
 def test_an_artifact_hash_mismatch_is_rejected(repo):
     payload, _ = make_run(repo, artifact_digest_override="0" * 64)
     result = validate_evidence_package(payload)
@@ -335,7 +323,6 @@ def test_an_unretrievable_artifact_is_rejected(repo):
     assert result.has(ARTIFACT_UNAVAILABLE), result.explain()
 
 
-# 6. verifier identity / hash mismatch
 def test_a_verifier_digest_that_is_not_the_sealed_one_is_rejected(repo):
     payload, _ = make_run(repo, verifier_digest="f" * 64)
     result = validate_evidence_package(payload)
@@ -353,7 +340,6 @@ def test_a_verifier_that_was_never_planned_is_rejected(repo):
     assert result.has(VERIFIER_IDENTITY_MISMATCH), result.explain()
 
 
-# 7. claimed PASS with a non-zero required verifier result
 def test_a_recorded_pass_over_a_nonzero_exit_code_is_rejected(repo):
     payload, _ = make_run(repo, exit_code=1, tests_failed=1,
                           recorded_outcome="PASS")
@@ -385,7 +371,6 @@ def test_an_incomplete_capture_cannot_claim_a_pass(repo):
     assert states["deterministic_verification"] != "SATISFIED"
 
 
-# 8. missing required negative control
 def test_a_declared_negative_control_that_never_ran_is_rejected(repo):
     payload, _ = make_run(repo, control=False)
     result = validate_evidence_package(payload)
@@ -400,7 +385,6 @@ def test_a_negative_control_that_did_not_discriminate_is_rejected(repo):
     assert result.has(MISSING_REQUIRED_NEGATIVE_CONTROL), result.explain()
 
 
-# 9. actual write outside authorized scope
 def test_a_write_outside_the_authorized_scope_is_rejected(repo):
     payload, _ = make_run(repo, actual_write_set=(ARTIFACT, "src/elsewhere.py"))
     result = validate_evidence_package(payload)
@@ -408,7 +392,6 @@ def test_a_write_outside_the_authorized_scope_is_rejected(repo):
     assert result.has(WRITE_OUTSIDE_AUTHORIZED_SCOPE), result.explain()
 
 
-# 10. execution target differs from dispatch authorization
 def test_an_attempt_on_an_unauthorized_target_is_rejected(repo):
     payload, _ = make_run(repo, target_id="local-msr1", host="msr1")
     result = validate_evidence_package(payload)
@@ -423,7 +406,6 @@ def test_an_attempt_citing_an_unknown_dispatch_receipt_is_rejected(repo):
     assert result.has(DISPATCH_TARGET_MISMATCH), result.explain()
 
 
-# 11. source changes after verification
 def test_a_source_that_moved_after_verification_is_rejected(repo):
     payload, source = make_run(repo)
     (repo / "src" / "thing.py").write_text("def thing(graph):\n    return [1]\n")
@@ -462,7 +444,6 @@ def test_verifications_that_disagree_about_their_tree_are_rejected(repo):
     assert result.has(SOURCE_CHANGED_AFTER_VERIFICATION), result.explain()
 
 
-# 12. retry history omitted to make a final result look cleaner
 def test_attempts_that_skip_the_first_are_rejected(repo):
     payload, _ = make_run(repo, attempts=(2,))
     result = validate_evidence_package(payload)
@@ -492,7 +473,6 @@ def test_contiguous_attempts_are_accepted(repo):
     assert not result.has(RETRY_HISTORY_OMITTED), result.explain()
 
 
-# 13. claimed pre-existing failure without baseline proof
 def test_a_preexisting_claim_without_a_baseline_is_rejected(repo):
     payload, _ = make_run(repo, exit_code=1, tests_failed=1,
                           failure_fingerprint="abc123",
@@ -524,7 +504,6 @@ def test_a_preexisting_claim_with_a_matching_baseline_is_not_rejected(repo):
     assert not result.has(PREEXISTING_FAILURE_WITHOUT_BASELINE), result.explain()
 
 
-# 14. worker-authored-only evidence satisfying an independent-proof requirement
 def test_worker_authored_proof_cannot_close_an_independent_requirement(repo):
     payload, _ = make_run(repo, proof_class="WORKER_AUTHORED")
     result = validate_evidence_package(payload)
@@ -534,7 +513,6 @@ def test_worker_authored_proof_cannot_close_an_independent_requirement(repo):
     assert states["deterministic_verification"] == "FAILED"
 
 
-# 15. prohibited secret-shaped fixture leaking into the package
 def test_a_secret_shaped_fixture_in_the_projection_is_rejected(repo):
     payload, _ = make_run(repo, context_secret=True)
     result = validate_evidence_package(payload)
@@ -564,7 +542,6 @@ def test_a_secret_shaped_value_in_the_package_payload_is_rejected(repo):
     assert result.has(SECRET_SHAPED_FIXTURE_LEAK), result.explain()
 
 
-# ================================================== further fail-closed rules ===
 def test_a_package_edited_after_sealing_is_rejected(repo):
     payload, _ = make_run(repo, tamper_after_seal=True)
     result = validate_evidence_package(payload)

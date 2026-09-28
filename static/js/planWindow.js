@@ -1,8 +1,4 @@
-// static/js/planWindow.js
-//
-// Plan mode: show a proposed plan in a draggable, side-dockable window —
-// reusing the same modal + makeWindowDraggable framework the calendar, email,
-// and document panels use. Approving from here runs the plan with full tools.
+// Plan mode window; approving runs the plan with full tools.
 
 import uiModule from './ui.js';
 import markdownModule from './markdown.js';
@@ -35,7 +31,6 @@ function _getModal() {
     closePlanWindow();
     if (typeof cb === 'function') cb();
   });
-  // Draggable + side-dockable, same one-call helper as the other windows.
   const content = _modal.querySelector('.modal-content');
   const header = _modal.querySelector('.modal-header');
   if (content && header) makeWindowDraggable(_modal, { content, header });

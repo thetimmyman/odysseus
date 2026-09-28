@@ -1,31 +1,9 @@
-"""src/pi_runtime.py — Odysseus execution adapter for Pi Coding.
+"""Odysseus execution adapter for Pi, the only boundary between the two planes.
 
-This is the *only* boundary between the two planes. Odysseus decides what work
-should happen, who should do it and under what policy/budget; this adapter hands
-the task to Pi and reports back what Pi did.
-
-    execution = pi_runtime.start(task=..., worktree=..., model=..., constraints=...)
-    events    = pi_runtime.events(execution["execution_id"])
-    pi_runtime.send(execution["execution_id"], message)
-    pi_runtime.cancel(execution["execution_id"])
-    result    = pi_runtime.result(execution["execution_id"])
-
-Transport is Pi's supported programmatic interface: RPC mode
-(``pi --mode rpc``), strict JSON-lines over stdin/stdout, verified against the
-installed ``@earendil-works/pi-coding-agent`` 0.74.2 protocol. No terminal
-scraping, no in-process Node bridge.
-
-Deliberate non-responsibilities (see the architectural boundary):
-
-  * Pi owns the inner coding loop, reasoning/tool rounds, repository
-    exploration, filesystem/shell/git operations and its own context lifecycle
-    (including compaction). This adapter never injects Odysseus's
-    ``context_compactor`` into a Pi run.
-  * Pi never gets Odysseus routing/budget/policy authority — it is launched with
-    a minimal environment (``pi_config.pi_environment``) and a models.json that
-    lists only the local execution model.
-  * A failure is reported as an explicit terminal state. There is no silent
-    re-route to another model/runtime in this integration.
+Transport is Pi RPC mode (``pi --mode rpc``, JSON lines over stdin/stdout).
+Pi owns its inner loop and context lifecycle, so no Odysseus compaction is
+injected. Pi gets no routing/budget/policy authority, and failures are explicit
+terminal states with no silent re-route.
 """
 from __future__ import annotations
 
@@ -52,21 +30,16 @@ from src.pi_executions import (
 
 logger = logging.getLogger(__name__)
 
-#: Outer execution wall-clock ceiling (Odysseus-side limit, NOT a context
-#: manager). Pi's inner loop is unconstrained by us up to this bound.
+#: Outer wall-clock ceiling only; not a context manager.
 DEFAULT_MAX_SECONDS = int(os.environ.get("ODYSSEUS_PI_MAX_SECONDS", "5400"))
 
-#: How long to wait for a command response before declaring the runtime wedged.
 RESPONSE_TIMEOUT_S = float(os.environ.get("ODYSSEUS_PI_RESPONSE_TIMEOUT_S", "30"))
 
-#: Grace period after ``abort`` before the process is killed outright.
 CANCEL_GRACE_S = float(os.environ.get("ODYSSEUS_PI_CANCEL_GRACE_S", "10"))
 
-#: Grace window after an ``agent_end`` before it is treated as the end of the
-#: WHOLE run. Pi 0.85.1 ends EVERY attempt with ``agent_end`` and then emits
-#: either ``auto_retry_start`` (another attempt) or ``agent_settled`` (run done).
-#: When neither follows, this is an older Pi where ``agent_end`` alone ends the
-#: run. This is a protocol-evidence fallback, not a version check.
+#: Grace after ``agent_end`` before it counts as the whole run's end. Newer Pi
+#: follows every attempt's ``agent_end`` with ``auto_retry_start`` or
+#: ``agent_settled``; if neither arrives, ``agent_end`` alone ended the run.
 SETTLE_GRACE_S = float(os.environ.get("ODYSSEUS_PI_SETTLE_GRACE_S", "1.0"))
 
 
@@ -75,13 +48,8 @@ def _now() -> float:
 
 
 def find_pi_session_file(session_id: Optional[str], session_dir: Optional[str] = None) -> Optional[str]:
-    """Locate Pi's session JSONL for ``session_id`` under the session dir.
-
-    Pi stores sessions as ``<timestamp>_<session-id>.jsonl`` in its session
-    directory (verified against 0.74.2). Looking the file up on disk is
-    deterministic even when a run ends faster than a ``get_session_stats`` round
-    trip — the file is what makes resume possible.
-    """
+    """Locate ``<timestamp>_<session-id>.jsonl``; a disk lookup works even when a
+    run ends before a ``get_session_stats`` round trip."""
     if not session_id:
         return None
     root = session_dir or pi_config.session_dir()
@@ -94,9 +62,7 @@ def find_pi_session_file(session_id: Optional[str], session_dir: Optional[str] =
     return None
 
 
-#: Substrings in Pi's own diagnostics that indicate a provider/model error. Pi
-#: merges stderr into the RPC stream, so the adapter captures these lines in
-#: ``PiExecution.stderr_tail`` as non-JSON output.
+#: Provider/model error markers in Pi's stderr, which Pi merges into the RPC stream.
 _PROVIDER_ERROR_HINTS = (
     "not found", "404", "unauthorized", "authentication", "api key",
     "invalid model", "no such model", "model not available", "provider error",
@@ -104,7 +70,6 @@ _PROVIDER_ERROR_HINTS = (
 
 
 def _stderr_provider_error(lines: List[str]) -> bool:
-    """True when Pi's captured diagnostics show a provider/model error."""
     blob = "\n".join(lines).lower()
     return any(hint in blob for hint in _PROVIDER_ERROR_HINTS)
 
@@ -120,12 +85,7 @@ def _message_error(message: Any) -> Optional[str]:
 
 
 def _raw_error(raw: Dict[str, Any]) -> Optional[str]:
-    """Provider/model error text Pi attached to an event, if any.
-
-    Pi 0.85.1 carries ``stopReason: "error"`` + ``errorMessage`` on the failed
-    attempt's assistant message (and on ``agent_end``). This is protocol-native
-    evidence that does not depend on parsing stderr text.
-    """
+    """Provider/model error text from ``stopReason: "error"`` + ``errorMessage``, if any."""
     err = _message_error(raw.get("message"))
     if err:
         return err
@@ -139,12 +99,10 @@ def _raw_error(raw: Dict[str, Any]) -> Optional[str]:
 
 
 class WorktreeMismatch(RuntimeError):
-    """Pi was not (or would not be) operating in the worktree Odysseus assigned.
+    """Pi was not in the assigned worktree; raised before the prompt is sent.
 
-    Raised BEFORE the task prompt is sent: fail closed rather than let a coding
-    agent run against a stale, remembered, or foreign repository state. The
-    execution record is persisted with ``status == "worktree_mismatch"`` and
-    ``worktree_verified == False`` so the refusal is auditable.
+    Fails closed against stale or foreign repository state; the record is kept
+    as ``worktree_mismatch`` for audit.
     """
 
     def __init__(self, reason: str, *, execution_id: Optional[str] = None) -> None:
@@ -154,13 +112,9 @@ class WorktreeMismatch(RuntimeError):
 
 
 def worktree_git_state(worktree: Optional[str]) -> Dict[str, Any]:
-    """Read-only git snapshot of the assigned worktree.
+    """Best-effort, read-only git snapshot for reporting; git errors yield empty fields.
 
-    Gives Odysseus the repository identity (toplevel), branch, base commit and
-    the final diff summary without ever committing or pushing (the routing
-    harness' hard rule). Best-effort on the reporting fields: any git failure
-    degrades to empty fields rather than blocking a run. Callers whose job is to
-    *enforce* assignment use :func:`worktree_identity`, which fails closed.
+    Enforcement uses :func:`worktree_identity`, which fails closed.
     """
     out: Dict[str, Any] = {
         "branch": None, "head": None, "toplevel": None, "is_repo": False,
@@ -208,12 +162,10 @@ def worktree_git_state(worktree: Optional[str]) -> Dict[str, Any]:
 
 
 def worktree_identity(worktree: Optional[str]) -> Dict[str, Any]:
-    """Assert the assigned worktree is a usable git work tree; return identity.
+    """Return the worktree's git identity, or raise :class:`WorktreeMismatch`.
 
-    Fails closed (raises :class:`WorktreeMismatch`) when the path is missing, is
-    not a git repository, or the work-tree toplevel is not the assigned path
-    itself — a nested/parent repo would let Pi operate on repository state that
-    is not this task's.
+    The toplevel must be the assigned path itself: a parent repo would expose
+    state that is not this task's.
     """
     if not worktree:
         raise WorktreeMismatch("no worktree assigned")
@@ -239,11 +191,7 @@ def worktree_identity(worktree: Optional[str]) -> Dict[str, Any]:
 
 
 def git_is_ancestor(worktree: str, ancestor_sha: str, ref: str) -> bool:
-    """True when ``ancestor_sha`` is an ancestor of ``ref`` in this work tree.
-
-    Used to accept a branch that legitimately advanced from the SHA recorded at
-    assignment while still refusing a HEAD that belongs to an unrelated lineage.
-    """
+    """Accepts a branch that advanced from the assigned SHA, not an unrelated lineage."""
     if not worktree or not ancestor_sha or not ref:
         return False
     try:
@@ -257,12 +205,7 @@ def git_is_ancestor(worktree: str, ancestor_sha: str, ref: str) -> bool:
 
 
 def process_cwd(pid: Optional[int]) -> Optional[str]:
-    """Best-effort OS-level working directory of a live process.
-
-    Linux: ``/proc/<pid>/cwd``. macOS: ``lsof``. Other platforms: ``None`` —
-    callers then rely on Pi's own session-recorded cwd, which Pi writes itself
-    and is therefore Pi-reported rather than Odysseus-assumed.
-    """
+    """Best-effort process cwd (``/proc`` or ``lsof``); ``None`` elsewhere."""
     if not pid:
         return None
     if sys.platform.startswith("linux"):
@@ -285,14 +228,7 @@ def process_cwd(pid: Optional[int]) -> Optional[str]:
 
 
 def pi_session_cwd(session_file: Optional[str]) -> Optional[str]:
-    """The ``cwd`` Pi itself recorded in a session file's header.
-
-    Pi writes this header at session creation, so it is Pi-reported state that
-    can be checked against the assigned worktree without trusting Pi's
-    defaults. A session header pointing elsewhere is exactly the stale
-    remembered worktree this adapter must refuse — including on resume, where
-    Pi would otherwise adopt the session's remembered directory.
-    """
+    """The ``cwd`` in a Pi session header; on resume Pi would adopt it, so it is checked."""
     if not session_file or not os.path.isfile(session_file):
         return None
     try:
@@ -316,7 +252,6 @@ def pi_session_cwd(session_file: Optional[str]) -> Optional[str]:
 
 
 class PiExecution:
-    """Live state for one Pi subprocess (not persisted — the record is)."""
 
     __slots__ = ("execution_id", "proc", "reader", "responses", "stderr_tail",
                  "session_id", "session_file", "started", "last_activity",
@@ -342,48 +277,36 @@ class PiExecution:
         self.seen_files: List[str] = []
         self.seen_tests: List[str] = []
         self.final_text: str = ""
-        #: Failure classification signals for the terminal state (section 14).
         self.last_failure: Optional[str] = None
         self.saw_retry = False
         #: An ``auto_retry_end`` reported ``success == False`` (retries used up).
         self.retry_exhausted = False
-        #: Set only when Pi reports the run is DEFINITIVELY finished. On Pi
-        #: 0.85.1 that is ``agent_settled``; on older Pi it is ``agent_end`` or
-        #: process exit. ``agent_end`` alone is only an ATTEMPT end on 0.85.1.
+        #: Set only on a definitive run end: ``agent_settled``, or on older Pi
+        #: ``agent_end``/process exit. Otherwise ``agent_end`` is an attempt end.
         self.run_finished = False
-        #: True once ``agent_settled`` (Pi 0.85.1) has been observed.
         self.settled = False
         #: Grace timer armed by ``agent_end`` for older Pi without agent_settled.
         self.settle_timer: Optional[asyncio.Task] = None
-        #: Monotonic timestamp of the most recent ``agent_end``.
         self.last_agent_end_at: Optional[float] = None
-        #: Provider/model error text from the MOST RECENT attempt (cleared when
-        #: a new attempt starts, so a retry-then-success ends clean).
+        #: Latest attempt's error only, so a retry-then-success ends clean.
         self.last_attempt_error: Optional[str] = None
         #: Interactive executions stay alive for ``send``/steer; delegated task
         #: runs are stopped once the run finishes.
         self.keep_alive = False
-        #: The worktree Odysseus assigned to THIS execution (realpath). Pi may
-        #: operate only here; every binding check compares against it.
+        #: Assigned worktree realpath; every binding check compares against it.
         self.assigned_worktree: Optional[str] = None
-        #: HEAD recorded at assignment time (kept so a resumed run still proves
-        #: it is operating on this task's repository state).
+        #: HEAD at assignment, so a resumed run can prove the same repository state.
         self.expected_sha: Optional[str] = None
 
     @property
     def alive(self) -> bool:
         return self.proc.returncode is None
 class PiRuntime:
-    """Manages Pi RPC subprocesses on behalf of the Odysseus control plane.
-
-    One live process per execution id. The process is spawned in the *assigned*
-    worktree supplied by Odysseus — Pi never chooses repository state itself.
-    """
+    """One Pi RPC process per execution, spawned in the assigned worktree."""
 
     def __init__(self) -> None:
         self._execs: Dict[str, PiExecution] = {}
 
-    # -- process plumbing ---------------------------------------------------
     def _command(self, provider: str, model_id: str, session_file: Optional[str]) -> List[str]:
         cmd = [
             pi_config.pi_bin(),
@@ -419,7 +342,6 @@ class PiRuntime:
 
     async def _request(self, handle: PiExecution, payload: Dict[str, Any],
                        timeout: float = RESPONSE_TIMEOUT_S) -> Optional[Dict[str, Any]]:
-        """Send a command and await its correlated ``response``."""
         req_id = payload.get("id") or uuid.uuid4().hex[:12]
         payload["id"] = req_id
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -438,7 +360,6 @@ class PiRuntime:
         finally:
             handle.responses.pop(req_id, None)
 
-    # -- start --------------------------------------------------------------
     async def start(
         self,
         task: str,
@@ -462,20 +383,12 @@ class PiRuntime:
         host: Optional[str] = None,
         runtime_kind: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Start a delegated Pi execution and return its Odysseus record.
+        """Start a delegated Pi execution and return its record.
 
-        ``model``/``provider`` are supplied by the caller (routing policy) — the
-        adapter never picks a model by itself. ``worktree`` is required: Pi is an
-        execution plane, not a repository selector.
-
-        Worktree assignment is enforced, not assumed: the assigned path is
-        validated as a git work tree, Pi is launched with exactly that cwd, and
-        the live binding is verified BEFORE the task prompt is sent. A mismatch
-        raises :class:`WorktreeMismatch` (fail closed) with the execution record
-        left in ``worktree_mismatch`` for audit.
+        The caller picks the model; the adapter never does. The worktree binding
+        is verified before the prompt is sent, raising :class:`WorktreeMismatch`
+        on failure.
         """
-        # Fail closed before anything is spawned: the assignment itself must be
-        # a real, self-contained git work tree.
         identity = worktree_identity(worktree)
         assigned = identity["worktree"]
 
@@ -511,9 +424,7 @@ class PiRuntime:
         )
         eid = record["execution_id"]
 
-        # Pi is spawned with the ASSIGNED cwd. Nothing else is consulted — not
-        # Pi's remembered session, not whatever directory the Odysseus process
-        # happens to be in, and never a previously used worktree.
+        # Spawn in the assigned cwd only, never a remembered or inherited one.
         handle = await self._spawn(assigned, resolved_provider, resolved_model)
         handle.execution_id = eid
         handle.keep_alive = keep_alive
@@ -523,8 +434,6 @@ class PiRuntime:
         handle.reader = asyncio.create_task(self._pump(eid))
         handle.watchdog = asyncio.create_task(self._watch(eid))
 
-        # Capture Pi's session identity immediately (get_state returns sessionId
-        # before any prompt).
         state = await self._request(handle, {"type": "get_state"})
         if state and isinstance(state.get("data"), dict):
             handle.session_id = state["data"].get("sessionId")
@@ -535,8 +444,7 @@ class PiRuntime:
                 pi_session_file=handle.session_file,
             )
 
-        # Bind check happens BEFORE the task is handed over. A Pi that landed
-        # anywhere other than the assigned worktree never receives the prompt.
+        # A Pi outside the assigned worktree never receives the prompt.
         await self._verify_worktree_binding(eid, handle, phase="start")
 
         await self._request(handle, {"type": "prompt",
@@ -561,11 +469,9 @@ class PiRuntime:
         execution_id: Optional[str] = None,
         keep_alive: bool = False,
     ) -> Dict[str, Any]:
-        """Start from a complete pin emitted by ``BoundDispatch.pin_for``.
+        """Start from a ``BoundDispatch.pin_for`` pin, checking its binding first.
 
-        This checks the pin's binding against the caller's run/package values
-        before spawning. It does not authenticate an arbitrary caller-created
-        dict; callers must pass the canonical pin from a resolved BoundDispatch.
+        This does not authenticate a caller-built dict; pass the canonical pin.
         """
         if not isinstance(pin, dict):
             raise ValueError("a complete canonical dispatch pin is required")
@@ -620,31 +526,17 @@ class PiRuntime:
 
     @staticmethod
     def _compose_prompt(task: str, constraints: Optional[List[str]]) -> str:
-        """The task handoff. Deliberately thin: Pi discovers the repo itself."""
+        """Deliberately thin: Pi discovers the repo itself."""
         lines = [task.strip()]
         if constraints:
             lines.append("")
             lines.append("Constraints:")
             lines.extend(f"- {c}" for c in constraints if str(c).strip())
         return "\n".join(lines)
-    # -- worktree assignment enforcement ------------------------------------
     async def _verify_worktree_binding(self, execution_id: str, handle: PiExecution,
                                        phase: str) -> Dict[str, Any]:
-        """Prove Pi is operating in the worktree Odysseus assigned to this run.
-
-        Three independent checks, all compared against the ASSIGNED path:
-
-        1. OS-level process cwd (``/proc/<pid>/cwd`` on Linux, ``lsof`` on macOS) —
-           catches a Pi that chdir'd somewhere else, e.g. into a remembered
-           session directory.
-        2. Pi's own session-header ``cwd`` — Pi-reported state written by Pi
-           itself, available on every platform, and on resume it is exactly the
-           remembered directory Pi would adopt.
-        3. The git identity of the assigned path (toplevel / branch / HEAD) —
-           read-only, via :func:`worktree_identity`.
-
-        Every failure is fatal: the task prompt is never sent.
-        """
+        """Prove Pi runs in the assigned worktree: process cwd, session-header cwd
+        and git identity must all match. Any failure is fatal."""
         record = pi_executions.get_execution(execution_id) or {}
         assigned = handle.assigned_worktree or record.get("assigned_worktree") \
             or record.get("worktree")
@@ -657,14 +549,12 @@ class PiRuntime:
         evidence: Dict[str, Any] = {"phase": phase, "assigned_worktree": assigned}
         problems: List[str] = []
 
-        # 1. OS-level process cwd.
         live_cwd = process_cwd(getattr(handle.proc, "pid", None))
         evidence["process_cwd"] = live_cwd
         if live_cwd is not None and os.path.realpath(live_cwd) != assigned:
             problems.append(
                 f"pi process cwd {os.path.realpath(live_cwd)!r} != assigned worktree {assigned!r}")
 
-        # 2. Pi's own recorded session cwd.
         session_file = handle.session_file or record.get("pi_session_file") \
             or find_pi_session_file(handle.session_id or record.get("pi_session_id"))
         session_cwd = pi_session_cwd(session_file)
@@ -674,7 +564,6 @@ class PiRuntime:
             problems.append(
                 f"pi session cwd {os.path.realpath(session_cwd)!r} != assigned worktree {assigned!r}")
 
-        # 3. Git identity of the assigned path itself.
         try:
             identity = worktree_identity(assigned)
             evidence["repo_toplevel"] = identity["toplevel"]
@@ -691,8 +580,7 @@ class PiRuntime:
             if same:
                 evidence["head_matches_starting_sha"] = True
             elif git_is_ancestor(assigned, expected_sha, actual_sha):
-                # The branch legitimately advanced from the assigned starting
-                # SHA (the task's own lineage) — acceptable, and recorded.
+                # Advanced from the assigned SHA on the same lineage: accepted.
                 evidence["head_matches_starting_sha"] = False
                 evidence["head_descends_from_starting_sha"] = True
             else:
@@ -716,13 +604,7 @@ class PiRuntime:
         return evidence
 
     def _record_refusal(self, execution_id: str, reason: str, phase: str) -> None:
-        """Persist a fail-closed worktree refusal as the execution's state.
-
-        The refusal is always visible: ``refusals[]`` accumulates every refused
-        attempt (with its phase), ``previous_status`` preserves what the record
-        said before, and the execution's status becomes ``worktree_mismatch`` so
-        the operator cannot mistake a refused run for a completed one.
-        """
+        """Record a worktree refusal so it can never be mistaken for a completed run."""
         record = pi_executions.get_execution(execution_id) or {}
         refusals = list(record.get("refusals") or [])
         refusals.append({"phase": phase, "reason": reason})
@@ -745,7 +627,6 @@ class PiRuntime:
 
     async def _refuse_worktree(self, execution_id: str, handle: PiExecution, reason: str,
                               phase: str = "start") -> None:
-        """Terminate a mis-bound Pi and record the fail-closed outcome."""
         handle.cancelled = True  # never report this as a normal completion
         try:
             if handle.proc.returncode is None:
@@ -760,9 +641,7 @@ class PiRuntime:
 
 
 
-    # -- event pump ---------------------------------------------------------
     async def _pump(self, execution_id: str) -> None:
-        """Read Pi's JSONL stdout until the process ends."""
         handle = self._execs.get(execution_id)
         if handle is None or handle.proc.stdout is None:
             return
@@ -778,8 +657,7 @@ class PiRuntime:
                 try:
                     raw = json.loads(text)
                 except ValueError:
-                    # Non-JSON stdout (Pi shares stderr into stdout here) is kept
-                    # as a bounded diagnostic tail, never as an event.
+                    # Non-JSON output is merged stderr: kept as a diagnostic tail, not an event.
                     handle.stderr_tail.append(text[:500])
                     del handle.stderr_tail[:-40]
                     continue
@@ -807,9 +685,7 @@ class PiRuntime:
             if fut is not None and not fut.done():
                 fut.set_result(raw)
             data = raw.get("data") if isinstance(raw.get("data"), dict) else None
-            # A prompt rejected BEFORE acceptance (unknown model, bad provider
-            # credential, malformed request) is a provider/model failure, not a
-            # task failure.
+            # A prompt rejected before acceptance is a provider failure, not a task failure.
             if raw.get("command") == "prompt" and raw.get("success") is False:
                 handle.last_failure = "provider_failure"
                 handle.stderr_tail.append(
@@ -826,12 +702,9 @@ class PiRuntime:
                     pi_executions.update_execution(execution_id, **patch)
             return
 
-        # Any protocol event after an ``agent_end`` proves that attempt-end was
-        # not the run end (Pi 0.85.1 ends every attempt with agent_end), so
-        # disarm the settle grace timer before handling the new event.
+        # Any event after ``agent_end`` proves it was only an attempt end.
         self._cancel_settle_grace(handle)
 
-        # Pi events -> Odysseus execution events.
         for mapped in pi_event_map.map_pi_event(raw):
             pi_executions.append_event(execution_id, mapped)
             if mapped["type"] == pi_event_map.COMPLETION and mapped.get("text"):
@@ -840,36 +713,27 @@ class PiRuntime:
                 handle.last_failure = mapped.get("failure") or "failure"
 
         if kind == "agent_settled":
-            # Pi 0.85.1: the definitive end of the run (after any retries).
             handle.settled = True
             handle.run_finished = True
             if not handle.keep_alive and handle.proc.returncode is None:
                 asyncio.create_task(self._graceful_stop(handle))
         elif kind == "agent_start":
-            # A new attempt (fresh run, or a retry) is in flight.
             handle.run_finished = False
             handle.last_attempt_error = None
         elif kind == "auto_retry_start":
-            # A retry keeps the run alive: a preceding ``agent_end`` was only an
-            # attempt end, not the run end.
             handle.saw_retry = True
             handle.run_finished = False
         elif kind == "auto_retry_end":
             if raw.get("success") is False:
                 handle.retry_exhausted = True
         elif kind == "agent_end":
-            # End of ONE attempt. Pi 0.85.1 follows this with either
-            # ``auto_retry_start`` (another attempt) or ``agent_settled`` (run
-            # done); older Pi has no ``agent_settled``, so arm a short grace
-            # window and treat this attempt end as the run end if nothing else
-            # arrives. Never finalize on ``agent_end`` alone.
+            # One attempt's end. Older Pi has no ``agent_settled``, so a grace
+            # timer treats it as the run end only if nothing follows.
             handle.run_finished = False
             handle.last_agent_end_at = _now()
             self._schedule_settle_grace(execution_id, handle)
 
-        # Protocol-native failure evidence: Pi attaches ``stopReason: "error"``
-        # / ``errorMessage`` to a failed attempt's assistant message and to
-        # ``agent_end``. Keep the most recent attempt's error only.
+        # Keep only the most recent attempt's error.
         err = _raw_error(raw)
         if err:
             handle.last_attempt_error = err[:500]
@@ -899,8 +763,7 @@ class PiRuntime:
         pi_executions.save_execution(record)
 
     def _finalize(self, execution_id: str, handle: PiExecution, returncode: int) -> None:
-        """Map the process exit into an explicit Odysseus terminal state."""
-        # The process is gone, so no attempt-end grace is pending any more.
+        """Map the process exit into an explicit terminal state."""
         self._cancel_settle_grace(handle)
         record = pi_executions.get_execution(execution_id)
         if record is None:
@@ -920,10 +783,7 @@ class PiRuntime:
             head_after=git_state.get("head"),
         )
 
-        # Late assignment check: Pi may only write its session file once the run
-        # starts, so the live binding check at start time can miss it. If the
-        # recorded session cwd turns out to be a different worktree, this run is
-        # refused rather than reported as a success.
+        # Pi may write its session file only after start, so recheck its cwd here.
         assigned = record.get("assigned_worktree") or record.get("worktree")
         if (record.get("status") not in pi_executions.TERMINAL_STATUSES
                 and session_cwd and assigned
@@ -943,17 +803,11 @@ class PiRuntime:
             return
 
         tail = "\n".join(handle.stderr_tail[-10:])[:2000]
-        # Failure evidence takes precedence over generic completion evidence.
-        # Pi 0.85.1 emits ``agent_end`` at the end of EVERY attempt, inserts
-        # ``auto_retry_start`` between attempts, emits ``agent_settled`` once
-        # retries are exhausted, and may STILL exit rc=0 after a provider/model
-        # failure. Neither ``run_finished`` nor rc==0 may therefore be read as
-        # success on its own.
+        # Failure evidence wins: Pi can exit rc=0 after a provider failure, so
+        # neither ``run_finished`` nor rc==0 alone means success.
         has_output = bool((handle.final_text or "").strip())
 
-        # 1. A prompt Pi rejected before acceptance: nothing ran. ``last_failure``
-        #    is only ever set to ``provider_failure`` for a rejected prompt (tool
-        #    errors set it to ``tool_failure``), so this is a hard failure.
+        # ``provider_failure`` here only means a rejected prompt: nothing ran.
         if handle.last_failure == "provider_failure":
             pi_executions.finish_execution(
                 execution_id, STATUS_PROVIDER_FAILURE,
@@ -971,10 +825,7 @@ class PiRuntime:
             or _stderr_provider_error(handle.stderr_tail)
         )
 
-        # 3. Provider/model failure evidence with no usable assistant output:
-        #    retries seen or exhausted, an error stop reason Pi carried on the
-        #    failed attempt, or merged-stderr diagnostics. Pi 0.85.1 may still
-        #    exit rc=0, so this must precede any completion decision.
+        # Provider failure with no usable output must precede any completion check.
         if not has_output and provider_evidence:
             pi_executions.finish_execution(
                 execution_id, STATUS_PROVIDER_FAILURE,
@@ -986,8 +837,7 @@ class PiRuntime:
                 ).strip(),
             )
             return
-        # 4. A tool failure that ended a run with no usable output. A tool error
-        #    during an otherwise successful run is NOT terminal (see step 6).
+        # A tool error is terminal only when the run produced no usable output.
         if not has_output and handle.last_failure == "tool_failure" and not settled_ok:
             pi_executions.finish_execution(
                 execution_id, STATUS_TOOL_FAILURE,
@@ -995,7 +845,6 @@ class PiRuntime:
                 failure_reason=f"tool failure ended the run. {tail}".strip(),
             )
             return
-        # 5. Died without ever settling the run.
         if not settled_ok:
             if provider_evidence:
                 failure_class, status = "provider_failure", STATUS_PROVIDER_FAILURE
@@ -1009,10 +858,7 @@ class PiRuntime:
                 failure_reason=f"pi exited with code {returncode}. {tail}".strip(),
             )
             return
-        # 6. A settled run (``agent_settled`` on 0.85.1, ``agent_end``/process exit
-        #    on older Pi). A meaningful result is a completion; a settled run that
-        #    produced no assistant text and no tool call is a silent no-op, never
-        #    a success merely because Pi exited rc=0.
+        # A settled run with no text and no tool call is a no-op, not a success.
         if meaningful:
             pi_executions.finish_execution(
                 execution_id, STATUS_COMPLETED,
@@ -1029,7 +875,6 @@ class PiRuntime:
         )
 
     def _cancel_settle_grace(self, handle: PiExecution) -> None:
-        """Disarm the attempt-end grace timer (if any)."""
         task = handle.settle_timer
         handle.settle_timer = None
         if task is not None and not task.done():
@@ -1045,12 +890,7 @@ class PiRuntime:
 
     async def _settle_after_grace(self, execution_id: str, handle: PiExecution,
                                   delay: float) -> None:
-        """Treat ``agent_end`` as the run end when no retry/settle follows.
-
-        Pi 0.85.1 always follows the final ``agent_end`` with ``agent_settled``
-        (which disarms this timer); an older Pi has no such event, so once the
-        grace window elapses the attempt end IS the run end.
-        """
+        """Treat ``agent_end`` as the run end when no retry/settle follows (older Pi)."""
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
@@ -1065,11 +905,7 @@ class PiRuntime:
             await self._graceful_stop(handle)
 
     async def _graceful_stop(self, handle: PiExecution, delay: float = 1.5) -> None:
-        """Stop a Pi process whose run has finished.
-
-        The grace period lets Pi flush its session JSONL (what makes resume
-        possible) before the process goes away.
-        """
+        """Stop a finished Pi, with grace to flush the session JSONL resume needs."""
         await asyncio.sleep(delay)
         if handle.proc.returncode is None:
             try:
@@ -1078,11 +914,7 @@ class PiRuntime:
                 pass
 
     async def _watch(self, execution_id: str) -> None:
-        """Enforce the OUTER execution wall-clock limit.
-
-        This is an execution limit only. Pi keeps ownership of its inner context
-        lifecycle; Odysseus does not inject a second compaction system.
-        """
+        """Enforce the outer wall-clock limit; Pi keeps its own context lifecycle."""
         handle = self._execs.get(execution_id)
         if handle is None:
             return
@@ -1095,9 +927,7 @@ class PiRuntime:
         except asyncio.CancelledError:
             return
 
-    # -- public adapter API -------------------------------------------------
     def events(self, execution_id: str, since: int = 0) -> List[Dict[str, Any]]:
-        """Mapped Pi events observed for this execution (observability)."""
         return pi_executions.read_events(execution_id, since=since)
 
     def status(self, execution_id: str) -> Dict[str, Any]:
@@ -1112,11 +942,7 @@ class PiRuntime:
 
     async def send(self, execution_id: str, message: str,
                    streaming_behavior: Optional[str] = None) -> bool:
-        """Send a follow-up message to a running execution.
-
-        Pi requires an explicit ``streamingBehavior`` (``steer`` / ``followUp``)
-        while it is mid-run; otherwise the prompt is rejected.
-        """
+        """Send a follow-up; mid-run Pi rejects it without a ``streamingBehavior``."""
         handle = self._execs.get(execution_id)
         if handle is None or not handle.alive:
             return False
@@ -1128,12 +954,7 @@ class PiRuntime:
         return ok
 
     async def cancel(self, execution_id: str, reason: str = "operator cancel") -> bool:
-        """Cancel an active Pi execution.
-
-        Prefers Pi's own ``abort`` command (it stops the inner loop cleanly and
-        Pi reports the aborted turn); falls back to terminating the process if
-        the runtime does not respond within the grace period.
-        """
+        """Cancel via Pi's ``abort``, terminating the process if it does not respond."""
         handle = self._execs.get(execution_id)
         if handle is None:
             return False
@@ -1192,7 +1013,6 @@ class PiRuntime:
             "final_text": final_text,
             "files_changed": record.get("files_changed") or [],
             "tests_run": record.get("tests_run") or tests,
-            # Worktree assignment identity (Odysseus-owned).
             "worktree": record.get("worktree"),
             "assigned_worktree": record.get("assigned_worktree") or record.get("worktree"),
             "actual_worktree": record.get("actual_worktree"),
@@ -1213,17 +1033,10 @@ class PiRuntime:
 
     async def resume(self, execution_id: str, message: Optional[str] = None,
                      streaming_behavior: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Resume an interrupted execution against its own Pi session.
+        """Resume an execution with ``--session`` on its own session file.
 
-        Pi sessions are files; resuming relaunches Pi with ``--session`` pointed
-        at the SAME session file, so continuation is the same execution rather
-        than an unrelated new chat/task.
-
-        The worktree is taken from the EXECUTION RECORD and nothing else — a
-        resume can never be pointed at a different worktree, and it will not
-        proceed when the recorded Pi session belongs to another directory
-        (``WorktreeMismatch``, fail closed). Pi's remembered session cwd is
-        treated as untrusted input to be verified, never as the launch context.
+        The worktree comes only from the execution record; a session recorded in
+        another directory raises ``WorktreeMismatch``.
         """
         record = pi_executions.get_execution(execution_id)
         if record is None:
@@ -1234,8 +1047,6 @@ class PiRuntime:
                 await self.send(execution_id, message, streaming_behavior)
             return self.status(execution_id)
 
-        # Odysseus owns the assignment: the record's assigned worktree, exactly
-        # as it was set when the execution was created.
         assigned = record.get("assigned_worktree") or record.get("worktree")
         if not assigned:
             raise WorktreeMismatch(
@@ -1250,8 +1061,7 @@ class PiRuntime:
             raise
 
         session_file = record.get("pi_session_file")
-        # Refuse BEFORE spawning when the recorded session belongs to a
-        # different directory: Pi would adopt that remembered cwd on resume.
+        # Refuse before spawning: Pi would adopt the session's remembered cwd.
         if session_file:
             recorded_cwd = pi_session_cwd(session_file)
             if recorded_cwd is not None and os.path.realpath(recorded_cwd) != assigned:
@@ -1279,8 +1089,6 @@ class PiRuntime:
             new_handle.session_id = state["data"].get("sessionId")
             pi_executions.update_execution(execution_id, pi_session_id=new_handle.session_id)
 
-        # Same fail-closed binding check as a fresh start, before any follow-up
-        # message is delivered.
         await self._verify_worktree_binding(execution_id, new_handle, phase="resume")
 
         pi_executions.update_execution(
@@ -1309,7 +1117,6 @@ _RUNTIME: Optional[PiRuntime] = None
 
 
 def get_pi_runtime() -> PiRuntime:
-    """Process-wide Pi runtime adapter."""
     global _RUNTIME
     if _RUNTIME is None:
         _RUNTIME = PiRuntime()

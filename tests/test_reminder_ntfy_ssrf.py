@@ -1,11 +1,9 @@
 """Regression: the reminder ntfy sender must run the same SSRF guard as the
 webhook sender.
 
-The webhook branch of dispatch_reminder validates its target with
-src.url_safety.check_outbound_url before posting; the ntfy branch posted to
-the integration's base_url with no check, so a base_url pointing at the cloud
-metadata range (169.254.169.254) was fetched server-side — with the
-integration's Authorization header attached — every time a reminder fired.
+Without check_outbound_url, a base_url pointing at cloud metadata
+(169.254.169.254) would be fetched server-side with the integration's
+Authorization header attached.
 """
 import asyncio
 from unittest.mock import MagicMock, patch

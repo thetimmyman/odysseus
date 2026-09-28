@@ -1,8 +1,7 @@
-"""PS-605 — deterministic execution-target selection and a real receipt.
+"""Deterministic execution-target selection and a real receipt.
 
-The slice has to prove the receipt is REAL, not decorative: every field the ticket
-names is populated from a decision that was actually taken, and the hard
-invariants are negative controls, not comments:
+Every receipt field comes from a decision actually taken, and the hard
+invariants are negative controls:
 
   * a runtime adapter cannot reroute itself (there is no API to call);
   * the selected target is pinned, and re-running the selector cannot move it;
@@ -99,7 +98,6 @@ def select(req=None, *, profiles=None, receipts=None, **kwargs):
         policy=POLICY, now=NOW, **kwargs)
 
 
-# ================================================================ the control ===
 def test_capacity_refusal_codes_and_hash_stable_optional_receipt_refs():
     for code in (dr.REFUSED_CAPACITY_MISSING, dr.REFUSED_CAPACITY_STALE,
                  dr.REFUSED_CAPACITY_UNUSABLE):
@@ -121,9 +119,8 @@ def test_capacity_refusal_codes_and_hash_stable_optional_receipt_refs():
 def test_ps638_receipt_hash_matches_for_capacity_refs():
     """Non-empty capacity_receipt_refs must hash identically across both modules.
 
-    Regression: ps638_receipt_core routed every optional-omit field through
-    _normalize_authority, which crashes on a tuple of strings. The hash must be
-    computed with the list-normalization path and agree with PS-638's own core().
+    Tuple-of-string refs must take the list-normalization path (not
+    _normalize_authority) and agree with the receipt core's own hash.
     """
     decision = dataclasses.replace(select(), capacity_receipt_refs=("capacity:deadbeef",))
     kwargs = decision.to_ps638_receipt_kwargs()
@@ -201,7 +198,7 @@ def test_capacity_receipt_order_does_not_change_decision_hash():
 
 
 def test_the_receipt_carries_everything_the_ticket_requires():
-    """Every field the ticket names, asserted on the receipt itself."""
+    """Every required field, asserted on the receipt itself."""
     kwargs = select(decision_id="dec-1").to_ps638_receipt_kwargs()
     assert kwargs["run_id"] == "run-1" and kwargs["packet_id"] == "P-1"
     assert kwargs["execution_package_hash"] == "pkg-hash-1"
@@ -238,14 +235,10 @@ def test_the_receipt_carries_everything_the_ticket_requires():
 def test_the_receipt_field_set_is_the_ps638_contract():
     """The mapping is a CONTRACT, asserted rather than discovered later.
 
-    ``authority`` (PS-638 DR-01+DR-09) is the one field in
-    ``PS638_RECEIPT_FIELDS`` that is OPTIONAL in the kwargs a decision without
-    one actually emits: an authority-free decision must omit the key itself,
-    not merely set it to ``None`` (review fix F-1, 2026-09-16) -- an
-    unconditional ``None`` entry would change ``seal_dispatch_evidence``'s
-    ``evidence_hash`` for every authority-free dispatch. So the contract here
-    is a subset relation for the optional field, and an exact-set match for
-    every field that is not optional.
+    ``authority`` is the one OPTIONAL field in ``PS638_RECEIPT_FIELDS``: an
+    authority-free decision must omit the key, not set it to ``None``, or every
+    authority-free ``evidence_hash`` would change. So the optional field is a
+    subset relation; every other field is an exact-set match.
     """
     kwargs = select().to_ps638_receipt_kwargs()
     assert set(kwargs) <= set(dr.PS638_RECEIPT_FIELDS)
@@ -302,7 +295,6 @@ def test_the_same_inputs_produce_the_same_decision_hash():
     assert first.decision_hash != forward.decision_hash
 
 
-# ============================================================ hard invariants ===
 def test_a_runtime_adapter_cannot_reroute_itself():
     """MUTATION CONTROL: there is no routing API for an adapter to call.
 
@@ -476,7 +468,6 @@ def test_tool_network_budget_and_resource_filters_bind():
     assert err.value.code == dr.REFUSED_RESOURCE
 
 
-# ================================================================== fallback ===
 def test_a_fallback_must_satisfy_the_same_policy_as_the_preferred_candidate():
     """MUTATION CONTROL: fallback is a lower rank, never a weaker standard."""
     hosted = profile(target_id="openrouter-v4pro", profile_id="or-v4pro",
@@ -532,7 +523,6 @@ def test_a_local_only_request_cannot_fall_back_to_hosted():
     assert all(not a.eligible for a in err.value.assessments)
 
 
-# ================================================================ fail closed ===
 def test_a_role_mismatch_is_refused_rather_than_downgraded():
     with pytest.raises(dr.RoutingRefused) as err:
         select(request(role=dr.ROLE_PLANNER))
@@ -602,8 +592,8 @@ def test_selected_capacity_refs_share_assessment_time(monkeypatch):
     seen = []
 
     def time_advancing_classify(profile, receipts, *, now=None):
-        # Model a slow selection: under the old double-clock path, first check is
-        # fresh and the later binding check occurs well after the short TTL.
+        # Slow selection: the binding check runs well after the short TTL, so
+        # a second clock read would see the receipt expired.
         effective = now if now is not None else (observed if not seen else observed + dt.timedelta(seconds=61))
         seen.append(effective)
         return original(profile, receipts, now=effective)

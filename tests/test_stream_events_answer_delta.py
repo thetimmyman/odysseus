@@ -1,11 +1,7 @@
-"""Regression tests for POS-AI-24 on the background side.
+"""Background consumers of ``stream_agent_loop`` must drop ``thinking`` deltas.
 
-``stream_llm`` tags reasoning deltas ``thinking: true``. The interactive agent
-loop honours that; every background consumer of ``stream_agent_loop`` did not —
-each one accumulated ``data["delta"]`` unconditionally, so raw model
-deliberation was folded into what it treated as the model's answer. In
-``bg_monitor`` that answer is persisted into a user's session as an assistant
-message; in ``task_scheduler`` it goes out in reminders.
+Otherwise raw deliberation lands in the answer, which ``bg_monitor`` persists
+into user sessions and ``task_scheduler`` sends in reminders.
 """
 
 import json

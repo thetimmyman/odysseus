@@ -1,21 +1,8 @@
-"""Regression test for POS-AI-24 on the interactive path (static/js/chat.js).
+"""chat.js must close the ``<think>`` block at each agent round boundary.
 
-The stream tags reasoning deltas ``thinking: true``; chat.js turns that into
-``<think>…</think>`` markup so the renderer collapses it into the thinking
-section. The open/close state lives in ``_thinkOpen``, one flag for the whole
-stream.
-
-An agent round that ends on a tool call emits reasoning and then NO answer
-delta, so nothing ever appended the closing tag — ``_thinkOpen`` stayed true
-across the round boundary. The next round's reasoning therefore got no OPENING
-tag either (the flag said one was already open), ``hasUnclosedThinkTag()`` saw
-plain text, and the round rendered pages of raw model deliberation as the
-answer, with an orphan ``</think>`` once real content arrived. That is also how
-the guarded memory block in the system prompt became visible to the user.
-
-The fix is to close the block at the round boundary. This test reads the source
-and checks the boundary handlers do so, and simulates the state machine to show
-each round gets its own balanced pair.
+A round ending on a tool call emits reasoning but no answer delta, so without a
+boundary close ``_thinkOpen`` leaks into the next round and raw deliberation
+(including guarded system-prompt content) renders as the answer.
 """
 
 import os

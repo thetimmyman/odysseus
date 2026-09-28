@@ -1,16 +1,9 @@
-"""src/config_store.py — generic versioned JSON config store.
+"""Generic versioned JSON config store: archive-before-write, append-only
+publish_log.jsonl, and path-jailed rollback.
 
-Extracted from routing_policy.py's proven pattern (archive-before-write +
-append-only publish_log.jsonl + realpath/commonpath-jailed rollback) as a
-reusable, dependency-light module. Deliberately imports nothing from the rest
-of ``src`` (in particular NOT routing_policy — that module imports the config
-layer, and a back-edge would be circular) so any config domain can persist
-through it without dragging in the routing/DB stack.
-
-The LIVE file for every domain lives under the data/ volume (data_root(),
-ODYSSEUS_DATA_DIR-aware), NOT the baked ``config/`` dir — so an in-app save
-survives a redeploy. ``seed_if_missing`` copies the baked default on first
-read, so behavior is unchanged on a fresh deploy.
+Imports nothing else from ``src`` (routing_policy imports this, so a back-edge
+would be circular). Live files live under the data/ volume so in-app saves
+survive redeploys; ``seed_if_missing`` copies the baked ``config/`` default.
 
 Layout for domain ``d``:
   <data_root>/routing/<d>.json            -- live file (read by the app)
@@ -32,11 +25,8 @@ _log = logging.getLogger(__name__)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Per-domain in-process publish locks (a domain -> threading.Lock registry,
-# itself guarded). Serializes concurrent publishes on the SAME domain so the
-# read-current -> archive -> write-live -> log critical section can't interleave
-# (two FastAPI threadpool threads racing left lost updates + torn archives). A
-# cross-process fcntl.flock in _publish_guard covers the (future) >1-worker case.
+# Per-domain publish locks so concurrent threadpool publishes can't interleave
+# the archive -> write -> log section (lost updates, torn archives).
 _locks_guard = threading.Lock()
 _domain_locks: dict = {}
 
@@ -52,11 +42,8 @@ def _domain_lock(domain: str) -> threading.Lock:
 
 @contextmanager
 def _publish_guard(domain: str):
-    """Serialize publishes for a domain: an in-process threading.Lock plus a
-    best-effort cross-process fcntl.flock on a lockfile in the versions dir (in
-    case the app is ever run with >1 uvicorn worker). A filesystem without
-    flock support (some network mounts) must not break publishing, so the flock
-    is best-effort; the threading.Lock is the load-bearing one today."""
+    """Serialize publishes for a domain: a threading.Lock plus a best-effort
+    fcntl.flock for multi-worker setups (some network mounts lack flock)."""
     tl = _domain_lock(domain)
     tl.acquire()
     lock_fh = None
@@ -85,14 +72,9 @@ def _publish_guard(domain: str):
 
 
 def _atomic_write_json(path: str, obj: dict) -> None:
-    """Write ``obj`` as pretty JSON to ``path`` ATOMICALLY: a same-dir temp file
-    is fsync'd then ``os.replace``'d over the target. os.replace is atomic on
-    POSIX, so a concurrent reader always opens either the whole old file or the
-    whole new one — never the truncated file that ``open(path,'w')`` exposes
-    mid-write (the fail-open race where a reader saw defaults). ``allow_nan``
-    is False so a non-finite value fails LOUDLY here (before os.replace, so the
-    live file is untouched) instead of persisting a bare NaN/Infinity token
-    that only Python's json can read back."""
+    """Atomically write ``obj`` as JSON (temp file, fsync, os.replace) so readers
+    never see a truncated file. ``allow_nan=False`` fails loudly before replace
+    instead of persisting NaN/Infinity."""
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".json")
@@ -102,11 +84,8 @@ def _atomic_write_json(path: str, obj: dict) -> None:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
-        # mkstemp creates 0600; the in-place open('w') this replaced yielded
-        # 0644. Restore 0644 so a config file written by one uid (e.g. a root
-        # `docker exec` maintenance write, or a root entrypoint seed before the
-        # gosu drop) stays readable by the non-root app user. These configs hold
-        # no secrets (credentials live encrypted in secret_storage, not here).
+        # mkstemp creates 0600; use 0644 so files written as root stay readable
+        # by the non-root app user. These configs hold no secrets.
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except BaseException:
@@ -118,10 +97,7 @@ def _atomic_write_json(path: str, obj: dict) -> None:
 
 
 def _atomic_write_json_raw(path: str, raw: str) -> None:
-    """Atomically write an already-serialized JSON string (used to copy the
-    outgoing live file into the archive). Same temp+fsync+os.replace as
-    _atomic_write_json, so a concurrent reader (list_versions / rollback) can
-    never open a half-written archive."""
+    """Atomically write an already-serialized JSON string (for archives)."""
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".json")
@@ -141,11 +117,8 @@ def _atomic_write_json_raw(path: str, raw: str) -> None:
 
 
 def data_root() -> str:
-    """The harness data directory: ODYSSEUS_DATA_DIR when set (resolved per
-    call so a monkeypatched/exported env is honored without re-import), else
-    ``<repo-root>/data`` — the same convention as routing_workdir.data_root().
-    Duplicated locally rather than imported to keep this module dependency
-    light (routing_workdir drags in subprocess/git plumbing)."""
+    """ODYSSEUS_DATA_DIR (read per call) or ``<repo-root>/data``. Duplicated from
+    routing_workdir to avoid its heavy imports."""
     override = os.environ.get("ODYSSEUS_DATA_DIR")
     if override:
         return os.path.realpath(override)
@@ -153,12 +126,10 @@ def data_root() -> str:
 
 
 def live_path(domain: str) -> str:
-    """The live config file for a domain, under the persisted data/ volume."""
     return os.path.join(data_root(), "routing", f"{domain}.json")
 
 
 def versions_dir(domain: str) -> str:
-    """The append-only archive dir for a domain (snapshots + publish log)."""
     return os.path.join(data_root(), "routing", f"{domain}_versions")
 
 
@@ -175,23 +146,19 @@ def _read_live(domain: str) -> Optional[dict]:
     except FileNotFoundError:
         return None
     except Exception:
-        # Exists but unreadable/corrupt — never silent (a caller may need to
-        # fail-safe in a specific direction, e.g. budget must not raise its cap).
+        # Present but unreadable: never silent; callers may need to fail safe
+        # in a specific direction (e.g. never raise a budget cap).
         _log.warning("config_store: live file %s exists but is unreadable; "
                      "caller will use its fallback", lp)
         return None
 
 
-# Public alias — same read, exposed so a caller can act on the distinction
-# between a truly-absent file and a present-but-corrupt one (via live_status).
 read_live = _read_live
 
 
 def live_status(domain: str) -> str:
-    """'missing' | 'ok' | 'unreadable'. Lets a caller that must fail-safe in a
-    particular direction tell a truly-absent live file (fine to seed/default)
-    from a present-but-corrupt one (where degrading to a permissive default may
-    be the WRONG direction — e.g. silently raising a spend cap)."""
+    """'missing' | 'ok' | 'unreadable', so callers can refuse to degrade a corrupt
+    file to a permissive default (e.g. silently raising a spend cap)."""
     if not os.path.exists(live_path(domain)):
         return "missing"
     return "ok" if _read_live(domain) is not None else "unreadable"
@@ -199,10 +166,8 @@ def live_status(domain: str) -> str:
 
 def seed_if_missing(domain: str, baked_default_path: Optional[str] = None,
                     default_dict: Optional[dict] = None) -> None:
-    """On first read, if the live file is absent, copy the baked ``config/``
-    default (or the passed default dict) into place so a fresh deploy behaves
-    exactly as the baked config did. A corrupt/unreadable baked file falls
-    through to ``default_dict`` (never raises)."""
+    """If the live file is absent, copy the baked ``config/`` default (or
+    ``default_dict``) into place. Never raises."""
     lp = live_path(domain)
     if os.path.exists(lp):
         return
@@ -220,17 +185,14 @@ def seed_if_missing(domain: str, baked_default_path: Optional[str] = None,
     try:
         _atomic_write_json(lp, data)
     except (OSError, ValueError):
-        # A read-only volume must not crash the read path; the fallback in
-        # read() still returns sane defaults. (ValueError only if a default
-        # somehow carried a non-finite value — not our shipped configs.)
+        # A read-only volume must not crash the read path.
         pass
 
 
 def read(domain: str, baked_default_path: Optional[str] = None,
          fallback_dict: Optional[dict] = None) -> dict:
-    """Seed (if missing) then load the live config. A corrupt/unreadable live
-    file degrades to ``fallback_dict`` — this is a read path that must never
-    raise (mirrors routing_policy.load_policy's degrade-to-default contract)."""
+    """Seed if missing, then load. A corrupt live file degrades to
+    ``fallback_dict``; this read path never raises."""
     seed_if_missing(domain, baked_default_path, fallback_dict)
     d = _read_live(domain)
     if d is None:
@@ -240,13 +202,11 @@ def read(domain: str, baked_default_path: Optional[str] = None,
 
 def publish(domain: str, new_dict: dict, actor: str,
             validate_fn: Optional[Callable[[dict], list]] = None) -> dict:
-    """Validate → archive the current live file → write the new one → append
+    """Validate, archive the current live file, write the new one, then append
     to publish_log.jsonl.
 
-    ``validate_fn(new_dict)`` returns a list of reasons; a non-empty list means
-    invalid and this raises ``ValueError(reasons)`` BEFORE any write, so a
-    rejected publish never touches the live file (fail-safe). Archive-before-
-    overwrite means every publish is recoverable via rollback().
+    ``validate_fn`` returns reasons; any reason raises ``ValueError`` before any
+    write, leaving the live file untouched.
     """
     if not isinstance(new_dict, dict):
         raise ValueError(["config must be a JSON object"])
@@ -260,10 +220,6 @@ def publish(domain: str, new_dict: dict, actor: str,
     os.makedirs(vdir, exist_ok=True)
     os.makedirs(os.path.dirname(lp), exist_ok=True)
 
-    # Serialize the whole archive -> write-live -> log sequence: concurrent
-    # publishes on the same domain must not interleave (that lost updates and
-    # left torn archives). The live write is atomic (temp + os.replace) so a
-    # concurrent READER never snapshots a truncated file either.
     with _publish_guard(domain):
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         archive_name: Optional[str] = None
@@ -275,9 +231,8 @@ def publish(domain: str, new_dict: dict, actor: str,
                     current_version = json.loads(current_raw).get("version", "unknown")
                 except Exception:
                     current_version = "unknown"
-                # Version in the filename so `ls` alone answers "what was live
-                # before this publish"; sanitized so a hostile version string
-                # can't smuggle path separators into the archive name.
+                # Version in the filename answers "what was live before"; sanitized
+                # so a hostile version can't inject path separators.
                 safe_version = re.sub(r"[^A-Za-z0-9._]", "_", str(current_version))[:40]
                 archive_name = f"{ts}-{safe_version}.json"
                 _atomic_write_json_raw(os.path.join(vdir, archive_name), current_raw)
@@ -301,10 +256,8 @@ def publish(domain: str, new_dict: dict, actor: str,
 
 
 def list_versions(domain: str) -> list:
-    """Archived snapshots newest-first as
-    ``[{archive_name, version, ts, actor}]``. ``actor``/``ts`` are joined from
-    publish_log.jsonl (the publish that archived that file); when no log row
-    matches, ``ts`` falls back to the file mtime and ``actor`` is None."""
+    """Archived snapshots newest-first: ``[{archive_name, version, ts, actor}]``.
+    ts/actor come from publish_log, else file mtime and None."""
     vdir = versions_dir(domain)
     if not os.path.isdir(vdir):
         return []
@@ -354,12 +307,8 @@ def list_versions(domain: str) -> list:
 
 def rollback(domain: str, archive_name: str, actor: str,
              validate_fn: Optional[Callable[[dict], list]] = None) -> dict:
-    """Re-publish an archived snapshot. The archive name is realpath+commonpath
-    jailed INSIDE versions_dir (symlinks included) so a traversal name can
-    never read outside the archive dir. Rollback goes THROUGH publish(), so it
-    itself archives the (bad) current file and lands in the publish log — a
-    rollback is never an invisible state change. Mirrors
-    routing_policy.rollback_policy exactly."""
+    """Re-publish an archived snapshot. The name is realpath-jailed inside
+    versions_dir. Goes through publish(), so rollback itself is archived and logged."""
     if not archive_name or os.path.basename(archive_name) != archive_name:
         raise ValueError("invalid archive name")
     versions_root = os.path.realpath(versions_dir(domain))

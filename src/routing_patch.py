@@ -1,12 +1,6 @@
-"""src/routing_patch.py — Phase 3: extracts a unified diff from a model's raw
-completion text and validates its shape (file count, changed-line count,
-forbidden/generated paths, traversal) per spec Section 12
-(ODYSSEUS_POLICY: maxChangedFilesWithoutApproval=8, maxPatchLinesWithoutApproval=600).
+"""Extract a unified diff from model output and validate its shape.
 
-Deliberately pure text validation -- never touches the filesystem, never
-shells out to git, never applies anything. Creating a worktree/branch,
-applying the patch, running verification commands, and rollback are Phase 4
-("Safe Execution"), not built here."""
+Pure text validation: never touches the filesystem, git, or applies anything."""
 import re
 from typing import List, Optional
 
@@ -15,10 +9,7 @@ from src.routing_context import looks_like_secret, safe_repo_path
 MAX_CHANGED_FILES = 8
 MAX_CHANGED_LINES = 600
 
-# Paths a patch must never touch, even if otherwise well-formed. Not
-# exhaustive -- a deliberate, reasonable default denylist for VCS internals
-# and generated/dependency trees, matching the framing already used for
-# routing_context.py's _SECRET_PATTERNS.
+# Paths a patch must never touch; a reasonable default, not exhaustive.
 _FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"(^|/)\.git(/|$)"),
     re.compile(r"(^|/)node_modules(/|$)"),
@@ -28,16 +19,8 @@ _FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"(^|/)\.next(/|$)"),
 ]
 
-# Matches ANY fenced code block regardless of language tag ("python", "diff",
-# no tag at all, ...) -- deliberately NOT anchored to a "diff"/"patch" tag in
-# the regex itself. A response typically contains more than one fenced block
-# (e.g. an "Evidence" block showing the ORIGINAL buggy code, then a "Patch"
-# block with the actual diff); anchoring the opening delimiter to a specific
-# tag while leaving the closing delimiter untagged caused an untagged/
-# differently-tagged EARLIER fence (like "```python") to pair with the
-# actual diff's closing fence instead of its own, corrupting extraction.
-# Matching every fence correctly and filtering by content afterward (via
-# _looks_diff_shaped) avoids that mispairing entirely.
+# Match every fence regardless of tag, then filter by content: anchoring on a
+# "diff" tag lets an earlier fence pair with the diff's closing delimiter.
 _FENCE_RE = re.compile(r"```[^\n]*\r?\n(.*?)```", re.DOTALL)
 _DIFF_GIT_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _HEADER_RE = re.compile(r"^--- (\S+)\r?\n\+\+\+ (\S+)", re.MULTILINE)
@@ -48,12 +31,7 @@ def _looks_diff_shaped(text: str) -> bool:
 
 
 def _trim_to_diff_end(text: str) -> str:
-    """A bare (unfenced) diff embedded in prose has no closing delimiter to
-    bound it, unlike a fenced block -- trim at the first line that doesn't
-    look like unified-diff content (a header, hunk marker, +/-/context line,
-    a "no newline" marker, or a blank line inside a hunk). Everything before
-    that is the diff; everything from there on is trailing commentary that
-    would otherwise get baked into the patch.diff artifact."""
+    """Trim an unfenced diff at the first non-diff line, dropping trailing prose."""
     lines = text.splitlines()
     end = 0
     for line in lines:
@@ -65,11 +43,7 @@ def _trim_to_diff_end(text: str) -> str:
 
 
 def extract_diff(response_text: str) -> Optional[str]:
-    """Look for a fenced code block containing a diff first (how most models
-    wrap patch output, whatever tag they give the fence or none at all);
-    fall back to bare unified-diff markers appearing directly in the text,
-    trimmed at the point the diff content ends. Returns None if nothing
-    diff-shaped is found."""
+    """Prefer a fenced diff, else a bare one; None if nothing diff-shaped is found."""
     if not response_text:
         return None
     for block in _FENCE_RE.findall(response_text):
@@ -83,21 +57,13 @@ def extract_diff(response_text: str) -> Optional[str]:
 
 
 def _file_paths_from_header(dash_path: str, plus_path: str) -> List[str]:
-    """`dash_path`/`plus_path` are the raw --- / +++ header targets (e.g.
-    "a/src/foo.py", "/dev/null"), still carrying their a/ or b/ prefix.
-    Returns the distinct real repo-relative path(s) touched -- one for a
-    modify, one for a pure add or delete (the /dev/null side is not a real
-    path and is skipped)."""
+    """Distinct repo-relative paths from raw ---/+++ targets, skipping /dev/null."""
     paths = []
     for raw in (dash_path, plus_path):
         if raw == "/dev/null":
             continue
-        # Strip a conventional single-letter prefix ("a/", "b/") if present;
-        # tolerate patches that omit it (bare repo-relative paths).
         stripped = re.sub(r"^[ab]/", "", raw)
         paths.append(stripped)
-    # Modify: both sides are the same real path -- one entry. Add/delete:
-    # one side was /dev/null -- the other real path is the only entry.
     seen = []
     for p in paths:
         if p not in seen:
@@ -106,11 +72,7 @@ def _file_paths_from_header(dash_path: str, plus_path: str) -> List[str]:
 
 
 def parse_patch_shape(diff_text: str) -> dict:
-    """Parse `--- a/x` / `+++ b/x` header pairs and their following hunks
-    into changed-file and changed-line counts. Not a full unified-diff
-    parser (no hunk-range/context validation) -- shape validation only, per
-    spec Section 12's acceptance criterion ("rejects oversized/unsafe
-    diffs"), not a correctness check of whether the diff would even apply."""
+    """Count changed files and lines; shape only, not whether the diff applies."""
     changed_files: List[str] = []
     changed_lines = 0
 
@@ -142,10 +104,7 @@ def parse_patch_shape(diff_text: str) -> dict:
 
 
 def validate_patch_shape(diff_text: Optional[str], repo_path: str) -> dict:
-    """Returns {"extracted", "allowed", "reasons", "file_count",
-    "changed_lines", "changed_files"}. `allowed=False` with `reasons`
-    explaining why whenever the patch is oversized, touches a
-    forbidden/secret/out-of-repo path, or no diff was found at all."""
+    """`allowed=False` with `reasons` when oversized, touching a forbidden path, or absent."""
     if not diff_text:
         return {
             "extracted": False, "allowed": False,

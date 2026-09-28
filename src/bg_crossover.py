@@ -1,28 +1,13 @@
 """Tripwire for background-utility completions landing in a user's chat.
 
-Odysseus runs several *background* prompts against the same model and endpoint
-as the user's chat turn: memory extraction, skill extraction, the completion
-verifier. Each one has a rigid, machine-readable output contract that no reply
-to a human ever satisfies. That makes them cheaply recognisable, and on
-2026-08-24/25 two of them were persisted verbatim as the assistant's reply in a
-live session (POS-AI-23):
+Background prompts (memory extraction, skill extraction, the completion
+verifier) share the chat's model and endpoint, and each has a rigid output
+contract no human reply satisfies. This detector lets the chat finaliser catch
+one that leaked through; the isolation in ``src/llm_lane.py`` and
+``src/background_tasks.py`` is the actual fix.
 
-* session ``8670f5ae`` 2026-08-24 17:43:13 — the memory extractor's
-  ``[{"text": ..., "category": "identity"}, ...]`` array, answering the user
-  message "yes install whatever we need to make this work";
-* session ``2c490607`` 2026-08-25 11:42:43 — the skill extractor's literal
-  ``null`` decline token (the string "return null" appears nowhere in this
-  codebase except that extractor's prompt), answering a FizzBuzz request.
-
-Both were written by the normal chat finaliser, with normal chat metadata, so
-nothing downstream could tell they were wrong. This module gives the finaliser a
-way to tell. It is deliberately a *detector*, not a fix: the isolation work
-(``src/llm_lane.py``, ``src/background_tasks.py``) is what should stop the
-crossover happening; this is what makes it impossible to happen *silently* if
-some path we have not found still leaks.
-
-Kept intentionally narrow — every rule matches a whole response against an
-exact background output contract, never a substring of a longer human answer.
+Every rule matches a whole response against an exact contract, never a
+substring of a longer answer.
 """
 
 from __future__ import annotations
@@ -34,9 +19,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Only inspect short replies. Every background contract here produces a small
-# payload; a long, discursive answer is a real reply even if it happens to
-# contain one of these shapes somewhere inside it.
+# Background contracts are short; a long answer is a real reply even if it
+# contains one of these shapes.
 MAX_INSPECT_CHARS = 4000
 
 # The skill extractor's documented decline token, plus the shapes an empty
@@ -85,12 +69,8 @@ def _is_skill_extraction(payload) -> bool:
 
 
 def detect(response: str) -> Optional[str]:
-    """Return a short reason when ``response`` is a background subsystem's
-    output rather than a reply to the user, else ``None``.
-
-    The reason string is stable and safe to log/store — it names the
-    subsystem, never the content.
-    """
+    """Return a stable, loggable reason naming the subsystem when ``response`` is
+    background output rather than a reply, else ``None``."""
     if not isinstance(response, str):
         return None
     body = _strip_think(response).strip()
@@ -116,8 +96,7 @@ def detect(response: str) -> Optional[str]:
     return None
 
 
-# Shown to the user in place of the leaked utility output. Says what happened
-# and what to do, rather than presenting `null` as an answer.
+# Replaces leaked utility output in the user's view.
 USER_NOTICE = (
     "⚠️ Something went wrong on my side: an internal background job's output was "
     "delivered into this chat instead of my reply to you. Nothing from it was "
@@ -126,12 +105,10 @@ USER_NOTICE = (
 
 
 def guard_user_reply(response: str, *, session_id: str = "", where: str = "chat") -> tuple:
-    """Screen a completion that is about to be shown/persisted as the assistant's
-    reply.
+    """Screen a completion before it is shown/persisted as the reply.
 
-    Returns ``(content, reason_or_None)``. When a crossover is detected the
-    content is replaced with :data:`USER_NOTICE` and an ERROR is logged with a
-    stable ``[bg-crossover]`` marker so it can be alerted on.
+    Returns ``(content, reason_or_None)``. On detection the content becomes
+    :data:`USER_NOTICE` and an ERROR is logged with a ``[bg-crossover]`` marker.
     """
     reason = detect(response)
     if not reason:

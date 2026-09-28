@@ -1,23 +1,10 @@
-"""src/agent_execution.py — pinned execution identity for the agent loop.
+"""Pinned execution identity for the agent loop.
 
-Reliability invariant this module exists to enforce:
-
-    One agent execution run has ONE pinned execution target.
-
-Once a run starts on a specific provider / model / endpoint / runtime, every
-working-model invocation of that run — reasoning rounds, tool calls, tool-result
-continuations, test/fix/test iterations and ordinary retries — must use that
-exact execution identity. The identity may be replaced ONLY by an explicit,
-recorded transition (provider fallback, model escalation, operator-approved
-reroute), which is represented as a NEW :class:`AgentExecutionTarget` carrying
+Invariant: one agent execution run has one pinned execution target. Every
+working-model call in a run (rounds, tool continuations, retries) uses that
+identity; it changes only via an explicit recorded transition (fallback,
+escalation, approved reroute), represented as a new AgentExecutionTarget with
 ``previous_execution_id`` and ``transition_reason``.
-
-It is deliberately tiny and dependency-light. Provider detection / context
-window / reasoning-capability lookups live in ``llm_core`` and
-``model_context``; this module only *captures* their results into an immutable
-value object so the loop never has to re-derive them mid-run, plus the pure
-helpers used to classify a provider failure and to order a fallback pool so a
-same-model / different-provider switch is preferred over a model change.
 """
 from __future__ import annotations
 
@@ -29,38 +16,32 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-#: Failure classes surfaced on telemetry. A provider/runtime outage is NEVER
-#: model-quality evidence — callers must keep these separate from model or
-#: reasoning failure (governance) signals.
+#: A provider/runtime outage is never model-quality evidence; keep these
+#: separate from model or reasoning failure signals.
 FAILURE_TRANSIENT = "provider_transient"
 FAILURE_PERMANENT = "provider_permanent"
 FAILURE_UNKNOWN = "provider_unknown"
 
-#: Tool-call format the pinned target speaks. Native = OpenAI-style
-#: ``tool_calls``; fenced = the model copies fenced-block examples from the
-#: prompt. Pinned per execution so round 5 can never be invoked under round-1
-#: tool assumptions for a different backend.
+#: Tool-call format the pinned target speaks (native ``tool_calls`` or fenced
+#: blocks), pinned so later rounds never assume a different backend.
 TOOL_PROFILE_NATIVE = "native-tools"
 TOOL_PROFILE_FENCED = "fenced-tools"
 
-#: Execution modes a pinned target can describe. "agent" is the multi-round
-#: tool loop; the others are recorded for child/adjacent executions (the
-#: completion verifier is a fresh-context child of the same pinned target).
+#: "agent" is the multi-round tool loop; others record child executions (e.g.
+#: the completion verifier).
 EXECUTION_MODE_AGENT = "agent"
 EXECUTION_MODE_CHAT = "chat"
 EXECUTION_MODE_VERIFIER = "verifier"
 
-#: Upstream HTTP statuses that are worth an ordinary retry on the SAME target
-#: before any fallback transition is considered. Mirrors the retryable set
-#: llm_core's non-streaming path already retries.
+#: Statuses worth an ordinary retry on the same target before any fallback;
+#: mirrors llm_core's non-streaming retry set.
 _TRANSIENT_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
 _STATUS_RE = re.compile(r'"status"\s*:\s*(\d{3})')
 _TEXT_RE = re.compile(r'"(?:text|error)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
-#: Provider -> runtime label. The label is free-form on purpose: a future
-#: execution may be a local OpenAI-compatible HTTP server, a native API, a
-#: Cline agent runtime, or a CLI (Claude Code / Codex / Google subscription).
+#: Provider -> runtime label; free-form so HTTP, native API, agent runtime or
+#: CLI backends all fit.
 _RUNTIME_BY_PROVIDER = {
     "ollama": "ollama",
     "anthropic": "anthropic-api",
@@ -75,11 +56,7 @@ def _utc_iso() -> str:
 
 
 def _model_identity(model: str) -> str:
-    """Provider-agnostic model identity for same-model comparison.
-
-    Strips a vendor namespace so ``openrouter``'s ``deepseek/deepseek-v4-pro``
-    and a direct ``deepseek-v4-pro`` compare equal. Pure/local — no network.
-    """
+    """Provider-agnostic model id (strips a vendor namespace) for same-model comparison."""
     text = (model or "").strip().lower()
     if "/" in text:
         text = text.rsplit("/", 1)[-1]
@@ -87,12 +64,8 @@ def _model_identity(model: str) -> str:
 
 
 def headers_fingerprint(headers) -> str:
-    """Stable, non-secret fingerprint of the auth headers in play.
-
-    Raw headers are never persisted in telemetry (they carry bearer keys);
-    only this digest is recorded so a transition to a different credential set
-    on the same URL is still distinguishable in the audit trail.
-    """
+    """Non-secret digest of the auth headers, so credential changes on the same
+    URL are visible in the audit trail without persisting bearer keys."""
     if not headers:
         return ""
     try:
@@ -103,8 +76,7 @@ def headers_fingerprint(headers) -> str:
 
 
 def detect_provider(endpoint_url: str) -> str:
-    """Provider id for ``endpoint_url``; degrades safely when llm_core is
-    unavailable (import-related, not a network call)."""
+    """Provider id for ``endpoint_url``; degrades safely if llm_core is unavailable."""
     try:
         from src.llm_core import _detect_provider
 
@@ -127,11 +99,7 @@ def _reasoning_mode(model: str) -> str:
 
 
 def _budget_domain(endpoint_url: str) -> str:
-    """'local' when the endpoint is loopback/RFC1918/LAN host, else 'remote'.
-
-    Only a recorded routing/budget hint on the identity; it never changes the
-    target itself.
-    """
+    """'local' for loopback/RFC1918/LAN hosts, else 'remote'. A hint only."""
     try:
         from src.model_context import is_local_endpoint
 
@@ -144,11 +112,9 @@ def _budget_domain(endpoint_url: str) -> str:
 class AgentExecutionTarget:
     """Immutable pinned execution identity for one agent execution.
 
-    Field names are intentionally generic (``runtime``, ``execution_mode``)
-    rather than "HTTP endpoint"-specific, so a future execution backed by a CLI
-    or agent runtime fits without a redesign. ``context_window`` /
-    ``tool_profile`` / ``reasoning_mode`` pin the *assumptions* the loop may
-    make for this execution.
+    Field names are generic so CLI or agent-runtime backends fit.
+    ``context_window``/``tool_profile``/``reasoning_mode`` pin the loop's
+    assumptions for this execution.
     """
 
     execution_id: str
@@ -173,7 +139,7 @@ class AgentExecutionTarget:
         return bool(self.previous_execution_id)
 
     def to_dict(self) -> dict:
-        """Audit/telemetry shape (safe to emit over SSE — no secrets)."""
+        """Audit/telemetry shape; safe to emit over SSE (no secrets)."""
         return {
             "execution_id": self.execution_id,
             "provider": self.provider,
@@ -207,12 +173,8 @@ def build_execution_target(
     previous: Optional[AgentExecutionTarget] = None,
     transition_reason: Optional[str] = None,
 ) -> AgentExecutionTarget:
-    """Resolve once and freeze an execution identity.
-
-    Called exactly once before round 1 and (only) again when the harness makes
-    an explicit transition decision; ``previous``/``transition_reason`` record
-    that transition. Never called inside the round loop for the working model.
-    """
+    """Resolve and freeze an execution identity. Called once before round 1 and
+    again only on an explicit transition; never inside the round loop."""
     provider = detect_provider(endpoint_url)
     return AgentExecutionTarget(
         execution_id=str(uuid.uuid4()),
@@ -252,11 +214,8 @@ def _extract_status(error) -> Optional[int]:
 
 
 def classify_provider_failure(error) -> str:
-    """Classify a provider/runtime failure (NOT a model reasoning failure).
-
-    ``error`` may be an ``event: error`` SSE chunk, an Exception, or a status
-    int. Transient failures are retry-worthy on the same target; permanent
-    failures are not.
+    """Classify a provider/runtime failure (not a model reasoning failure).
+    Transient failures are retry-worthy on the same target; permanent ones are not.
     """
     status = _extract_status(error)
     if status is not None:
@@ -296,12 +255,8 @@ def prefer_same_model_order(
     pinned_model: str,
     candidates: Sequence[Tuple[str, str, dict]],
 ) -> List[Tuple[str, str, dict]]:
-    """Order a fallback pool as 'same model / different provider' first.
-
-    Concretely: DeepSeek V4 Pro @ ClinePass -> DeepSeek V4 Pro @ OpenRouter is
-    preferred over DeepSeek V4 Pro -> Kimi K3. Order is otherwise preserved
-    (operator configuration wins within each group).
-    """
+    """Order a fallback pool with same-model/different-provider routes first,
+    otherwise preserving operator order."""
     pinned = _model_identity(pinned_model)
     same: List[Tuple[str, str, dict]] = []
     other: List[Tuple[str, str, dict]] = []
@@ -319,12 +274,8 @@ def select_transition_target(
     pool: Sequence[Tuple[str, str, dict]],
     used_routes: Iterable[Tuple[str, str]],
 ) -> Optional[Tuple[str, str, dict]]:
-    """Pick the next explicit-transition target from the fallback pool.
-
-    Same-model / different-provider candidates are tried first, then the rest.
-    Routes already attempted by this run (or identical to the current route)
-    are skipped so a transition always actually changes the identity.
-    """
+    """Pick the next transition target: same-model routes first, skipping
+    routes already tried so a transition always changes the identity."""
     used = list(used_routes or [])
     for cand in prefer_same_model_order(pinned_model, pool):
         route = (cand[0], cand[1])
