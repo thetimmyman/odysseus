@@ -53,8 +53,8 @@
   "absis": {
     "enabled": false,
     "sshTarget": "minipc",
-    "kubectlExecPrefix": "sudo kubectl exec -n tacticus deploy/absis-orchestrator --",
+    "kubectlExecPrefix": "kubectl exec -n app deploy/orchestrator --",
     "transportTimeoutSeconds": 30,
-    "note": "no llm_inference/oracle_runner workers deployed as of 2026-07-08; enable after workers exist in tacticus-analytics"
+    "note": "keep disabled until llm_inference/oracle_runner workers are deployed; set sshTarget/kubectlExecPrefix in the live data-volume policy"
   }
 }

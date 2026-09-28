@@ -41,8 +41,8 @@ def archive_root() -> str:
     """data_root()/routing/runs — the per-run artifact archive. A function,
     not a module constant (which this replaced), so the ODYSSEUS_DATA_DIR
     override routing_workdir.data_root() honors is picked up per call: host
-    CLIs on the Framework must land artifacts under
-    /mnt/framework-data/odysseus-data, not the checkout's ./data."""
+    CLIs must land artifacts under the deployment's ODYSSEUS_DATA_DIR, not
+    the checkout's ./data."""
     return os.path.join(data_root(), "routing", "runs")
 
 _RATE_LIMIT_RE = re.compile(r"->\s*429\b")

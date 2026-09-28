@@ -14,7 +14,7 @@ SECURITY MODEL (multi-user, network-exposed app — LAN + Tailscale, not public)
      never accept.
   2. ORIGIN ALLOWLIST (anti-CSWSH). A WebSocket is NOT subject to the same-origin
      policy and cookies ride along automatically, so any website the user visits
-     could open ws://framework:7000/... with the user's cookie and get a root
+     could open ws://<odysseus-host>:7000/... with the user's cookie and get a root
      shell (cross-site WebSocket hijacking). We validate the ``Origin`` header
      against the app's own ALLOWED_ORIGINS allowlist before accept().
   3. NON-ROOT SHELL. The uvicorn process already runs as the unprivileged
@@ -24,7 +24,7 @@ SECURITY MODEL (multi-user, network-exposed app — LAN + Tailscale, not public)
      path is fixed and not shell-interpolated. cwd is the caller's own session
      ``project_root`` if set, else a safe default under /app/work or HOME.
   4. ADMIN-ONLY + OWNER-SCOPED REGISTRY. Bound to the existing admin gate (this
-     is Tim's tool, not the wife/child accounts). The PTY registry in
+     is an operator tool, not for non-admin accounts). The PTY registry in
      ``app.state`` is keyed by ``(owner, session_id)`` and the owner is
      re-validated on every input/resize/attach so one user can never attach to,
      write to, or resize another user's PTY.
@@ -137,7 +137,7 @@ def _ws_is_admin(websocket: WebSocket, user: Optional[str]) -> bool:
 
 def _allowed_origins() -> set[str]:
     """The app's own origin allowlist — reused verbatim from the ALLOWED_ORIGINS
-    env the CORS middleware already uses (http(s)://framework:7000, the LAN IP,
+    env the CORS middleware already uses (the host name, the LAN IP,
     the Tailscale name, localhost). Normalised (lowercase, no trailing slash)."""
     raw = os.getenv("ALLOWED_ORIGINS", "http://localhost,http://127.0.0.1")
     out: set[str] = set()

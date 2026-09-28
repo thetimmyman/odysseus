@@ -5,7 +5,7 @@ resident coordinator model is good enough to *earn the coordinator seat*. It
 replays a fixture suite N times against a decision producer, scores every
 decision across 12 weighted dimensions, aggregates the per-dimension rates,
 and enforces the Section-20 hard gates. The verdict is a report, never a
-side effect — flipping coordinator.provider to "endpoint" stays Tim's decision
+side effect — flipping coordinator.provider to "endpoint" stays an operator decision
 (see the runner docstring for the exact steps).
 
 DESIGN — LLM-FREE / INJECTABLE
@@ -528,7 +528,7 @@ def build_endpoint_policy(base_policy: dict, endpoint_name: str, model: Optional
     """A policy override that points a CoordinatorClient at `endpoint_name` as
     the resident coordinator, WITHOUT mutating the live policy. The benchmark
     reports whether that candidate passes the gates; it never flips
-    coordinator.provider on disk (that stays Tim's decision)."""
+    coordinator.provider on disk (that stays an operator decision)."""
     import copy
 
     policy = copy.deepcopy(base_policy or {})

@@ -86,6 +86,9 @@ services:
       # unless this is set true. Generic default = false (fail-closed). This box is
       # a trusted LAN/Tailscale dev host served over HTTP, so .env sets it true.
       - DEV_PREVIEW_ALLOW_INSECURE_ENV_WRITE=${DEV_PREVIEW_ALLOW_INSECURE_ENV_WRITE:-false}
+      # Absolute path of the Vaultwarden fetch helper on the Dev Preview ssh
+      # target (empty = the code's placeholder default).
+      - DEV_PREVIEW_VW_HELPER=${DEV_PREVIEW_VW_HELPER:-}
       # PUID / PGID — the user/group the container drops to before
       # running uvicorn (entrypoint also chowns /app/data + /app/logs
       # to match, so bind-mounted files stay editable from the host).
