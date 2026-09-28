@@ -131,6 +131,9 @@ class AgentExecutionTarget:
     selection_reason: str
     headers_key: str = ""
     session_id: str = ""
+    #: The capability this target was selected to satisfy, recorded so evidence
+    #: can show the work was not quietly downgraded to a weaker target.
+    capability: str = ""
     previous_execution_id: Optional[str] = None
     transition_reason: Optional[str] = None
 
@@ -155,6 +158,7 @@ class AgentExecutionTarget:
             "selection_reason": self.selection_reason,
             "headers_key": self.headers_key,
             "session_id": self.session_id,
+            "capability": self.capability,
             "previous_execution_id": self.previous_execution_id,
             "transition_reason": self.transition_reason,
         }
@@ -170,6 +174,7 @@ def build_execution_target(
     execution_mode: str = EXECUTION_MODE_AGENT,
     selection_reason: str = "initial_resolution",
     session_id: str = "",
+    capability: str = "",
     previous: Optional[AgentExecutionTarget] = None,
     transition_reason: Optional[str] = None,
 ) -> AgentExecutionTarget:
@@ -191,6 +196,7 @@ def build_execution_target(
         selection_reason=selection_reason,
         headers_key=headers_fingerprint(headers),
         session_id=session_id or "",
+        capability=capability or "",
         previous_execution_id=(previous.execution_id if previous else None),
         transition_reason=transition_reason,
     )
