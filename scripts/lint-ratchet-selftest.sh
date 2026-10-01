@@ -19,6 +19,8 @@
 #   7b ruff unavailable (RUFF_BIN override) ............... 2
 #   7c base commit has no baseline file ................... 2
 #   7d broken ruff.toml .................................. 2
+#   8a clean baseline bootstrap (no .py changes) ......... 0
+#   8b bootstrap with .py changes ....................... 2
 #
 # Exit: 0 only if every control produced its expected code.
 set -u
@@ -163,6 +165,35 @@ base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
 printf 'this is not valid toml [[[\n' > "$d/ruff.toml"
 git -C "$d" commit -qam broken-config
 expect "7d broken config fails closed" 2 "$(run_gate "$d" "BASE=$base")"
+
+# --- control 8: baseline bootstrap ----------------------------------------
+mk_boot() { # repo whose base commit has NO baseline file
+  local d="$WORKROOT/$1"
+  mkdir -p "$d"
+  git -C "$d" init -q
+  git -C "$d" config user.email selftest@example.invalid
+  git -C "$d" config user.name selftest
+  cp "$RUFF_CFG" "$d/ruff.toml"
+  printf 'x = 1\n' > "$d/app.py"
+  git -C "$d" add -A && git -C "$d" commit -qm base-no-baseline
+  echo "$d"
+}
+add_baseline_only() { # HEAD adds baseline + docs, no .py changes
+  local d="$1"
+  python3 -c "import json,os,sys; os.makedirs(sys.argv[1]+'/ci',exist_ok=True); json.dump({'version':1,'generated_from_base':'boot','tool':'ruff','rules':['E9','F'],'findings':{}}, open(sys.argv[1]+'/ci/lint-baseline.json','w'))" "$d"
+  printf '# policy\n' > "$d/docs-lint-policy.md"
+  git -C "$d" add -A && git -C "$d" commit -qm introduce-baseline
+}
+d=$(mk_boot c8a)
+base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
+add_baseline_only "$d"
+expect "8a clean baseline bootstrap (no .py changes)" 0 "$(run_gate "$d" "BASE=$base")"
+
+d=$(mk_boot c8b)
+base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
+add_baseline_only "$d"
+printf 'print(boot_undefined)\n' >> "$d/app.py"; git -C "$d" commit -qam py-change-too
+expect "8b bootstrap with .py changes fails closed" 2 "$(run_gate "$d" "BASE=$base")"
 
 echo
 echo "selftest: $PASS passed, $FAIL failed (workdir: $WORKROOT)"

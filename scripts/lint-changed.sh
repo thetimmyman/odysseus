@@ -56,8 +56,18 @@ $RUFF --version >/dev/null 2>&1 || die2 "ruff present but not runnable — faili
 BASELINE_TMP="$(mktemp)"
 RAW_TMP="$(mktemp)"
 trap 'rm -f "$BASELINE_TMP" "$RAW_TMP"' EXIT
-git show "${BASE}:ci/lint-baseline.json" > "$BASELINE_TMP" 2>/dev/null \
-  || die2 "no ci/lint-baseline.json at base '$BASE' — cannot certify, failing closed"
+if ! git show "${BASE}:ci/lint-baseline.json" > "$BASELINE_TMP" 2>/dev/null; then
+  # Bootstrap: the baseline itself is being introduced by this change.
+  # Allowed ONLY when this change adds the baseline AND touches no Python
+  # files — with no changed .py files there is nothing that could be
+  # self-blessed. Any other shape fails closed.
+  if git cat-file -e "HEAD:ci/lint-baseline.json" 2>/dev/null \
+     && [ -z "$(git diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- '*.py')" ]; then
+    echo "lint-changed: BOOTSTRAP — baseline introduced by this change; no changed Python files to lint. Pass." >&2
+    exit 0
+  fi
+  die2 "no ci/lint-baseline.json at base '$BASE' and this is not a clean baseline bootstrap — cannot certify, failing closed"
+fi
 
 # --- changed Python files (added/copied/modified/renamed) -------------------
 mapfile -t CHANGED < <(git diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- '*.py')
