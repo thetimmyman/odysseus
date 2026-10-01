@@ -32,8 +32,14 @@
 #     baseline reduction in the same or a follow-up PR (reduction-only).
 set -u
 
-die2()   { echo "lint-changed: ERROR (gate cannot run): $*" >&2; exit 2; }
-fail1()  { echo "lint-changed: FAIL: $*" >&2; exit 1; }
+die2() {
+  echo "lint-changed: ERROR (gate cannot run): $*" >&2
+  exit 2
+}
+fail1() {
+  echo "lint-changed: FAIL: $*" >&2
+  exit 1
+}
 
 BASE="${BASE:-${1:-}}"
 [ -n "$BASE" ] || die2 "BASE (comparison commit) is required, e.g. BASE=\$PR_BASE_SHA scripts/lint-changed.sh"
@@ -60,13 +66,13 @@ $RUFF --version >/dev/null 2>&1 || die2 "ruff present but not runnable — faili
 BASELINE_TMP="$(mktemp)"
 RAW_TMP="$(mktemp)"
 trap 'rm -f "$BASELINE_TMP" "$RAW_TMP" "/tmp/lint-changed-ruff-stderr.$$"' EXIT
-if ! git show "${BASE}:ci/lint-baseline.json" > "$BASELINE_TMP" 2>/dev/null; then
+if ! git show "${BASE}:ci/lint-baseline.json" >"$BASELINE_TMP" 2>/dev/null; then
   # Bootstrap: the baseline itself is being introduced by this change.
   # Allowed ONLY when this change adds the baseline AND touches no Python
   # files — with no changed .py files there is nothing that could be
   # self-blessed. Any other shape fails closed.
-  if git cat-file -e "HEAD:ci/lint-baseline.json" 2>/dev/null \
-     && [ -z "$(git diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- '*.py')" ]; then
+  if git cat-file -e "HEAD:ci/lint-baseline.json" 2>/dev/null &&
+    [ -z "$(git diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- '*.py')" ]; then
     echo "lint-changed: BOOTSTRAP — baseline introduced by this change; no changed Python files to lint. Pass." >&2
     exit 0
   fi
@@ -86,8 +92,8 @@ if git diff --name-only "${BASE}" HEAD -- ruff.toml | grep -q .; then
   set -e
   [ "$crc" -le 1 ] || die2 "ruff.toml changed and does not load (ruff exit $crc) — failing closed"
   case "$CANARY_OUT" in
-    *F821*) : ;;
-    *) die2 "ruff.toml changed and no longer flags the F821 canary — rule weakening requires separate explicit review" ;;
+  *F821*) : ;;
+  *) die2 "ruff.toml changed and no longer flags the F821 canary — rule weakening requires separate explicit review" ;;
   esac
 fi
 
@@ -98,7 +104,7 @@ fi
 
 # --- run ruff on changed files only ----------------------------------------
 set +e
-$RUFF check --config ruff.toml --output-format=json -- "${CHANGED[@]}" > "$RAW_TMP" 2>/tmp/lint-changed-ruff-stderr.$$
+$RUFF check --config ruff.toml --output-format=json -- "${CHANGED[@]}" >"$RAW_TMP" 2>/tmp/lint-changed-ruff-stderr.$$
 rc=$?
 set -e
 if [ "$rc" -gt 1 ]; then
@@ -173,8 +179,9 @@ gate_rc=$?
 
 # --- belt-and-braces: did this change grow the baseline file itself? -------
 if [ $gate_rc -eq 0 ] && git diff --name-only "${BASE}" HEAD -- ci/lint-baseline.json | grep -q .; then
-  PR_BASELINE_TMP="$(mktemp)"; trap 'rm -f "$BASELINE_TMP" "$RAW_TMP" "$PR_BASELINE_TMP"' EXIT
-  git show "HEAD:ci/lint-baseline.json" > "$PR_BASELINE_TMP" 2>/dev/null || die2 "baseline deleted in HEAD — baseline removal requires explicit review"
+  PR_BASELINE_TMP="$(mktemp)"
+  trap 'rm -f "$BASELINE_TMP" "$RAW_TMP" "$PR_BASELINE_TMP"' EXIT
+  git show "HEAD:ci/lint-baseline.json" >"$PR_BASELINE_TMP" 2>/dev/null || die2 "baseline deleted in HEAD — baseline removal requires explicit review"
   if ! python3 - "$BASELINE_TMP" "$PR_BASELINE_TMP" <<'PYEOF'
 import json, sys
 old = json.load(open(sys.argv[1]))["findings"]
