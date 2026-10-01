@@ -179,6 +179,10 @@ def generate_and_wrap_decision(
         decide_error = red_err
     result.validationErrors = [redact_text(e)[0] for e in result.validationErrors]
     result.auditNotes = [redact_text(n)[0] for n in result.auditNotes]
+    # The route itself can carry model-controlled strings (rationale, reasons) —
+    # hold the same redact-before-return bar as every other returned field.
+    if result.route is not None:
+        result.route = json.loads(redact_text(json.dumps(result.route))[0])
 
     pv = routing_policy.policy_versions()
     audit_id, redacted_raw, _applied = _persist_audit(db, task.id, raw, result, pv)
