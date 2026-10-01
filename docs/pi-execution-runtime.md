@@ -5,7 +5,7 @@ Pi Coding is Odysseus's **coding-agent execution plane**. Odysseus remains the
 
 | Plane | Owns |
 | --- | --- |
-| Odysseus | Jira/backlog integration, routing policy, model-role selection, provider/subscription selection, budgets and spend controls, provider health, work prioritization, audit scheduling, implementation scouting, governance policy, escalation decisions, evidence/history, operator controls, task lifecycle |
+| Odysseus | Tracker/backlog integration, routing policy, model-role selection, provider/subscription selection, budgets and spend controls, provider health, work prioritization, audit scheduling, implementation scouting, governance policy, escalation decisions, evidence/history, operator controls, task lifecycle |
 | Pi | inner coding-agent loop, reasoning/tool rounds, repository exploration, filesystem operations, shell execution, git operations, context lifecycle, compaction/session continuity, implementation execution, iterative test/fix/test |
 
 Odysseus does **not** re-implement the inner loop, and does **not** inject a
@@ -54,7 +54,7 @@ stdio):
 ```python
 runtime = get_pi_runtime()
 record = await runtime.start(task=..., worktree=..., model=..., constraints=[...],
-                             task_id=..., jira_ticket=..., odysseus_run_id=...)
+                             task_id=..., ticket_key=..., odysseus_run_id=...)
 runtime.events(record["execution_id"])          # mapped Odysseus events
 runtime.status(record["execution_id"])          # lifecycle + liveness
 await runtime.send(execution_id, message, streaming_behavior="steer")
@@ -65,10 +65,13 @@ await runtime.resume(execution_id, message=...) # same Pi session file
 
 Execution identity (`src/pi_executions.py`) is stored per execution under
 `<DATA_DIR>/pi/executions/<id>.json` plus an append-only
-`<id>.events.jsonl` ledger: odysseus run id, task id, Jira ticket, worktree,
+`<id>.events.jsonl` ledger: odysseus run id, task id, tracker ticket key, worktree,
 repo path, base commit, branch, model, provider, runtime, Pi session id and
 session file, timestamps, status, failure class/reason, files changed, tests
-run, result.
+run, result. The ticket key field was `jira_ticket` before the tracker moved
+off Jira: `POST /api/pi/executions` still accepts `jira_ticket` as a deprecated
+alias for `ticket_key`, and records written under the old name are read back
+as `ticket_key`.
 
 ## Event mapping
 

@@ -82,7 +82,7 @@ PACKET = {
 def build(packet, source, plan, **kwargs):
     """Seal a package with the shipped builder, overriding nothing by default."""
     return build_execution_package(packet, source=source, verification=plan,
-                                   run_id="r-1", jira_key="PS-638",
+                                   run_id="r-1", ticket_key="PS-638",
                                    allowed_tools=("write_file",), **kwargs)
 
 
@@ -92,7 +92,7 @@ def test_a_packageable_packet_seals_with_a_valid_hash(source, plan):
 
     assert package_hash_is_valid(payload) is True
     assert payload["package_id"] == "P-1:r-1"
-    assert payload["jira_key"] == "PS-638"
+    assert payload["ticket_key"] == "PS-638"
     assert payload["execution_role"] == "local_implementer"
     assert payload["interface_digest"] == pkg.interface_digest
 

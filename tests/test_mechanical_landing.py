@@ -11,7 +11,7 @@ from src.execution_package import (
 from src.evidence_package import validate_evidence_package, seal_evidence_package
 from src.mechanical_landing import (
     LandingPolicy, LandingRefusalCode, LandingRefused, LandingStrategy,
-    JiraReconciliationAdapter, RepositoryLandingAdapter, SemanticAcceptance,
+    TrackerReconciliationAdapter, RepositoryLandingAdapter, SemanticAcceptance,
     evaluate_landing_eligibility, landing_receipt_hash_is_valid,
     land_exact_candidate, make_semantic_acceptance, prove_landed_equivalence,
 )
@@ -72,7 +72,7 @@ def make_real_run(root, *, out_of_scope=False, candidate_value="B"):
         verifier_paths=[VERIFIER], verifier_digests=seal_verifier_digests(str(root), [VERIFIER]),
         positive_control="known-good passes", negative_control="broken fails")
     package = build_execution_package(PACKET, source=source_a, verification=plan,
-                                      run_id="r-1", jira_key="PS-578",
+                                      run_id="r-1", ticket_key="PS-578",
                                       allowed_tools=("write_file",))
     dispatch = make_dispatch_receipt(
         receipt_id="d-1", execution_package_hash=package.package_hash,
@@ -246,10 +246,10 @@ class Repo(RepositoryLandingAdapter):
     def land(self, strategy): self.calls += 1; return self.landed
 
 
-class Jira(JiraReconciliationAdapter):
+class Tracker(TrackerReconciliationAdapter):
     def __init__(self, fail=False): self.fail = fail
     def reconcile(self, receipt):
-        if self.fail: raise RuntimeError("jira unavailable")
+        if self.fail: raise RuntimeError("tracker unavailable")
         return {"ok": True, "issue": "PS-578", "transition": "bookkeeping"}
 
 
@@ -261,7 +261,7 @@ def test_receipt_is_complete_revalidatable_and_preserves_adapter_result(repo):
               "pr_number": 12, "pr_url": "https://example.test/pr/12", "merge_result": "merged"}
     receipt = land_exact_candidate(
         evidence_package=package, acceptance=acceptance,
-        repository=Repo(source_b.to_dict(), landed), jira=Jira(),
+        repository=Repo(source_b.to_dict(), landed), tracker=Tracker(),
         current_source=source_b.to_dict(), governance=(),
         policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
     payload = receipt.to_dict()
@@ -274,16 +274,16 @@ def test_receipt_is_complete_revalidatable_and_preserves_adapter_result(repo):
     assert not landing_receipt_hash_is_valid(payload)
 
 
-def test_jira_failure_keeps_truthful_partial_receipt(repo):
+def test_tracker_failure_keeps_truthful_partial_receipt(repo):
     package, _, source_b, _, _ = make_real_run(repo)
     receipt = land_exact_candidate(
         evidence_package=package, acceptance=acceptance_for(package, source_b),
         repository=Repo(source_b.to_dict(), {"head_sha": "squashed",
-                  "diff_digest": source_b.tracked_diff_digest}), jira=Jira(fail=True),
+                  "diff_digest": source_b.tracked_diff_digest}), tracker=Tracker(fail=True),
         current_source=source_b.to_dict(), governance=(),
         policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
-    assert receipt.reconciliation_state == "REPOSITORY_LANDED_JIRA_FAILED"
-    assert receipt.reconciliation_error_code == "JIRA_RECONCILIATION_FAILED"
+    assert receipt.reconciliation_state == "REPOSITORY_LANDED_TRACKER_FAILED"
+    assert receipt.reconciliation_error_code == "TRACKER_RECONCILIATION_FAILED"
     assert receipt.landed_head == "squashed"
     assert receipt.deployment_implication == "none"
 

@@ -89,7 +89,7 @@ def create_execution(
     runtime: str = "pi",
     odysseus_run_id: Optional[str] = None,
     task_id: Optional[str] = None,
-    jira_ticket: Optional[str] = None,
+    ticket_key: Optional[str] = None,
     constraints: Optional[List[str]] = None,
     execution_id: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -99,7 +99,7 @@ def create_execution(
         "execution_id": eid,
         "odysseus_run_id": odysseus_run_id or eid,
         "task_id": task_id,
-        "jira_ticket": jira_ticket,
+        "ticket_key": ticket_key,
         "task": task or "",
         "constraints": list(constraints or []),
         "worktree": assigned,
@@ -156,9 +156,14 @@ def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
+    # Records written before the tracker-neutral rename carry ``jira_ticket``.
+    if "ticket_key" not in data and "jira_ticket" in data:
+        data["ticket_key"] = data.pop("jira_ticket")
+    return data
 
 
 def list_executions(limit: int = 50) -> List[Dict[str, Any]]:
