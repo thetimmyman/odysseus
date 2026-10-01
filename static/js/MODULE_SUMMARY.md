@@ -5,10 +5,10 @@ This document describes what each JavaScript module is responsible for.
 
 > **Note:** This file is a partial, historical overview — not a complete authoritative
 > inventory. The authoritative module set is the current `static/js/` tree plus the
-> scripts loaded by `static/index.html`. As of this writing that tree holds **65 `.js`
-> files** across **8 subdirectories** (`calendar/`, `color/`, `compare/`, `editor/`,
-> `emailLibrary/`, `markdown/`, `research/`, `util/`), and `static/index.html` loads
-> **35** `/static…` script tags. The catalog below covers only the original core
+> scripts loaded by `static/index.html`. As of this writing that tree holds **157 `.js`
+> files** across **9 subdirectories** (`calendar/`, `color/`, `compare/`, `editor/`,
+> `emailLibrary/`, `markdown/`, `model/`, `research/`, `util/`), and `static/index.html` loads
+> **43** `/static…` script tags. The catalog below covers only the original core
 > modules and is not kept in sync with every module.
 
 ---
