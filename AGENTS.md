@@ -50,9 +50,14 @@ route modules (`routes/`), core plumbing (`core/`, `src/`), feature services
   may only REDUCE it (via fixing findings). Any growth, and any weakening of
   `ruff.toml`, requires separate explicit review. The gate reads the
   baseline from the base commit, so editing it in your PR does not help.
-- **Never add `continue-on-error`, `|| true`, `# noqa`, or disabled/skipped
-  tests to hide a failure.** A check that cannot run must fail loudly (exit 2),
-  not silently pass.
+- **Never add `continue-on-error`, `|| true`, or disabled/skipped tests to
+  hide a failure.** A check that cannot run must fail loudly (exit 2), not
+  silently pass.
+- **`# noqa` suppression is forbidden by policy.** The ratchet cannot
+  technically detect it (ruff honors noqa by design) — reviewers must
+  check changed diffs for added `# noqa` comments. Known gap, stated plainly.
+- Run the gate **after committing**: it refuses to run against a dirty
+  Python working tree (its file list comes from HEAD, ruff reads disk).
 - **Never mass-format or bulk-autofix existing application code** (no
   repo-wide `ruff --fix`, no blanket reformat).
 - **Never commit secrets**: API keys, tokens, private logs, private hostnames,

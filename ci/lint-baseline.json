@@ -8,7 +8,7 @@
   },
   "core/platform_compat.py": {
    "F401 `sys` imported but unused": 1,
-   "F811 Redefinition of unused `sys` from line 21: `sys` redefined here": 1
+   "F811 Redefinition of unused `sys` from line N: `sys` redefined here": 1
   },
   "mcp_servers/email_server.py": {
    "F401 `datetime.timedelta` imported but unused": 1,
@@ -17,15 +17,15 @@
   "routes/calendar_routes.py": {
    "F401 `src.user_time.set_user_tz_name` imported but unused": 1,
    "F401 `src.user_time.set_user_tz_offset` imported but unused": 1,
-   "F811 Redefinition of unused `delete_calendar` from line 855: `delete_calendar` redefined here": 1,
-   "F811 Redefinition of unused `set_user_tz_name` from line 182: `set_user_tz_name` redefined here": 1,
-   "F811 Redefinition of unused `set_user_tz_offset` from line 183: `set_user_tz_offset` redefined here": 1
+   "F811 Redefinition of unused `delete_calendar` from line N: `delete_calendar` redefined here": 1,
+   "F811 Redefinition of unused `set_user_tz_name` from line N: `set_user_tz_name` redefined here": 1,
+   "F811 Redefinition of unused `set_user_tz_offset` from line N: `set_user_tz_offset` redefined here": 1
   },
   "routes/cookbook_helpers.py": {
    "F401 `core.platform_compat.IS_WINDOWS` imported but unused": 1
   },
   "routes/cookbook_routes.py": {
-   "F811 Redefinition of unused `COOKBOOK_STATE_FILE` from line 18: `COOKBOOK_STATE_FILE` redefined here": 1
+   "F811 Redefinition of unused `COOKBOOK_STATE_FILE` from line N: `COOKBOOK_STATE_FILE` redefined here": 1
   },
   "routes/crew_routes.py": {
    "F401 `core.database.Crew` imported but unused": 1
@@ -33,7 +33,7 @@
   "routes/document_helpers.py": {
    "F401 `re` imported but unused": 1,
    "F401 `src.upload_handler.UploadHandler` imported but unused": 1,
-   "F811 Redefinition of unused `re` from line 7: `re` redefined here": 1
+   "F811 Redefinition of unused `re` from line N: `re` redefined here": 1
   },
   "routes/email_pollers.py": {
    "F401 `routes.email_helpers._pre_retrieve_context` imported but unused": 1,
@@ -45,7 +45,7 @@
   "routes/gallery_routes.py": {
    "F401 `pathlib.Path` imported but unused": 2,
    "F401 `src.auth_helpers.owner_filter` imported but unused": 1,
-   "F811 Redefinition of unused `owner_filter` from line 15: `owner_filter` redefined here": 1
+   "F811 Redefinition of unused `owner_filter` from line N: `owner_filter` redefined here": 1
   },
   "routes/mcp_routes.py": {
    "F401 `src.constants.DATA_DIR` imported but unused": 1
@@ -170,7 +170,7 @@
    "F401 `src.dispatch_routing.ROLE_VERIFIER` imported but unused": 1,
    "F401 `src.dispatch_routing.RoutingRefused` imported but unused": 1,
    "F401 `src.dispatch_routing.make_legacy_capability_view` imported but unused": 1,
-   "F811 Redefinition of unused `make_legacy_capability_view` from line 66: `make_legacy_capability_view` redefined here": 1
+   "F811 Redefinition of unused `make_legacy_capability_view` from line N: `make_legacy_capability_view` redefined here": 1
   },
   "src/dispatch_routing.py": {
    "F401 `typing.Iterable` imported but unused": 1,
@@ -189,7 +189,7 @@
    "F401 `src.evidence_contract.CLAIM_INCONCLUSIVE` imported but unused": 1,
    "F401 `src.source_snapshot.snapshot_digest_is_valid` imported but unused": 1,
    "F401 `typing.Callable` imported but unused": 1,
-   "F811 Redefinition of unused `snapshot_digest_is_valid` from line 43: `snapshot_digest_is_valid` redefined here": 1
+   "F811 Redefinition of unused `snapshot_digest_is_valid` from line N: `snapshot_digest_is_valid` redefined here": 1
   },
   "src/execution_package.py": {
    "F401 `src.source_snapshot.source_snapshot_from_dict` imported but unused": 1,
@@ -385,7 +385,7 @@
    "F401 `datetime.datetime` imported but unused": 1,
    "F401 `datetime.timezone` imported but unused": 1,
    "F401 `tests.test_promotional_dispatch.configured` imported but unused": 1,
-   "F811 Redefinition of unused `configured` from line 13: `configured` redefined here": 5
+   "F811 Redefinition of unused `configured` from line N: `configured` redefined here": 5
   },
   "tests/test_ps632_capability_receipt.py": {
    "F401 `src.local_targets.HEALTH_HEALTHY` imported but unused": 1,
@@ -499,10 +499,11 @@
   }
  },
  "generated_from_base": "a4f91a8",
+ "note": "messages normalized: 'line <N>' -> 'line N'",
  "rules": [
   "E9",
   "F"
  ],
  "tool": "ruff==0.16.8",
- "version": 1
+ "version": 2
 }

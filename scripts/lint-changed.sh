@@ -39,6 +39,10 @@ BASE="${BASE:-${1:-}}"
 [ -n "$BASE" ] || die2 "BASE (comparison commit) is required, e.g. BASE=\$PR_BASE_SHA scripts/lint-changed.sh"
 git rev-parse --verify "${BASE}^{commit}" >/dev/null 2>&1 || die2 "BASE '$BASE' does not resolve to a commit"
 
+# The changed-file list comes from HEAD but ruff reads files on disk; a
+# dirty tree would let a local run "pass" content that is not in HEAD.
+git diff --quiet HEAD -- '*.py' || die2 "uncommitted changes to Python files — commit or stash before running the gate"
+
 # --- locate ruff (fail closed if unavailable) -------------------------------
 RUFF="${RUFF_BIN:-}"
 if [ -z "$RUFF" ]; then
@@ -55,7 +59,7 @@ $RUFF --version >/dev/null 2>&1 || die2 "ruff present but not runnable — faili
 # --- baseline comes from the BASE commit, never the working tree ------------
 BASELINE_TMP="$(mktemp)"
 RAW_TMP="$(mktemp)"
-trap 'rm -f "$BASELINE_TMP" "$RAW_TMP"' EXIT
+trap 'rm -f "$BASELINE_TMP" "$RAW_TMP" "/tmp/lint-changed-ruff-stderr.$$"' EXIT
 if ! git show "${BASE}:ci/lint-baseline.json" > "$BASELINE_TMP" 2>/dev/null; then
   # Bootstrap: the baseline itself is being introduced by this change.
   # Allowed ONLY when this change adds the baseline AND touches no Python
@@ -72,15 +76,19 @@ fi
 # --- changed Python files (added/copied/modified/renamed) -------------------
 mapfile -t CHANGED < <(git diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- '*.py')
 
-# --- config sanity: a change that touches ruff.toml must actually load -----
-# Without this, a PR that breaks the config while touching no .py file
-# would slip past the early exit below with a silently dead linter.
+# --- config canary: a change that touches ruff.toml must load AND still -----
+# detect a known violation. A load-only check would let a weakened config
+# (e.g. select = []) silently disable the gate while looking healthy.
 if git diff --name-only "${BASE}" HEAD -- ruff.toml | grep -q .; then
   set +e
-  echo "" | $RUFF check --config ruff.toml - >/dev/null 2>&1
+  CANARY_OUT=$(echo 'print(canary_undefined_name)' | $RUFF check --config ruff.toml --output-format=json - 2>/dev/null)
   crc=$?
   set -e
   [ "$crc" -le 1 ] || die2 "ruff.toml changed and does not load (ruff exit $crc) — failing closed"
+  case "$CANARY_OUT" in
+    *F821*) : ;;
+    *) die2 "ruff.toml changed and no longer flags the F821 canary — rule weakening requires separate explicit review" ;;
+  esac
 fi
 
 if [ "${#CHANGED[@]}" -eq 0 ]; then
@@ -118,12 +126,17 @@ if not isinstance(baseline.get("findings"), dict):
     sys.exit(2)
 base_findings = baseline["findings"]
 
+import re, os
+def norm(msg):
+    # F811-style messages embed the original line number; normalize it so
+    # harmless line shifts above the finding do not create a new key.
+    return re.sub(r"line \d+", "line N", msg)
+
 cand = collections.defaultdict(collections.Counter)
 for f in load_json(raw_path, "ruff JSON output"):
-    import os
     p = f.get("filename", "")
     p = os.path.relpath(p, os.getcwd()) if os.path.isabs(p) else p
-    cand[p][f"{f.get('code')} {f.get('message')}"] += 1
+    cand[p][norm(f"{f.get('code')} {f.get('message')}")] += 1
 
 violations = []
 for path, ctr in sorted(cand.items()):

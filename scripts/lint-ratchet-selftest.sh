@@ -21,6 +21,12 @@
 #   7d broken ruff.toml .................................. 2
 #   8a clean baseline bootstrap (no .py changes) ......... 0
 #   8b bootstrap with .py changes ....................... 2
+#   9  baseline-only growth (clean py change) ........... 1
+#  10  baseline deleted in HEAD (with py change) ....... 2
+#  11  BASE unresolvable ............................... 2
+#  12  weakened ruff.toml (select=["E9"]) ............. 2  (canary)
+#  13  F811 line shift tolerated (normalized keys) .... 0
+#  14  dirty working tree .............................. 2
 #
 # Exit: 0 only if every control produced its expected code.
 set -u
@@ -46,14 +52,15 @@ make_repo() {
   cp "$RUFF_CFG" "$d/ruff.toml"
   printf 'def f():\n    return UndefinedThing\n' > "$d/legacy.py"
   printf 'x = 1\n' > "$d/app.py"
+  printf 'import sys\nimport sys\nprint(sys)\n' > "$d/f811.py"
   ( cd "$d" && python3 - <<'PY'
-import json, collections, subprocess, os
+import json, collections, subprocess, os, re
 raw = subprocess.run(['ruff','check','--config','ruff.toml','--output-format=json','.'],
                     capture_output=True, text=True).stdout
 agg = collections.defaultdict(collections.Counter)
 for f in json.loads(raw):
     p = os.path.relpath(f['filename'], os.getcwd())
-    agg[p][f"{f['code']} {f['message']}"] += 1
+    agg[p][re.sub(r'line \d+', 'line N', f"{f['code']} {f['message']}")] += 1
 out = {"version": 1, "generated_from_base": "selftest-base", "tool": "ruff",
        "rules": ["E9", "F"],
        "findings": {k: dict(sorted(v.items())) for k, v in sorted(agg.items())}}
@@ -67,7 +74,7 @@ PY
 # check <label> <expected-exit> -- run gate inside repo dir (cwd passed via $1st arg of run)
 run_gate() { # <repo> [extra env assignments as prefix string]
   local d="$1"; shift
-  ( cd "$d" && env "$@" "$GATE" >/dev/null 2>&1; echo $? )
+  ( cd "$d" && env "$@" "$GATE" >"$WORKROOT/last_gate_out.txt" 2>&1; echo $? )
 }
 
 expect() { # <label> <expected> <actual>
@@ -75,6 +82,7 @@ expect() { # <label> <expected> <actual>
     echo "PASS  $1 (exit $3 as expected)"; PASS=$((PASS+1))
   else
     echo "FAIL  $1 (expected exit $2, got $3)"; FAIL=$((FAIL+1))
+    [ -f "$WORKROOT/last_gate_out.txt" ] && sed 's/^/      | /' "$WORKROOT/last_gate_out.txt" | head -12
   fi
 }
 
@@ -83,7 +91,6 @@ d=$(make_repo c1)
 git -C "$d" commit -q --allow-empty -m noop
 printf '# touched\nx = 1\ny = 2\n' > "$d/app.py"
 git -C "$d" commit -qam change
-base=$(git -C "$d" rev-parse base 2>/dev/null || git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
 base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
 expect "1 tolerated existing finding" 0 "$(run_gate "$d" "BASE=$base")"
 
@@ -194,6 +201,46 @@ base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
 add_baseline_only "$d"
 printf 'print(boot_undefined)\n' >> "$d/app.py"; git -C "$d" commit -qam py-change-too
 expect "8b bootstrap with .py changes fails closed" 2 "$(run_gate "$d" "BASE=$base")"
+
+# --- control 9: baseline-only growth with clean py change -------------------
+d=$(make_repo c9)
+base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
+printf '# clean comment change\n' >> "$d/app.py"
+python3 -c "import json,sys; p=sys.argv[1]+'/ci/lint-baseline.json'; b=json.load(open(p)); b['findings']['ghost.py']={'F821 Undefined name \`ghost\`': 3}; json.dump(b, open(p,'w'), indent=1, sort_keys=True)" "$d"
+git -C "$d" add -A && git -C "$d" commit -qm clean-change-plus-baseline-growth
+expect "9 baseline growth caught despite clean code" 1 "$(run_gate "$d" "BASE=$base")"
+
+# --- control 10: baseline deleted in HEAD -----------------------------------
+d=$(make_repo c10)
+base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
+printf '# clean\n' >> "$d/app.py"; git -C "$d" add -A
+git -C "$d" rm -q ci/lint-baseline.json && git -C "$d" commit -qm clean-change-drop-baseline
+expect "10 baseline deleted in HEAD fails closed" 2 "$(run_gate "$d" "BASE=$base")"
+
+# --- control 11: BASE unresolvable ------------------------------------------
+d=$(make_repo c11)
+printf 'print(u)\n' >> "$d/app.py"; git -C "$d" commit -qam x
+expect "11 unresolvable BASE fails closed" 2 "$(run_gate "$d" "BASE=deadbeefdeadbeefdeadbeefdeadbeefdeadbe")"
+
+# --- control 12: weakened ruff.toml (canary) --------------------------------
+d=$(make_repo c12)
+base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
+printf '[lint]\nselect = ["E9"]\n' > "$d/ruff.toml"
+git -C "$d" commit -qam weaken-rules
+expect "12 weakened ruff.toml fails canary" 2 "$(run_gate "$d" "BASE=$base")"
+
+# --- control 13: F811 line shift tolerated (normalized keys) ----------------
+d=$(make_repo c13)
+base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
+printf '# shifted down\n' | cat - "$d/f811.py" > "$d/f811.py.new" && mv "$d/f811.py.new" "$d/f811.py"
+git -C "$d" commit -qam shift-above-f811
+expect "13 F811 line shift tolerated" 0 "$(run_gate "$d" "BASE=$base")"
+
+# --- control 14: dirty working tree ------------------------------------------
+d=$(make_repo c14)
+base=$(git -C "$d" rev-list --max-parents=0 HEAD | tail -1)
+printf 'print(dirty_uncommitted)\n' >> "$d/app.py"   # NOT committed
+expect "14 dirty tree fails closed" 2 "$(run_gate "$d" "BASE=$base")"
 
 echo
 echo "selftest: $PASS passed, $FAIL failed (workdir: $WORKROOT)"
