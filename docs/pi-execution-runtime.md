@@ -68,8 +68,8 @@ Execution identity (`src/pi_executions.py`) is stored per execution under
 `<id>.events.jsonl` ledger: odysseus run id, task id, tracker ticket key, worktree,
 repo path, base commit, branch, model, provider, runtime, Pi session id and
 session file, timestamps, status, failure class/reason, files changed, tests
-run, result. The ticket key field was `jira_ticket` before the tracker moved
-off Jira: `POST /api/pi/executions` still accepts `jira_ticket` as a deprecated
+run, result. The ticket key field was `jira_ticket` before the tracker moved from
+Jira to Plane: `POST /api/pi/executions` still accepts `jira_ticket` as a deprecated
 alias for `ticket_key`, and records written under the old name are read back
 as `ticket_key`.
 
