@@ -29,7 +29,9 @@ from src.evidence_contract import (
 from src.source_snapshot import SourceSnapshotIdentity, source_snapshot_from_dict
 from src.work_packet import WorkPacket, make_work_packet
 
-EXECUTION_PACKAGE_SCHEMA_VERSION = 1
+#: v2 renamed the core field ``jira_key`` to ``ticket_key``; v1 payloads still
+#: hash-validate because ``package_hash_is_valid`` re-hashes the serialized keys.
+EXECUTION_PACKAGE_SCHEMA_VERSION = 2
 DISPATCH_RECEIPT_SCHEMA_VERSION = 1
 
 #: How the target was actually chosen. Recorded, not inferred.
@@ -346,7 +348,7 @@ class ExecutionPackage:
     negative_control: str = ""
     stop_conditions: Tuple[str, ...] = ()
     budgets: Budgets = field(default_factory=Budgets)
-    jira_key: str = ""
+    ticket_key: str = ""
     parent_ids: Tuple[str, ...] = ()
     schema_version: int = EXECUTION_PACKAGE_SCHEMA_VERSION
     package_hash: str = field(default="")
@@ -395,7 +397,7 @@ class ExecutionPackage:
             "package_id": self.package_id,
             "run_id": self.run_id,
             "packet_id": self.packet_id,
-            "jira_key": self.jira_key,
+            "ticket_key": self.ticket_key,
             "parent_ids": list(self.parent_ids),
             "source": self.source.to_dict(),
             "objective": self.objective,
@@ -445,7 +447,7 @@ def build_execution_package(
     verification: VerificationPlan,
     run_id: str,
     package_id: str = "",
-    jira_key: str = "",
+    ticket_key: str = "",
     execution_role: str = "",
     required_capabilities: Sequence[str] = (),
     allowed_tools: Sequence[str] = (),
@@ -497,7 +499,7 @@ def build_execution_package(
         "package_id": package_id or f"{validated.packet_id}:{run_id}",
         "run_id": run_id,
         "packet_id": validated.packet_id,
-        "jira_key": jira_key,
+        "ticket_key": ticket_key,
         "parent_ids": list(parent_ids),
         "source": source,
         "objective": validated.objective,

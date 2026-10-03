@@ -114,7 +114,7 @@ def make_run(root, **opts):
         negative_control="a non-alphabetical order must FAIL")
     package = build_execution_package(
         opts.get("packet", PACKET), source=source, verification=plan,
-        run_id="r-1", jira_key="PS-638", allowed_tools=("write_file",))
+        run_id="r-1", ticket_key="PS-638", allowed_tools=("write_file",))
 
     dispatch = make_dispatch_receipt(
         receipt_id="d-1", execution_package_hash=package.package_hash,

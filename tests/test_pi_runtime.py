@@ -134,12 +134,12 @@ async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-a")
     runtime = PiRuntime()
     record = await runtime.start(
-        task="Add a Jira integration settings entry.",
+        task="Add a tracker integration settings entry.",
         worktree=str(worktree),
         model="local-qwen3.8-27b",
         constraints=["Do not touch production migrations."],
         odysseus_run_id="run-42",
-        jira_ticket="PS-999",
+        ticket_key="PS-999",
     )
     assert record["execution_id"]
     assert record["worktree"] == os.path.realpath(worktree)
@@ -147,9 +147,32 @@ async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     assert record["base_commit"]
     assert record["model"] == pc.DEFAULT_PI_MODEL_ID
     assert record["provider"] == pc.DEFAULT_PI_PROVIDER
+    assert record["ticket_key"] == "PS-999"
+    assert "jira_ticket" not in record
 
     final = await wait_terminal(runtime, record["execution_id"])
     assert final["status"] == pe.STATUS_COMPLETED
+
+
+def test_pre_rename_record_reads_jira_ticket_as_ticket_key(pi_env):
+    eid = pe.new_execution_id()
+    os.makedirs(pe.executions_root(), exist_ok=True)
+    with open(pe.record_path(eid), "w", encoding="utf-8") as fh:
+        json.dump({"execution_id": eid, "jira_ticket": "PS-100"}, fh)
+    record = pe.get_execution(eid)
+    assert record["ticket_key"] == "PS-100"
+    assert "jira_ticket" not in record
+
+
+def test_start_body_accepts_deprecated_jira_ticket_alias():
+    from routes.pi_runtime_routes import StartBody
+
+    base = {"task": "t", "worktree": "/w"}
+    assert StartBody(**base, ticket_key="PS-1").ticket_key == "PS-1"
+    assert StartBody(**base, jira_ticket="PS-2").ticket_key == "PS-2"
+    assert StartBody(**base, ticket_key="PS-3", jira_ticket="PS-3").ticket_key == "PS-3"
+    with pytest.raises(ValueError):
+        StartBody(**base, ticket_key="PS-4", jira_ticket="PS-5")
 
 
 async def test_start_from_pin_persists_dispatch_binding(repo, worktree, pi_env):

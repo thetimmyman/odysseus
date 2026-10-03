@@ -9,7 +9,7 @@ import os
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from src import pi_config, pi_executions
 from src.pi_runtime import WorktreeMismatch, get_pi_runtime
@@ -24,8 +24,20 @@ class StartBody(BaseModel):
     provider: Optional[str] = None
     constraints: Optional[List[str]] = None
     task_id: Optional[str] = None
+    ticket_key: Optional[str] = None
+    #: Deprecated input alias for ``ticket_key``, kept so pre-rename callers still work.
     jira_ticket: Optional[str] = None
     odysseus_run_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _fold_deprecated_ticket_alias(self) -> "StartBody":
+        if self.jira_ticket is None:
+            return self
+        if self.ticket_key is not None and self.ticket_key != self.jira_ticket:
+            raise ValueError("ticket_key and deprecated jira_ticket disagree")
+        logger.warning("pi start: 'jira_ticket' is deprecated; send 'ticket_key'")
+        self.ticket_key = self.jira_ticket
+        return self
 
 
 class SendBody(BaseModel):
@@ -93,7 +105,7 @@ def setup_pi_runtime_routes() -> APIRouter:
                 provider=body.provider,
                 constraints=body.constraints,
                 task_id=body.task_id,
-                jira_ticket=body.jira_ticket,
+                ticket_key=body.ticket_key,
                 odysseus_run_id=body.odysseus_run_id,
             )
         except WorktreeMismatch as exc:

@@ -4,7 +4,7 @@
 PS-641 implementation from this document** — it materializes the *scope*
 ruling (DR-16, `OPERATOR_RULINGS.md` D2 + CHECKPOINT §4), because before this
 package PS-641's entire written contract was one line at
-`docs/CANONICAL-EXECUTION-FOUNDATION.md:46` plus the Jira description. With no
+`docs/CANONICAL-EXECUTION-FOUNDATION.md:46` plus the tracker item's description. With no
 design doc, that one line **was** the contract, so amending it here is a real
 contract edit, not a clarification (CHECKPOINT §4).
 
@@ -147,7 +147,7 @@ Two related findings, preserved per D9:
 
 **This scope clause names no built layer.** A census of `work/ps-635-loop-demo`
 @ `f96ebc20` (`PS635_OWNERSHIP_FINDINGS.md` §2.5-§2.7) finds **zero symbols**
-for lease, fencing token, or continuation/checkpoint mechanism — despite Jira
+for lease, fencing token, or continuation/checkpoint mechanism — despite tracker item
 PS-635 listing "claims/leases/fencing" in its authority boundary and carrying
 a `lease-fencing` label. PS-650's own report §15 called this "DECLARED-only,
 behaviour UNKNOWN"; that is upgraded here to **DECLARED-only, behaviour

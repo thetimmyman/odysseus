@@ -3,8 +3,8 @@
 **This document is a consolidation, not a redesign** (PACKAGES.md B.7,
 OPERATOR_RULINGS.md CHECKPOINT §5). Every statement below is sourced from code
 already approved and landed on `origin/main` (`e787725fdf74bd03d7cb1cb48b5e7803fa0613a6`
-via PR #38, `7afd55bad7034d789c98be4ee6e9ebcfcc97cdba`), or from the Jira PS-638
-description. No statement here is new design. No `DESIGN_NOW` / second-wave
+via PR #38, `7afd55bad7034d789c98be4ee6e9ebcfcc97cdba`), or from the PS-638 tracker
+item description. No statement here is new design. No `DESIGN_NOW` / second-wave
 concept (DR-02, DR-06, DR-10, DR-14, DR-17, DR-18, DR-21, DR-24) appears as a
 required runtime field — where one is mentioned at all, it is named explicitly
 as not-yet-required, deferred, or unassigned.
@@ -144,7 +144,7 @@ package can still be correctly refused landing: `EVIDENCE_NOT_VERIFIED`,
 `EVIDENCE_STALE`, `EVIDENCE_INVALID`, `SEMANTIC_ACCEPTANCE_MISSING`,
 `ACCEPTANCE_SOURCE_MISMATCH`, `CANDIDATE_CHANGED`, `GOVERNANCE_NOT_GREEN`,
 `WRITE_SCOPE_MISMATCH`, `UNRESOLVED_REWORK`, `LANDING_STRATEGY_NOT_ALLOWED`,
-`LANDED_TREE_NOT_EQUIVALENT`, `JIRA_RECONCILIATION_FAILED`. Being VERIFIED is
+`LANDED_TREE_NOT_EQUIVALENT`, `TRACKER_RECONCILIATION_FAILED`. Being VERIFIED is
 necessary and never sufficient; landing is its own authority (PS-578) and
 semantic acceptance is a further, separate authority still, per
 `docs/CANONICAL-EXECUTION-FOUNDATION.md`'s authority table.
