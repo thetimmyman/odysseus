@@ -46,6 +46,27 @@ import src.execution_catalog as ec  # noqa: E402
 # Safety fixtures: injected stubs standing in for settings + local registry.
 # ---------------------------------------------------------------------------
 
+_PACKAGE_ATTR_MISSING = object()
+
+
+def _restore_package_attributes(package, saved_attributes):
+    """Restore package submodule attributes, including originally absent ones."""
+    if package is None:
+        return
+    for name, value in saved_attributes.items():
+        if value is _PACKAGE_ATTR_MISSING:
+            if hasattr(package, name):
+                delattr(package, name)
+        else:
+            setattr(package, name, value)
+
+
+def _attach_stub_to_package(name: str, stub: types.ModuleType) -> None:
+    """Keep ``src.<submodule>`` coherent with the injected sys.modules entry."""
+    package = sys.modules.get("src")
+    if package is not None:
+        setattr(package, name.rsplit(".", 1)[-1], stub)
+
 def _install_settings_stub(settings_value) -> types.ModuleType:
     """Register an in-memory ``src.settings`` stub.
 
@@ -63,6 +84,7 @@ def _install_settings_stub(settings_value) -> types.ModuleType:
     stub.get_setting = get_setting
     stub._ps623_stub = True
     sys.modules["src.settings"] = stub
+    _attach_stub_to_package("src.settings", stub)
     return stub
 
 
@@ -112,6 +134,7 @@ def _make_local_registry_stub(entries, probe_results) -> types.ModuleType:
     stub.probe_target = probe_target
     stub._ps623_stub = True
     sys.modules["src.local_targets"] = stub
+    _attach_stub_to_package("src.local_targets", stub)
     return stub
 
 
@@ -129,6 +152,14 @@ def _guard_no_live_sourcing():
                 f"{name} was not the injected stub — refusing to run against "
                 "a live settings file or local registry"
             )
+        package = sys.modules.get("src")
+        if mod is not None and package is not None:
+            attribute = name.rsplit(".", 1)[-1]
+            if getattr(package, attribute, None) is not mod:
+                raise AssertionError(
+                    f"src.{attribute} does not point at the injected stub — "
+                    "refusing to use a cached package attribute"
+                )
 
 
 def _fake_proc(returncode, stdout="", stderr=""):
@@ -187,6 +218,18 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
             for name in ("src.settings", "src.local_targets",
                          "src", "src.execution_catalog")
         }
+        package = self._saved["src"]
+        self._saved_package_attributes = {
+            name: getattr(package, name, _PACKAGE_ATTR_MISSING)
+            for name in ("settings", "local_targets")
+        } if package is not None else {}
+        # Some test runners import src.settings/src.local_targets before this
+        # class runs. Install both inert replacements up front so a helper's
+        # per-call safety check never observes the other cached real module.
+        # The exact prior modules and package attributes were captured above
+        # and are restored by tearDown.
+        _install_settings_stub({})
+        _make_local_registry_stub([], {})
         self._which_backup = None
         self._spawn_guard = None
 
@@ -197,6 +240,8 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = mod
+        _restore_package_attributes(
+            sys.modules.get("src"), self._saved_package_attributes)
         if self._which_backup is not None:
             ec.shutil.which = self._which_backup
             self._which_backup = None
@@ -224,6 +269,65 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
 
     def _restore_run(self):
         subprocess.run = self._real_run
+
+    def test_cached_package_attributes_are_replaced_and_restored(self):
+        """Stubs replace imported package attributes and restore their originals."""
+        package = sys.modules["src"]
+        cached_settings = types.ModuleType("src.settings")
+        cached_targets = types.ModuleType("src.local_targets")
+        package.settings = cached_settings
+        package.local_targets = cached_targets
+        sys.modules["src.settings"] = cached_settings
+        sys.modules["src.local_targets"] = cached_targets
+
+        # Install both stubs before the guarded catalog access: each installer
+        # replaces its package attribute as well as its sys.modules entry.
+        # The convenience wrappers guard after each individual install, which
+        # is intentionally too early while the other cached module is stale.
+        _install_settings_stub({})
+        _make_local_registry_stub(
+            entries=[("cached-safe-target", "qwen3.8:27b", ("inference",), "measured")],
+            probe_results={"cached-safe-target": ("healthy", [])},
+        )
+        _guard_no_live_sourcing()
+        self.assertIs(sys.modules["src"].settings, sys.modules["src.settings"])
+        self.assertIs(
+            sys.modules["src"].local_targets, sys.modules["src.local_targets"])
+        self.assertTrue(sys.modules["src.local_targets"]._ps623_stub)
+        self.assertEqual(
+            [spec.target_id for spec in ec.catalog_targets(ec.CAPABILITY_BULK_LOCAL)],
+            ["cached-safe-target"],
+        )
+
+        saved_settings = self._saved["src.settings"]
+        saved_targets = self._saved["src.local_targets"]
+        saved_settings_attribute = self._saved_package_attributes["settings"]
+        saved_targets_attribute = self._saved_package_attributes["local_targets"]
+        self.tearDown()
+        self.assertIs(sys.modules.get("src.settings"), saved_settings)
+        self.assertIs(sys.modules.get("src.local_targets"), saved_targets)
+        package = sys.modules.get("src")
+        if saved_settings_attribute is _PACKAGE_ATTR_MISSING:
+            self.assertFalse(hasattr(package, "settings"))
+        else:
+            self.assertIs(package.settings, saved_settings_attribute)
+        if saved_targets_attribute is _PACKAGE_ATTR_MISSING:
+            self.assertFalse(hasattr(package, "local_targets"))
+        else:
+            self.assertIs(package.local_targets, saved_targets_attribute)
+
+    def test_package_attribute_restore_removes_originally_absent_attributes(self):
+        package = types.ModuleType("src")
+        package.settings = object()
+        package.local_targets = object()
+
+        _restore_package_attributes(package, {
+            "settings": _PACKAGE_ATTR_MISSING,
+            "local_targets": _PACKAGE_ATTR_MISSING,
+        })
+
+        self.assertFalse(hasattr(package, "settings"))
+        self.assertFalse(hasattr(package, "local_targets"))
 
     def test_two_fake_installs_restore_original_run_guard_at_teardown(self):
         """The fixture restores its original callable after repeated installs.
