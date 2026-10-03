@@ -31,8 +31,12 @@ module.exports = async ({ github, context, core }) => {
   // 2. Linked Issue must reference a real issue. Accept a bare #NNN, a closing
   //    keyword + #NNN, or a full issue URL (e.g. .../issues/123) — the strict
   //    keyword-prefixed form previously false-flagged correctly-linked PRs.
+  //    Plane is the work-item tracker; accept its supported project keys only
+  //    as complete, positive-integer identifiers (not embedded substrings).
   const linkedSection = section('Linked Issue');
-  const hasIssueRef = /#\d+\b/.test(linkedSection) || /\/issues\/\d+/.test(linkedSection);
+  const hasGitHubRef = /#\d+\b/.test(linkedSection) || /\/issues\/\d+/.test(linkedSection);
+  const hasPlaneRef = /(?:^|[^A-Za-z0-9_-])(?:PS|TMOS|EOT|EST)-[1-9]\d*(?![A-Za-z0-9_-])/.test(linkedSection);
+  const hasIssueRef = hasGitHubRef || hasPlaneRef;
   if (!linkedSection || !hasIssueRef) {
     problems.push('**Linked Issue** — add a reference like `Fixes #NNN`, a bare `#NNN`, or a link to the issue.');
   }
