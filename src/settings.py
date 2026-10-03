@@ -152,6 +152,22 @@ DEFAULT_SETTINGS = {
     # Ordered fallback chain for the Utility model (summarization, naming,
     # tidy actions, etc.).
     "utility_model_fallbacks": [],
+    # Per-capability execution-target allowlists, read by
+    # src/execution_catalog.py. Each entry is {"provider", "model"}; a
+    # capability's list is its allowlist, so there is no cross-capability
+    # fallthrough and a Pro capability can never reach a Flash target.
+    # bulk_local is omitted on purpose: its candidates come from the local
+    # execution-target registry, so each host keeps its own identity and
+    # qualification.
+    "execution_targets": {
+        "integration_strong": [
+            {"provider": "cline-pass", "model": "deepseek-v4-pro"},
+            {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+        ],
+        "implementation_fast": [
+            {"provider": "cline-pass", "model": "deepseek-v4.1-flash"},
+        ],
+    },
     "teacher_model": "",
     "teacher_enabled": False,
     "teacher_tier2_enabled": False,
