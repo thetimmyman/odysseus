@@ -1,11 +1,12 @@
 """Focused controls for the bounded local worker coordinator."""
 from dataclasses import replace
 from datetime import datetime, timezone
+import json
 
 import pytest
 
 from src.local_worker_loop import (
-    ACCEPTED_CANDIDATE, BLOCKED, ESCALATE, REFUSED, VerificationExecution,
+    ACCEPTED_CANDIDATE, BLOCKED, ESCALATE, REFUSED, MAX_ADVISORY_RAW_BYTES, VerificationExecution,
     WorkerExecution, run_local_worker_loop,
 )
 from src.repair_packet import (
@@ -34,13 +35,18 @@ from src.execution_package import (
     Budgets, VerificationPlan, build_execution_package, compute_package_hash,
 )
 from src.source_snapshot import _finalize
+from src.replanner import (
+    make_manager_proposal, parse_proposal_text, validate_advisory_artifacts,
+    validate_proposal,
+)
 
 
 NOW = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 POLICY = policy_snapshot(policy={"routingPolicyVersion": "test-1"})
 
 
-def _package(*, max_attempts=2, resource_facts=None):
+def _package(*, max_attempts=2, resource_facts=None,
+             contract="def transform(value: str) -> str"):
     source = _finalize({
         "repo_root": "/synthetic/worker-loop", "head_sha": "base-sha",
         "base_sha": "base-sha", "branch": "main", "repo_identity": "synthetic",
@@ -51,7 +57,7 @@ def _package(*, max_attempts=2, resource_facts=None):
     })
     packet = {
         "packet_id": "fixture-packet", "objective": "Implement the declared fixture contract",
-        "contract": "def transform(value: str) -> str", "role": "local_implementer",
+        "contract": contract, "role": "local_implementer",
         "write_scope": ["src/thing.py"], "interface": [{"name": "value", "required": True}],
         "test_command": "python -m pytest tests/test_thing.py -q",
         "acceptance_criteria": ["preserve the declared input/output relation"],
@@ -67,7 +73,7 @@ def _package(*, max_attempts=2, resource_facts=None):
     )
     package = build_execution_package(
         packet, source=source, verification=plan, run_id="worker-loop-test-run",
-        allowed_tools=("write_file",),
+        allowed_tools=("write_file",), network_policy="offline",
         budgets=Budgets(max_attempts=max_attempts, max_repair_chars=5000,
                         output_tokens=512),
     )
@@ -279,7 +285,7 @@ def _verification(bound, package, receipt, attempt, *, exit_code=0, failure=""):
 def _run(package, bound, verification_codes, *, facts_mutator=None,
          select_fresh=None, worker_failure=None, invocation_mutator=None,
          after_verifier=None, canonical_failure_class=None, changed_files=None,
-         max_attempts=None):
+         max_attempts=None, advise=None, advisory_budget=1):
     workers, verifiers, contexts, fact_calls, selections = [], [], [], [], []
 
     def facts(current_bound, attempt):
@@ -323,6 +329,7 @@ def _run(package, bound, verification_codes, *, facts_mutator=None,
         current_facts=facts, invocation=invocation,
         execute_worker=worker, execute_verifier=verifier,
         select_fresh=selector, changed_files=changed_files,
+        advise=advise, advisory_budget=advisory_budget,
     )
     return result, workers, verifiers, contexts, fact_calls, selections
 
@@ -425,7 +432,7 @@ def test_fail_then_repair_pass_reuses_dispatch_and_validates_canonical_red_histo
     fail_log = "FAILED tests/test_thing.py::test_contract - AssertionError: wrong output\n"
     result, workers, verifiers, contexts, _facts, selections = _run(
         package, bound, [(1, fail_log), (0, "")])
-    assert result.status == ACCEPTED_CANDIDATE
+    assert result.status == ACCEPTED_CANDIDATE, result.refusal_reason
     assert selections == [], "a still-valid standing dispatch decision is reused"
     assert len(workers) == len(verifiers) == len(contexts) == 2
     assert result.attempts[0].attempt == 1 and result.attempts[0].repair_of == 0
@@ -792,6 +799,404 @@ def test_shared_budget_exhaustion_and_repeated_failure_retain_red_receipt_histor
     assert "repeated deterministic failure" in result.refusal_reason
     assert len(result.evidence_package["attempt_receipts"]) == 2
     assert len(result.evidence_package["verification_receipts"]) == 2
+
+
+def _approach_advisor(calls):
+    def advise(plan_input):
+        calls.append(plan_input)
+        return json.dumps({
+            "proposal_id": "synthetic-advice", "run_id": plan_input.run_id,
+            "packet_id": plan_input.packet_id, "kind": "approach_switch",
+            "rationale": "Use the declared input relation directly.",
+            "approach": "Check the input relation before transforming the value.",
+            "evidence_refs": [plan_input.evidence_index[-1]],
+        })
+    return advise
+
+
+def test_consecutive_stall_uses_one_bounded_advice_and_retains_final_artifacts():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+    result, workers, verifiers, contexts, _facts, selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")],
+        advise=_approach_advisor(calls))
+    assert result.status == ACCEPTED_CANDIDATE, result.refusal_reason
+    assert len(calls) == 1
+    assert len(workers) == len(verifiers) == 3
+    assert selections == []
+    assert "ADVISORY APPROACH (steering only" in contexts[2]
+    for immutable in ("CONTRACT (UNCHANGED", "INTERFACE (UNCHANGED", "VERIFIER CONTRACT (UNCHANGED)"):
+        assert immutable in contexts[2]
+    attempt = result.attempts[1]
+    assert {ref.artifact_id.split("-")[0] for ref in attempt.artifact_refs} >= {"advisory"}
+    assert "advisory/2/raw" in result.artifacts and "advisory/2/gate" in result.artifacts
+    assert result.validation.ok
+    validation = validate_evidence_package(result.evidence_package,
+                                           artifact_extensions=result.artifacts)
+    assert validation.ok
+    raw_ref = next(ref for ref in attempt.artifact_refs if ref.storage_uri == "advisory/2/raw")
+    gate_ref = next(ref for ref in attempt.artifact_refs if ref.storage_uri == "advisory/2/gate")
+    proposal = parse_proposal_text(result.artifacts[raw_ref.storage_uri])
+    verdict = validate_proposal(proposal, plan_input=calls[0])
+    assert validate_advisory_artifacts(
+        attempt, result.artifacts, planner_input=calls[0], proposal=proposal,
+        verdict=verdict, journal_ref=gate_ref, raw_ref=raw_ref,
+        verification=result.verifications[1])
+    forged = dict(result.artifacts)
+    journal = json.loads(forged[gate_ref.storage_uri])
+    journal["planner_input_digest"] = "f" * 64
+    forged_bytes = json.dumps(journal, sort_keys=True, separators=(",", ":")).encode()
+    forged[gate_ref.storage_uri] = forged_bytes
+    forged_ref = artifact_ref(gate_ref.artifact_id, forged_bytes,
+                              media_type=gate_ref.media_type,
+                              storage_uri=gate_ref.storage_uri)
+    forged_attempt = make_attempt_receipt(**{
+        **attempt.__dict__,
+        "artifact_refs": tuple(forged_ref if ref.storage_uri == gate_ref.storage_uri else ref
+                               for ref in attempt.artifact_refs),
+        "receipt_hash": ""})
+    assert not validate_advisory_artifacts(
+        forged_attempt, forged, planner_input=calls[0], proposal=proposal,
+        verdict=verdict, journal_ref=forged_ref, raw_ref=raw_ref,
+        verification=result.verifications[1])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_id", "forged-run"), ("packet_id", "forged-packet"),
+    ("proposal_hash", "0" * 64),
+])
+def test_resealed_journal_semantic_identity_forgery_is_rejected(field, value):
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+    result, *_ = _run(package, bound, [(1, repeated), (1, repeated), (0, "")],
+                      advise=_approach_advisor(calls))
+    attempt = result.attempts[1]
+    raw_ref = next(ref for ref in attempt.artifact_refs if ref.storage_uri == "advisory/2/raw")
+    gate_ref = next(ref for ref in attempt.artifact_refs if ref.storage_uri == "advisory/2/gate")
+    proposal = parse_proposal_text(result.artifacts[raw_ref.storage_uri])
+    verdict = validate_proposal(proposal, plan_input=calls[0])
+    forged = dict(result.artifacts)
+    journal = json.loads(forged[gate_ref.storage_uri])
+    journal[field] = value
+    content = json.dumps(journal, sort_keys=True, separators=(",", ":")).encode()
+    forged[gate_ref.storage_uri] = content
+    forged_ref = artifact_ref(gate_ref.artifact_id, content, media_type=gate_ref.media_type,
+                              storage_uri=gate_ref.storage_uri)
+    forged_attempt = make_attempt_receipt(**{
+        **attempt.__dict__,
+        "artifact_refs": tuple(forged_ref if ref.storage_uri == gate_ref.storage_uri else ref
+                               for ref in attempt.artifact_refs),
+        "receipt_hash": ""})
+    assert not validate_advisory_artifacts(
+        forged_attempt, forged, planner_input=calls[0], proposal=proposal,
+        verdict=verdict, journal_ref=forged_ref, raw_ref=raw_ref,
+        verification=result.verifications[1])
+
+
+def test_ordinary_failure_and_nonconsecutive_cycle_never_call_advisor():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    a = "FAILED tests/test_thing.py::test_contract - AssertionError: shape 123\n"
+    b = "FAILED tests/test_thing.py::test_contract - TypeError: wrong type 456\n"
+    calls = []
+    result, *_ = _run(package, bound, [(1, a), (1, b), (1, a)],
+                      advise=_approach_advisor(calls))
+    assert result.status == ESCALATE
+    assert "non-consecutive" in result.refusal_reason
+    assert calls == []
+    calls = []
+    result, *_ = _run(package, bound, [(1, a), (0, "")],
+                      advise=_approach_advisor(calls))
+    assert result.status == ACCEPTED_CANDIDATE
+    assert calls == []
+
+
+def test_second_advisory_is_never_spent_after_a_valid_continuing_advice():
+    package = _package(max_attempts=4)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (1, repeated), (1, repeated)],
+        advise=_approach_advisor(calls))
+    assert result.status == ESCALATE
+    assert "no advisory allowance remains" in result.refusal_reason
+    assert len(calls) == 1
+    assert len(workers) == len(verifiers) == 3
+    assert "advisory/2/gate" in result.artifacts
+
+
+def test_no_remaining_worker_or_advisory_budget_means_no_callback_or_extra_worker():
+    package = _package(max_attempts=2)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated)],
+        advise=_approach_advisor(calls))
+    assert result.status == ESCALATE
+    assert len(workers) == len(verifiers) == 2
+    assert calls == []
+
+    calls = []
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound,
+        [(1, repeated), (1, repeated), (0, "")],
+        advise=_approach_advisor(calls), advisory_budget=0)
+    assert result.status == ESCALATE
+    assert len(workers) == len(verifiers) == 2
+    assert calls == []
+
+
+def test_typed_proposal_with_exact_raw_bytes_uses_the_same_gate():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+
+    def typed_advisor(plan_input):
+        calls.append(plan_input)
+        proposal = make_manager_proposal(
+            proposal_id="typed-advice", run_id=plan_input.run_id,
+            packet_id=plan_input.packet_id, kind="approach_switch",
+            rationale="Change the next implementation approach.",
+            approach="Use the declared input relation directly.",
+            evidence_refs=(plan_input.evidence_index[-1],))
+        raw = json.dumps(proposal.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        return proposal, raw
+
+    result, workers, verifiers, contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")], advise=typed_advisor)
+    assert result.status == ACCEPTED_CANDIDATE
+    assert len(calls) == 1 and len(workers) == len(verifiers) == 3
+    assert "ADVISORY APPROACH" in contexts[2]
+    assert result.validation.ok
+
+
+def test_malformed_advisor_text_is_recorded_and_never_spends_worker_attempt():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    malformed = b"{not valid JSON"
+    calls = []
+
+    def malformed_advisor(_plan_input):
+        calls.append("called")
+        return malformed
+
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")], advise=malformed_advisor)
+    assert result.status == ESCALATE
+    assert calls == ["called"] and len(workers) == len(verifiers) == 2
+    assert result.artifacts["advisory/2/raw"] == malformed
+    attempt = result.attempts[1]
+    assert any(ref.storage_uri == "advisory/2/raw" for ref in attempt.artifact_refs)
+    assert any(ref.storage_uri == "advisory/2/gate" for ref in attempt.artifact_refs)
+
+
+@pytest.mark.parametrize("encoding", ["ascii_whitespace", "multibyte", "typed_raw"])
+def test_oversized_advisor_raw_is_bounded_fault_and_never_continues(encoding):
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+
+    def oversized(plan_input):
+        proposal = make_manager_proposal(
+            proposal_id="oversized", run_id=plan_input.run_id,
+            packet_id=plan_input.packet_id, kind="approach_switch",
+            rationale="Change the next implementation approach.",
+            approach="Use the declared input relation directly.",
+            evidence_refs=(plan_input.evidence_index[-1],))
+        raw = json.dumps(proposal.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        if encoding == "ascii_whitespace":
+            return b" " * (MAX_ADVISORY_RAW_BYTES + 1 - len(raw)) + raw
+        if encoding == "multibyte":
+            return b" " * (MAX_ADVISORY_RAW_BYTES - len(raw)) + "é".encode() + raw
+        return proposal, b" " * (MAX_ADVISORY_RAW_BYTES + 1 - len(raw)) + raw
+
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")], advise=oversized)
+    assert result.status == ESCALATE
+    assert "exceeds byte limit" in result.refusal_reason
+    assert len(workers) == len(verifiers) == 2
+    assert "advisory/2/raw" not in result.artifacts
+    fault = result.artifacts["advisory/2/fault"]
+    assert len(fault) < 256 and str(MAX_ADVISORY_RAW_BYTES).encode() in fault
+    attempt = result.attempts[1]
+    assert any(ref.storage_uri == "advisory/2/fault" for ref in attempt.artifact_refs)
+
+
+def test_exact_advisory_raw_byte_limit_remains_eligible_for_normal_continuation():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+
+    def at_limit(plan_input):
+        proposal = make_manager_proposal(
+            proposal_id="boundary", run_id=plan_input.run_id,
+            packet_id=plan_input.packet_id, kind="approach_switch",
+            rationale="Change the next implementation approach.",
+            approach="Use the declared input relation directly.",
+            evidence_refs=(plan_input.evidence_index[-1],))
+        raw = json.dumps(proposal.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        return raw + b" " * (MAX_ADVISORY_RAW_BYTES - len(raw))
+
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")], advise=at_limit)
+    assert result.status == ACCEPTED_CANDIDATE, result.refusal_reason
+    assert len(workers) == len(verifiers) == 3
+    assert len(result.artifacts["advisory/2/raw"]) == MAX_ADVISORY_RAW_BYTES
+
+
+def test_advisor_exception_preserves_real_red_history_and_fault_artifact():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+
+    def broken(_plan_input):
+        calls.append("called")
+        raise RuntimeError("synthetic advisor failure")
+
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")], advise=broken)
+    assert result.status == ESCALATE
+    assert calls == ["called"]
+    assert len(workers) == len(verifiers) == 2
+    assert len(result.attempts) == len(result.verifications) == 2
+    assert "advisory/2/fault" in result.artifacts
+    assert "RuntimeError" in result.artifacts["advisory/2/fault"].decode()
+    assert "advisory/2/gate" in result.artifacts
+    validation = validate_evidence_package(result.evidence_package,
+                                           artifact_extensions=result.artifacts)
+    assert not validation.ok
+    assert any(issue.code == "requirement_failed" for issue in validation.issues)
+
+
+def test_facts_refresh_package_mutation_is_caught_before_advisor_callback():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls, workers, verifiers = [], [], []
+
+    def facts(current_bound, attempt):
+        values = _facts(current_bound, package)
+        calls.append(attempt)
+        # On the pre-advisor refresh, return the facts captured before this
+        # mutation to model a stale but otherwise matching DR-10 snapshot.
+        if attempt == 2 and calls.count(2) == 2:
+            object.__setattr__(package, "objective", package.objective + " changed")
+        return values
+
+    def worker(current_bound, context, attempt, _tokens):
+        result = _worker(current_bound, package, context, attempt)
+        workers.append(result)
+        return result
+
+    def verifier(current_bound, ar, attempt):
+        result = _verification(current_bound, package, ar, attempt,
+                               exit_code=1, failure=repeated)
+        verifiers.append(result)
+        return result
+
+    advisor_calls = []
+    result = run_local_worker_loop(
+        execution_package=package, standing_dispatch=bound,
+        current_facts=facts, invocation=_invocation,
+        execute_worker=worker, execute_verifier=verifier,
+        advise=_approach_advisor(advisor_calls))
+    assert result.status == BLOCKED
+    assert len(workers) == len(verifiers) == 2
+    assert advisor_calls == []
+    assert len(result.attempts) == len(result.verifications) == 2
+    assert "immutable execution package changed" in result.refusal_reason
+
+
+def test_package_mutation_and_post_advisor_capacity_loss_block_before_worker_three():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+
+    def mutate(plan_input):
+        calls.append(plan_input)
+        object.__setattr__(package, "objective", "mutated objective")
+        return _approach_advisor([])(plan_input)
+
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")], advise=mutate)
+    assert result.status == BLOCKED
+    assert "execution package" in result.refusal_reason
+    assert len(calls) == 1
+    assert len(workers) == len(verifiers) == 2
+
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+
+    def mutate_bound(plan_input):
+        changed = replace(bound.decision, network_policy="online")
+        changed = replace(changed,
+                          receipt_hash=ps638_receipt_hash(changed.to_ps638_receipt_kwargs()))
+        object.__setattr__(bound, "decision", changed)
+        return _approach_advisor([])(plan_input)
+
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")], advise=mutate_bound)
+    assert result.status == BLOCKED
+    assert "envelope derivation" in result.refusal_reason
+    assert len(workers) == len(verifiers) == 2
+    assert "advisory/2/gate" in result.artifacts
+
+    package = _package(max_attempts=3)
+    bound = _hosted_bound(package)
+    result, workers, verifiers, _contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")],
+        advise=_approach_advisor([]),
+        facts_mutator=lambda _bound, attempt: {"capacity_fresh": False} if attempt == 3 else {})
+    assert result.status == BLOCKED
+    assert "post-advisor dispatch invalidation" in result.refusal_reason
+    assert len(workers) == len(verifiers) == 2
+
+
+@pytest.mark.parametrize("budget", [True, -1, 2, 1.0])
+def test_advisory_budget_rejects_values_outside_frozen_zero_or_one(budget):
+    package = _package(max_attempts=1)
+    bound = _bound(package)
+    calls = []
+    result = run_local_worker_loop(
+        execution_package=package, standing_dispatch=bound,
+        current_facts=lambda *_: calls.append("facts"),
+        invocation=lambda *_: calls.append("invocation"),
+        execute_worker=lambda *_: calls.append("worker"),
+        execute_verifier=lambda *_: calls.append("verifier"),
+        advisory_budget=budget)
+    assert result.status == REFUSED
+    assert calls == []
+
+
+def test_advisory_approach_must_fit_without_truncating_immutable_contract():
+    package = _package(max_attempts=3)
+    bound = _bound(package)
+    repeated = "FAILED tests/test_thing.py::test_contract - AssertionError: same defect\n"
+    calls = []
+    result, workers, verifiers, contexts, _facts, _selections = _run(
+        package, bound, [(1, repeated), (1, repeated), (0, "")],
+        advise=_approach_advisor(calls),
+        changed_files=lambda _bound, _execution: {
+            f"src/file_{index}.py": "D" * 1200 for index in range(4)})
+    assert result.status == ESCALATE
+    assert "does not fit" in result.refusal_reason
+    assert len(calls) == 1
+    assert len(workers) == len(verifiers) == 2
+    assert "CONTRACT (UNCHANGED" in contexts[1]
+    assert "def transform(value: str) -> str" in contexts[1]
+    assert "ADVISORY APPROACH" not in contexts[1]
 
 
 def test_infrastructure_failure_blocks_without_verifier_but_technical_failure_is_repairable():
