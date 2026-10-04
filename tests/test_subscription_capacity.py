@@ -61,6 +61,51 @@ def test_no_credentials_sent_to_unknown_or_redirected_hosts(monkeypatch):
         sc._read("https://api.commandcode.ai/provider/v1/models", {"Authorization": "fixture"})
 
 
+@pytest.mark.parametrize("endpoint", [
+    None,
+    17,
+    "",
+    "https://api.commandcode.ai/provider/v1",
+    "https://api.commandcode.ai/provider/v1/",
+    "https://api.commandcode.ai/provider/v1/models",
+    "https://api.commandcode.ai/provider/v1/messages",
+    "https://api.commandcode.ai/provider/v1/chat/completions/extra",
+    "https://api.commandcode.ai/provider/v1/provider/v1/chat/completions",
+    "https://opencode.ai/zen/go/v1/unknown",
+    "https://opencode.ai/zen/go/v1/chat/completions/extra",
+    "https://api.commandcode.ai.evil/provider/v1/chat/completions",
+    "http://api.commandcode.ai/provider/v1/chat/completions",
+    "https://user@api.commandcode.ai/provider/v1/chat/completions",
+    "https://api.commandcode.ai:444/provider/v1/chat/completions",
+    "https://api.commandcode.ai/provider/v1/chat/completions?mode=1",
+    "https://api.commandcode.ai/provider/v1/chat/completions#fragment",
+    "https://chatgpt.com/backend-api/codex/responses",
+])
+def test_noncanonical_capacity_endpoint_refuses_before_any_reads(monkeypatch, endpoint):
+    reads = []
+
+    def forbid_read(url, headers):
+        reads.append(url)
+        pytest.fail("unsupported endpoint must not send credential-bound reads")
+
+    monkeypatch.setattr(sc, "_read", forbid_read)
+    with pytest.raises(ValueError):
+        sc.collect_api_capacity(endpoint, "m", {"Authorization": "Bearer fixture"})
+    assert reads == []
+
+
+def test_endpoint_identity_keeps_root_normalization_but_capacity_requires_invocation():
+    assert sc.subscription_endpoint_identity("https://api.commandcode.ai/provider/v1") == (
+        "command-code", "https://api.commandcode.ai/provider/v1/chat/completions"
+    )
+    assert sc.subscription_endpoint_identity("https://opencode.ai/zen/go/v1/") == (
+        "opencode-go", "https://opencode.ai/zen/go/v1/chat/completions"
+    )
+    assert sc.subscription_endpoint_identity("https://api.commandcode.ai/provider/v1/chat/completions") == (
+        "command-code", "https://api.commandcode.ai/provider/v1/chat/completions"
+    )
+
+
 @pytest.mark.parametrize("plan,status", [("individual-go", "active"), ("unrecognized", "active"), ("individual-goat", "cancelled")])
 def test_command_code_requires_observed_api_eligible_plan(monkeypatch, plan, status):
     def read(url, headers):
