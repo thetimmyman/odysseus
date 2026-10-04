@@ -1,0 +1,15 @@
+# Development-only lint configuration (Stage 1: agent guidance + ratchet).
+#
+# Day-one rule selection is deliberately minimal:
+#   E9 — syntax/compile-class errors
+#   F  — pyflakes (undefined names, unused imports, duplicate defs, ...)
+#
+# The CI ratchet (scripts/lint-changed.sh) compares changed files against
+# ci/lint-baseline.json recorded on the base branch: existing findings are
+# tolerated per (file, rule+message) count, new ones fail the build.
+#
+# Widening the rule set or weakening anything here requires explicit review
+# — it is a policy change, not a convenience.
+
+[lint]
+select = ["E9", "F"]

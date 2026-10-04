@@ -1,16 +1,8 @@
 r"""Regression test for a py/polynomial-redos sink in text_helpers.
 
-Imported for PS-602 (the `<thought>` half of upstream #4704; our tree already
-carries the tool_parsing half via the forward-only delimiter scanners).
-
-`_THOUGHT_TAG_OPEN_RE` used `(\s+[^>]*)?` -- two OVERLAPPING quantifiers (both
-match whitespace), so an unclosed `<thought` + whitespace flood in untrusted
-model output backtracked O(n^2). Dropping the `+` (`\s` = one char) removes the
-ambiguity while keeping the EXACT language and capture.
-
-NOTE: upstream #4704 chose `([^>]*)`, which is NOT equivalent here -- it also
-matches non-tags (`<thoughtx>`, `<thought/>`) and silently rewrites them. The
-equivalence oracle below rejects that; this fork uses the exact form.
+`_THOUGHT_TAG_OPEN_RE` must not use overlapping whitespace quantifiers (O(n^2)
+on an unclosed `<thought` + whitespace flood) and must keep the exact language
+and capture. A bare `([^>]*)` is NOT equivalent: it also matches `<thoughtx>`.
 """
 
 import re
@@ -52,9 +44,7 @@ def test_thought_open_tag_substitution_matches_old_pattern():
 
 
 def test_thought_flood_is_linear():
-    # The DOCUMENTED adversary: an opener followed by a long whitespace run and
-    # NO `>`. The old `(\s+[^>]*)?>` had `\s+` and `[^>]*` both consuming that
-    # whitespace -> O(n^2) backtracking; the single `[^>]*` scan is linear.
+    # An opener, a long whitespace run and NO `>`: must scan linearly.
     evil = "<thought" + " " * 60_000 + "x"
     start = time.perf_counter()
     out = _new_sub(evil)

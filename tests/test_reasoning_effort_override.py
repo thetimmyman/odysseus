@@ -1,11 +1,8 @@
 """Per-request reasoning-effort override: validation, and that every user-facing
 chat path actually forwards it.
 
-The forwarding assertions are source-level on purpose. The original
-reasoning_effort work threaded the field through the preset layer and shipped
-with no way to reach it from the UI at all, and the chat-mode call site silently
-dropped it. Both were invisible to behavioural tests because the field is
-optional everywhere — omitting it looks exactly like "user didn't ask".
+The forwarding assertions are source-level on purpose: the field is optional
+everywhere, so a call site that drops it is invisible to behavioural tests.
 """
 
 import re
@@ -65,11 +62,8 @@ def test_both_routes_apply_the_override():
 
 
 def test_every_llm_call_site_forwards_reasoning_effort():
-    """Guard the regression this test file was written for.
-
-    `temperature=ctx.preset.temperature` marks a user-facing generation call.
-    Each one must pass reasoning_effort too, or that mode silently ignores the
-    user's choice — which is what chat mode did.
+    """`temperature=ctx.preset.temperature` marks a user-facing generation call;
+    each must also pass reasoning_effort or that mode ignores the user's choice.
     """
     temp_sites = _CHAT_ROUTES.count("temperature=ctx.preset.temperature")
     effort_sites = _CHAT_ROUTES.count("reasoning_effort=ctx.preset.reasoning_effort")

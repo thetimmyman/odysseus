@@ -1,30 +1,14 @@
-"""LLM call lanes — keep background/utility model traffic separated from the
-interactive chat turn a user is watching.
+"""LLM call lanes: keep background model traffic separate from the interactive
+chat turn.
 
-Odysseus fires a lot of *background* model work off the back of a normal chat
-turn: memory extraction, skill extraction, the completion verifier, auto-naming,
-teacher escalation, scheduled tasks. Every one of those calls used to share the
-interactive path's process-wide state — one `httpx.AsyncClient` connection pool
-and one response cache keyed only on (url, model, messages, temperature,
-max_tokens). Nothing in that shared machinery knew which subsystem had asked, so
-nothing could tell a background answer apart from the user's answer.
+Background work (memory/skill extraction, the completion verifier, naming,
+scheduled tasks) must never cross into the user's reply. Each lane gets its own
+HTTP connection pool, so an abandoned background request can't hand its socket
+to the user's stream, and the lane is part of the response-cache key.
 
-That mattered: on 2026-08-24 and 2026-08-25 two background completions were
-persisted as the assistant's reply in a live user session (a memory-extractor
-JSON array, and the skill extractor's literal `null` decline token — see
-POS-AI-23). A lane makes the separation explicit and structural:
-
-* each lane gets its own HTTP connection pool, so a background request that is
-  abandoned mid-flight can never hand its socket to the stream the user is
-  reading;
-* the lane is part of the response-cache key, so a background completion can
-  never be served out of cache to an interactive call (or vice versa).
-
-The lane travels in a ``ContextVar``, so anything launched through
-``src.background_tasks.spawn`` is automatically in the background lane without
-each call site having to remember. Callers that make an in-turn utility call
-(the completion verifier runs inside the user's request context) pass
-``lane=BACKGROUND`` explicitly.
+The lane travels in a ``ContextVar``, so ``src.background_tasks.spawn`` puts
+everything nested in the background lane; in-turn utility calls (e.g. the
+verifier) pass ``lane=BACKGROUND`` explicitly.
 """
 
 from __future__ import annotations
@@ -47,13 +31,8 @@ def current_lane() -> str:
 
 
 def normalize_lane(lane: Optional[str]) -> str:
-    """Coerce a caller-supplied lane to a known value.
-
-    ``None`` means "whatever lane I'm already in" — that is what lets the
-    ContextVar set by ``background_tasks.spawn`` reach every nested call
-    without threading a parameter through the whole stack. An unknown string
-    is treated as background: an unrecognised caller is exactly the sort of
-    traffic that should not share the user's connection pool.
+    """Coerce a caller-supplied lane. ``None`` means the current ContextVar lane;
+    an unknown string is treated as background, keeping it off the user's pool.
     """
     if lane is None:
         return current_lane()

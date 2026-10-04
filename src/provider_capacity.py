@@ -1,8 +1,7 @@
-"""PS-640: provider capacity and entitlement facts.
+"""Provider capacity and entitlement facts.
 
-This module is deliberately a facts layer.  It does not select a model,
-route, retry, or apply privacy policy.  A receipt describes one independently
-consumable pool and is only eligible while the relevant observations are fresh.
+A facts layer only: it never selects, routes, retries or applies policy. A
+receipt describes one consumable pool and is eligible only while fresh.
 """
 from __future__ import annotations
 
@@ -306,10 +305,14 @@ class ProviderCapacityReceipt:
     invalidation_reason: str = ""
     schema_version: int = CAPACITY_SCHEMA_VERSION
     receipt_hash: str = ""
+    credential_sha256: str = ""
+    endpoint_url: str = ""
 
     def __post_init__(self) -> None:
         if self.schema_version != CAPACITY_SCHEMA_VERSION:
             raise CapacityError("unsupported capacity receipt schema")
+        if self.credential_sha256 and (len(self.credential_sha256) != 64 or any(c not in "0123456789abcdef" for c in self.credential_sha256)):
+            raise CapacityError("credential_sha256 must be a lowercase SHA-256 digest")
         object.__setattr__(self, "exposed_models", tuple(self.exposed_models))
         object.__setattr__(self, "quotas", tuple(self.quotas))
         for name in ("provider", "pool_id", "account_identity", "authorization_class"):
@@ -350,7 +353,7 @@ class ProviderCapacityReceipt:
             raise CapacityError("receipt_hash does not cover receipt content")
 
     def core(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "provider": self.provider,
+        payload = {"schema_version": self.schema_version, "provider": self.provider,
                 "pool_id": self.pool_id, "account_identity": self.account_identity,
                 "authorization_class": self.authorization_class,
                 "entitlement": self.entitlement, "exposed_models": list(self.exposed_models),
@@ -367,6 +370,11 @@ class ProviderCapacityReceipt:
                 "zdr_required_by_pool": self.zdr_required_by_pool,
                 "supersedes": self.supersedes,
                 "invalidation_reason": self.invalidation_reason}
+        if self.credential_sha256:
+            payload["credential_sha256"] = self.credential_sha256
+        if self.endpoint_url:
+            payload["endpoint_url"] = self.endpoint_url
+        return payload
 
     def to_dict(self) -> dict[str, Any]:
         return {**_encode(self.core()), "receipt_hash": self.receipt_hash}
@@ -409,8 +417,11 @@ class ProviderCapacityReceipt:
         return True
 
     def has_usable_capacity_facts(self, *, now: Optional[datetime] = None) -> bool:
-        """Facts-only usability; PS-605 still decides policy permission."""
-        return (self.is_operationally_available(now=now) and
+        """Facts-only usability; dispatch policy still decides permission."""
+        known_capacity = (not _is_unknown(self.concurrency_remaining) or
+                          any(not _is_unknown(q.remaining) for q in self.quotas))
+        return (self.is_operationally_available(now=now) and known_capacity and
+                all(_is_unknown(q.remaining) or q.remaining > 0 for q in self.quotas) and
                 self.entitlement not in (Entitlement.UNKNOWN, Entitlement.INTERACTIVE_NATIVE))
 
 
@@ -437,6 +448,10 @@ def make_capacity_receipt(**kwargs: Any) -> ProviderCapacityReceipt:
     payload.setdefault("entitlement_provenance", base_prov)
     payload.setdefault("zdr_provenance", base_prov)
     payload.pop("receipt_hash", None)
+    if not payload.get("endpoint_url"):
+        payload.pop("endpoint_url", None)
+    if not payload.get("credential_sha256"):
+        payload.pop("credential_sha256", None)
     return ProviderCapacityReceipt(**payload, receipt_hash=_sha256(payload))
 
 
@@ -552,7 +567,7 @@ class CapacityRegistry:
 
     def eligible_capacity_for(self, target: str, *, now: Optional[datetime] = None
                               ) -> Tuple[ProviderCapacityReceipt, ...]:
-        """Return all structurally available pools; PS-605 applies policy facts."""
+        """Return all structurally available pools; dispatch policy applies later."""
         return tuple(sorted((r for r in self._receipts if target in r.exposed_models and
                              r.has_usable_capacity_facts(now=now)),
                             key=lambda r: (r.provider, r.pool_id, r.receipt_hash)))

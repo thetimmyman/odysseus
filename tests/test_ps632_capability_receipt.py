@@ -1,4 +1,4 @@
-"""PS-632 — the canonical TargetCapabilityReceipt, its store, and its consumers.
+"""The canonical TargetCapabilityReceipt, its store, and its consumers.
 
 The properties worth reading these tests for:
 
@@ -8,10 +8,10 @@ The properties worth reading these tests for:
 * freshness has THREE clocks (liveness, semantic qualification, material identity
   drift) and they do not leak into each other;
 * the store is append-only, atomic, hash-verified, and FAILS CLOSED on corruption;
-* PS-605 consumes persisted receipts, and the hash of the receipt it used is what
+* dispatch routing consumes persisted receipts, and the hash of the receipt it used is what
   ends up bound into the dispatch evidence.
 
-Every negative control in the slice's list has a test named after it.
+Every negative control has a test named after it.
 """
 from __future__ import annotations
 
@@ -91,7 +91,6 @@ def store(tmp_path) -> TargetCapabilityStore:
     return TargetCapabilityStore(str(tmp_path / "target_capabilities"))
 
 
-# ============================================================ the canonical receipt ===
 def test_the_receipt_separates_the_host_from_the_execution_profile():
     one = receipt()
     two = receipt(spec_=spec("local-framework", ssh_host="framework"))
@@ -147,7 +146,6 @@ def test_an_unmeasured_safe_context_is_recorded_as_unqualified():
     assert r.model.declared_context == 262144        # still recorded, as DECLARED
 
 
-# ================================================================== freshness clocks ===
 def test_the_three_clocks_are_independent():
     old = (NOW - datetime.timedelta(days=2)).isoformat()
     fresh_health = (NOW - datetime.timedelta(seconds=10)).isoformat()
@@ -261,7 +259,6 @@ def test_requalification_observations_do_not_change_execution_profile_id():
     assert second.receipt_hash != first.receipt_hash
 
 
-# ================================================================ the store ===
 def test_the_store_appends_and_keeps_history(tmp_path):
     s = store(tmp_path)
     first = receipt()
@@ -384,7 +381,6 @@ def test_mark_invalidated_appends_evidence_and_never_deletes(tmp_path):
     assert s.current(r.profile_id).qualification_state(now=NOW) == INVALIDATED_IDENTITY_DRIFT
 
 
-# ========================================================= routing consumes the store ===
 def _inputs(s, **kwargs):
     return ltr.persisted_routing_inputs(s, now=kwargs.pop("now", NOW), **kwargs)
 
@@ -405,11 +401,10 @@ def test_a_fresh_receipt_routes_and_binds_its_own_hash(tmp_path):
         execution_package_hash="pkg", run_id="r1", decision_id="d1")
     kwargs = bound.decision.to_ps638_receipt_kwargs()
     assert bound.decision.selected_profile.target_id == "local-rtx4500"
-    # The PS-632 receipt identity is what the receipt REFERS to.
+    # The capability receipt identity is what the receipt REFERS to.
     assert kwargs["capability_receipt_refs"] == (r.receipt_hash,)
 
 
-# ---------------------------------------------------------------- negative controls ---
 def test_control_1_mutating_the_model_digest_after_sealing_invalidates(tmp_path):
     s = store(tmp_path)
     s.append(receipt())

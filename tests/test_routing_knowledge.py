@@ -71,7 +71,6 @@ def _draft(db, **kw):
     return create_draft(db, **kw)
 
 
-# ---------- evidence-required creation ----------
 def test_create_requires_nonempty_evidence():
     db = _db()
     for bad in (None, [], "not-a-list", {}):
@@ -94,28 +93,27 @@ def test_create_requires_title_and_body():
         create_draft(db, title="t", body="", evidence=list(EVIDENCE))
 
 
-# ---------- lifecycle: legal transitions ----------
 def test_draft_validate_records_actor():
     db = _db()
-    row = validate_entry(db, _draft(db).id, "tim")
+    row = validate_entry(db, _draft(db).id, "reviewer-1")
     assert row.status == "validated"
-    assert row.validated_by == "tim"
+    assert row.validated_by == "reviewer-1"
     assert row.validated_at is not None
-    assert "validated by tim" in row.audit_log
+    assert "validated by reviewer-1" in row.audit_log
 
 
 def test_draft_reject_records_actor():
     db = _db()
-    row = reject_entry(db, _draft(db).id, "tim")
+    row = reject_entry(db, _draft(db).id, "reviewer-1")
     assert row.status == "rejected"
-    assert "rejected by tim" in row.audit_log
+    assert "rejected by reviewer-1" in row.audit_log
 
 
 def test_validated_supersede_links_replacement():
     db = _db()
-    old = validate_entry(db, _draft(db).id, "tim")
+    old = validate_entry(db, _draft(db).id, "reviewer-1")
     new = _draft(db, title="replacement")
-    row = supersede_entry(db, old.id, "tim", new.id)
+    row = supersede_entry(db, old.id, "reviewer-1", new.id)
     assert row.status == "superseded"
     assert row.superseded_by_id == new.id
     assert f"superseded by entry {new.id}" in row.audit_log
@@ -123,10 +121,10 @@ def test_validated_supersede_links_replacement():
 
 def test_validated_expire_requires_rationale():
     db = _db()
-    row = validate_entry(db, _draft(db).id, "tim")
+    row = validate_entry(db, _draft(db).id, "reviewer-1")
     with pytest.raises(ValueError):
-        expire_entry(db, row.id, "tim", "   ")
-    row = expire_entry(db, row.id, "tim", "substantial code change in area X")
+        expire_entry(db, row.id, "reviewer-1", "   ")
+    row = expire_entry(db, row.id, "reviewer-1", "substantial code change in area X")
     assert row.status == "expired"
     assert row.expires_rationale == "substantial code change in area X"
     assert row.expired_at is not None
@@ -137,20 +135,19 @@ def test_expired_revalidate_only_with_explicit_flag():
     return to validated, but ONLY via an explicit human flag — never as a
     default validate."""
     db = _db()
-    row = validate_entry(db, _draft(db).id, "tim")
-    row = expire_entry(db, row.id, "tim", "area rewritten")
+    row = validate_entry(db, _draft(db).id, "reviewer-1")
+    row = expire_entry(db, row.id, "reviewer-1", "area rewritten")
     # Without the flag: illegal.
     with pytest.raises(KnowledgeTransitionError):
-        validate_entry(db, row.id, "tim")
-    row = validate_entry(db, row.id, "tim", revalidate_expired=True)
+        validate_entry(db, row.id, "reviewer-1")
+    row = validate_entry(db, row.id, "reviewer-1", revalidate_expired=True)
     assert row.status == "validated"
     assert row.expired_at is None and row.expires_rationale is None
     # The expiry survives in the audit trail even though the columns cleared.
     assert "area rewritten" in row.audit_log
-    assert "re-validated from expired by tim" in row.audit_log
+    assert "re-validated from expired by reviewer-1" in row.audit_log
 
 
-# ---------- lifecycle: illegal transitions ----------
 def test_illegal_transition_matrix():
     """Every non-legal (status, action) pair raises KnowledgeTransitionError.
     Legal set: draft->validate, draft->reject, validated->supersede,
@@ -161,11 +158,11 @@ def test_illegal_transition_matrix():
         ("expired", "revalidate"),
     }
     actions = {
-        "validate": lambda db, eid: validate_entry(db, eid, "tim"),
-        "revalidate": lambda db, eid: validate_entry(db, eid, "tim", revalidate_expired=True),
-        "reject": lambda db, eid: reject_entry(db, eid, "tim"),
-        "supersede": lambda db, eid: supersede_entry(db, eid, "tim", _draft(db).id),
-        "expire": lambda db, eid: expire_entry(db, eid, "tim", "reason"),
+        "validate": lambda db, eid: validate_entry(db, eid, "reviewer-1"),
+        "revalidate": lambda db, eid: validate_entry(db, eid, "reviewer-1", revalidate_expired=True),
+        "reject": lambda db, eid: reject_entry(db, eid, "reviewer-1"),
+        "supersede": lambda db, eid: supersede_entry(db, eid, "reviewer-1", _draft(db).id),
+        "expire": lambda db, eid: expire_entry(db, eid, "reviewer-1", "reason"),
     }
 
     def _in_status(db, status):
@@ -202,27 +199,26 @@ def test_illegal_transition_matrix():
 
 def test_supersede_replacement_must_exist_and_differ():
     db = _db()
-    row = validate_entry(db, _draft(db).id, "tim")
+    row = validate_entry(db, _draft(db).id, "reviewer-1")
     with pytest.raises(ValueError):
-        supersede_entry(db, row.id, "tim", "no-such-entry")
+        supersede_entry(db, row.id, "reviewer-1", "no-such-entry")
     with pytest.raises(ValueError):
-        supersede_entry(db, row.id, "tim", row.id)
+        supersede_entry(db, row.id, "reviewer-1", row.id)
     with pytest.raises(ValueError):
-        supersede_entry(db, row.id, "tim", "")
+        supersede_entry(db, row.id, "reviewer-1", "")
     db.refresh(row)
     assert row.status == "validated"
 
 
-# ---------- retrieval: validated-only, advisory-labeled ----------
 def test_retrieve_validated_only_and_advisory_labeled():
     db = _db()
-    validated = validate_entry(db, _draft(db, title="keep", category="bug_debug").id, "tim")
+    validated = validate_entry(db, _draft(db, title="keep", category="bug_debug").id, "reviewer-1")
     _draft(db, title="still-draft")                       # draft: excluded
-    reject_entry(db, _draft(db).id, "tim")                # rejected: excluded
-    expired = validate_entry(db, _draft(db).id, "tim")
-    expire_entry(db, expired.id, "tim", "gone")           # expired: excluded
-    sup = validate_entry(db, _draft(db).id, "tim")
-    supersede_entry(db, sup.id, "tim", validated.id)      # superseded: excluded
+    reject_entry(db, _draft(db).id, "reviewer-1")                # rejected: excluded
+    expired = validate_entry(db, _draft(db).id, "reviewer-1")
+    expire_entry(db, expired.id, "reviewer-1", "gone")           # expired: excluded
+    sup = validate_entry(db, _draft(db).id, "reviewer-1")
+    supersede_entry(db, sup.id, "reviewer-1", validated.id)      # superseded: excluded
 
     items = retrieve_validated(db)
     assert [it["entry"]["id"] for it in items] == [validated.id]
@@ -240,8 +236,8 @@ def test_retrieve_filters_category_tag_task_type():
     db.add(task)
     db.commit()
     a = validate_entry(db, _draft(db, title="a", category="bug_debug",
-                                  tags=["retry"], source_task_id="t-kb").id, "tim")
-    validate_entry(db, _draft(db, title="b", category="feature_plan").id, "tim")
+                                  tags=["retry"], source_task_id="t-kb").id, "reviewer-1")
+    validate_entry(db, _draft(db, title="b", category="feature_plan").id, "reviewer-1")
 
     assert [i["entry"]["id"] for i in retrieve_validated(db, category="bug_debug")] == [a.id]
     assert [i["entry"]["id"] for i in retrieve_validated(db, tag="retry")] == [a.id]
@@ -250,7 +246,6 @@ def test_retrieve_filters_category_tag_task_type():
     assert retrieve_validated(db, task_type="ci_triage") == []
 
 
-# ---------- draft_from_run ----------
 def _seed_model_run(db, *, scores=None, artifacts=None, with_manifest=True,
                     lesson_history=None):
     db.add(cdb.RoutingModelProfile(
@@ -339,7 +334,6 @@ def test_draft_from_run_without_verification_or_manifest():
     assert "not yet scored" in row.body
 
 
-# ---------- routes ----------
 class _StubAuthManager:
     is_configured = True
 
@@ -485,7 +479,6 @@ def test_routes_draft_from_run():
     assert any(e.get("type") == "model_run" for e in d["evidence"])
 
 
-# ---------- auth gating (AUTH_ENABLED=true, real gate code) ----------
 class TestKnowledgeAuthGating:
     def setup_method(self):
         os.environ["AUTH_ENABLED"] = "true"
@@ -523,7 +516,6 @@ class TestKnowledgeAuthGating:
         assert client.get("/api/harness/knowledge/retrieve", headers=ADMIN).status_code == 200
 
 
-# ---------- the advisory-only invariant ----------
 def test_kb_retrieval_cannot_flip_routing_or_verification():
     """Knowledge is context, never policy. Two teeth:
 
@@ -536,7 +528,7 @@ def test_kb_retrieval_cannot_flip_routing_or_verification():
        KB entry. (routes/ may serve it read-only to the admin UI; that is
        display, not decision.)"""
     db = _db()
-    v = validate_entry(db, _draft(db).id, "tim")
+    v = validate_entry(db, _draft(db).id, "reviewer-1")
     for item in retrieve_validated(db):
         assert item["advisory"] is True
         assert item["note"] == ADVISORY_NOTE
@@ -569,5 +561,5 @@ def test_kb_retrieval_cannot_flip_routing_or_verification():
         allow_premium_models=False, data_sensitivity="internal")
     bundle = {"metadata": {"token_estimate": 10}, "files": []}
     before = route_task(db2, stub, bundle)["candidates"]
-    validate_entry(db2, _draft(db2, category="bug_debug").id, "tim")
+    validate_entry(db2, _draft(db2, category="bug_debug").id, "reviewer-1")
     assert route_task(db2, stub, bundle)["candidates"] == before

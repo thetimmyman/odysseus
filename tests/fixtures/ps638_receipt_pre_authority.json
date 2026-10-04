@@ -5,7 +5,7 @@
       {
         "profile_id": "p1",
         "selected": true,
-        "target_id": "local-rtx4500"
+        "target_id": "local-sim-gpu"
       }
     ],
     "capability_receipt_refs": [
@@ -21,7 +21,7 @@
     "granted_write_scope": [
       "src/thing.py"
     ],
-    "network_policy": "tailnet-loopback",
+    "network_policy": "private-loopback",
     "packet_id": "packet-fixture-1",
     "policy_ref": "",
     "reason": "fixture receipt captured pre-authority for F1 negative control",
@@ -33,19 +33,19 @@
     "run_id": "run-fixture-1",
     "schema_version": 1,
     "selected_backend": "cuda",
-    "selected_host": "minipc",
+    "selected_host": "gpu-host",
     "selected_model": "qwen3.8:27b",
     "selected_model_digest": "d94d9646",
     "selected_runtime_kind": "ollama",
     "selected_runtime_version": "0.32.11",
-    "selected_target_id": "local-rtx4500"
+    "selected_target_id": "local-sim-gpu"
   },
   "kwargs": {
     "candidates_considered": [
       {
         "profile_id": "p1",
         "selected": true,
-        "target_id": "local-rtx4500"
+        "target_id": "local-sim-gpu"
       }
     ],
     "capability_receipt_refs": [
@@ -61,7 +61,7 @@
     "granted_write_scope": [
       "src/thing.py"
     ],
-    "network_policy": "tailnet-loopback",
+    "network_policy": "private-loopback",
     "packet_id": "packet-fixture-1",
     "reason": "fixture receipt captured pre-authority for F1 negative control",
     "receipt_id": "dispatch-fixture-1",
@@ -71,13 +71,13 @@
     "requested_role": "implementer",
     "run_id": "run-fixture-1",
     "selected_backend": "cuda",
-    "selected_host": "minipc",
+    "selected_host": "gpu-host",
     "selected_model": "qwen3.8:27b",
     "selected_model_digest": "d94d9646",
     "selected_runtime_kind": "ollama",
     "selected_runtime_version": "0.32.11",
-    "selected_target_id": "local-rtx4500"
+    "selected_target_id": "local-sim-gpu"
   },
-  "note": "Captured from thetimmyman/odysseus origin/main @ 7afd55bad7034d789c98be4ee6e9ebcfcc97cdba, BEFORE the PS-664 / DR-01+DR-09 optional 'authority' field existed on DispatchDecisionReceipt. tests/test_ps638_authority_hash_stability.py's negative control builds the SAME kwargs (below) under the amended contract with authority omitted, and asserts core()/receipt_hash are byte-identical to this frozen fixture -- proving an absent authority block does not move the hash of an already-sealed receipt shape.",
-  "receipt_hash": "822f8109db8030d714469703671dfe568b713a337491abbc87700038a77c2ea1"
+  "note": "Frozen output captured from origin/main @ 7afd55bad7034d789c98be4ee6e9ebcfcc97cdba, before the optional 'authority' field existed on DispatchDecisionReceipt; regenerated with synthetic target values using that same baseline code. tests/test_ps638_authority_hash_stability.py builds the SAME kwargs (below) under the current contract with authority omitted, and asserts core()/receipt_hash are byte-identical to this frozen fixture -- proving an absent authority block does not move the hash of an already-sealed receipt shape.",
+  "receipt_hash": "62db29b4b6c90edbfc05ae63d458ae8279fa5b74f69217528797697d19d02a81"
 }

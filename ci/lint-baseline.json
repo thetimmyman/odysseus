@@ -1,0 +1,509 @@
+{
+ "findings": {
+  "core/__init__.py": {
+   "F403 `from .constants import *` used; unable to detect undefined names": 1
+  },
+  "core/auth.py": {
+   "F401 `pathlib.Path` imported but unused": 1
+  },
+  "core/platform_compat.py": {
+   "F401 `sys` imported but unused": 1,
+   "F811 Redefinition of unused `sys` from line N: `sys` redefined here": 1
+  },
+  "mcp_servers/email_server.py": {
+   "F401 `datetime.timedelta` imported but unused": 1,
+   "F841 Local variable `touched` is assigned to but never used": 1
+  },
+  "routes/calendar_routes.py": {
+   "F401 `src.user_time.set_user_tz_name` imported but unused": 1,
+   "F401 `src.user_time.set_user_tz_offset` imported but unused": 1,
+   "F811 Redefinition of unused `delete_calendar` from line N: `delete_calendar` redefined here": 1,
+   "F811 Redefinition of unused `set_user_tz_name` from line N: `set_user_tz_name` redefined here": 1,
+   "F811 Redefinition of unused `set_user_tz_offset` from line N: `set_user_tz_offset` redefined here": 1
+  },
+  "routes/cookbook_helpers.py": {
+   "F401 `core.platform_compat.IS_WINDOWS` imported but unused": 1
+  },
+  "routes/cookbook_routes.py": {
+   "F811 Redefinition of unused `COOKBOOK_STATE_FILE` from line N: `COOKBOOK_STATE_FILE` redefined here": 1
+  },
+  "routes/crew_routes.py": {
+   "F401 `core.database.Crew` imported but unused": 1
+  },
+  "routes/document_helpers.py": {
+   "F401 `re` imported but unused": 1,
+   "F401 `src.upload_handler.UploadHandler` imported but unused": 1,
+   "F811 Redefinition of unused `re` from line N: `re` redefined here": 1
+  },
+  "routes/email_pollers.py": {
+   "F401 `routes.email_helpers._pre_retrieve_context` imported but unused": 1,
+   "F401 `smtplib` imported but unused": 1
+  },
+  "routes/email_routes.py": {
+   "F401 `routes.email_helpers.ATTACHMENTS_DIR` imported but unused": 1
+  },
+  "routes/gallery_routes.py": {
+   "F401 `pathlib.Path` imported but unused": 2,
+   "F401 `src.auth_helpers.owner_filter` imported but unused": 1,
+   "F811 Redefinition of unused `owner_filter` from line N: `owner_filter` redefined here": 1
+  },
+  "routes/mcp_routes.py": {
+   "F401 `src.constants.DATA_DIR` imported but unused": 1
+  },
+  "routes/model_routes.py": {
+   "F601 Dictionary key literal `0` repeated (`0` hashes to the same value as `False`)": 1,
+   "F601 Dictionary key literal `1` repeated (`1` hashes to the same value as `True`)": 1,
+   "F841 Local variable `provider` is assigned to but never used": 1
+  },
+  "routes/personal_routes.py": {
+   "F401 `core.constants.BASE_DIR` imported but unused": 1
+  },
+  "routes/research_routes.py": {
+   "F541 f-string without any placeholders": 1
+  },
+  "routes/session_routes.py": {
+   "F401 `core.database.ChatMessage` imported but unused": 1
+  },
+  "routes/shell_routes.py": {
+   "F401 `sys` imported but unused": 1
+  },
+  "routes/skills_routes.py": {
+   "F401 `asyncio` imported but unused": 2,
+   "F401 `services.memory.skill_format.slugify` imported but unused": 1,
+   "F401 `src.settings.get_setting` imported but unused": 1
+  },
+  "routes/terminal_routes.py": {
+   "F401 `pathlib.Path` imported but unused": 1
+  },
+  "routes/vault_routes.py": {
+   "F401 `shutil` imported but unused": 1
+  },
+  "scripts/diffusion_server.py": {
+   "F841 Local variable `model_path` is assigned to but never used": 1
+  },
+  "scripts/fix_paths.py": {
+   "F401 `sys` imported but unused": 1
+  },
+  "scripts/index_documents.py": {
+   "F401 `typing.List` imported but unused": 1,
+   "F401 `typing.Tuple` imported but unused": 1
+  },
+  "scripts/update_database.py": {
+   "F401 `database.Base` imported but unused": 1,
+   "F401 `datetime.datetime` imported but unused": 1
+  },
+  "services/memory/skill_importer.py": {
+   "F401 `os` imported but unused": 1,
+   "F401 `typing.List` imported but unused": 1
+  },
+  "setup.py": {
+   "F541 f-string without any placeholders": 5
+  },
+  "src/agent_loop.py": {
+   "F401 `src.llm_core.stream_llm` imported but unused": 1
+  },
+  "src/agent_tools.py": {
+   "F401 `src.constants.MAX_READ_CHARS` imported but unused": 1
+  },
+  "src/assistant_log.py": {
+   "F401 `datetime.datetime` imported but unused": 1,
+   "F401 `json` imported but unused": 1,
+   "F401 `uuid` imported but unused": 1
+  },
+  "src/builtin_actions.py": {
+   "F401 `httpx` imported but unused": 1,
+   "F401 `os` imported but unused": 1,
+   "F401 `time` imported but unused": 1
+  },
+  "src/caldav_sync.py": {
+   "F401 `datetime.date` imported but unused": 1
+  },
+  "src/crew_orchestrator.py": {
+   "F841 Local variable `final_error` is assigned to but never used": 1,
+   "F841 Local variable `worker_done` is assigned to but never used": 1
+  },
+  "src/database.py": {
+   "F401 `core.database.ApiToken` imported but unused": 1,
+   "F401 `core.database.Base` imported but unused": 1,
+   "F401 `core.database.ChatMessage` imported but unused": 1,
+   "F401 `core.database.Comparison` imported but unused": 1,
+   "F401 `core.database.CrewMember` imported but unused": 1,
+   "F401 `core.database.DATABASE_URL` imported but unused": 1,
+   "F401 `core.database.DocumentVersion` imported but unused": 1,
+   "F401 `core.database.Document` imported but unused": 1,
+   "F401 `core.database.GalleryImage` imported but unused": 1,
+   "F401 `core.database.McpServer` imported but unused": 1,
+   "F401 `core.database.Memory` imported but unused": 1,
+   "F401 `core.database.ModelEndpoint` imported but unused": 1,
+   "F401 `core.database.ScheduledTask` imported but unused": 1,
+   "F401 `core.database.SessionLocal` imported but unused": 1,
+   "F401 `core.database.Session` imported but unused": 1,
+   "F401 `core.database.Signature` imported but unused": 1,
+   "F401 `core.database.TaskRun` imported but unused": 1,
+   "F401 `core.database.TimestampMixin` imported but unused": 1,
+   "F401 `core.database.UserToolData` imported but unused": 1,
+   "F401 `core.database.UserTool` imported but unused": 1,
+   "F401 `core.database.Webhook` imported but unused": 1,
+   "F401 `core.database.archive_session` imported but unused": 1,
+   "F401 `core.database.bulk_insert_messages` imported but unused": 1,
+   "F401 `core.database.cleanup_old_sessions` imported but unused": 1,
+   "F401 `core.database.engine` imported but unused": 1,
+   "F401 `core.database.get_db_session` imported but unused": 1,
+   "F401 `core.database.get_db` imported but unused": 1,
+   "F401 `core.database.get_detailed_stats` imported but unused": 1,
+   "F401 `core.database.get_session_by_id` imported but unused": 1,
+   "F401 `core.database.get_session_stats` imported but unused": 1,
+   "F401 `core.database.init_db` imported but unused": 1,
+   "F401 `core.database.update_session_last_accessed` imported but unused": 1
+  },
+  "src/dispatch_boundary.py": {
+   "F401 `src.dispatch_routing.CAP_DETERMINISTIC_VERIFICATION` imported but unused": 1,
+   "F401 `src.dispatch_routing.DispatchRoutingError` imported but unused": 1,
+   "F401 `src.dispatch_routing.EXACTNESS_APPROXIMATE` imported but unused": 1,
+   "F401 `src.dispatch_routing.FALLBACK_RULE` imported but unused": 1,
+   "F401 `src.dispatch_routing.KNOWN_PROVENANCE` imported but unused": 1,
+   "F401 `src.dispatch_routing.LegacyCapabilityView` imported but unused": 1,
+   "F401 `src.dispatch_routing.PROVENANCE_DETECTED` imported but unused": 1,
+   "F401 `src.dispatch_routing.PROVENANCE_MEASURED` imported but unused": 1,
+   "F401 `src.dispatch_routing.REFUSED_PRIVACY_LOCAL_ONLY` imported but unused": 1,
+   "F401 `src.dispatch_routing.ROLE_GOVERNANCE_CI` imported but unused": 1,
+   "F401 `src.dispatch_routing.ROLE_VERIFIER` imported but unused": 1,
+   "F401 `src.dispatch_routing.RoutingRefused` imported but unused": 1,
+   "F401 `src.dispatch_routing.make_legacy_capability_view` imported but unused": 1,
+   "F811 Redefinition of unused `make_legacy_capability_view` from line N: `make_legacy_capability_view` redefined here": 1
+  },
+  "src/dispatch_routing.py": {
+   "F401 `typing.Iterable` imported but unused": 1,
+   "F401 `typing.List` imported but unused": 1
+  },
+  "src/document_actions.py": {
+   "F401 `core.database.Session` imported but unused": 1,
+   "F841 Local variable `real_len` is assigned to but never used": 1
+  },
+  "src/event_bus.py": {
+   "F401 `os` imported but unused": 1
+  },
+  "src/evidence_package.py": {
+   "F401 `src.evidence_contract.CLAIM_BLOCKED` imported but unused": 1,
+   "F401 `src.evidence_contract.CLAIM_FAIL` imported but unused": 1,
+   "F401 `src.evidence_contract.CLAIM_INCONCLUSIVE` imported but unused": 1,
+   "F401 `src.source_snapshot.snapshot_digest_is_valid` imported but unused": 1,
+   "F401 `typing.Callable` imported but unused": 1,
+   "F811 Redefinition of unused `snapshot_digest_is_valid` from line N: `snapshot_digest_is_valid` redefined here": 1
+  },
+  "src/execution_package.py": {
+   "F401 `src.source_snapshot.source_snapshot_from_dict` imported but unused": 1,
+   "F401 `typing.Iterable` imported but unused": 1
+  },
+  "src/integrations.py": {
+   "F401 `src.constants.DATA_DIR` imported but unused": 1
+  },
+  "src/local_target_routing.py": {
+   "F401 `src.local_targets.INVALIDATED_UNHEALTHY` imported but unused": 1,
+   "F401 `src.local_targets.PRIVACY_LOCAL_ONLY` imported but unused": 1,
+   "F821 Undefined name `Iterable`": 1
+  },
+  "src/provider_capacity.py": {
+   "F841 Local variable `provenance` is assigned to but never used": 1
+  },
+  "src/rag_singleton.py": {
+   "F401 `os` imported but unused": 1,
+   "F401 `pathlib.Path` imported but unused": 1
+  },
+  "src/routing_budget.py": {
+   "F401 `json` imported but unused": 1
+  },
+  "src/routing_engine.py": {
+   "F401 `typing.Dict` imported but unused": 1
+  },
+  "src/routing_escalation.py": {
+   "F401 `src.routing_coordinator.SCHEMA_VERSION` imported but unused": 1
+  },
+  "src/routing_prompts.py": {
+   "F401 `typing.Optional` imported but unused": 1
+  },
+  "src/routing_reliability.py": {
+   "F401 `datetime.datetime` imported but unused": 1,
+   "F401 `typing.List` imported but unused": 1,
+   "F401 `typing.Optional` imported but unused": 1
+  },
+  "src/routing_rules_classifier.py": {
+   "F401 `sys` imported but unused": 1
+  },
+  "src/secret_storage.py": {
+   "F401 `os` imported but unused": 1
+  },
+  "src/source_snapshot.py": {
+   "F401 `dataclasses.field` imported but unused": 1
+  },
+  "src/task_scheduler.py": {
+   "F401 `core.database.CalendarEvent` imported but unused": 1,
+   "F401 `core.database.ChatMessage` imported but unused": 2,
+   "F401 `core.database.ScheduledTask` imported but unused": 1,
+   "F401 `datetime.timedelta` imported but unused": 1
+  },
+  "src/tool_execution.py": {
+   "F401 `pathlib` imported but unused": 1
+  },
+  "src/tool_implementations.py": {
+   "F401 `fnmatch` imported but unused": 1
+  },
+  "tests/test_admin_wipe_gallery.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_api_key_manager_atomic_save.py": {
+   "F401 `unittest.mock.mock_open` imported but unused": 1
+  },
+  "tests/test_api_key_manager_resilience.py": {
+   "F401 `os` imported but unused": 1
+  },
+  "tests/test_app.py": {
+   "F401 `src.constants.MEMORY_FILE` imported but unused": 1,
+   "F401 `src.constants.SESSIONS_FILE` imported but unused": 1,
+   "F401 `src.exceptions.InvalidFileUploadError` imported but unused": 1,
+   "F401 `src.exceptions.LLMServiceError` imported but unused": 1,
+   "F401 `src.exceptions.WebSearchError` imported but unused": 1
+  },
+  "tests/test_audit_memories_vector_rebuild.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_auth_config_lock_concurrency.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_auth_regressions.py": {
+   "F401 `unittest.mock.MagicMock` imported but unused": 1
+  },
+  "tests/test_backup_import_cross_user_dedup.py": {
+   "F401 `types.SimpleNamespace` imported but unused": 1
+  },
+  "tests/test_backup_import_skills.py": {
+   "F401 `types.SimpleNamespace` imported but unused": 1
+  },
+  "tests/test_build_user_content_pdf_marker.py": {
+   "F401 `os` imported but unused": 1,
+   "F401 `tempfile` imported but unused": 1
+  },
+  "tests/test_caldav_google_principal_url.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_caldav_sync_uid_scope.py": {
+   "F401 `pytest` imported but unused": 1,
+   "F401 `uuid` imported but unused": 1
+  },
+  "tests/test_calendar_recurrence.py": {
+   "F401 `datetime.timedelta` imported but unused": 1
+  },
+  "tests/test_carddav_password_encryption.py": {
+   "F401 `os` imported but unused": 1,
+   "F401 `pathlib.Path` imported but unused": 1,
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_checkin_digest_owner_scope.py": {
+   "F401 `pytest` imported but unused": 1,
+   "F401 `uuid` imported but unused": 1
+  },
+  "tests/test_compact_truncate_tool_call_args.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_compaction_summary_failure.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_context_compactor.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_context_safety.py": {
+   "F401 `pytest` imported but unused": 1,
+   "F401 `unittest.mock.MagicMock` imported but unused": 1
+  },
+  "tests/test_copilot_routes.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_device_flow_routes.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_doc_library_open_orphaned.py": {
+   "F401 `re` imported but unused": 1
+  },
+  "tests/test_edit_file.py": {
+   "F841 Local variable `ws` is assigned to but never used": 1
+  },
+  "tests/test_email_polly_imap_leak.py": {
+   "F401 `unittest.mock.MagicMock` imported but unused": 1
+  },
+  "tests/test_endpoint_probing.py": {
+   "F401 `routes.model_routes._PROVIDER_CURATED` imported but unused": 1
+  },
+  "tests/test_evidence_package_ps638.py": {
+   "F401 `src.evidence_package.compute_evidence_package_hash` imported but unused": 1
+  },
+  "tests/test_free_scout.py": {
+   "F401 `pathlib.Path` imported but unused": 1
+  },
+  "tests/test_gallery_owner_filter_single_user.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_history_topics_owner_scope.py": {
+   "F401 `os` imported but unused": 1,
+   "F401 `pytest` imported but unused": 1,
+   "F401 `starlette.requests.Request` imported but unused": 1,
+   "F401 `sys` imported but unused": 1,
+   "F401 `types` imported but unused": 1
+  },
+  "tests/test_ics_export_escaping.py": {
+   "F401 `pytest` imported but unused": 1,
+   "F401 `unittest.mock.MagicMock` imported but unused": 1,
+   "F401 `unittest.mock.patch` imported but unused": 1
+  },
+  "tests/test_imap_leak_fixes.py": {
+   "F401 `unittest.mock.patch` imported but unused": 1
+  },
+  "tests/test_internal_api_base.py": {
+   "F401 `importlib` imported but unused": 1,
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_llm_core_reasoning_content_fallback.py": {
+   "F401 `json` imported but unused": 1,
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_mechanical_landing.py": {
+   "F401 `src.mechanical_landing.LandingRefused` imported but unused": 1,
+   "F401 `src.mechanical_landing.SemanticAcceptance` imported but unused": 1
+  },
+  "tests/test_memory_extractor_vector_cross_tenant.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_notes_fail_closed_auth.py": {
+   "F401 `uuid` imported but unused": 1
+  },
+  "tests/test_notes_update_due_date.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_null_owner_gates.py": {
+   "F401 `os` imported but unused": 1
+  },
+  "tests/test_offer_economics.py": {
+   "F401 `datetime.datetime` imported but unused": 1,
+   "F401 `datetime.timezone` imported but unused": 1,
+   "F401 `tests.test_promotional_dispatch.configured` imported but unused": 1,
+   "F811 Redefinition of unused `configured` from line N: `configured` redefined here": 5
+  },
+  "tests/test_ps632_capability_receipt.py": {
+   "F401 `src.local_targets.HEALTH_HEALTHY` imported but unused": 1,
+   "F401 `src.local_targets.HEALTH_UNREACHABLE` imported but unused": 1,
+   "F401 `src.local_targets.INVALIDATED_UNHEALTHY` imported but unused": 1
+  },
+  "tests/test_ps640_provider_capacity.py": {
+   "F401 `datetime.timedelta` imported but unused": 1,
+   "F401 `datetime.timezone` imported but unused": 1,
+   "F403 `from src.provider_capacity import *` used; unable to detect undefined names": 1,
+   "F405 `AuthorizationClass` may be undefined, or defined from star imports": 3,
+   "F405 `CapacityError` may be undefined, or defined from star imports": 26,
+   "F405 `CapacityRegistry` may be undefined, or defined from star imports": 11,
+   "F405 `CapacityState` may be undefined, or defined from star imports": 2,
+   "F405 `CostClass` may be undefined, or defined from star imports": 9,
+   "F405 `Entitlement` may be undefined, or defined from star imports": 6,
+   "F405 `EvidenceProvenance` may be undefined, or defined from star imports": 1,
+   "F405 `PriceObservation` may be undefined, or defined from star imports": 10,
+   "F405 `PricingSource` may be undefined, or defined from star imports": 8,
+   "F405 `QuotaDimension` may be undefined, or defined from star imports": 16,
+   "F405 `UNKNOWN` may be undefined, or defined from star imports": 18,
+   "F405 `capacity_receipt_from_dict` may be undefined, or defined from star imports": 1,
+   "F405 `make_capacity_receipt` may be undefined, or defined from star imports": 1,
+   "F841 Local variable `invalidated` is assigned to but never used": 1
+  },
+  "tests/test_rag_remove_directory_scope.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_rate_limiter.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_research_chat_stream_owner.py": {
+   "F401 `textwrap` imported but unused": 1
+  },
+  "tests/test_research_service.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_rewrite_persist_column.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_routing_benchmark.py": {
+   "F401 `src.routing_benchmark.HARD_GATE_THRESHOLDS` imported but unused": 1,
+   "F401 `src.routing_benchmark` imported but unused": 1
+  },
+  "tests/test_routing_execution.py": {
+   "F401 `json` imported but unused": 1,
+   "F401 `types` imported but unused": 1
+  },
+  "tests/test_routing_knowledge.py": {
+   "F841 Local variable `v` is assigned to but never used": 1
+  },
+  "tests/test_routing_outcomes.py": {
+   "F401 `core.database.RoutingTask` imported but unused": 1
+  },
+  "tests/test_scheduler_restart_doublefire.py": {
+   "F401 `sqlalchemy.Boolean` imported but unused": 1,
+   "F401 `unittest.mock.MagicMock` imported but unused": 1
+  },
+  "tests/test_search_cache_invalidation.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_secure_cookie_derivation.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_send_to_session_owner_scope.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_session_list_owner_scope.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_setup_device_auth_static.py": {
+   "F841 Local variable `guide_block` is assigned to but never used": 1
+  },
+  "tests/test_skill_index_prompt_injection.py": {
+   "F401 `json` imported but unused": 1,
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_skills_delete_owner.py": {
+   "F401 `fastapi.HTTPException` imported but unused": 1,
+   "F401 `os` imported but unused": 1
+  },
+  "tests/test_skills_manager_owner_isolation.py": {
+   "F401 `os` imported but unused": 1,
+   "F401 `services.memory.skill_format.Skill` imported but unused": 1,
+   "F841 Local variable `alice_path` is assigned to but never used": 1,
+   "F841 Local variable `bob_path` is assigned to but never used": 1
+  },
+  "tests/test_sqlite_foreign_keys.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_strip_think.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_teacher_eval_tier2.py": {
+   "F401 `asyncio` imported but unused": 1,
+   "F401 `types.SimpleNamespace` imported but unused": 1
+  },
+  "tests/test_tool_support_heuristic.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_topic_analyzer.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_unknown_tool_calls.py": {
+   "F401 `pytest` imported but unused": 1
+  },
+  "tests/test_upload_handler_atomicity.py": {
+   "F401 `pytest` imported but unused": 1,
+   "F401 `threading` imported but unused": 1,
+   "F841 Local variable `new_result` is assigned to but never used": 1
+  }
+ },
+ "generated_from_base": "a4f91a8",
+ "note": "messages normalized: 'line <N>' -> 'line N'",
+ "rules": [
+  "E9",
+  "F"
+ ],
+ "tool": "ruff==0.16.8",
+ "version": 2
+}

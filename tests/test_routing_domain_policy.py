@@ -1,6 +1,6 @@
-"""PS-605 — deterministic per-domain routing/privacy policy.
+"""Deterministic per-domain routing/privacy policy.
 
-Covers the ticket's five controls: a sensitive domain refuses hosted execution
+Covers five controls: a sensitive domain refuses hosted execution
 (negative); the same domain succeeds against a local target (positive); a dev
 domain may use a hosted target (non-sensitive control); fallback never escapes
 the domain policy and fails closed (fallback control); and every case leaves an
@@ -11,8 +11,6 @@ import pytest
 
 from src import routing_domain_policy as rdp
 
-
-# --- negative / positive / non-sensitive ------------------------------------
 
 def test_sensitive_domain_refuses_hosted_provider():
     d = rdp.evaluate_route(domain="finance", provider="openrouter", sensitivity="internal")
@@ -30,8 +28,6 @@ def test_dev_domain_allows_hosted_provider():
     d = rdp.evaluate_route(domain="general_swe", provider="openrouter", sensitivity="internal")
     assert d.allowed is True
 
-
-# --- sensitivity ceiling still binds ---------------------------------------
 
 def test_dev_domain_respects_sensitivity_ceiling():
     # 'restricted' ranks above the default 'confidential' ceiling, so even a dev
@@ -53,8 +49,6 @@ def test_local_endpoint_url_counts_as_local():
     assert d.allowed is True
 
 
-# --- fallback control -------------------------------------------------------
-
 def test_fallback_fails_closed_for_sensitive_domain():
     with pytest.raises(rdp.PolicyDenied) as err:
         rdp.select_route(
@@ -73,8 +67,6 @@ def test_fallback_selects_first_approved_for_dev_domain():
     assert d.provider == "openrouter"
 
 
-# --- provider allow/deny ----------------------------------------------------
-
 def test_provider_deny_list():
     pol = rdp.DomainPolicy(domain="general_swe", denied_providers=frozenset({"openrouter"}))
     d = rdp.evaluate_route(domain="general_swe", provider="openrouter", policy=pol)
@@ -88,8 +80,6 @@ def test_provider_allow_list():
     assert rdp.evaluate_route(domain="general_swe", provider="openrouter", policy=pol).allowed is False
 
 
-# --- operator override (settable) -------------------------------------------
-
 def test_operator_override_via_config(monkeypatch):
     monkeypatch.setattr(
         "src.routing_policy.load_policy",
@@ -99,8 +89,6 @@ def test_operator_override_via_config(monkeypatch):
     assert pol.local_only is False
     assert pol.allowed_providers == frozenset({"openrouter"})
 
-
-# --- audit control ----------------------------------------------------------
 
 def test_decision_record_is_complete():
     d = rdp.evaluate_route(domain="finance", provider="ollama")

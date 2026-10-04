@@ -1,26 +1,15 @@
-"""src/attempt_receipt.py — AttemptReceipt + VerificationReceipt (PS-638).
+"""AttemptReceipt and VerificationReceipt: what actually happened.
 
-The other half of the envelope: what actually happened.
+Rules enforced mechanically:
 
-The rules this module enforces mechanically, because prose cannot:
-
-**Attempt 2 never overwrites attempt 1.** A receipt is frozen and
-content-addressed per attempt. There is no mutable "current attempt" to
-overwrite, so "final green erased an earlier red" is not a mistake a caller can
-make here — PS-638 hardening item 4 requires that every retry survive.
-
-**A verdict is DERIVED, never asserted.** ``VerificationReceipt`` has no
-``passed`` field to set. The outcome comes from ``exit_code`` plus capture
-completeness, so a nonzero command cannot become PASS because the surrounding
-text looked reassuring, and a truncated log cannot become PASS either — an
-absence inside a truncated capture is not an absence. Both directions are
-deliberately symmetric: truncation poisons a PASS exactly as much as it poisons
-a claim of absence.
-
-**A pre-existing failure claim needs a baseline, not an opinion.** PS-638
-requires an exact-base receipt with a matching normalized failure identity. The
-receipt can carry the claim; only :func:`classify_against_baseline` decides, and
-it returns SAME / CHANGED / NEW from fingerprints — never from a sentence.
+* A later attempt never overwrites an earlier one: receipts are frozen and
+  content-addressed per attempt, so every retry survives.
+* A verdict is derived, never asserted: there is no ``passed`` field. The
+  outcome comes from ``exit_code`` and capture completeness, and truncation
+  poisons a PASS as much as a claim of absence.
+* A pre-existing-failure claim needs a baseline receipt:
+  :func:`classify_against_baseline` returns SAME / CHANGED / NEW from
+  fingerprints, never from prose.
 """
 from __future__ import annotations
 
@@ -42,8 +31,7 @@ from src.evidence_contract import (
 ATTEMPT_RECEIPT_SCHEMA_VERSION = 1
 VERIFICATION_RECEIPT_SCHEMA_VERSION = 1
 
-#: Failure classes, kept separate for the same reason the ledger keeps them
-#: separate: an outage is not a task verdict, and a sizing error is neither.
+#: An outage is not a task verdict, and a sizing error is neither.
 FAILURE_CLASS_TECHNICAL = "technical"
 FAILURE_CLASS_POLICY = "policy"
 FAILURE_CLASS_RUNTIME_PROVIDER = "runtime_provider"
@@ -55,7 +43,6 @@ KNOWN_FAILURE_CLASSES = frozenset({
     FAILURE_CLASS_INFRA, FAILURE_CLASS_CONTEXT,
 })
 
-#: Baseline comparison, per PS-638 hardening item 6.
 BASELINE_SAME = "SAME"
 BASELINE_CHANGED = "CHANGED"
 BASELINE_NEW = "NEW"
@@ -76,12 +63,8 @@ def _sha256_hex(data: bytes) -> str:
 
 
 def context_projection_digest(rendered_context: str) -> str:
-    """Digest of the EXACT text handed to the worker.
-
-    One function, used by both the producer and the validator, so the hash in a
-    receipt and the hash recomputed from the rendered artifact cannot be derived
-    two different ways.
-    """
+    """Digest of the exact text handed to the worker. Shared by producer and
+    validator so the hash can't be derived two ways."""
     return _sha256_hex((rendered_context or "").encode("utf-8"))
 
 
@@ -94,16 +77,11 @@ def artifact_ref(artifact_id: str, content: str | bytes, *,
                        storage_uri=storage_uri)
 
 
-# ---------------------------------------------------------------- artifact ---
 @dataclass(frozen=True)
 class ArtifactRef:
-    """A content-addressed artifact reference.
-
-    ``storage_uri`` is a PROJECTION: where the bytes happen to live right now.
-    ``sha256`` is the identity. That split is what lets an evidence package
-    survive a file being moved, and what makes an artifact hash mismatch a
-    detectable event rather than a broken link.
-    """
+    """A content-addressed artifact reference. ``sha256`` is the identity;
+    ``storage_uri`` is only where the bytes live now, so moves survive and hash
+    mismatches are detectable."""
 
     artifact_id: str
     sha256: str
@@ -126,10 +104,8 @@ class ArtifactRef:
 def _seal_record(cls, core: dict, hash_field: str, exclude: Sequence[str] = ()):
     """Build a frozen record, sealing a digest over its own ``core()``.
 
-    ``exclude`` drops fields that are DERIVED rather than recorded. A derived
-    field must not be part of the identity: if it were, the same fact could be
-    written two ways and produce two different hashes, and a reader could not
-    tell an edited verdict from a recomputed one.
+    ``exclude`` drops derived fields: if they were in the identity, one fact
+    could hash two ways and an edited verdict would look recomputed.
     """
     provisional = cls(**core)
     sealed = {k: v for k, v in provisional.core().items() if k not in exclude}
@@ -146,15 +122,10 @@ def _check_hash(payload: Mapping[str, Any], hash_field: str,
     return _sha256_hex(_canonical(core)) == payload[hash_field]
 
 
-# ----------------------------------------------------------------- attempt ---
 @dataclass(frozen=True)
 class AttemptReceipt:
-    """One actual attempt. Immutable, and never replaced by a later one.
-
-    ``repair_of`` names the attempt this one repairs (0 for a fresh dispatch),
-    which is what makes a repair chain reconstructible instead of inferred from
-    timestamps.
-    """
+    """One actual attempt; immutable and never replaced. ``repair_of`` names the
+    attempt this repairs (0 for fresh), so repair chains are reconstructible."""
 
     receipt_id: str
     run_id: str
@@ -206,7 +177,6 @@ class AttemptReceipt:
                 f"repair_of={self.repair_of} must reference an EARLIER attempt "
                 f"than attempt={self.attempt}")
 
-    # ---------------------------------------------------------- write scope ---
     @property
     def writes_outside_scope(self) -> Tuple[str, ...]:
         """Actual writes that were not declared. Empty is the only good answer."""
@@ -283,15 +253,10 @@ def attempt_receipt_hash_is_valid(payload: Mapping[str, Any]) -> bool:
     return _check_hash(payload, "receipt_hash")
 
 
-# ------------------------------------------------------------ verification ---
 @dataclass(frozen=True)
 class VerificationReceipt:
-    """One deterministic check, with its identity and its capture honesty.
-
-    There is deliberately NO ``passed`` field. The verdict is :attr:`outcome`,
-    derived from ``exit_code`` and capture completeness, so it cannot be set to
-    something the command did not produce.
-    """
+    """One deterministic check. No ``passed`` field: :attr:`outcome` is derived
+    from ``exit_code`` and capture completeness."""
 
     receipt_id: str
     run_id: str
@@ -370,7 +335,6 @@ class VerificationReceipt:
             if value is not None and (not isinstance(value, int) or value < 0):
                 raise ReceiptError(f"{name} must be None or a non-negative int")
 
-    # -------------------------------------------------------------- verdict ---
     @property
     def capture_complete(self) -> bool:
         """Both streams fully captured. A truncated capture proves neither way."""
@@ -378,13 +342,8 @@ class VerificationReceipt:
 
     @property
     def outcome(self) -> str:
-        """PASS / FAIL / BLOCKED / INCONCLUSIVE — DERIVED, never asserted.
-
-        Order matters: BLOCKED first (nothing was judged), then a nonzero exit
-        code (a failure is a failure whatever the prose says), then incomplete
-        capture (which cannot support a PASS any more than it can support an
-        absence claim), and only then PASS.
-        """
+        """PASS / FAIL / BLOCKED / INCONCLUSIVE, derived. Order matters: BLOCKED,
+        then nonzero exit, then incomplete capture, and only then PASS."""
         if self.blocked_reason.strip():
             return CLAIM_BLOCKED
         if self.exit_code != 0:
@@ -497,10 +456,8 @@ def make_verification_receipt(**kwargs: Any) -> VerificationReceipt:
 def verification_receipt_hash_is_valid(payload: Mapping[str, Any]) -> bool:
     """True when a serialized verification receipt's hash matches its fields.
 
-    ``outcome`` is NOT part of the hash: it is derived from ``exit_code`` and
-    capture completeness, so including it would let two representations of the
-    same fact disagree. It is recomputed on read instead — which is exactly why
-    an edited ``outcome`` is detectable rather than authoritative.
+    ``outcome`` is excluded from the hash and recomputed on read, so an edited
+    ``outcome`` is detectable rather than authoritative.
     """
     return _check_hash(payload, "receipt_hash", exclude=("outcome",))
 
@@ -520,11 +477,8 @@ def recompute_outcome(receipt: Mapping[str, Any]) -> str:
 def classify_against_baseline(receipt: VerificationReceipt) -> str:
     """SAME / CHANGED / NEW / UNPROVEN from fingerprints, never from prose.
 
-    ``UNPROVEN`` is the state a bare claim lands in. PS-638 requires an
-    exact-base receipt to support "this failure was pre-existing"; a receipt that
-    says so without naming a baseline hash, a baseline source and a baseline
-    fingerprint has not supported anything, and must not read as NEW (which
-    would silently drop the claim) or as SAME (which would accept it).
+    A claim without baseline hash, source and fingerprint is UNPROVEN: neither
+    NEW (dropping the claim) nor SAME (accepting it).
     """
     if not receipt.claimed_preexisting:
         return BASELINE_NEW

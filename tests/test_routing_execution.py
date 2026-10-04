@@ -51,7 +51,6 @@ def data_dir(tmp_path, monkeypatch):
     return d
 
 
-# ---------- command allowlist ----------
 @pytest.mark.parametrize("cmd", [
     "pytest",
     "pytest -q",
@@ -82,7 +81,6 @@ def test_allowlist_rejects(cmd):
     assert is_command_allowed(cmd, SB_POLICY) is False
 
 
-# ---------- docker argv construction (docker mocked) ----------
 def _fake_run_factory(calls, stdout=b"ok", stderr=b"", returncode=0):
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -203,7 +201,6 @@ def test_run_in_sandbox_docker_unavailable(tmp_path, data_dir, monkeypatch):
     assert result["exit_code"] is None
 
 
-# ---------- ToolCallRecord persistence ----------
 def _db():
     engine = sqlalchemy.create_engine(
         "sqlite:///:memory:",
@@ -273,14 +270,12 @@ def test_tool_call_record_persisted_for_denied(tmp_path, data_dir, monkeypatch):
     assert rec.policy_decision_id  # defaults to the routing policy version
 
 
-# ---------- workdir: data_root override ----------
 def test_data_root_honors_env_override(data_dir):
     assert data_root() == os.path.realpath(str(data_dir))
     assert worktrees_root() == os.path.join(os.path.realpath(str(data_dir)),
                                             "routing", "worktrees")
 
 
-# ---------- workdir: worktree lifecycle on a real throwaway repo ----------
 PATCH = """diff --git a/hello.txt b/hello.txt
 --- a/hello.txt
 +++ b/hello.txt

@@ -94,17 +94,52 @@ async def wait_terminal(runtime, execution_id, timeout=25.0):
             return status
         await asyncio.sleep(0.1)
     return runtime.status(execution_id)
-# --- Test A — Start --------------------------------------------------------
+
+
+def test_execution_record_persists_ps638_attempt_binding(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path))
+    binding = {
+        "run_id": "run-605",
+        "packet_id": "packet-638",
+        "attempt": 2,
+        "execution_package_hash": "package-hash",
+        "dispatch_receipt_hash": "receipt-hash",
+        "target_id": "target-1",
+        "host": "host-1",
+        "runtime_kind": "pi",
+    }
+
+    record = pe.create_execution(**binding)
+    persisted = pe.get_execution(record["execution_id"])
+
+    assert persisted is not None
+    for field, value in binding.items():
+        assert persisted[field] == value
+
+
+def test_execution_record_defaults_ps638_attempt_binding_to_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path))
+    record = pe.create_execution()
+    persisted = pe.get_execution(record["execution_id"])
+
+    assert persisted is not None
+    for field in (
+        "run_id", "packet_id", "attempt", "execution_package_hash",
+        "dispatch_receipt_hash", "target_id", "host", "runtime_kind",
+    ):
+        assert persisted[field] is None
+
+
 async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-a")
     runtime = PiRuntime()
     record = await runtime.start(
-        task="Add a Jira integration settings entry.",
+        task="Add a tracker integration settings entry.",
         worktree=str(worktree),
         model="local-qwen3.8-27b",
         constraints=["Do not touch production migrations."],
         odysseus_run_id="run-42",
-        jira_ticket="PS-999",
+        ticket_key="PS-999",
     )
     assert record["execution_id"]
     assert record["worktree"] == os.path.realpath(worktree)
@@ -112,12 +147,133 @@ async def test_a_start_creates_execution_record(repo, worktree, pi_env):
     assert record["base_commit"]
     assert record["model"] == pc.DEFAULT_PI_MODEL_ID
     assert record["provider"] == pc.DEFAULT_PI_PROVIDER
+    assert record["ticket_key"] == "PS-999"
+    assert "jira_ticket" not in record
 
     final = await wait_terminal(runtime, record["execution_id"])
     assert final["status"] == pe.STATUS_COMPLETED
 
 
-# --- Test B — Identity -----------------------------------------------------
+def test_pre_rename_record_reads_jira_ticket_as_ticket_key(pi_env):
+    eid = pe.new_execution_id()
+    os.makedirs(pe.executions_root(), exist_ok=True)
+    with open(pe.record_path(eid), "w", encoding="utf-8") as fh:
+        json.dump({"execution_id": eid, "jira_ticket": "PS-100"}, fh)
+    record = pe.get_execution(eid)
+    assert record["ticket_key"] == "PS-100"
+    assert "jira_ticket" not in record
+
+
+def test_start_body_accepts_deprecated_jira_ticket_alias():
+    from routes.pi_runtime_routes import StartBody
+
+    base = {"task": "t", "worktree": "/w"}
+    assert StartBody(**base, ticket_key="PS-1").ticket_key == "PS-1"
+    assert StartBody(**base, jira_ticket="PS-2").ticket_key == "PS-2"
+    assert StartBody(**base, ticket_key="PS-3", jira_ticket="PS-3").ticket_key == "PS-3"
+    with pytest.raises(ValueError):
+        StartBody(**base, ticket_key="PS-4", jira_ticket="PS-5")
+
+
+async def test_start_from_pin_persists_dispatch_binding(repo, worktree, pi_env):
+    configure(worktree, session_id="stub-session-pin")
+    runtime = PiRuntime()
+    pin = {
+        "provider": pc.DEFAULT_PI_PROVIDER,
+        "model": pc.DEFAULT_PI_MODEL_ID,
+        "runtime_kind": "pi",
+        "receipt_hash": "a" * 64,
+        "run_id": "run-pin",
+        "packet_id": "packet-pin",
+        "execution_package_hash": "b" * 64,
+        "profile_id": "profile-pin",
+        "target_id": "target-pin",
+        "host": "host-pin",
+    }
+
+    record = await runtime.start_from_pin(
+        pin,
+        task="Run from a dispatch pin.",
+        worktree=str(worktree),
+        attempt=2,
+        run_id="run-pin",
+        packet_id="packet-pin",
+        execution_package_hash="b" * 64,
+    )
+
+    assert record["provider"] == pin["provider"]
+    assert record["model"] == pin["model"]
+    assert record["dispatch_receipt_hash"] == "a" * 64
+    assert record["target_id"] == "target-pin"
+    assert record["host"] == "host-pin"
+    assert record["runtime_kind"] == "pi"
+    assert record["attempt"] == 2
+
+
+async def test_start_from_pin_rejects_non_pi_without_spawning(repo, worktree, pi_env, monkeypatch):
+    configure(worktree, session_id="stub-session-non-pi")
+    runtime = PiRuntime()
+
+    async def no_spawn(*args, **kwargs):
+        raise AssertionError("non-Pi dispatch pin must not spawn Pi")
+
+    monkeypatch.setattr(runtime, "_spawn", no_spawn)
+    pin = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "runtime_kind": "openai_compatible",
+    }
+
+    with pytest.raises(ValueError, match="not a Pi target"):
+        await runtime.start_from_pin(pin, task="Must not run.", worktree=str(worktree))
+    assert not list((Path(pi_env) / "executions").glob("*.json"))
+
+
+@pytest.mark.parametrize("field", ["runtime_kind", "receipt_hash", "run_id", "packet_id",
+                                   "execution_package_hash", "target_id", "profile_id", "host"])
+async def test_start_from_pin_rejects_incomplete_binding_before_spawning(
+        repo, worktree, pi_env, monkeypatch, field):
+    runtime = PiRuntime()
+
+    async def no_spawn(*args, **kwargs):
+        raise AssertionError("incomplete pin must be rejected before spawning")
+
+    monkeypatch.setattr(runtime, "_spawn", no_spawn)
+    pin = {"provider": "local-qwen", "model": "qwen", "runtime_kind": "pi",
+           "receipt_hash": "a" * 64, "run_id": "run", "packet_id": "packet",
+           "execution_package_hash": "b" * 64, "target_id": "target",
+           "profile_id": "profile", "host": "host"}
+    pin.pop(field)
+    expected = "not a Pi target" if field == "runtime_kind" else "dispatch pin"
+    with pytest.raises(ValueError, match=expected):
+        await runtime.start_from_pin(pin, task="No run.", worktree=str(worktree),
+            run_id="run", packet_id="packet", execution_package_hash="b" * 64)
+    assert not list((Path(pi_env) / "executions").glob("*.json"))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_id", "other-run"), ("packet_id", "other-packet"),
+    ("execution_package_hash", "c" * 64),
+])
+async def test_start_from_pin_rejects_caller_binding_mismatch_before_spawning(
+        repo, worktree, pi_env, monkeypatch, field, value):
+    runtime = PiRuntime()
+
+    async def no_spawn(*args, **kwargs):
+        raise AssertionError("binding mismatch must be rejected before spawning")
+
+    monkeypatch.setattr(runtime, "_spawn", no_spawn)
+    pin = {"provider": "local-qwen", "model": "qwen", "runtime_kind": "pi",
+           "receipt_hash": "a" * 64, "run_id": "run", "packet_id": "packet",
+           "execution_package_hash": "b" * 64, "target_id": "target",
+           "profile_id": "profile", "host": "host"}
+    kwargs = {"run_id": "run", "packet_id": "packet", "execution_package_hash": "b" * 64}
+    kwargs[field] = value
+    with pytest.raises(ValueError, match="binding differs"):
+        await runtime.start_from_pin(pin, task="No run.", worktree=str(worktree), **kwargs)
+    assert not list((Path(pi_env) / "executions").glob("*.json"))
+
+
 async def test_b_execution_id_maps_to_pi_session_id(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-b")
     runtime = PiRuntime()
@@ -134,7 +290,6 @@ async def test_b_execution_id_maps_to_pi_session_id(repo, worktree, pi_env):
     assert on_disk["pi_session_file"]
 
 
-# --- Test C — Worktree isolation -------------------------------------------
 async def test_c_pi_edits_only_the_assigned_worktree(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-c", write_files=["stub_output.txt"])
     runtime = PiRuntime()
@@ -149,7 +304,6 @@ async def test_c_pi_edits_only_the_assigned_worktree(repo, worktree, pi_env):
     assert "stub_output.txt" in result["files_changed"]
 
 
-# --- Test D — Events -------------------------------------------------------
 async def test_d_useful_events_are_observable(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-d", run_command="pytest -q",
               write_files=["mod.py"])
@@ -171,7 +325,6 @@ async def test_d_useful_events_are_observable(repo, worktree, pi_env):
 
 
 
-# --- Test E — Completion ---------------------------------------------------
 async def test_e_success_produces_explicit_completed_result(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-e")
     runtime = PiRuntime()
@@ -186,7 +339,6 @@ async def test_e_success_produces_explicit_completed_result(repo, worktree, pi_e
     assert result["ended_at"]
 
 
-# --- Test F — Failure ------------------------------------------------------
 @pytest.mark.parametrize("scenario,expected", [
     ("provider_fail", pe.STATUS_PROVIDER_FAILURE),
     ("tool_fail", pe.STATUS_TOOL_FAILURE),
@@ -209,7 +361,6 @@ async def test_f_failures_map_to_explicit_states(repo, worktree, pi_env, scenari
     assert result["status"] == expected
 
 
-# --- Test G — Cancellation -------------------------------------------------
 async def test_g_cancel_stops_an_active_execution(repo, worktree, pi_env):
     configure(worktree, scenario="slow")
     runtime = PiRuntime()
@@ -222,7 +373,6 @@ async def test_g_cancel_stops_an_active_execution(repo, worktree, pi_env):
     final = await wait_terminal(runtime, eid)
     assert final["status"] == pe.STATUS_CANCELLED
     assert not final["runtime_alive"]
-# --- Adapter surface smoke test -------------------------------------------
 def test_ensure_model_config_does_not_clobber_existing_endpoint(tmp_path, monkeypatch):
     """An operator/deployment-managed endpoint must survive a config rewrite."""
     models_json = tmp_path / "models.json"
@@ -273,7 +423,6 @@ def test_route_surface_exposes_adapter_contract():
 
 
 
-# --- Test H — Resume -------------------------------------------------------
 async def test_h_resume_continues_the_same_pi_session(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-h")
     runtime = PiRuntime()
@@ -297,7 +446,6 @@ async def test_h_resume_continues_the_same_pi_session(repo, worktree, pi_env):
     assert args[args.index("--session") + 1] == session_file
 
 
-# --- Test I — Routing authority --------------------------------------------
 async def test_i_pi_cannot_touch_routing_or_secrets(repo, worktree, pi_env):
     configure(worktree, session_id="stub-session-i")
     runtime = PiRuntime()
@@ -326,7 +474,6 @@ async def test_i_pi_cannot_touch_routing_or_secrets(repo, worktree, pi_env):
 
 
 
-# --- Worktree assignment enforcement ---------------------------------------
 def prompts_sent():
     """Prompts actually delivered to the stub Pi (cwd-independent log)."""
     path = os.path.join(pc.session_dir(), "pi_stub_prompts.jsonl")

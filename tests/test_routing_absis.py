@@ -34,10 +34,8 @@ from src.routing_absis import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
-KUBECTL_PREFIX = "sudo kubectl exec -n tacticus deploy/absis-orchestrator --"
+KUBECTL_PREFIX = "sudo kubectl exec -n app-ns deploy/job-orchestrator --"
 
-
-# --- helpers -----------------------------------------------------------------
 
 class FakeTransport:
     """Scripted transport: returns canned results per call, records scripts."""
@@ -55,8 +53,6 @@ def _worker(worker_id="w1", worker_class="llm_inference", capabilities=()):
     return {"worker_id": worker_id, "worker_class": worker_class,
             "capabilities": list(capabilities)}
 
-
-# --- wire format -------------------------------------------------------------
 
 EXPECTED_WIRE_FIELDS = {
     "scenario_id", "required_worker_class", "required_capabilities",
@@ -113,8 +109,6 @@ def test_spec_defaults_match_job_defaults():
     assert job["payload"] == {}
 
 
-# --- input validation (reject, never escape) ----------------------------------
-
 @pytest.mark.parametrize("bad", [
     'scen"ario', "scen'ario", "scen\\ario", "scen\nario", "scen\rario",
     "scenario with space", "", "scen`ario", "scen$ario",
@@ -154,8 +148,6 @@ def test_job_id_injection_rejected(bad):
         get_status(FakeTransport([]), bad)
 
 
-# --- ssh argv / remote-script construction ------------------------------------
-
 def test_ssh_argv_construction(monkeypatch):
     calls = []
 
@@ -164,15 +156,15 @@ def test_ssh_argv_construction(monkeypatch):
         return SimpleNamespace(returncode=0, stdout='{"ok": true}\n', stderr="")
 
     monkeypatch.setattr(ra.subprocess, "run", fake_run)
-    t = AbsisTransport(ssh_target="minipc", kubectl_exec_prefix=KUBECTL_PREFIX, timeout_s=30)
+    t = AbsisTransport(ssh_target="edge-node", kubectl_exec_prefix=KUBECTL_PREFIX, timeout_s=30)
     script = 'print("{}")'
     result = t.run_remote_python(script)
     assert result == {"ok": True}
     assert len(calls) == 1
     argv = calls[0].argv
-    # argv list, never a shell string: ["ssh", "minipc", <remote command>].
+    # argv list, never a shell string: ["ssh", "edge-node", <remote command>].
     assert isinstance(argv, list) and len(argv) == 3
-    assert argv[:2] == ["ssh", "minipc"]
+    assert argv[:2] == ["ssh", "edge-node"]
     # Remote command = kubectl exec prefix + python -c + the shlex-quoted script.
     assert argv[2] == f"{KUBECTL_PREFIX} python -c {shlex.quote(script)}"
     assert calls[0].timeout == 30
@@ -251,7 +243,7 @@ def test_enqueue_script_is_shell_quoted_end_to_end(monkeypatch):
 
     monkeypatch.setattr(ra.subprocess, "run", fake_run)
     spec = AbsisJobSpec(scenario_id="s1", required_worker_class="llm_inference")
-    t = AbsisTransport(ssh_target="minipc", kubectl_exec_prefix=KUBECTL_PREFIX)
+    t = AbsisTransport(ssh_target="edge-node", kubectl_exec_prefix=KUBECTL_PREFIX)
     enqueue(t, spec, force=True)
     remote_cmd = captured["argv"][2]
     prefix = f"{KUBECTL_PREFIX} python -c "
@@ -277,8 +269,6 @@ def test_scan_script_targets_worker_keys():
     assert "registered_workers" in script
     assert 'os.environ["REDIS_URL"]' in script
 
-
-# --- check_availability -------------------------------------------------------
 
 def test_availability_no_workers():
     t = FakeTransport([{"registered_workers": []}])
@@ -328,8 +318,6 @@ def test_availability_tolerates_malformed_worker_records():
     assert len(out["workers"]) == 1
 
 
-# --- enqueue gating -----------------------------------------------------------
-
 def test_enqueue_refuses_without_matching_worker():
     t = FakeTransport([{"registered_workers": []}])
     spec = AbsisJobSpec(scenario_id="s1", required_worker_class="llm_inference")
@@ -367,8 +355,6 @@ def test_enqueue_proceeds_when_worker_available():
     assert len(t.scripts) == 2
 
 
-# --- status / wait ------------------------------------------------------------
-
 def test_get_status_found_and_not_found():
     job = {"job_id": "0f8fad5b-d9cb-469f-a165-70867728950e", "status": "running"}
     t = FakeTransport([{"found": True, "job": job}])
@@ -403,8 +389,6 @@ def test_wait_for_terminal_times_out(monkeypatch):
     assert out["last_status"] == "running"
 
 
-# --- map_job_to_model_run -----------------------------------------------------
-
 def test_map_completed_job():
     out = map_job_to_model_run({
         "job_id": "j1", "status": "completed", "attempts": 1,
@@ -434,8 +418,6 @@ def test_map_running_job_is_neither_completed_nor_errored():
     assert out["artifacts"] == {"absis_payload": {}}
 
 
-# --- CLI ----------------------------------------------------------------------
-
 def _load_cli():
     path = ROOT / "scripts" / "odysseus-absis"
     loader = importlib.machinery.SourceFileLoader("odysseus_absis_cli", str(path))
@@ -448,7 +430,7 @@ def _load_cli():
 def test_cli_disabled_by_policy_message(monkeypatch, capsys):
     cli = _load_cli()
     monkeypatch.setattr(cli, "load_absis_policy", lambda: {
-        "enabled": False, "sshTarget": "minipc",
+        "enabled": False, "sshTarget": "edge-node",
         "kubectlExecPrefix": KUBECTL_PREFIX, "transportTimeoutSeconds": 30,
         "note": "no workers deployed",
     })

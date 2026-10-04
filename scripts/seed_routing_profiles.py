@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/seed_routing_profiles.py — one-time (idempotent) seed of
-RoutingModelProfile rows from the 2026-07-06 benchmark data, not the
-routing-harness spec doc's untested placeholders. Safe to re-run: upserts by
-id rather than duplicating rows.
-
-    scripts/seed_routing_profiles.py
-"""
+"""Idempotent seed of RoutingModelProfile rows from benchmark data; upserts by id."""
 from __future__ import annotations
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
@@ -23,13 +17,9 @@ def _find_endpoint_id(db, name: str):
 
 
 PROFILES = [
-    # Local Framework GPU models -- zero marginal cost, private, no
-    # third-party data exposure. Roles/notes come from the 2026-07-06
-    # 10-test gauntlet (isolated-clone real bug fix graded against a
-    # held-back oracle suite + fact-checked design proposal + adversarial
-    # review + implementation), NOT the lighter OpenRouter bulk-task
-    # benchmark the free-tier profiles below are seeded from -- keep that
-    # distinction when updating notes from a future benchmark.
+    # Local GPU models: zero marginal cost, no third-party data exposure.
+    # Notes come from the heavier bug-fix/design/review gauntlet, not the bulk-
+    # task benchmark the free-tier profiles below use; keep that distinction.
     {
         "id": "qwen3-coder-next",
         "endpoint_name": "Framework llama.cpp (Qwen3-Coder-Next, GPU)",
@@ -89,7 +79,7 @@ PROFILES = [
     {
         "id": "hy3-free",
         "endpoint_name": "openrouter-bench",
-        "model": "tencent/hy3:free",  # NOT hy3-preview -- that's a different, untested listing
+        "model": "tencent/hy3:free",  # not hy3-preview, a different untested listing
         "roles": ["scout", "reviewer"],
         "context_window": 262_144,
         "max_output_tokens": 4096,
@@ -121,9 +111,8 @@ PROFILES = [
         "is_free": True,
         "notes": "Excellent on the bulk-task benchmark, weak on hard/long code-gen (1/6 gauntlet, null-responses on harder problems).",
     },
-    # Placeholders from the source spec's Section 5 registry -- no API
-    # key/endpoint registered for these yet, seeded disabled so
-    # routing_engine never routes to them until Tim adds real credentials.
+    # No credentials registered for these yet; seeded disabled so routing
+    # never selects them.
     {
         "id": "glm-5.2",
         "endpoint_name": None,
@@ -174,11 +163,8 @@ def main():
                 endpoint_id = _find_endpoint_id(db, spec["endpoint_name"])
                 if not endpoint_id:
                     print(f"warning: endpoint {spec['endpoint_name']!r} not found", file=sys.stderr)
-                    # Don't silently disable a profile that was already working
-                    # against a (presumably still-valid) endpoint just because
-                    # this endpoint_name lookup failed this run -- e.g. the
-                    # endpoint was renamed and the spec list above is stale.
-                    # Leave it untouched and move on rather than clobbering it.
+                    # Don't disable a previously working profile just because
+                    # this lookup failed (e.g. endpoint renamed); leave it as is.
                     if existing and existing.enabled and existing.model_endpoint_id:
                         print(f"  -- leaving existing profile {spec['id']!r} untouched "
                               f"(currently enabled={existing.enabled}, endpoint={existing.model_endpoint_id!r})",

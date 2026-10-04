@@ -70,6 +70,7 @@ class ResearchHandler:
         self._active_tasks: Dict[str, dict] = {}
         self._initialize_legacy_engine()
         RESEARCH_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self._sweep_interrupted_runs()
 
     def _initialize_legacy_engine(self):
         """Initialize the legacy research engine as a fallback."""
@@ -291,6 +292,12 @@ class ResearchHandler:
         }
         self._active_tasks[session_id] = entry
 
+        # Persist a 'running' marker immediately so a crash/restart cannot
+        # silently erase this run: get_status()/history still see it, and
+        # _sweep_interrupted_runs() marks it terminal after a restart
+        # (defect B). Overwritten by _save_result() on any terminal state.
+        self._write_running_marker(session_id, entry)
+
         def on_progress(event):
             entry["progress"] = event
 
@@ -357,6 +364,7 @@ class ResearchHandler:
                         logger.warning(f"on_complete callback failed in timeout branch: {e}")
                 else:
                     entry["result"] = f"Research timed out after {hard_timeout}s. The model may be too slow for deep research."
+                    self._save_result(session_id, entry)
                 on_progress({"phase": "error", "message": f"Research timed out after {hard_timeout}s"})
             except asyncio.CancelledError:
                 entry["status"] = "cancelled"
@@ -383,6 +391,9 @@ class ResearchHandler:
                 else:
                     entry["result"] = str(e)
                     entry["status"] = "error"
+                    # Persist the failure: without this the error is invisible after
+                    # restart and never appears in history (defect C).
+                    self._save_result(session_id, entry)
 
         task = asyncio.create_task(_run())
         entry["task"] = task
@@ -574,6 +585,70 @@ class ResearchHandler:
                 path.write_text(json.dumps(data), encoding="utf-8")
             except Exception:
                 pass
+
+    def _write_running_marker(self, session_id: str, entry: dict) -> None:
+        """Write a minimal 'running' state file for a freshly started run.
+
+        Overwritten by _save_result() on any terminal state. Its only job is
+        to make the run discoverable if the process dies before then
+        (see _sweep_interrupted_runs)."""
+        try:
+            path = _research_json_path(session_id)
+            if path is None:
+                return
+            path.write_text(json.dumps({
+                "query": entry.get("query", ""),
+                "status": "running",
+                "result": None,
+                "raw_report": "",
+                "sources": [],
+                "raw_findings": [],
+                "stats": None,
+                "category": entry.get("category"),
+                "started_at": entry.get("started_at", 0),
+                "completed_at": None,
+                "owner": entry.get("owner", ""),
+            }), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Could not write running marker for {session_id}: {e}")
+
+    def _sweep_interrupted_runs(self) -> int:
+        """Mark 'running' state files left by a previous process as failed.
+
+        Called once at handler construction, before any new research can
+        start, so any status=="running" file here is an orphan of a crash
+        or restart. We deliberately do NOT fake-resume: the LLM task and
+        its context are gone. Marking the file terminal makes the loss
+        visible in get_status()/history instead of silently vanishing.
+
+        Assumes a single process owns RESEARCH_DATA_DIR (true for the
+        Odysseus container); a second concurrent instance sharing the
+        directory would sweep the first one's live markers.
+        """
+        swept = 0
+        try:
+            candidates = list(RESEARCH_DATA_DIR.glob("*.json"))
+        except OSError as e:
+            logger.warning(f"Cannot list research data dir for interrupted-run sweep: {e}")
+            return 0
+        for path in candidates:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or data.get("status") != "running":
+                continue
+            data["status"] = "error"
+            data["result"] = "Interrupted by server restart before completion."
+            data["completed_at"] = time.time()
+            try:
+                path.write_text(json.dumps(data), encoding="utf-8")
+                swept += 1
+            except OSError as e:
+                logger.warning(f"Could not sweep interrupted research marker {path.name}: {e}")
+        if swept:
+            logger.info(f"Marked {swept} interrupted research run(s) as failed")
+        return swept
 
     def _save_result(self, session_id: str, entry: dict):
         """Persist completed research result to disk."""

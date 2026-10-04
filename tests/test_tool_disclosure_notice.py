@@ -1,12 +1,8 @@
 """Regression tests for the progressive tool-disclosure notice.
 
-The system prompt ended with "(Other tools available when needed: a, b, c, …
-(N more))". Both halves are wrong: the listed tools are NOT available that turn
-(only the selected set is sent as function schemas), and the elision implies a
-hidden reserve behind an activation step — no such mechanism exists in Odysseus.
-A model read it, concluded it lacked ``edit_file`` — which was in that round's
-schema list and documented in that same prompt — and burned reasoning working
-around its own tools with ``sed``.
+The notice must not claim unloaded tools are available that turn, nor elide
+them in a way that implies a hidden reserve; models misread that as lacking
+tools they actually have.
 """
 
 import os
@@ -23,8 +19,7 @@ def test_disclosure_notice_does_not_claim_unloaded_tools_are_available():
 
 
 def test_disclosure_notice_is_not_truncated():
-    """The '… (N more)' elision is what read as a hidden reserve. Every unloaded
-    tool is now named, so the model can see there is nothing behind the curtain."""
+    """Every unloaded tool is named; a '… (N more)' elision reads as a hidden reserve."""
     included = {"bash", "edit_file"}
     prompt = agent_loop._assemble_prompt(included)
     not_shown = set(agent_loop.TOOL_SECTIONS.keys()) - included

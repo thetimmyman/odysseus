@@ -76,7 +76,6 @@ def _route_stub(task_type):
     )
 
 
-# --- the field split itself ---
 def test_split_partitions_all_score_fields():
     """Task-perf and lesson-gen are DISJOINT and together cover every human
     score field — no field can leak into both aggregates."""
@@ -118,7 +117,6 @@ def test_historical_score_is_task_perf_only():
     assert historical_score(db, "p2", "feature_plan") is None
 
 
-# --- aggregate builders ---
 def test_task_perf_aggregate_outcomes_and_verification():
     db = _db()
     _seed_profile(db, "p1")
@@ -177,7 +175,6 @@ def test_aggregate_filters():
     assert [r["task_type"] for r in model_lesson_gen_by_task(db, task_type="implementation")] == ["implementation"]
 
 
-# --- routing fitness never consumes lesson-gen ---
 def _ordering(db, task_type):
     result = route_task(db, _route_stub(task_type), _BUNDLE)
     return [(c["profile_id"], c["score"]) for c in result["candidates"]]

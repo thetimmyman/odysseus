@@ -1,44 +1,25 @@
-"""src/routing_engine.py — model scoring + routing, ported from the source
-spec's Section 6 (role map + scoreModelForTask). Scored against
-`core.database.RoutingModelProfile` rows and a routing_context.build_context_bundle()
-bundle; historical performance comes from routing_scoring.historical_score()
-(single source of truth -- don't reimplement that aggregate here)."""
+"""Model scoring and routing over RoutingModelProfile rows.
+
+Historical performance comes only from routing_scoring.historical_score()."""
 import json
-import re
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
 from src.routing_budget import DEFAULT_MAX_OUTPUT_TOKENS, estimate_cost_usd
 from src.routing_scoring import historical_score
 
-# Desired roles per RoutingTask.task_type. Keyed on the OdysseusTask-style
-# 7-value enum this app's RoutingTask.task_type actually uses (bug_debug/
-# ci_triage/feature_plan/feature_review/implementation/release_readiness/
-# diff_review) -- the source spec's Section 6.1 role map used a second,
-# slightly different TaskType enum (known_bug_reproduction/ci_failure_triage/
-# etc.) for the same concept; this is the one reconciliation to the single
-# enum actually stored in the DB.
-ROLE_BY_TASK: Dict[str, List[str]] = {
-    "bug_debug": ["debugger", "scout"],
-    "ci_triage": ["debugger", "scout"],
-    "feature_plan": ["planner", "reviewer"],
-    "feature_review": ["reviewer"],
-    "implementation": ["implementer", "debugger"],
-    "release_readiness": ["debugger", "scout"],
-    "diff_review": ["reviewer"],
-}
-_DEFAULT_ROLES = ["scout"]
+# Task->role vocabulary, sensitivity ranks and endpoint locality live in
+# src/routing_locality.py; re-exported so existing callers keep importing them here.
+from src.routing_locality import (  # noqa: F401  (re-exports)
+    ROLE_BY_TASK, _DEFAULT_ROLES, _SENSITIVITY_RANK, _PRIVATE_HOST_RE, _endpoint_is_local,
+    _remote_ceiling_rank, endpoint_is_local, roles_for_task_type, sensitivity_requires_local_only,
+)
 
-# task_types that would produce a patch if patch extraction existed (Phase 3+
-# concern) -- used here only to weight implementer-role models higher, not
-# to actually apply anything in Phase 1/2.
+# Patch-producing task types; used only to weight implementer-role models higher.
 _PATCH_SHAPED_TASK_TYPES = ("bug_debug", "ci_triage", "implementation")
 _REPO_WIDE_TASK_TYPES = ("feature_plan", "release_readiness", "feature_review")
 
 
 def score_model_for_task(profile, task, bundle: dict, hist_score: Optional[float]) -> dict:
-    """Port of the spec's scoreModelForTask. `profile` is a RoutingModelProfile
-    row, `task` a RoutingTask row, `bundle` a routing_context bundle dict."""
     desired_roles = ROLE_BY_TASK.get(task.task_type, _DEFAULT_ROLES)
     profile_roles = json.loads(profile.roles) if profile.roles else []
     reasons: List[str] = []
@@ -70,10 +51,7 @@ def score_model_for_task(profile, task, bundle: dict, hist_score: Optional[float
             score -= 15
             reasons.append("free model penalized for high/release-blocking risk (-15)")
 
-    # Excludes task types where "implementer" is already a desired_role (e.g.
-    # "implementation" itself) -- otherwise the same underlying fact (profile
-    # has the implementer role) earns +25 twice: once here and once via the
-    # role-match bonus above, for the identical signal.
+    # Skip when "implementer" is already a desired role, or the same fact earns +25 twice.
     requires_patch = task.task_type in _PATCH_SHAPED_TASK_TYPES and "implementer" not in desired_roles
     if requires_patch and "implementer" in profile_roles:
         score += 25
@@ -115,68 +93,11 @@ def score_model_for_task(profile, task, bundle: dict, hist_score: Optional[float
     }
 
 
-# Sensitivity rank order for the Section 9 hard filter. A task whose
-# data_sensitivity ranks ABOVE the policy's remoteSensitivityCeiling may only
-# route to endpoints on loopback/private networks.
-_SENSITIVITY_RANK = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3, "secret": 4}
-
-_PRIVATE_HOST_RE = re.compile(
-    r"^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal"
-    r"|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+"
-    r"|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+"
-    r"|[^.]+\.local|[^.]+\.internal|[^.]+)$"  # bare hostnames (no dots) = LAN
-)
-
-
-def _endpoint_is_local(url: Optional[str]) -> bool:
-    """True when the endpoint host is loopback / RFC1918 / a bare LAN hostname.
-    Anything else (openrouter.ai, api.*, cloud hosts) counts as remote for the
-    data-sensitivity hard filter. A missing URL is NOT local — an unverifiable
-    destination must never receive restricted data (fail closed)."""
-    if not url:
-        return False
-    host = urlparse(url).hostname or ""
-    return bool(host) and bool(_PRIVATE_HOST_RE.match(host))
-
-
-def _remote_ceiling_rank() -> int:
-    try:
-        from src.routing_policy import load_policy
-        ceiling = load_policy().get("remoteSensitivityCeiling", "confidential")
-    except Exception:
-        ceiling = "confidential"
-    return _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK["confidential"])
-
-
-# ------------------------------------------------------- public contract (PS-605) ---
-# dispatch_boundary and the registry seam consume these functions rather than
-# private helpers, so locality and sensitivity rules have one shared vocabulary.
-def endpoint_is_local(url: Optional[str]) -> bool:
-    """True when an endpoint URL is loopback/private/LAN."""
-    return _endpoint_is_local(url)
-
-
-def sensitivity_requires_local_only(sensitivity: Optional[str]) -> bool:
-    """True when sensitivity exceeds the configured remote ceiling."""
-    return _SENSITIVITY_RANK.get(str(sensitivity or "internal"), 1) > _remote_ceiling_rank()
-
-
-def roles_for_task_type(task_type: Optional[str]) -> List[str]:
-    """Preference-ordered roles for the task vocabulary."""
-    return list(ROLE_BY_TASK.get(str(task_type or ""), _DEFAULT_ROLES))
-
-
 def route_task(db, task, bundle: dict) -> dict:
-    """Return the ranked candidate chain for `task`, filtered by its
-    allow_free/paid/premium flags and the Section 9 data-sensitivity hard
-    filter (a hard filter, not a score penalty: dataPolicyFit < 1.0 means the
-    candidate never enters ranking at all). `task` is a RoutingTask row.
+    """Ranked candidates for `task`, filtered by tier flags and data sensitivity.
 
-    Routing fitness note (spec Phase 5): the only historical signal in the
-    ranking is routing_scoring.historical_score(), which aggregates
-    TASK-PERFORMANCE fields exclusively (task_perf_score_run). Lesson-gen
-    scores (plan_quality, adversarial_review_quality — see
-    routing_scoring.model_lesson_gen_by_task) never change this ordering."""
+    Sensitivity is a hard filter, not a penalty. The only historical signal is
+    task performance; lesson-gen scores never change the order."""
     from core.database import ModelEndpoint, RoutingModelProfile
 
     profiles = db.query(RoutingModelProfile).filter(RoutingModelProfile.enabled == True).all()  # noqa: E712
