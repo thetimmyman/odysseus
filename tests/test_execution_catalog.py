@@ -30,8 +30,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
+from contextlib import contextmanager
 
 # Make the repository root importable the same way the shared conftest does,
 # so this file also runs on a bare interpreter with no pytest.
@@ -121,9 +123,20 @@ def _make_local_registry_stub(entries, probe_results) -> types.ModuleType:
                 return spec
         return None
 
-    def probe_target(spec):
+    def probe_target(spec, *, inspector=None):
+        if inspector is not None:
+            return inspector.inspect(spec)
         health, classes = probe_results.get(spec.target_id, ("unknown", []))
         return _FakeRecord(health, classes)
+
+    class _FakeInspector:
+        def __init__(self, *, timeout=25, probe_tools=True):
+            self.timeout = timeout
+            self.probe_tools = probe_tools
+
+        def inspect(self, spec):
+            health, classes = probe_results.get(spec.target_id, ("unknown", []))
+            return _FakeRecord(health, classes)
 
     stub = types.ModuleType("src.local_targets")
     stub.ROLE_INFERENCE = "inference"
@@ -132,6 +145,7 @@ def _make_local_registry_stub(entries, probe_results) -> types.ModuleType:
     stub.registered_targets = registered_targets
     stub.target_by_id = target_by_id
     stub.probe_target = probe_target
+    stub.OllamaInspector = _FakeInspector
     stub._ps623_stub = True
     sys.modules["src.local_targets"] = stub
     _attach_stub_to_package("src.local_targets", stub)
@@ -296,7 +310,7 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
         self.assertTrue(sys.modules["src.local_targets"]._ps623_stub)
         self.assertEqual(
             [spec.target_id for spec in ec.catalog_targets(ec.CAPABILITY_BULK_LOCAL)],
-            ["cached-safe-target"],
+            [],  # a ref string is not a persisted qualification receipt
         )
 
         saved_settings = self._saved["src.settings"]
@@ -608,16 +622,311 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
             probe_results={"local-alpha": ("healthy", [])},
         )
         specs = ec.catalog_targets(ec.CAPABILITY_BULK_LOCAL)
-        self.assertEqual([s.target_id for s in specs], ["local-alpha"])
-        self.assertEqual(specs[0].provider, ec.LOCAL_PROVIDER)
-        self.assertEqual(specs[0].capability, ec.CAPABILITY_BULK_LOCAL)
-        self.assertTrue(specs[0].local_target_id)
-        # No collapsed generic identity exists among the candidates.
-        self.assertNotIn("local_qwen", {s.target_id for s in specs})
-        # Selection drives exactly the qualified individual; its default local
-        # probe path uses only the injected registry (no host touched).
-        chosen = ec.select_target_for_capability(ec.CAPABILITY_BULK_LOCAL)
-        self.assertEqual(chosen.target_id, "local-alpha")
+        self.assertEqual(specs, [])
+        # A reference string without a persisted canonical receipt is not
+        # qualification and cannot reach the default inspector.
+        calls = []
+        with self.assertRaises(ec.CapabilityUnavailable):
+            ec.select_target_for_capability(
+                ec.CAPABILITY_BULK_LOCAL,
+                probe=lambda target: calls.append(target) or ec.CapabilityProbe(target, True))
+        self.assertEqual(calls, [])
+
+    def test_bulk_local_ignores_hosted_override_and_malformed_override(self):
+        """Hosted, empty, and malformed settings cannot redefine bulk_local."""
+        qualified = [("local-alpha", "qwen3.8:27b", ("inference",), "measured")]
+        for override in (
+            {"bulk_local": [{"provider": "hosted", "model": "remote"}]},
+            {"bulk_local": []},
+            {"bulk_local": ["malformed", {"provider": "hosted", "model": "x"}]},
+            {"bulk_local": "malformed"},
+        ):
+            self._settings(override)
+            self._registry(qualified, {"local-alpha": ("healthy", [])})
+            targets = ec.catalog_targets(ec.CAPABILITY_BULK_LOCAL)
+            self.assertEqual(targets, [])
+
+    def test_bulk_local_empty_or_ineligible_registry_never_probes(self):
+        self._settings({"bulk_local": [{"provider": "hosted", "model": "x"}]})
+        for entries in (
+            [],
+            [("local-verifier", "model", ("verifier",), "qualified")],
+            [("local-unqualified", "model", ("inference",), "")],
+        ):
+            self._registry(entries, {})
+            calls = []
+            with self.assertRaises(ec.CapabilityUnavailable):
+                ec.select_target_for_capability(
+                    ec.CAPABILITY_BULK_LOCAL,
+                    probe=lambda target: calls.append(target) or ec.CapabilityProbe(target, True))
+            self.assertEqual(calls, [])
+
+    def test_bulk_local_changed_registry_identity_refuses_before_probe(self):
+        self._settings({})
+        self._registry(
+            [("local-alpha", "model-a", ("inference",), "qualified")], {})
+        stale = ec.ExecutionTargetSpec(
+            provider="local", model="model-a", capability="bulk_local",
+            local_target_id="local-alpha")
+        # Change the registry's identity after constructing the stale target.
+        self._registry(
+            [("local-alpha", "model-b", ("inference",), "qualified")], {})
+        # A direct stale/forged local spec is rejected before inspector use.
+        result = ec.probe_target(stale)
+        self.assertFalse(result.available)
+        result = ec.probe_target(ec.ExecutionTargetSpec(
+            provider="hosted", model="remote", capability="bulk_local"))
+        self.assertFalse(result.available)
+
+    def test_default_local_runner_uses_metadata_only_inspector(self):
+        """A valid synthetic persisted receipt gates actual metadata-only inspection."""
+        import importlib
+        from dataclasses import replace
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+
+        saved_local = sys.modules["src.local_targets"]
+        package = sys.modules["src"]
+        saved_attr = getattr(package, "local_targets", _PACKAGE_ATTR_MISSING)
+        env_before = os.environ.get("PS632_CAPABILITY_STORE")
+        del sys.modules["src.local_targets"]
+        if hasattr(package, "local_targets"):
+            delattr(package, "local_targets")
+        try:
+            local = importlib.import_module("src.local_targets")
+            spec = next(s for s in local.registered_targets()
+                        if local.ROLE_INFERENCE in s.roles and s.qualification_ref)
+            now = datetime.now(timezone.utc)
+            raw = {
+                "reachable": True, "version": "synthetic-runtime",
+                "model": {"name": spec.model, "digest": "a" * 64,
+                          "size": 1024, "details": {
+                              "context_length": 32768,
+                              "quantization_level": "Q4_K_M",
+                              "family": "synthetic"}, "capabilities": []},
+                "ps": {"models": [{"name": spec.model, "size_vram": 1024,
+                                    "context_length": 8192}]},
+                "tool_proof": None,
+            }
+            measured = local.build_capability(spec, raw, probed_at=now.isoformat())
+            receipt = local.receipt_from_capability(
+                measured, configured_context=8192, safe_working_context=8192,
+                safe_context_source="synthetic test measurement", backend="synthetic",
+                ttl_s=3600, health_ttl_s=300, observed_at=now.isoformat(),
+                roles=spec.roles, qualification_ref=spec.qualification_ref)
+            with tempfile.TemporaryDirectory() as scratch:
+                os.environ["PS632_CAPABILITY_STORE"] = scratch
+                from src.target_capability_store import store_from_env
+                store_from_env().append(receipt)
+                targets = ec.catalog_targets(ec.CAPABILITY_BULK_LOCAL)
+                self.assertEqual([t.target_id for t in targets], [spec.target_id])
+                for changed in (
+                    replace(spec, roles=()),
+                    replace(spec, model="different-synthetic-model"),
+                    replace(spec, qualification_ref=""),
+                    replace(spec, qualification_ref="changed-synthetic-ref"),
+                ):
+                    with patch.object(local, "registered_targets", return_value=(changed,)):
+                        callbacks = []
+                        with self.assertRaises(ec.CapabilityUnavailable):
+                            ec.select_target_for_capability(
+                                ec.CAPABILITY_BULK_LOCAL,
+                                probe=lambda candidate: callbacks.append(candidate) or
+                                ec.CapabilityProbe(candidate, True))
+                        self.assertEqual(callbacks, [])
+                target = ec.ExecutionTargetSpec(
+                    provider="local", model=spec.model, capability="bulk_local",
+                    local_target_id=spec.target_id)
+                calls = []
+
+                def fake_api(inspector, target, path, body=None):
+                    calls.append((path, body, inspector.timeout, inspector.probe_tools))
+                    if path == "/api/version":
+                        return {"ok": True, "body": {"version": "synthetic"}, "err": ""}
+                    if path == "/api/tags":
+                        return {"ok": True, "body": {"models": [{
+                            "name": target.model, "details": {}, "size": 1}]}, "err": ""}
+                    if path == "/api/ps":
+                        return {"ok": True, "body": {"models": []}, "err": ""}
+                    raise AssertionError(f"unexpected metadata path: {path}")
+
+                with patch.object(local.OllamaInspector, "api", fake_api), \
+                        patch.object(local.OllamaInspector, "_tool_question",
+                                     side_effect=AssertionError("tool probe reached")), \
+                        patch.object(local.subprocess, "run",
+                                     side_effect=AssertionError("process probe reached")):
+                    observed = ec.probe_target(target, timeout=7.25)
+                    self.assertTrue(observed.available)
+                    self.assertEqual([c[0] for c in calls],
+                                     ["/api/version", "/api/tags", "/api/ps"])
+                    self.assertTrue(all(c[1] is None for c in calls))
+                    self.assertTrue(all(c[2:] == (7.25, False) for c in calls))
+                    calls.clear()
+                    chosen = ec.select_target_for_capability(
+                        ec.CAPABILITY_BULK_LOCAL)
+                    self.assertEqual(chosen.target_id, spec.target_id)
+                    self.assertEqual([c[0] for c in calls],
+                                     ["/api/version", "/api/tags", "/api/ps"])
+                    self.assertTrue(all(c[2:] == (30.0, False) for c in calls))
+
+                    def absent_api(inspector, target, path, body=None):
+                        if path == "/api/version":
+                            return {"ok": True, "body": {"version": "synthetic"}, "err": ""}
+                        if path == "/api/tags":
+                            return {"ok": True, "body": {"models": []}, "err": ""}
+                        return {"ok": True, "body": {"models": []}, "err": ""}
+                    with patch.object(local.OllamaInspector, "api", absent_api):
+                        self.assertFalse(ec.probe_target(target, timeout=2).available)
+
+                    def unreachable_api(inspector, target, path, body=None):
+                        return {"ok": False, "body": {}, "err": "synthetic offline"}
+                    with patch.object(local.OllamaInspector, "api", unreachable_api):
+                        self.assertFalse(ec.probe_target(target, timeout=2).available)
+        finally:
+            if env_before is None:
+                os.environ.pop("PS632_CAPABILITY_STORE", None)
+            else:
+                os.environ["PS632_CAPABILITY_STORE"] = env_before
+            sys.modules.pop("src.local_targets", None)
+            sys.modules["src.local_targets"] = saved_local
+            if saved_attr is _PACKAGE_ATTR_MISSING:
+                if hasattr(package, "local_targets"):
+                    delattr(package, "local_targets")
+            else:
+                package.local_targets = saved_attr
+
+    def test_persisted_qualification_states_fail_closed_before_callbacks(self):
+        """The real PS-632 store/seam rejects missing, stale and corrupt evidence."""
+        import importlib
+        import json
+        from datetime import datetime, timedelta, timezone
+
+        saved_local = sys.modules["src.local_targets"]
+        package = sys.modules["src"]
+        saved_attr = getattr(package, "local_targets", _PACKAGE_ATTR_MISSING)
+        env_before = os.environ.get("PS632_CAPABILITY_STORE")
+        del sys.modules["src.local_targets"]
+        if hasattr(package, "local_targets"):
+            delattr(package, "local_targets")
+        try:
+            local = importlib.import_module("src.local_targets")
+            spec = next(s for s in local.registered_targets()
+                        if local.ROLE_INFERENCE in s.roles and s.qualification_ref)
+            from src.target_capability_store import store_from_env
+            now = datetime.now(timezone.utc)
+            raw = {
+                "reachable": True, "version": "synthetic-runtime",
+                "model": {"name": spec.model, "digest": "b" * 64,
+                          "size": 1024, "details": {
+                              "context_length": 32768,
+                              "quantization_level": "Q4_K_M",
+                              "family": "synthetic"}, "capabilities": []},
+                "ps": {"models": [{"name": spec.model, "size_vram": 1024,
+                                    "context_length": 8192}]},
+                "tool_proof": None,
+            }
+            measured = local.build_capability(spec, raw, probed_at=now.isoformat())
+
+            def make_receipt(**overrides):
+                args = dict(
+                    configured_context=8192, safe_working_context=8192,
+                    safe_context_source="synthetic test measurement",
+                    backend="synthetic", ttl_s=3600, health_ttl_s=300,
+                    observed_at=now.isoformat(), roles=spec.roles,
+                    qualification_ref=spec.qualification_ref)
+                args.update(overrides)
+                return local.receipt_from_capability(measured, **args)
+
+            valid = make_receipt()
+            # The persisted seam binds the receipt it validated. If a
+            # subsequent current_for_host read sees a newer same-profile
+            # receipt, its hash must not be substituted for that binding.
+            from types import SimpleNamespace
+            from unittest.mock import patch
+            import src.local_target_routing as ltr
+            import src.target_capability_store as capability_store
+            profile = SimpleNamespace(
+                target_id=spec.target_id, model=spec.model,
+                profile_id=valid.profile_id)
+
+            class _CurrentReceiptStore:
+                def __init__(self, current):
+                    self.current = current
+
+                def current_for_host(self, host_id):
+                    return self.current
+
+            for current, should_be_eligible in (
+                (valid, True),
+                (local.make_target_capability_receipt(**{
+                    **valid.to_dict(), "notes": "new current receipt"}), False),
+            ):
+                bound_store = _CurrentReceiptStore(current)
+                bound_inputs = SimpleNamespace(
+                    profiles=(profile,), skipped=(),
+                    receipt_hash_for=lambda target_id: valid.receipt_hash,
+                    capability_store=bound_store)
+                with patch.object(ltr, "persisted_routing_inputs",
+                                  return_value=bound_inputs), \
+                        patch.object(capability_store, "store_from_env",
+                                     return_value=bound_store):
+                    eligible, _ = ec._persisted_local_eligibility((spec,))
+                self.assertEqual(spec.target_id in eligible, should_be_eligible)
+
+            expired = local.make_target_capability_receipt(**{
+                **valid.to_dict(), "observed_at": (now - timedelta(days=2)).isoformat(),
+                "ttl_s": 1})
+            future = local.make_target_capability_receipt(**{
+                **valid.to_dict(), "observed_at": (now + timedelta(days=1)).isoformat()})
+            invalidated = local.make_target_capability_receipt(**{
+                **valid.to_dict(), "invalidation_reason": "synthetic invalidation"})
+            unmeasured = make_receipt(safe_working_context=0, safe_context_source="")
+            failed_record = local.build_capability(
+                spec, {"reachable": False, "failure_classes": ["runtime_unreachable"]},
+                probed_at=now.isoformat())
+            failed = local.receipt_from_capability(
+                failed_record, configured_context=8192, safe_working_context=8192,
+                safe_context_source="synthetic", backend="synthetic", ttl_s=3600,
+                health_ttl_s=300, observed_at=now.isoformat(), roles=spec.roles,
+                qualification_ref=spec.qualification_ref)
+
+            for label, candidate, corrupt in (
+                ("missing", None, False), ("expired", expired, False),
+                ("future", future, False), ("invalidated", invalidated, False),
+                ("unmeasured", unmeasured, False), ("failed", failed, False),
+                ("corrupt-index", valid, True),
+            ):
+                with tempfile.TemporaryDirectory(prefix=f"ps1168-{label}-") as scratch:
+                    os.environ["PS632_CAPABILITY_STORE"] = scratch
+                    _install_settings_stub({"bulk_local": [
+                        {"provider": "hosted-remote", "model": "synthetic"}]})
+                    store = store_from_env()
+                    if candidate is not None:
+                        store.append(candidate)
+                    if corrupt:
+                        with open(store.index_path, encoding="utf-8") as handle:
+                            index = json.load(handle)
+                        index[valid.profile_id]["receipt_hash"] = "0" * 64
+                        with open(store.index_path, "w", encoding="utf-8") as handle:
+                            json.dump(index, handle)
+                    calls = []
+                    with self.assertRaises(ec.CapabilityUnavailable, msg=label):
+                        ec.select_target_for_capability(
+                            ec.CAPABILITY_BULK_LOCAL,
+                            probe=lambda target: calls.append(target) or ec.CapabilityProbe(target, True))
+                    self.assertEqual(calls, [], label)
+        finally:
+            if env_before is None:
+                os.environ.pop("PS632_CAPABILITY_STORE", None)
+            else:
+                os.environ["PS632_CAPABILITY_STORE"] = env_before
+            sys.modules.pop("src.local_targets", None)
+            sys.modules["src.local_targets"] = saved_local
+            if saved_attr is _PACKAGE_ATTR_MISSING:
+                if hasattr(package, "local_targets"):
+                    delattr(package, "local_targets")
+            else:
+                package.local_targets = saved_attr
 
     # 12. capability identity compatibility -------------------------------------
     def test_capability_identity_survives_builder_and_serialization(self):
