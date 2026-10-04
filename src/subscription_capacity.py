@@ -48,19 +48,21 @@ def subscription_endpoint_identity(endpoint_url):
 
 def collect_api_capacity(chat_url, model, headers):
     """Read fixed known API origins using the exact resolved inference headers."""
+    if not isinstance(chat_url, str):
+        raise ValueError("unsupported subscription endpoint")
+    identity = subscription_endpoint_identity(chat_url)
+    if identity is None or identity[0] not in ("command-code", "opencode-go") or identity[1] != chat_url:
+        raise ValueError("unsupported subscription endpoint")
     url = urlsplit(chat_url)
     if url.scheme != "https" or url.username or url.password or url.port not in (None, 443) or url.query or url.fragment:
         raise ValueError("unsupported subscription endpoint")
-    if url.hostname == "opencode.ai" and url.path.startswith("/zen/go/v1/"):
-        provider = "opencode-go"
+    provider = identity[0]
+    if provider == "opencode-go":
         root = "https://opencode.ai/zen/go/v1"
         quota_url = root + "/usage"
-    elif url.hostname == "api.commandcode.ai" and url.path.startswith("/provider/v1/"):
-        provider = "command-code"
+    else:
         root = "https://api.commandcode.ai/provider/v1"
         quota_url = "https://api.commandcode.ai/alpha/billing/credits"
-    else:
-        raise ValueError("no supported live capacity adapter for endpoint")
     if not any(str(k).lower() == "authorization" and str(v).strip() for k, v in headers.items()):
         raise ValueError("subscription API credential is missing")
     models = _read(root + "/models", headers)
