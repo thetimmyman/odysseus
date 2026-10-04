@@ -1,0 +1,414 @@
+{
+  "acquisition": "Executed pre-guard native test_dispatch_boundary._db/_seed/_resolve/_sealed and attempt_for with deterministic fixture IDs/clock, then compared both hashes with original frozen golden before materializing this fixture.",
+  "captured_from_sha": "e504a53625bdf3ffff3ed3419d778418a85083ef",
+  "decision_receipt_hash": "0d1fad68da6f3acb4996c299c251c01d137a9517602f2904248932f3639165ab",
+  "original_golden_sha256": "6c21988d7c39fad1dfcb26263655220992d2d0a0d66aa4cd8d699e50fbfa5a4c",
+  "payload": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "decision_id": "dec-test",
+        "dispatch_receipt_hash": "0d1fad68da6f3acb4996c299c251c01d137a9517602f2904248932f3639165ab",
+        "execution_package_hash": "148c299271e2039a20240ae1dc762472e59f3e6f918017a71a08d90ea3404e84",
+        "host": "10.0.0.10",
+        "locality": "local",
+        "model": "qwen3.8:27b",
+        "model_digest": "",
+        "packet_id": "t-1",
+        "profile_id": "p-rtx",
+        "run_id": "run-1",
+        "runtime_kind": "ollama",
+        "schema_version": 1,
+        "selected": true,
+        "target_id": "profile:p-rtx"
+      }
+    ],
+    "budget_snapshot": {
+      "max_cost_rank": 0,
+      "selected_cost_rank": 0
+    },
+    "capability_provenance": {
+      "p-msr": "measured",
+      "p-openrouter": "measured",
+      "p-rtx": "measured"
+    },
+    "capability_receipts": [
+      {
+        "capabilities": [
+          "exact_reference_semantics",
+          "single_tool_call",
+          "text_generation"
+        ],
+        "exactness": "exact_reference_intent",
+        "healthy": true,
+        "host": "p-rtx",
+        "model_digest": "fixture-digest",
+        "notes": "PS-632 canonical receipt projection",
+        "observed_at": "2026-09-15T12:00:00+00:00",
+        "profile_id": "p-rtx",
+        "provenance": "measured",
+        "receipt_hash": "6c37545f769b7ded8974b2bf51b8eb35247bdf9d379ee2356b77a88d9a21ea0c",
+        "receipt_id": "ps632:p-rtx:2026-09-15T12:00:00+00:00",
+        "runtime_version": "0.32.11",
+        "schema_version": 1,
+        "source_receipt_hash": "",
+        "target_id": "profile:p-rtx",
+        "ttl_s": 604800
+      },
+      {
+        "capabilities": [
+          "exact_reference_semantics",
+          "single_tool_call",
+          "text_generation"
+        ],
+        "exactness": "exact_reference_intent",
+        "healthy": true,
+        "host": "p-openrouter",
+        "model_digest": "fixture-digest",
+        "notes": "PS-632 canonical receipt projection",
+        "observed_at": "2026-09-15T12:00:00+00:00",
+        "profile_id": "p-openrouter",
+        "provenance": "measured",
+        "receipt_hash": "5fb286cd9ae31ffd337d8d5052580f0bd9e8f576ec33c510bfdd415f20e46e73",
+        "receipt_id": "ps632:p-openrouter:2026-09-15T12:00:00+00:00",
+        "runtime_version": "0.32.11",
+        "schema_version": 1,
+        "source_receipt_hash": "",
+        "target_id": "profile:p-openrouter",
+        "ttl_s": 604800
+      },
+      {
+        "capabilities": [
+          "text_generation"
+        ],
+        "exactness": "exact_reference_intent",
+        "healthy": true,
+        "host": "p-msr",
+        "model_digest": "fixture-digest",
+        "notes": "PS-632 canonical receipt projection",
+        "observed_at": "2026-09-15T12:00:00+00:00",
+        "profile_id": "p-msr",
+        "provenance": "measured",
+        "receipt_hash": "feb4a4f06b628e095156cdc5e2b552aeb904d10ff1461bb818efc604e9fda7fc",
+        "receipt_id": "ps632:p-msr:2026-09-15T12:00:00+00:00",
+        "runtime_version": "0.32.11",
+        "schema_version": 1,
+        "source_receipt_hash": "",
+        "target_id": "profile:p-msr",
+        "ttl_s": 604800
+      }
+    ],
+    "decision": {
+      "budget_facts": {
+        "candidates_considered": 3,
+        "eligible_candidates": 1,
+        "max_cost_rank": 0,
+        "request_budget_class": "",
+        "selected_budget_class": "free",
+        "selected_cost_rank": 0
+      },
+      "candidates": [
+        {
+          "budget_class": "free",
+          "capability_receipt_freshness_s": 0,
+          "capability_receipt_hash": "6c37545f769b7ded8974b2bf51b8eb35247bdf9d379ee2356b77a88d9a21ea0c",
+          "capability_receipt_id": "ps632:p-rtx:2026-09-15T12:00:00+00:00",
+          "capability_receipt_observed_at": "2026-09-15T12:00:00+00:00",
+          "capability_receipt_ttl_s": 604800,
+          "cost_rank": 0,
+          "eligible": true,
+          "exactness": "exact_reference_intent",
+          "locality": "local",
+          "preference_rank": 0,
+          "profile_id": "p-rtx",
+          "provider": "ollama",
+          "reason": "all filters passed",
+          "rule": "eligible",
+          "target_id": "profile:p-rtx"
+        },
+        {
+          "budget_class": "free",
+          "capability_receipt_freshness_s": 0,
+          "capability_receipt_hash": "feb4a4f06b628e095156cdc5e2b552aeb904d10ff1461bb818efc604e9fda7fc",
+          "capability_receipt_id": "ps632:p-msr:2026-09-15T12:00:00+00:00",
+          "capability_receipt_observed_at": "2026-09-15T12:00:00+00:00",
+          "capability_receipt_ttl_s": 604800,
+          "cost_rank": 0,
+          "eligible": false,
+          "exactness": "exact_reference_intent",
+          "locality": "local",
+          "preference_rank": 0,
+          "profile_id": "p-msr",
+          "provider": "msr1",
+          "reason": "profile profile:p-msr is not an inference target",
+          "rule": "not_an_inference_target",
+          "target_id": "profile:p-msr"
+        },
+        {
+          "budget_class": "paid",
+          "capability_receipt_freshness_s": 0,
+          "capability_receipt_hash": "5fb286cd9ae31ffd337d8d5052580f0bd9e8f576ec33c510bfdd415f20e46e73",
+          "capability_receipt_id": "ps632:p-openrouter:2026-09-15T12:00:00+00:00",
+          "capability_receipt_observed_at": "2026-09-15T12:00:00+00:00",
+          "capability_receipt_ttl_s": 604800,
+          "cost_rank": 1,
+          "eligible": false,
+          "exactness": "exact_reference_intent",
+          "locality": "local",
+          "preference_rank": 0,
+          "profile_id": "p-openrouter",
+          "provider": "openrouter",
+          "reason": "profile does not declare role 'implementer'",
+          "rule": "role_not_supported",
+          "target_id": "profile:p-openrouter"
+        }
+      ],
+      "decision_hash": "fcbdbc74944ce8022c649b79ec13c8cbd87b4c54cf0f7272b0b6775cf12cdbb0",
+      "decision_id": "dec-test",
+      "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+      "fallback_used": false,
+      "granted_read_scope": [],
+      "granted_tools": [],
+      "granted_write_scope": [],
+      "network_policy": "local-network",
+      "observed_at": "2026-09-15T12:00:00+00:00",
+      "policy": {
+        "policy_hash": "820abb4bf3cf4b3440f132025e4823444c4e359d89aa7edc46da2ed5a61b1520",
+        "policy_ref": "routing_policy@1.2+sha256:820abb4bf3cf4b34",
+        "schema_version": 1,
+        "source": "src.routing_policy.load_policy",
+        "version": "1.2"
+      },
+      "preference_rank": 0,
+      "reason": "no profile preference was expressed; the deterministic order decided",
+      "reason_code": "selected_deterministic_candidate",
+      "receipt_hash": "0d1fad68da6f3acb4996c299c251c01d137a9517602f2904248932f3639165ab",
+      "request": {
+        "budget_class": "",
+        "capabilities": [
+          "text_generation",
+          "single_tool_call",
+          "exact_reference_semantics"
+        ],
+        "domain": "general_swe",
+        "exactness": "exact_reference_intent",
+        "execution_package_hash": "148c299271e2039a20240ae1dc762472e59f3e6f918017a71a08d90ea3404e84",
+        "local_only": false,
+        "max_cost_rank": 0,
+        "network_policy": "",
+        "packet_id": "t-1",
+        "preferred_profile_ids": [],
+        "read_scope": [],
+        "required_tools": [],
+        "role": "implementer",
+        "run_id": "",
+        "sensitivity": "internal",
+        "write_scope": []
+      },
+      "resource_facts": {},
+      "schema_version": 1,
+      "selected_profile": {
+        "backend": "cuda",
+        "backend_version": "",
+        "budget_class": "free",
+        "configured_context": 0,
+        "configured_served_context": 0,
+        "cost_rank": 0,
+        "endpoint_type": "openai_compatible",
+        "endpoint_url": "http://10.0.0.10:11434/v1",
+        "exactness": "exact_reference_intent",
+        "host": "10.0.0.10",
+        "inference": true,
+        "locality": "local",
+        "model": "qwen3.8:27b",
+        "model_digest": "fixture-digest",
+        "network_policy": "local-network",
+        "profile_id": "p-rtx",
+        "provider": "ollama",
+        "roles": [
+          "debugger",
+          "implementer",
+          "reviewer",
+          "scout"
+        ],
+        "runtime_commit": "",
+        "runtime_image_digest": "",
+        "runtime_kind": "ollama",
+        "runtime_options": {},
+        "runtime_version": "0.32.11",
+        "schema_version": 1,
+        "target_id": "profile:p-rtx",
+        "tools": [
+          "write_file"
+        ]
+      },
+      "selected_receipt_hash": "6c37545f769b7ded8974b2bf51b8eb35247bdf9d379ee2356b77a88d9a21ea0c"
+    },
+    "decision_receipt": {
+      "candidates_considered": [
+        {
+          "budget_class": "free",
+          "budget_facts": {
+            "candidates_considered": 3,
+            "eligible_candidates": 1,
+            "max_cost_rank": 0,
+            "request_budget_class": "",
+            "selected_budget_class": "free",
+            "selected_cost_rank": 0
+          },
+          "capability_receipt_freshness_s": 0,
+          "capability_receipt_hash": "6c37545f769b7ded8974b2bf51b8eb35247bdf9d379ee2356b77a88d9a21ea0c",
+          "capability_receipt_id": "ps632:p-rtx:2026-09-15T12:00:00+00:00",
+          "capability_receipt_observed_at": "2026-09-15T12:00:00+00:00",
+          "capability_receipt_ttl_s": 604800,
+          "cost_rank": 0,
+          "eligible": true,
+          "exactness": "exact_reference_intent",
+          "fallback_rule": "every candidate is filtered by the same ordered rules (domain privacy, locality, inference capability, role, receipt presence/match/freshness/health, measured capabilities, exactness, tools, network, budget, resources); the first eligible candidate in deterministic preference order is selected; a fallback is therefore a LOWER PREFERENCE RANK, never a weaker standard",
+          "fallback_used": false,
+          "locality": "local",
+          "preference_rank": 0,
+          "profile_id": "p-rtx",
+          "provider": "ollama",
+          "reason": "all filters passed",
+          "reason_code": "selected_deterministic_candidate",
+          "resource_facts": {},
+          "rule": "eligible",
+          "selected": true,
+          "target_id": "profile:p-rtx"
+        },
+        {
+          "budget_class": "free",
+          "capability_receipt_freshness_s": 0,
+          "capability_receipt_hash": "feb4a4f06b628e095156cdc5e2b552aeb904d10ff1461bb818efc604e9fda7fc",
+          "capability_receipt_id": "ps632:p-msr:2026-09-15T12:00:00+00:00",
+          "capability_receipt_observed_at": "2026-09-15T12:00:00+00:00",
+          "capability_receipt_ttl_s": 604800,
+          "cost_rank": 0,
+          "eligible": false,
+          "exactness": "exact_reference_intent",
+          "locality": "local",
+          "preference_rank": 0,
+          "profile_id": "p-msr",
+          "provider": "msr1",
+          "reason": "profile profile:p-msr is not an inference target",
+          "rule": "not_an_inference_target",
+          "target_id": "profile:p-msr"
+        },
+        {
+          "budget_class": "paid",
+          "capability_receipt_freshness_s": 0,
+          "capability_receipt_hash": "5fb286cd9ae31ffd337d8d5052580f0bd9e8f576ec33c510bfdd415f20e46e73",
+          "capability_receipt_id": "ps632:p-openrouter:2026-09-15T12:00:00+00:00",
+          "capability_receipt_observed_at": "2026-09-15T12:00:00+00:00",
+          "capability_receipt_ttl_s": 604800,
+          "cost_rank": 1,
+          "eligible": false,
+          "exactness": "exact_reference_intent",
+          "locality": "local",
+          "preference_rank": 0,
+          "profile_id": "p-openrouter",
+          "provider": "openrouter",
+          "reason": "profile does not declare role 'implementer'",
+          "rule": "role_not_supported",
+          "target_id": "profile:p-openrouter"
+        }
+      ],
+      "capability_receipt_refs": [
+        "6c37545f769b7ded8974b2bf51b8eb35247bdf9d379ee2356b77a88d9a21ea0c"
+      ],
+      "decided_at": "2026-09-15T12:00:00+00:00",
+      "decided_by": "ps605_policy",
+      "execution_package_hash": "148c299271e2039a20240ae1dc762472e59f3e6f918017a71a08d90ea3404e84",
+      "granted_read_scope": [],
+      "granted_tools": [],
+      "granted_write_scope": [],
+      "network_policy": "local-network",
+      "packet_id": "t-1",
+      "policy_ref": "routing_policy@1.2+sha256:820abb4bf3cf4b34",
+      "reason": "selected_deterministic_candidate: no profile preference was expressed; the deterministic order decided",
+      "receipt_id": "dispatch-dec-test",
+      "requested_capabilities": [
+        "text_generation",
+        "single_tool_call",
+        "exact_reference_semantics"
+      ],
+      "requested_role": "implementer",
+      "run_id": "",
+      "schema_version": 1,
+      "selected_backend": "cuda",
+      "selected_host": "10.0.0.10",
+      "selected_model": "qwen3.8:27b",
+      "selected_model_digest": "fixture-digest",
+      "selected_runtime_kind": "ollama",
+      "selected_runtime_version": "0.32.11",
+      "selected_target_id": "profile:p-rtx"
+    },
+    "execution_package": {
+      "data_sensitivity": "internal",
+      "domain": "general_swe",
+      "execution_package_hash": "148c299271e2039a20240ae1dc762472e59f3e6f918017a71a08d90ea3404e84",
+      "packet_id": "t-1",
+      "role": "implementer"
+    },
+    "fixture": {},
+    "invocations": [
+      {
+        "locality": "local",
+        "target_id": "profile:p-rtx"
+      }
+    ],
+    "policy": {
+      "policy_hash": "820abb4bf3cf4b3440f132025e4823444c4e359d89aa7edc46da2ed5a61b1520",
+      "policy_ref": "routing_policy@1.2+sha256:820abb4bf3cf4b34",
+      "schema_version": 1,
+      "source": "src.routing_policy.load_policy",
+      "version": "1.2"
+    },
+    "resource_snapshot": {
+      "available": true
+    },
+    "route_request": {
+      "budget_class": "",
+      "capabilities": [
+        "text_generation",
+        "single_tool_call",
+        "exact_reference_semantics"
+      ],
+      "domain": "general_swe",
+      "exactness": "exact_reference_intent",
+      "execution_package_hash": "148c299271e2039a20240ae1dc762472e59f3e6f918017a71a08d90ea3404e84",
+      "local_only": false,
+      "max_cost_rank": 0,
+      "network_policy": "",
+      "packet_id": "t-1",
+      "preferred_profile_ids": [],
+      "read_scope": [],
+      "required_tools": [],
+      "role": "implementer",
+      "run_id": "",
+      "sensitivity": "internal",
+      "write_scope": []
+    },
+    "schema_version": 1,
+    "seal": {
+      "decision_hash": "fcbdbc74944ce8022c649b79ec13c8cbd87b4c54cf0f7272b0b6775cf12cdbb0",
+      "dispatch_receipt_hash": "0d1fad68da6f3acb4996c299c251c01d137a9517602f2904248932f3639165ab",
+      "evidence_hash": "0cef16ddd780ff9c0cacd41a67eada7dae89007da1e7de7b4ddb225404facc12",
+      "policy_ref": "routing_policy@1.2+sha256:820abb4bf3cf4b34",
+      "selected_profile_id": "p-rtx",
+      "selected_target_id": "profile:p-rtx"
+    },
+    "sealed_at": "T",
+    "skipped_candidates": []
+  },
+  "schema": "ps638-pre-authority-complete-seal-preimage-v1",
+  "seal_evidence_hash": "0cef16ddd780ff9c0cacd41a67eada7dae89007da1e7de7b4ddb225404facc12",
+  "source_pins": {
+    "src/attempt_receipt.py": "ba129fabbf63c357a35900dfe8d897f299251a708b4ff14a479c996fced21e26",
+    "src/dispatch_boundary.py": "c631b2c4a003ff39b399ec7d07abfc8c0f49da3abf8cacbaa6d371a4518b0707",
+    "src/dispatch_routing.py": "fc953bcd6f16f2d6ecf3fd93fbc3f5e783eb00d1ed79084a1fae6af0852f055a",
+    "tests/fixtures/ps638_seal_evidence_pre_authority.json": "6c21988d7c39fad1dfcb26263655220992d2d0a0d66aa4cd8d699e50fbfa5a4c",
+    "tests/test_dispatch_boundary.py": "b8de4153d36b5bc6f77424744736d53d9ca88aa3841b9b795b7d0d95adfa2c16"
+  }
+}

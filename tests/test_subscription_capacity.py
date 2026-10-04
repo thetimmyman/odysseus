@@ -153,7 +153,8 @@ def test_database_endpoint_capacity_canonical_dispatch_and_invocation(monkeypatc
     qualified = TargetCapabilityReceipt(host_id="host", profile_id="p-openrouter", observed_at=now.isoformat(),
         runtime=RuntimeIdentity(provider="friendly-label", runtime_kind="openai_compatible", endpoint_url=endpoint.base_url, endpoint_type="openai_compatible"),
         model=ModelIdentity(model_id=model, alias=model, digest="verified-model"),
-        context=ContextProfile(safe_working_context=32768),
+        context=ContextProfile(safe_working_context=32768,
+                               safe_context_source="synthetic-subscription-fixture"),
         capabilities=CapabilityEvidence(measured=(routing.CAP_TEXT_GENERATION, routing.CAP_EXACT_REFERENCE_SEMANTICS)),
         health="healthy", health_checked_at=now.isoformat(), qualification_ref="qualified", locality="hosted")
     capability_store = SimpleNamespace(current=lambda profile_id: qualified)

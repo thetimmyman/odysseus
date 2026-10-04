@@ -146,6 +146,62 @@ def test_an_unmeasured_safe_context_is_recorded_as_unqualified():
     assert r.model.declared_context == 262144        # still recorded, as DECLARED
 
 
+MISSING_CONTEXT_SOURCE = object()
+
+
+@pytest.mark.parametrize("source", [
+    pytest.param(MISSING_CONTEXT_SOURCE, id="missing"),
+    pytest.param("", id="empty"),
+    pytest.param(" \t ", id="whitespace"),
+    pytest.param(True, id="true"),
+    pytest.param(False, id="false"),
+    pytest.param(1, id="positive-integer"),
+    pytest.param(0, id="zero-integer"),
+    pytest.param([], id="empty-list"),
+    pytest.param(["measurement"], id="nonempty-list"),
+    pytest.param({}, id="empty-dict"),
+    pytest.param({"source": "measurement"}, id="nonempty-dict"),
+    pytest.param(None, id="null"),
+])
+def test_positive_safe_context_requires_nonblank_provenance_for_qualification_and_routing(
+        tmp_path, source):
+    # This is a source-linked positive control through the public receipt API.
+    baseline = receipt(safe=32768)
+    baseline_round_trip = make_target_capability_receipt(**baseline.to_dict())
+    assert baseline_round_trip.receipt_hash == baseline.receipt_hash
+    assert baseline_round_trip.qualification_state(now=NOW) == "valid"
+
+    if source is MISSING_CONTEXT_SOURCE:
+        payload = baseline.to_dict()
+        context = dict(payload["context"])
+        context.pop("safe_context_source")
+        payload["context"] = context
+        unproven = make_target_capability_receipt(**payload)
+    else:
+        unproven = receipt_from_capability(
+            record(), configured_context=32768, safe_working_context=32768,
+            safe_context_source=source, backend="cuda",
+            observed_at=NOW.isoformat(), roles=spec().roles,
+            qualification_ref=spec().qualification_ref)
+    assert target_capability_receipt_hash_is_valid(unproven.to_dict())
+    assert unproven.context.safe_working_context == 32768
+    observed_state = unproven.qualification_state(now=NOW)
+
+    persisted = store(tmp_path / ("missing" if source is MISSING_CONTEXT_SOURCE else repr(source)))
+    persisted.append(unproven)
+    stored = persisted.current_for_host(unproven.host_id)
+    assert stored is not None
+    assert stored.receipt_hash == unproven.receipt_hash
+    assert stored.to_dict() == unproven.to_dict()
+    inputs = ltr.persisted_routing_inputs(persisted, now=NOW, specs=[spec()])
+    observed_targets = inputs.target_ids()
+    assert (observed_state == INVALIDATED_SAFE_CONTEXT_UNMEASURED
+            and observed_targets == ()), (
+        f"observed qualification_state={observed_state!r}; "
+        f"persisted target_ids={observed_targets!r}; skipped={inputs.skipped!r}")
+    assert INVALIDATED_SAFE_CONTEXT_UNMEASURED in inputs.skipped[0]["reason"]
+
+
 def test_the_three_clocks_are_independent():
     old = (NOW - datetime.timedelta(days=2)).isoformat()
     fresh_health = (NOW - datetime.timedelta(seconds=10)).isoformat()
