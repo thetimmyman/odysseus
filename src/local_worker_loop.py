@@ -351,6 +351,7 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
     seen_fingerprints: set[str] = set()
     bound = standing_dispatch
     last_failure = None
+    last_execution: Optional[WorkerExecution] = None
 
     def package_guard(current_bound: Any) -> Optional[str]:
         try:
@@ -441,7 +442,7 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
             context = render_initial_context(p)
             repair_of = 0
         else:
-            if last_failure is None:
+            if last_failure is None or last_execution is None:
                 return history_result(ESCALATE, "no deterministic repair evidence")
             guard_failure = package_guard(bound)
             if guard_failure:

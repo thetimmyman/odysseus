@@ -1,7 +1,6 @@
 """Focused controls for the bounded local worker coordinator."""
 from dataclasses import replace
 from datetime import datetime, timezone
-import hashlib
 
 import pytest
 

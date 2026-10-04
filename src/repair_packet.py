@@ -34,7 +34,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Mapping
 
 #: How much of the runner output may travel in a repair context. Chosen so a
 #: repair context plus the unchanged contract still fits the tightest node.
@@ -313,8 +313,8 @@ def render_initial_context(execution_package: Mapping) -> str:
     lines.append("ACCEPTANCE:")
     for criterion in execution_package.get("acceptance_criteria") or []:
         lines.append(f"  - {str(criterion)}")
-    lines.append(f"WRITE_SCOPE: {', '.join(str(p) for p in
-                                           (execution_package.get('write_scope') or ())) or 'NONE'}")
+    write_scope = execution_package.get("write_scope") or ()
+    lines.append("WRITE_SCOPE: " + (", ".join(str(path) for path in write_scope) or "NONE"))
     lines.append("INTERFACE (declare every input key by EXACTLY this name):")
     interface = [str(line) for line in (execution_package.get("interface") or ())]
     if interface:
@@ -326,7 +326,7 @@ def render_initial_context(execution_package: Mapping) -> str:
         from src.work_packet import interface_digest_from_normalized
         lines.append(f"INTERFACE_DIGEST: {interface_digest_from_normalized(interface)}")
     lines.append("")
-    lines.append(f"TEST (deterministic, run by the harness, not by you):")
+    lines.append("TEST (deterministic, run by the harness, not by you):")
     verification = execution_package.get("verification") or {}
     lines.append(f"  verifier: {str(verification.get('verifier_id') or '')}")
     lines.append(f"  command:  {str(verification.get('command') or '')}")
