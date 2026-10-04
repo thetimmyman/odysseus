@@ -437,7 +437,6 @@ def validate_register(register: dict, root: Path, source_overrides=None) -> list
             raise RegisterError("keyboard navigation alias lacks an owner or evidence")
 
     container_rows = coverage["root_container_candidates"]
-    container_ids = [row.get("candidate_id") for row in container_rows]
     actual_containers = [(ident, classes, line) for ident, classes, line in parser.containers]
     census_containers = [(row.get("id"), tuple(sorted(row.get("class", []))), row.get("line")) for row in inventory.get("index_surface_container_candidates", [])]
     mapped_containers = [(row.get("candidate_id"), tuple(sorted(row.get("classes", []))), row.get("source", {}).get("line")) for row in container_rows]
@@ -448,7 +447,6 @@ def validate_register(register: dict, root: Path, source_overrides=None) -> list
             raise RegisterError(f"container has no owner/reason: {row.get('candidate_id')}")
 
     settings_rows = coverage["settings_tabs"]
-    settings_keys = [(row.get("kind"), row.get("value")) for row in settings_rows]
     actual_settings = [(kind, value, line) for kind, value, line in parser.settings]
     census_settings = [(row.get("kind"), row.get("value"), row.get("line")) for row in inventory.get("settings_and_config_tabs", [])]
     mapped_settings = [(row.get("kind"), row.get("value"), row.get("source", {}).get("line")) for row in settings_rows]
