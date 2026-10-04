@@ -104,44 +104,56 @@ def _selected_receipt(package):
     return make_dispatch_receipt(**decision.to_ps638_receipt_kwargs())
 
 
-def _matching_outcome(package, dispatch):
+def _matching_outcome(package, dispatch, *, decision_receipts=None, attempt_dispatches=None):
     root = package.source.repo_root
     context = render_worker_context(PACKET, max_chars=4000).encode()
-    output = b"synthetic projected source result"
     stdout = b"1 passed\n"
     def ref(name, body):
         return ArtifactRef(artifact_id=name, sha256=hashlib.sha256(body).hexdigest(),
                            size=len(body), storage_uri=f"mem://{name}")
-    attempt = make_attempt_receipt(
-        receipt_id="synthetic-attempt", run_id=package.run_id, packet_id=package.packet_id,
-        attempt=1, execution_package_hash=package.package_hash,
-        dispatch_receipt_hash=dispatch.receipt_hash,
-        target_id=dispatch.selected_target_id, host=dispatch.selected_host,
-        model=dispatch.selected_model, context_projection_hash=hashlib.sha256(context).hexdigest(),
-        rendered_context_ref=ref("context", context), output_ref=ref("output", output),
-        declared_write_set=package.write_scope, actual_write_set=package.write_scope,
-        elapsed_s=2.0, prompt_tokens=10, completion_tokens=4, finish_reason="stop")
+    selected_per_attempt = tuple(attempt_dispatches or (dispatch,))
+    attempts = []
+    verifications = []
+    for number, attempt_dispatch in enumerate(selected_per_attempt, start=1):
+        output = f"synthetic result {number}".encode()
+        attempts.append(make_attempt_receipt(
+            receipt_id=f"synthetic-attempt-{number}", run_id=package.run_id,
+            packet_id=package.packet_id, attempt=number,
+            repair_of=number - 1, execution_package_hash=package.package_hash,
+            dispatch_receipt_hash=attempt_dispatch.receipt_hash,
+            target_id=attempt_dispatch.selected_target_id, host=attempt_dispatch.selected_host,
+            model=attempt_dispatch.selected_model,
+            context_projection_hash=hashlib.sha256(context).hexdigest(),
+            rendered_context_ref=ref(f"context-{number}", context),
+            output_ref=ref(f"output-{number}", output),
+            declared_write_set=package.write_scope, actual_write_set=package.write_scope,
+            elapsed_s=2.0 + number, prompt_tokens=10, completion_tokens=4, finish_reason="stop"))
     (Path(root) / "src/example.py").write_text("VALUE = 2\n")
     snapshot = take_source_snapshot(root, base_sha="HEAD",
                                     relevant_paths=["src/example.py", "tests/test_example.py"])
-    verification = make_verification_receipt(
-        receipt_id="synthetic-verification", run_id=package.run_id,
-        packet_id=package.packet_id, attempt=1, execution_package_hash=package.package_hash,
-        verifier_id=package.verification.verifier_id,
-        normalized_command=package.verification.command,
-        source_snapshot_digest=snapshot.snapshot_digest, exit_code=0,
-        verifier_digest=package.verification.digest_of("tests/test_example.py"),
-        verifier_paths=("tests/test_example.py",), ended_at=NOW.isoformat(),
-        stdout_ref=ref("stdout", stdout), tests_collected=1, tests_executed=1,
-        tests_passed=1, tests_failed=0,
-        requirement_ids=tuple(req.requirement_id for req in package.evidence_requirements),
-        proof_class=INDEPENDENCE_HARNESS_HIDDEN, control_id="synthetic-control",
-        control_expected="FAIL", control_observed="FAIL", control_passed=True)
+    for number in range(1, len(selected_per_attempt) + 1):
+        verifications.append(make_verification_receipt(
+            receipt_id=f"synthetic-verification-{number}", run_id=package.run_id,
+            packet_id=package.packet_id, attempt=number,
+            execution_package_hash=package.package_hash,
+            verifier_id=package.verification.verifier_id,
+            normalized_command=package.verification.command,
+            source_snapshot_digest=snapshot.snapshot_digest, exit_code=0,
+            verifier_digest=package.verification.digest_of("tests/test_example.py"),
+            verifier_paths=("tests/test_example.py",), ended_at=NOW.isoformat(),
+            stdout_ref=ref("stdout", stdout), tests_collected=1, tests_executed=1,
+            tests_passed=1, tests_failed=0,
+            requirement_ids=tuple(req.requirement_id for req in package.evidence_requirements),
+            proof_class=INDEPENDENCE_HARNESS_HIDDEN, control_id="synthetic-control",
+            control_expected="FAIL", control_observed="FAIL", control_passed=True))
     evidence = seal_evidence_package(
         evidence_package_id="synthetic-evidence", execution_package=package,
-        dispatch_receipts=(dispatch,), attempt_receipts=(attempt,),
-        verification_receipts=(verification,)).to_dict()
-    extensions = {"mem://context": context, "mem://output": output, "mem://stdout": stdout}
+        dispatch_receipts=tuple(decision_receipts or (dispatch,)),
+        attempt_receipts=tuple(attempts), verification_receipts=tuple(verifications)).to_dict()
+    extensions = {"mem://stdout": stdout}
+    for number, attempt in enumerate(attempts, start=1):
+        extensions[f"mem://context-{number}"] = context
+        extensions[f"mem://output-{number}"] = f"synthetic result {number}".encode()
     return build_outcome_record(evidence_package=evidence,
                                 companion_facts=make_facts(evidence),
                                 artifact_extensions=extensions)
@@ -339,3 +351,44 @@ def test_only_validated_exactly_associated_outcomes_are_aggregated(package, tmp_
     with pytest.raises(RoutingInspectionError, match="canonical record"):
         project_routing_inspection(package, dispatch, outcomes=(b"{}",), now=NOW,
                                    scoring_version="synthetic-v1")
+
+
+def test_unused_and_mixed_dispatch_attempt_histories_stay_unassociated(package):
+    dispatch_a = _selected_receipt(package)
+    dispatch_b = make_dispatch_receipt(**{
+        **dispatch_a.core(), "receipt_id": "synthetic-unused-decision",
+        "reason": "same profile, unused decision",
+    })
+    only_a = _matching_outcome(package, dispatch_a, decision_receipts=(dispatch_a, dispatch_b))
+    view_a = project_routing_inspection(
+        package, dispatch_a, outcomes=(only_a,), now=NOW, scoring_version="synthetic-v1")
+    view_b = project_routing_inspection(
+        package, dispatch_b, outcomes=(only_a,), now=NOW, scoring_version="synthetic-v1")
+    assert view_a["outcomes"]["associated_source_hashes"] == [only_a.raw_record_hash]
+    assert view_b["outcomes"]["status"] == "UNKNOWN"
+    assert view_b["outcomes"]["associated_source_hashes"] == []
+    assert view_b["outcomes"]["unassociated_source_hashes"] == [only_a.raw_record_hash]
+
+    mixed = _matching_outcome(package, dispatch_a,
+                              decision_receipts=(dispatch_a, dispatch_b),
+                              attempt_dispatches=(dispatch_a, dispatch_b))
+    for dispatch in (dispatch_a, dispatch_b):
+        view = project_routing_inspection(
+            package, dispatch, outcomes=(mixed,), now=NOW, scoring_version="synthetic-v1")
+        assert view["outcomes"]["status"] == "UNKNOWN"
+        assert view["outcomes"]["associated_source_hashes"] == []
+        assert view["outcomes"]["unassociated_source_hashes"] == [mixed.raw_record_hash]
+
+
+def test_same_dispatch_repair_chain_and_duplicate_record_keep_denominator(package):
+    dispatch = _selected_receipt(package)
+    repaired = _matching_outcome(package, dispatch, attempt_dispatches=(dispatch, dispatch))
+    view = project_routing_inspection(
+        package, dispatch, outcomes=(repaired, repaired), now=NOW,
+        scoring_version="synthetic-v1")
+    scorecard = view["outcomes"]["scorecard"]
+    assert scorecard["confidence_status"] == "INSUFFICIENT"
+    assert scorecard["ranking_allowed"] is False
+    assert scorecard["arms"][0]["distinct_execution_n"] == 1
+    assert scorecard["arms"][0]["attempt_n"] == 2
+    assert scorecard["source_record_hashes"] == [repaired.raw_record_hash]
