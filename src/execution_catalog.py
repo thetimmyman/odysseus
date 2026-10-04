@@ -5,8 +5,9 @@ and proves availability. Three invariants:
 
 1. A capability's candidate list is its allowlist. There is no cross-capability
    fallthrough, so ``integration_strong`` can never land on Flash.
-2. Availability is proven by invoking the target. Picker and catalog text are
-   human-facing views and are never the authority.
+2. Availability is observed through the target's provider-specific probe.
+   Local probes inspect metadata only; they do not prove generation or tools.
+   Picker and catalog text are human-facing views and are never the authority.
 3. A capability with no live allowlisted target raises
    :class:`CapabilityUnavailable` rather than substituting a weaker one.
 
@@ -120,16 +121,59 @@ def _local_bulk_targets() -> List[ExecutionTargetSpec]:
     A target qualifies only with an inference role and its own measured
     qualification, so a host that has not been qualified is not a candidate.
     """
-    from src.local_targets import ROLE_INFERENCE, registered_targets
+    from src.local_targets import registered_targets
 
-    candidates: List[ExecutionTargetSpec] = []
-    for spec in registered_targets():
-        if ROLE_INFERENCE not in spec.roles or not spec.qualification_ref:
+    specs = tuple(registered_targets())
+    eligible, _ = _persisted_local_eligibility(specs)
+    return [ExecutionTargetSpec(
+        provider=LOCAL_PROVIDER, model=spec.model,
+        capability=CAPABILITY_BULK_LOCAL, local_target_id=spec.target_id)
+        for spec in specs if spec.target_id in eligible]
+
+
+def _persisted_local_eligibility(specs):
+    """Read canonical persisted evidence for the current local registry.
+
+    The existing PS-632 seam validates the current receipt hash, profile
+    qualification, liveness and measured context. This function only binds its
+    eligible profiles back to current registry identities; it writes nothing.
+    """
+    specs = tuple(specs)
+    try:
+        from src.local_target_routing import persisted_routing_inputs
+        from src.local_targets import ROLE_INFERENCE
+        from src.target_capability_store import store_from_env
+        inputs = persisted_routing_inputs(store_from_env(), specs=specs)
+    except Exception as exc:
+        return {}, {spec.target_id: f"capability store unusable: {exc}"
+                    for spec in specs}
+    by_id = {spec.target_id: spec for spec in specs}
+    eligible = {}
+    reasons = {str(item.get("target_id") or ""): str(item.get("reason") or "")
+               for item in inputs.skipped}
+    for profile in inputs.profiles:
+        spec = by_id.get(profile.target_id)
+        if spec is None:
             continue
-        candidates.append(ExecutionTargetSpec(
-            provider=LOCAL_PROVIDER, model=spec.model,
-            capability=CAPABILITY_BULK_LOCAL, local_target_id=spec.target_id))
-    return candidates
+        try:
+            receipt = inputs.capability_store.current_for_host(spec.target_id)
+        except Exception as exc:
+            reasons[spec.target_id] = f"capability store unusable: {exc}"
+            continue
+        if (profile.model != spec.model
+                or not inputs.receipt_hash_for(spec.target_id)
+                or receipt is None
+                or receipt.receipt_hash != inputs.receipt_hash_for(spec.target_id)
+                or receipt.profile_id != profile.profile_id
+                or receipt.model.model_id != spec.model
+                or receipt.qualification_ref != spec.qualification_ref
+                or ROLE_INFERENCE not in (receipt.roles or ())):
+            if spec is not None:
+                reasons[spec.target_id] = (
+                    "persisted profile model, qualification, role or receipt binding mismatch")
+            continue
+        eligible[spec.target_id] = (spec, profile)
+    return eligible, reasons
 
 
 def _configured_targets(capability: str) -> Optional[list]:
@@ -153,10 +197,11 @@ def catalog_targets(capability: str) -> List[ExecutionTargetSpec]:
     """
     if capability not in KNOWN_CAPABILITIES:
         raise ValueError(f"unknown capability: {capability!r}")
+    # bulk_local is an exclusive routing boundary; hosted settings never apply.
+    if capability == CAPABILITY_BULK_LOCAL:
+        return _local_bulk_targets()
     raw = _configured_targets(capability)
     if raw is None:
-        if capability == CAPABILITY_BULK_LOCAL:
-            return _local_bulk_targets()
         raw = DEFAULT_TARGETS[capability]
     specs: List[ExecutionTargetSpec] = []
     for entry in raw:
@@ -239,13 +284,30 @@ def _run_cline_probe(target: ExecutionTargetSpec, timeout: float) -> Tuple[bool,
 
 
 def _run_local_probe(target: ExecutionTargetSpec, timeout: float) -> Tuple[bool, str]:
-    """Ask the local registry about one target instead of invoking a CLI."""
-    from src.local_targets import HEALTH_HEALTHY, probe_target, target_by_id
+    """Inspect local metadata only; this is not generation/tool proof."""
+    from src.local_targets import (
+        HEALTH_HEALTHY, OllamaInspector, ROLE_INFERENCE,
+        probe_target as inspect_target, registered_targets,
+    )
 
-    spec = target_by_id(target.target_id)
+    if (target.capability != CAPABILITY_BULK_LOCAL
+            or target.provider != LOCAL_PROVIDER
+            or not target.local_target_id):
+        return False, "invalid bulk_local target identity"
+    specs = tuple(registered_targets())
+    spec = next((item for item in specs
+                 if item.target_id == target.local_target_id), None)
     if spec is None:
         return False, "not a registered local target"
-    record = probe_target(spec)
+    if (ROLE_INFERENCE not in spec.roles or not spec.qualification_ref
+            or spec.model != target.model):
+        return False, "local target identity or qualification changed"
+    eligible, reasons = _persisted_local_eligibility(specs)
+    if target.local_target_id not in eligible:
+        return False, reasons.get(target.local_target_id,
+                                  "no current valid persisted qualification")
+    record = inspect_target(
+        spec, inspector=OllamaInspector(timeout=timeout, probe_tools=False))
     if record.health != HEALTH_HEALTHY:
         detail = ",".join(record.failure_classes) or "no detail"
         return False, f"health={record.health} ({detail})"
@@ -256,7 +318,7 @@ def _default_probe_runner(
     target: ExecutionTargetSpec,
     timeout: float,
 ) -> Tuple[bool, str]:
-    if target.local_target_id:
+    if target.capability == CAPABILITY_BULK_LOCAL or target.local_target_id:
         return _run_local_probe(target, timeout)
     return _run_cline_probe(target, timeout)
 
@@ -289,6 +351,28 @@ def select_target_for_capability(
     probe = probe or probe_target
     reasons: List[str] = []
     for target in candidates:
+        if capability == CAPABILITY_BULK_LOCAL:
+            # Revalidate registry policy at selection time, including when a
+            # caller supplies a custom probe callback.
+            from src.local_targets import ROLE_INFERENCE, registered_targets
+            specs = tuple(registered_targets())
+            spec = next((item for item in specs
+                         if item.target_id == target.local_target_id), None)
+            if (target.provider != LOCAL_PROVIDER
+                    or target.capability != CAPABILITY_BULK_LOCAL
+                    or spec is None
+                    or ROLE_INFERENCE not in spec.roles
+                    or not spec.qualification_ref
+                    or spec.model != target.model):
+                reasons.append(f"{target.target_id}: local registry eligibility changed")
+                continue
+            eligible, eligibility_reasons = _persisted_local_eligibility(specs)
+            if target.local_target_id not in eligible:
+                reasons.append(
+                    f"{target.target_id}: " + eligibility_reasons.get(
+                        target.local_target_id,
+                        "no current valid persisted qualification"))
+                continue
         result = probe(target)
         if result.available:
             return target
