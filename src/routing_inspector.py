@@ -179,6 +179,36 @@ def _capacity_view(receipt: ProviderCapacityReceipt, *, now: datetime,
     }
 
 
+def _outcome_is_bound_to_dispatch(evidence: Mapping[str, Any], *,
+                                  dispatch: DispatchDecisionReceipt,
+                                  package_hash: str) -> bool:
+    """Associate whole records only when every attempt used this exact receipt."""
+    package = evidence.get("execution_package")
+    receipt_rows = evidence.get("dispatch_receipts")
+    attempt_rows = evidence.get("attempt_receipts")
+    if (not isinstance(package, Mapping) or package.get("package_hash") != package_hash or
+            not isinstance(receipt_rows, list) or not isinstance(attempt_rows, list) or
+            not attempt_rows):
+        return False
+    cited_hashes = {row.get("receipt_hash") for row in receipt_rows
+                    if isinstance(row, Mapping)}
+    if dispatch.receipt_hash not in cited_hashes:
+        return False
+    for attempt in attempt_rows:
+        if not isinstance(attempt, Mapping):
+            return False
+        if (attempt.get("dispatch_receipt_hash") != dispatch.receipt_hash or
+                attempt.get("target_id") != dispatch.selected_target_id or
+                attempt.get("host") != dispatch.selected_host or
+                attempt.get("model") != dispatch.selected_model):
+            return False
+        for field, selected in (("runtime_kind", dispatch.selected_runtime_kind),
+                                ("runtime_version", dispatch.selected_runtime_version)):
+            if attempt.get(field) and selected and attempt[field] != selected:
+                return False
+    return True
+
+
 def project_routing_inspection(
     package: ExecutionPackage,
     dispatch: DispatchDecisionReceipt,
@@ -290,11 +320,8 @@ def project_routing_inspection(
             valid = validate_outcome_record(record)
             data = valid.to_dict()
             evidence = data.get("raw_evidence_package") or {}
-            linked = evidence.get("dispatch_receipts", [])
-            dispatch_hashes = {row.get("receipt_hash") for row in linked if isinstance(row, Mapping)}
-            pkg = evidence.get("execution_package") or {}
-            if (dispatch.receipt_hash in dispatch_hashes and
-                    pkg.get("package_hash") == package.package_hash):
+            if _outcome_is_bound_to_dispatch(
+                    evidence, dispatch=dispatch, package_hash=package.package_hash):
                 normalized_outcomes.append(valid)
             else:
                 unassociated.append(valid.raw_record_hash)
