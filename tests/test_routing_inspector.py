@@ -219,7 +219,8 @@ def test_referenced_canonical_capability_and_capacity_are_supplemented(package):
                                 version="1", backend="fixture-backend"),
         model=ModelIdentity(model_id="fixture-model", alias="fixture-model",
                             digest="d" * 64),
-        context=ContextProfile(safe_working_context=4096),
+        context=ContextProfile(safe_working_context=4096,
+                               safe_context_source="synthetic-inspector-fixture"),
         capabilities=CapabilityEvidence(measured=("text_generation",)))
     capacity = make_capacity_receipt(
         provider="fixture", pool_id="synthetic-pool", account_identity="synthetic-account",
@@ -256,7 +257,8 @@ def test_future_referenced_evidence_stays_unknown(package):
                                 version="1", backend="fixture-backend"),
         model=ModelIdentity(model_id="fixture-model", alias="fixture-model",
                             digest="d" * 64),
-        context=ContextProfile(safe_working_context=4096),
+        context=ContextProfile(safe_working_context=4096,
+                               safe_context_source="synthetic-future-inspector-fixture"),
         capabilities=CapabilityEvidence(measured=("text_generation",)))
     future_provenance = EvidenceProvenance(
         source="synthetic-test", reference="future-state", collector_id="synthetic-collector",

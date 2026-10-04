@@ -194,27 +194,50 @@ def test_b_absent_authority_is_omitted_from_the_kwargs_dict_itself():
 
 
 def test_b_seal_evidence_hash_is_stable_for_an_authority_free_dispatch():
-    """An authority-free real dispatch seals byte-identically to the fixture.
+    """The current seal API preserves the independently reconstructed history.
 
-    Uses the unmodified tests/test_dispatch_boundary.py helpers, which also
-    captured the fixture.
+    This serializer control deliberately consumes a complete frozen pre-guard
+    synthetic record. It does not requalify or authorize a live target.
     """
-    import test_dispatch_boundary as tdb
     from src import dispatch_boundary as dbd
 
-    fixture = _load("ps638_seal_evidence_pre_authority.json")
-    assert fixture["captured_from_sha"] == "7afd55bad7034d789c98be4ee6e9ebcfcc97cdba"
-
-    db = tdb._db()
-    task = tdb._seed(db)
-    bound = tdb._resolve(db, task, "p-rtx", "p-openrouter", "p-msr")
-    attempt = dbd.attempt_for(bound, attempt=1, profile_id="p-rtx", run_id="run-1")
-    payload = tdb._sealed(bound, attempts=(attempt,), invocations=(
-        {"target_id": "profile:p-rtx", "locality": "local"},))
-
+    golden = _load("ps638_seal_evidence_pre_authority.json")
+    historical = _load("ps638_seal_evidence_pre_authority_payload.json")
+    assert historical["captured_from_sha"] == "e504a53625bdf3ffff3ed3419d778418a85083ef"
+    assert historical["decision_receipt_hash"] == golden["decision_receipt_hash"]
+    assert historical["seal_evidence_hash"] == golden["seal_evidence_hash"]
+    payload = historical["payload"]
+    assert payload["decision"]["receipt_hash"] == golden["decision_receipt_hash"]
+    assert payload["seal"]["evidence_hash"] == golden["seal_evidence_hash"]
     assert "authority" not in payload["decision_receipt"]
-    assert payload["decision"]["receipt_hash"] == fixture["decision_receipt_hash"]
-    assert payload["seal"]["evidence_hash"] == fixture["seal_evidence_hash"]
+
+    record = {
+        "execution_package": payload["execution_package"],
+        "policy": payload["policy"],
+        "dispatch": {
+            "request": payload["route_request"],
+            "decision": payload["decision"],
+            "policy": payload["policy"],
+            "provenance": payload["capability_provenance"],
+            "skipped_candidates": payload["skipped_candidates"],
+        },
+        "dispatch_receipt": payload["decision_receipt"],
+        "dispatch_receipt_hash": payload["seal"]["dispatch_receipt_hash"],
+        "decision_hash": payload["seal"]["decision_hash"],
+        "capability_receipts": payload["capability_receipts"],
+        "capability_provenance": payload["capability_provenance"],
+        "skipped_candidates": payload["skipped_candidates"],
+        "attempts": payload["attempts"],
+        "invocations": payload["invocations"],
+    }
+    rebuilt = dbd.seal_recorded_dispatch(
+        record=record, budget_snapshot=payload["budget_snapshot"],
+        resource_snapshot=payload["resource_snapshot"], fixture=payload["fixture"],
+        sealed_at=payload["sealed_at"])
+    assert "authority" not in rebuilt["decision_receipt"]
+    assert rebuilt["decision"]["receipt_hash"] == golden["decision_receipt_hash"]
+    assert rebuilt["seal"]["evidence_hash"] == golden["seal_evidence_hash"]
+    assert dbd._sha256_hex(dbd._canonical(dbd.evidence_core(rebuilt))) == golden["seal_evidence_hash"]
 
 
 def test_b_seal_evidence_hash_changes_when_authority_is_present():
@@ -246,6 +269,33 @@ def test_b_seal_evidence_hash_changes_when_authority_is_present():
 
     assert payload_with["decision_receipt"]["authority"] == {"grant_id": "g1"}
     assert payload_with["seal"]["evidence_hash"] != payload_without["seal"]["evidence_hash"]
+
+
+def test_synthetic_context_provenance_changes_dispatch_identity():
+    """Synthetic source provenance changes the canonical capability receipt identity."""
+    from src.local_targets import (
+        CapabilityEvidence, ContextProfile, ModelIdentity, RuntimeIdentity,
+        make_target_capability_receipt,
+    )
+
+    def capability(source):
+        return make_target_capability_receipt(
+            host_id="synthetic-host", profile_id="synthetic-profile",
+            observed_at=NOW.isoformat(),
+            runtime=RuntimeIdentity(provider="synthetic", runtime_kind="fixture",
+                                    version="1", endpoint_url="http://127.0.0.1:9/v1",
+                                    endpoint_type="openai_compatible", backend="fixture"),
+            model=ModelIdentity(model_id="synthetic-model", alias="synthetic-model",
+                                digest="synthetic-digest"),
+            context=ContextProfile(safe_working_context=32768,
+                                   safe_context_source=source),
+            capabilities=CapabilityEvidence(measured=(dr.CAP_TEXT_GENERATION,)),
+            health="healthy", health_checked_at=NOW.isoformat(),
+            qualification_ref="synthetic-fixture-only",
+        )
+
+    assert capability("synthetic-fixture-source-a").receipt_hash != capability(
+        "synthetic-fixture-source-b").receipt_hash
 
 
 # (c) ROUND-TRIP / DETERMINISM

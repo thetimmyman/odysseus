@@ -98,6 +98,9 @@ def _candidates(*profile_ids):
 class _FixtureCapabilityStore:
     """Canonical fixture store; never uses legacy qualification data."""
 
+    def __init__(self, *, context_source="synthetic-test-context-provenance"):
+        self.context_source = context_source
+
     def current(self, profile_id):
         facts = {
             "p-rtx": ("ollama", "qwen3.8:27b", "http://10.0.0.10:11434/v1",
@@ -119,19 +122,24 @@ class _FixtureCapabilityStore:
                                     version="0.32.11", endpoint_url=endpoint,
                                     endpoint_type="openai_compatible", backend="cuda"),
             model=ModelIdentity(model_id=model, alias=model, digest="fixture-digest"),
-            context=ContextProfile(safe_working_context=32768),
+            # Synthetic provenance keeps the fixture eligible under the
+            # production source-presence contract; it is not hardware evidence.
+            context=ContextProfile(safe_working_context=32768,
+                                   safe_context_source=self.context_source),
             capabilities=CapabilityEvidence(measured=tuple(sorted(caps))),
             health="healthy", health_checked_at=NOW.isoformat(),
             qualification_ref="fixture-qualified")
 
 
-def _fixture_store():
-    return _FixtureCapabilityStore()
+def _fixture_store(*, context_source="synthetic-test-context-provenance"):
+    return _FixtureCapabilityStore(context_source=context_source)
 
 
-def _resolve(db, task, *profile_ids, **kwargs):
+def _resolve(db, task, *profile_ids,
+             context_source="synthetic-test-context-provenance", **kwargs):
     return dbd.resolve_dispatch(db, task, _candidates(*profile_ids), now=NOW,
-                                decision_id="dec-test", capability_store=_fixture_store(), **kwargs)
+                                decision_id="dec-test",
+                                capability_store=_fixture_store(context_source=context_source), **kwargs)
 
 
 def _invocation(profile_id="p-rtx", *, model="qwen3.8:27b",
@@ -565,7 +573,8 @@ class _HostedCapabilityStore:
                                     version=p.runtime_version, endpoint_url=p.endpoint_url,
                                     endpoint_type=p.endpoint_type, backend=p.backend),
             model=ModelIdentity(model_id=p.model, alias=p.model, digest=p.model_digest),
-            context=ContextProfile(safe_working_context=32768),
+            context=ContextProfile(safe_working_context=32768,
+                                   safe_context_source="synthetic-hosted-fixture-provenance"),
             capabilities=CapabilityEvidence(measured=tuple(sorted({
                 dr.CAP_TEXT_GENERATION, dr.CAP_SINGLE_TOOL_CALL,
                 dr.CAP_EXACT_REFERENCE_SEMANTICS}))),
