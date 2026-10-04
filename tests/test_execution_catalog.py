@@ -33,7 +33,6 @@ import sys
 import tempfile
 import types
 import unittest
-from contextlib import contextmanager
 
 # Make the repository root importable the same way the shared conftest does,
 # so this file also runs on a bare interpreter with no pytest.
