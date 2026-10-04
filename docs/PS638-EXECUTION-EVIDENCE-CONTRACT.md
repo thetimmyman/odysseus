@@ -128,6 +128,20 @@ Design rules the module enforces:
 - **Provenance is compared.** A PASS carried by worker-authored proof cannot
   close a requirement that demands independence, even when genuine.
 
+### Schema-version compatibility
+
+The validator checks the `schema_version` of each versioned record before
+hash validation or recursive traversal. It accepts `EvidencePackage` v1,
+`ExecutionPackage` v1 and v2, and v1 `SourceSnapshotIdentity`,
+`DispatchDecisionReceipt`, `AttemptReceipt`, and `VerificationReceipt` records.
+Version values must be exact non-boolean integers. Missing, malformed, or
+unsupported versions return a named validation issue at the record's subject
+path. This guard does not rewrite legacy records: an ExecutionPackage v1
+retains its `jira_key` field and original serialized hash, while v2 uses
+`ticket_key`. It does not add schema fields to unversioned evidence types, and
+`authority_schema_version` remains opaque recorded content rather than an
+authorization or compatibility gate.
+
 ## 7. VERIFIED != ACCEPTED
 
 Sources: `src/evidence_package.py` validator semantics + `src/mechanical_landing.py`
