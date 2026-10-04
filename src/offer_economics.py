@@ -1,15 +1,25 @@
 """Comparable, bounded request quotes; never authorization or actual spend."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 
-from src.provider_model_offer import provider_model_offer_from_dict
+from src.provider_capacity import (
+    EvidenceProvenance, EvidenceValue, ProviderCapacityReceipt, QuotaDimension,
+    UnknownValue as CapacityUnknownValue,
+)
 from src.provider_capacity_store import ProviderCapacityStore
+from src.provider_model_offer import (
+    OfferProvenance, OfferValue, ProviderModelOfferReceipt,
+    UnknownValue as OfferUnknownValue, provider_model_offer_from_dict,
+)
 from src.promotional_dispatch import PromotionUnavailable, _check_quotas
 
 TOKEN_UNITS = {"million_input_tokens": "input_tokens", "million_output_tokens": "output_tokens",
@@ -36,6 +46,246 @@ def _money(value):
     if not number.is_finite() or number < 0:
         raise PromotionUnavailable("USD rates must be finite and nonnegative")
     return number
+
+
+def _projection_value(value):
+    if isinstance(value, (OfferUnknownValue, CapacityUnknownValue)):
+        return value.to_dict()
+    return value
+
+
+@dataclass(frozen=True)
+class QuotaProjection:
+    """Conditional arithmetic over one exact native quota dimension."""
+
+    offer_ref: str
+    capacity_receipt_ref: str
+    dimension: str
+    unit: str
+    remaining: EvidenceValue
+    debit_per_request: OfferValue
+    request_count: int | None
+    reset_at: str | CapacityUnknownValue
+    quota_provenance: EvidenceProvenance
+    offer_provenance: OfferProvenance
+    status: str
+    reason: str | None
+    conversion_status: str
+    reset_window_known: bool
+
+    def to_dict(self):
+        return {
+            "offer_ref": self.offer_ref,
+            "capacity_receipt_ref": self.capacity_receipt_ref,
+            "dimension": self.dimension,
+            "unit": self.unit,
+            "remaining": _projection_value(self.remaining),
+            "debit_per_request": _projection_value(self.debit_per_request),
+            # Counts are serialized as decimal strings so JSON consumers do not
+            # round large exact integer results through binary floating point.
+            "requests_from_current_remaining": (
+                format(Decimal(self.request_count), "f") if self.request_count is not None else None
+            ),
+            "reset_at": _projection_value(self.reset_at),
+            "quota_provenance": self.quota_provenance.to_dict(),
+            "offer_provenance": self.offer_provenance.to_dict(),
+            "status": self.status,
+            "reason": self.reason,
+            "conversion_status": self.conversion_status,
+            "cash_equivalent_usd": None,
+            "evidence_confidence": "UNASSESSED",
+            "reset_window_known": self.reset_window_known,
+        }
+
+
+@dataclass(frozen=True)
+class QuotaProjectionResult:
+    """One offer's read-only result; it never authorizes or reserves quota."""
+
+    offer_ref: str
+    capacity_receipt_ref: str
+    status: str
+    reason: str | None
+    conversion_status: str = "UNKNOWN"
+    projections: tuple[QuotaProjection, ...] = ()
+
+    def to_dict(self):
+        return {
+            "offer_ref": self.offer_ref,
+            "capacity_receipt_ref": self.capacity_receipt_ref,
+            "status": self.status,
+            "reason": self.reason,
+            "conversion_status": self.conversion_status,
+            "projections": [projection.to_dict() for projection in self.projections],
+            "cash_equivalent_usd": None,
+            "evidence_confidence": "UNASSESSED",
+        }
+
+
+def _projection_decimal(value: object) -> Decimal | None:
+    """Parse only finite nonnegative integers/floats without lossy int casts."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        number = Decimal(value) if isinstance(value, int) else Decimal(str(value))
+    except (InvalidOperation, ValueError, OverflowError):
+        return None
+    return number if number.is_finite() and number >= 0 else None
+
+
+def _observed_at_not_future(source, current: datetime) -> bool:
+    observed_at = getattr(source, "observed_at", source)
+    if not isinstance(observed_at, str) or not observed_at:
+        return False
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (observed.tzinfo is not None and observed.utcoffset() is not None
+            and observed.astimezone(timezone.utc) <= current)
+
+
+def _capacity_sources_not_future(capacity: ProviderCapacityReceipt, current: datetime) -> bool:
+    sources = [
+        capacity.observed_at,
+        capacity.state_provenance,
+        capacity.entitlement_provenance,
+        capacity.zdr_provenance,
+        *(quota.provenance for quota in capacity.quotas),
+    ]
+    if capacity.rate_limit is not None:
+        sources.append(capacity.rate_limit.provenance)
+    if capacity.price is not None and any(
+        not isinstance(getattr(capacity.price, name), CapacityUnknownValue)
+        for name in ("published_list_rate", "estimated_marginal_cost", "actual_billed_cost")
+    ):
+        sources.append(capacity.price.provenance)
+    return all(_observed_at_not_future(source, current) for source in sources)
+
+
+def _quota_projection(
+    offer: ProviderModelOfferReceipt,
+    capacity: ProviderCapacityReceipt,
+    quota: QuotaDimension,
+    *,
+    status: str,
+    reason: str | None,
+    request_count: int | None = None,
+) -> QuotaProjection:
+    return QuotaProjection(
+        offer_ref=offer.ref,
+        capacity_receipt_ref=capacity.ref,
+        dimension=quota.name,
+        unit=quota.unit,
+        remaining=quota.remaining,
+        debit_per_request=offer.credit.amount,
+        request_count=request_count,
+        reset_at=quota.reset_at,
+        quota_provenance=quota.provenance,
+        offer_provenance=offer.provenance,
+        status=status,
+        reason=reason,
+        conversion_status="identity_same_unit",
+        reset_window_known=not isinstance(quota.reset_at, CapacityUnknownValue),
+    )
+
+
+def project_offer_quota(
+    offer: ProviderModelOfferReceipt,
+    capacity: ProviderCapacityReceipt,
+    *,
+    now: datetime | None = None,
+) -> QuotaProjectionResult:
+    """Project exact same-unit per-request debit from current typed receipts.
+
+    The result is advisory arithmetic only. It never reserves capacity or
+    claims USD value, eligibility, or measured usage.
+    """
+    if not isinstance(offer, ProviderModelOfferReceipt) or not isinstance(capacity, ProviderCapacityReceipt):
+        raise PromotionUnavailable("quota projection requires typed offer and capacity receipts")
+    if (offer.provider != capacity.provider or offer.pool_id != capacity.pool_id
+            or offer.capacity_receipt_ref != capacity.ref):
+        raise PromotionUnavailable("offer does not bind the supplied exact capacity receipt")
+    current = now or datetime.now(timezone.utc)
+    if not isinstance(current, datetime) or current.tzinfo is None or current.utcoffset() is None:
+        raise PromotionUnavailable("quota projection requires a timezone-aware current time")
+    current = current.astimezone(timezone.utc)
+
+    def result(status, reason, projections=(), conversion_status="UNKNOWN"):
+        return QuotaProjectionResult(
+            offer.ref, capacity.ref, status, reason, conversion_status, tuple(projections)
+        )
+
+    if (not _capacity_sources_not_future(capacity, current)
+            or not capacity.facts_are_fresh(now=current)):
+        return result("unknown", "capacity_source_not_current")
+    if not offer.is_eligible(now=current, provider=capacity.provider, pool_id=capacity.pool_id,
+            capacity_receipt_ref=capacity.ref, harness=offer.harness,
+            usage_path=offer.usage_path, native_model=offer.native_model):
+        return result("unknown", "offer_source_or_validity_not_current")
+    if offer.credit.applies_to != "per_request_debit":
+        return result("unknown", "unsupported_credit_application")
+    if isinstance(offer.credit.amount, (OfferUnknownValue, CapacityUnknownValue)):
+        return result("unknown", "debit_unknown")
+
+    matching = [quota for quota in capacity.quotas if quota.unit == offer.credit.unit]
+    if not matching:
+        return result("unknown", "unsupported_conversion")
+    duplicate_identity = any(
+        sum(other.name == quota.name for other in capacity.quotas) > 1
+        for quota in matching
+    )
+    if len(matching) != 1 or duplicate_identity:
+        projections = tuple(_quota_projection(
+            offer, capacity, quota, status="unknown", reason="ambiguous_dimension"
+        ) for quota in matching)
+        return result("unknown", "ambiguous_dimension", projections, "identity_same_unit")
+
+    quota = matching[0]
+    if quota.provenance is None or not quota.is_fresh(now=current):
+        return result("unknown", "quota_source_not_current", (
+            _quota_projection(offer, capacity, quota, status="unknown", reason="quota_source_not_current"),
+        ), "identity_same_unit")
+    if not isinstance(quota.reset_at, CapacityUnknownValue):
+        try:
+            reset_at = datetime.fromisoformat(str(quota.reset_at).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return result("unknown", "quota_reset_unusable", (
+                _quota_projection(offer, capacity, quota, status="unknown", reason="quota_reset_unusable"),
+            ), "identity_same_unit")
+        if reset_at.tzinfo is None or reset_at.astimezone(timezone.utc) <= current:
+            return result("unknown", "quota_reset_elapsed", (
+                _quota_projection(offer, capacity, quota, status="unknown", reason="quota_reset_elapsed"),
+            ), "identity_same_unit")
+
+    remaining = _projection_decimal(quota.remaining)
+    debit = _projection_decimal(offer.credit.amount)
+    if remaining is None:
+        return result("unknown", "remaining_unknown_or_invalid", (
+            _quota_projection(offer, capacity, quota, status="unknown", reason="remaining_unknown_or_invalid"),
+        ), "identity_same_unit")
+    if debit is None:
+        return result("unknown", "debit_invalid", (
+            _quota_projection(offer, capacity, quota, status="unknown", reason="debit_invalid"),
+        ), "identity_same_unit")
+    if debit == 0:
+        return result("unknown", "zero_debit_not_unlimited", (
+            _quota_projection(offer, capacity, quota, status="unknown", reason="zero_debit_not_unlimited"),
+        ), "identity_same_unit")
+
+    try:
+        count = Fraction(remaining) // Fraction(debit)
+    except (ArithmeticError, InvalidOperation, ValueError, OverflowError):
+        return result("unknown", "ratio_unusable", (
+            _quota_projection(offer, capacity, quota, status="unknown", reason="ratio_unusable"),
+        ), "identity_same_unit")
+    projection = _quota_projection(
+        offer, capacity, quota, status="conditional", reason=None,
+        request_count=int(count),
+    )
+    return result("conditional", None, (projection,), "identity_same_unit")
 
 
 def workload_counts(workload):
@@ -113,18 +363,10 @@ def quote_profile(config, *, profile_id, model, chat_url, harness, workload, pro
         list_cash = comparable_cash(offers, counts, list_price=True)
     except PromotionUnavailable:
         list_cash = None
-    quota_effects = []
-    for offer in offers:
-        credit = offer.credit
-        if credit.applies_to != "per_request_debit" or not isinstance(credit.amount, (int, float)):
-            continue
-        for quota in capacity.quotas:
-            if quota.unit == credit.unit and isinstance(quota.remaining, (int, float)):
-                debit = Decimal(str(credit.amount))
-                quota_effects.append({"offer_ref": offer.ref, "dimension": quota.name,
-                    "unit": quota.unit, "remaining": quota.remaining, "debit_per_request": credit.amount,
-                    "requests_from_this_dimension": int(Decimal(str(quota.remaining)) // debit) if debit > 0 else None,
-                    "cash_equivalent_usd": None})
+    quota_effects = [
+        project_offer_quota(offer, capacity, now=current).to_dict()
+        for offer in offers
+    ]
     return {"profile_id": profile_id, "provider": capacity.provider, "pool_id": capacity.pool_id,
             "harness": harness, "usage_path": scope["usage_path"], "model": model, "chat_url": chat_url,
             "observed_at": current.isoformat(), "workload": counts,
