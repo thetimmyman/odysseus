@@ -1,12 +1,9 @@
-"""Regression tests for the background-task registry (POS-AI-23).
+"""Tests for the background-task registry.
 
-Every background LLM task in Odysseus used to be started as a bare
-``asyncio.create_task(...)`` whose return value was thrown away. asyncio only
-keeps a *weak* reference to a running task, so the garbage collector was free to
-finalize one mid-``await`` — and a coroutine finalized that way cannot run async
-cleanup, which is how ``httpx`` releases a connection. Holding a reference is
-the documented fix; putting the task in the background LLM lane is what keeps
-its model traffic off the interactive connection pool.
+asyncio keeps only a weak reference to a running task, so an unreferenced task
+can be finalized mid-``await`` and skip async cleanup (leaking httpx
+connections). The registry holds the reference and runs the task in the
+background LLM lane, off the interactive connection pool.
 """
 
 import asyncio

@@ -1,14 +1,10 @@
-"""src/routing_task_io.py — shared task-JSON-to-RoutingTask mapping, used by
-both scripts/odysseus-route and scripts/odysseus-run (kept as one function so
-a new field only needs updating in one place)."""
+"""Shared task-JSON <-> RoutingTask mapping for the routing CLIs."""
 import json
 import uuid
 
 
 def task_kwargs_from_json(data: dict) -> dict:
-    """`data` matches the spec's OdysseusTask JSON shape. Returns kwargs ready
-    for `core.database.RoutingTask(**kwargs)` -- caller decides whether to
-    persist it."""
+    """OdysseusTask JSON -> RoutingTask kwargs (not persisted)."""
     routing = data.get("routing") or {}
     return dict(
         id=data.get("id") or str(uuid.uuid4()),
@@ -34,11 +30,7 @@ def task_kwargs_from_json(data: dict) -> dict:
 
 
 def task_payload_from_row(task) -> dict:
-    """Inverse of task_kwargs_from_json: serialize a RoutingTask row back to the
-    OdysseusTask JSON shape that CoordinatorClient.decide() expects as the model
-    prompt. Used by the server-side /coordinator/decide path and the
-    odysseus-coordinator CLI so a stored task can be handed to the resident
-    coordinator without reconstructing the JSON by hand."""
+    """Inverse of task_kwargs_from_json, for CoordinatorClient.decide()."""
     def _loads(raw, default):
         if not raw:
             return default
@@ -72,13 +64,9 @@ def task_payload_from_row(task) -> dict:
 
 
 def load_or_replace_task(db, data: dict, save: bool):
-    """Build a RoutingTask row from JSON; if `save`, persist it -- updating an
-    existing row with the same id IN PLACE rather than delete-then-recreate.
-    RoutingRun.task_id is ON DELETE CASCADE, so a delete+recreate on a
-    repeated task id would silently wipe out every prior RoutingRun/
-    RoutingModelRun (including Phase 2 scores) for that task -- exactly the
-    re-run-to-iterate workflow this function exists to support. Updating in
-    place preserves that history."""
+    """Build a RoutingTask from JSON; with `save`, update an existing row in place.
+
+    Delete-then-recreate would cascade-delete every prior run and score."""
     from core.database import RoutingTask
 
     kwargs = task_kwargs_from_json(data)

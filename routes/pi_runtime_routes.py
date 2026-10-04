@@ -1,13 +1,6 @@
-"""Pi execution runtime routes — operator control/observability for delegated runs.
-
-The architectural boundary: Odysseus decides what work happens, who does it and
-under what policy/budget; Pi executes. These endpoints expose exactly the
-adapter contract for operators — start, observe (events), status, send,
-cancel, resume, result — and nothing that would let a caller (or Pi) change
-routing policy, budgets or governance.
-
-Admin-only, same gate as git review / shell exec: launching a coding agent that
-edits a worktree is a powerful, operator-level action.
+"""Operator routes for delegated Pi runs: start, events, status, send, cancel,
+resume, result. Nothing here lets a caller change routing policy, budgets or
+governance. Admin-only, since it launches an agent that edits a worktree.
 """
 from __future__ import annotations
 
@@ -16,7 +9,7 @@ import os
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from src import pi_config, pi_executions
 from src.pi_runtime import WorktreeMismatch, get_pi_runtime
@@ -31,8 +24,20 @@ class StartBody(BaseModel):
     provider: Optional[str] = None
     constraints: Optional[List[str]] = None
     task_id: Optional[str] = None
+    ticket_key: Optional[str] = None
+    #: Deprecated input alias for ``ticket_key``, kept so pre-rename callers still work.
     jira_ticket: Optional[str] = None
     odysseus_run_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _fold_deprecated_ticket_alias(self) -> "StartBody":
+        if self.jira_ticket is None:
+            return self
+        if self.ticket_key is not None and self.ticket_key != self.jira_ticket:
+            raise ValueError("ticket_key and deprecated jira_ticket disagree")
+        logger.warning("pi start: 'jira_ticket' is deprecated; send 'ticket_key'")
+        self.ticket_key = self.jira_ticket
+        return self
 
 
 class SendBody(BaseModel):
@@ -45,7 +50,7 @@ class ResumeBody(BaseModel):
 
 
 def _require_admin(request: Request) -> None:
-    """Reject non-admin callers (mirrors routes/git_routes._require_admin)."""
+    """Reject non-admin callers."""
     auth_manager = getattr(request.app.state, "auth_manager", None)
     if not auth_manager:
         return  # no auth configured: trusted localhost dev only
@@ -59,7 +64,6 @@ def _require_admin(request: Request) -> None:
 
 
 def _which(binary: str) -> Optional[str]:
-    """Minimal PATH lookup for the Pi executable."""
     if not binary:
         return None
     for entry in (os.environ.get("PATH") or "").split(os.pathsep):
@@ -101,7 +105,7 @@ def setup_pi_runtime_routes() -> APIRouter:
                 provider=body.provider,
                 constraints=body.constraints,
                 task_id=body.task_id,
-                jira_ticket=body.jira_ticket,
+                ticket_key=body.ticket_key,
                 odysseus_run_id=body.odysseus_run_id,
             )
         except WorktreeMismatch as exc:
@@ -167,8 +171,7 @@ def setup_pi_runtime_routes() -> APIRouter:
         try:
             status = await get_pi_runtime().resume(execution_id, message=body.message)
         except WorktreeMismatch as exc:
-            # Resuming into a different worktree than the execution was assigned
-            # is refused, never silently honored.
+            # A resume into a worktree other than the assigned one is refused.
             raise HTTPException(
                 409,
                 {"error": "worktree_mismatch", "reason": exc.reason,

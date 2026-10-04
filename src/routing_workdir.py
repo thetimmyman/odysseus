@@ -1,22 +1,10 @@
-"""src/routing_workdir.py — Phase 3 "Safe Execution" worktree lifecycle (spec
-Section 15): per-task temporary git worktrees under the harness data root,
-patch application via `git apply` (always `--check` first, never `git am`),
-the failed-patch revert used between attempts, and jailed worktree removal.
+"""Temporary git worktree lifecycle: create, `git apply` patches, revert, jailed removal.
 
-HARD RULE: no function in this module may ever run `git commit`, `git merge`,
-or `git push` (nor `git am`, which creates commits) -- spec Section 15's
-"NEVER auto-commit / auto-merge / push" is enforced by construction: the only
-git subcommands invoked here are rev-parse / status / worktree / apply /
-checkout / clean / prune. Promoting an applied patch into a real branch or
-commit is a HUMAN action, outside this harness.
+Hard rule: nothing here may run commit, merge, push or `git am`; promoting a
+patch is a human action.
 
-data_root() is the single place the harness resolves its data directory. It
-honors an ODYSSEUS_DATA_DIR env override -- read at CALL time, not import
-time, so host CLIs on the Framework can target /mnt/framework-data/
-odysseus-data instead of the checkout's ./data, and tests can monkeypatch the
-env -- falling back to the same repo-root "data" dir routing_executor's
-ARCHIVE_ROOT historically hardcoded. routing_executor imports it from here so
-both resolve identically."""
+data_root() is the harness's single data-dir resolver; it reads
+ODYSSEUS_DATA_DIR at call time."""
 import os
 import re
 import subprocess
@@ -32,9 +20,7 @@ _GIT_TIMEOUT = 60
 
 
 def data_root() -> str:
-    """The harness data directory: ODYSSEUS_DATA_DIR when set (resolved per
-    call so a monkeypatched/exported env is honored without re-import), else
-    <repo-root>/data -- the same fallback routing_executor always used."""
+    """ODYSSEUS_DATA_DIR (read per call), else <repo-root>/data."""
     override = os.environ.get("ODYSSEUS_DATA_DIR")
     if override:
         return os.path.realpath(override)
@@ -47,20 +33,15 @@ def worktrees_root() -> str:
 
 
 def _git(args, timeout: int = _GIT_TIMEOUT):
-    """Run git with an argv list (no shell), captured output, bounded time."""
     return subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout)
 
 
 def create_worktree(repo_path: str, run_id: str, base_ref: str = "HEAD",
                     allow_dirty: bool = False) -> str:
-    """Create a detached temp worktree for `run_id` at `base_ref` under
-    worktrees_root() and return its path.
+    """Create a detached temp worktree for `run_id` at `base_ref`.
 
-    Spec Section 15 clean-worktree requirement: the SOURCE repo must have an
-    empty `git status --porcelain` unless explicitly waived via
-    allow_dirty=True (plumbed from the CLIs' --allow-dirty flag) -- applying
-    model patches on top of un-snapshotted local edits makes the verification
-    result meaningless and risks masking whose change broke what."""
+    The source repo must be clean unless allow_dirty=True: local edits would
+    make the verification result meaningless."""
     if not run_id or not _RUN_ID_RE.match(run_id):
         raise ValueError(
             f"invalid run_id {run_id!r}: must match {_RUN_ID_RE.pattern} "
@@ -92,15 +73,10 @@ def create_worktree(repo_path: str, run_id: str, base_ref: str = "HEAD",
 
 
 def apply_patch(worktree_path: str, patch_text: str) -> dict:
-    """Apply a unified diff to the worktree with `git apply` (a `--check`
-    dry-run first, then the real apply -- never `git am`, no commit of any
-    kind). Returns {"applied": bool, "error": str|None, "changed_files":
-    [...]} where changed_files comes from `git status --porcelain`.
+    """`git apply --check`, then apply; never commits.
 
-    The patch is written to a tempfile OUTSIDE the worktree -- writing it
-    inside (e.g. <worktree>/.routing-patch.diff) could collide with real repo
-    content, show up in `git status`, and leak into the very tree the sandbox
-    is about to execute."""
+    The patch file lives outside the worktree so it can't leak into the tree
+    the sandbox executes."""
     if not patch_text or not patch_text.strip():
         return {"applied": False, "error": "empty patch text", "changed_files": []}
     if not patch_text.endswith("\n"):
@@ -144,10 +120,7 @@ def apply_patch(worktree_path: str, patch_text: str) -> dict:
 
 
 def revert_worktree(worktree_path: str) -> None:
-    """The failed-patch reset between attempts (spec Section 15: "failed
-    patches reverted before the next attempt"): restore all tracked files and
-    delete anything untracked the patch (or a sandboxed command) created, so
-    the next attempt starts from a pristine base_ref tree."""
+    """Restore tracked files and delete untracked ones, so the next attempt starts pristine."""
     out = _git(["-C", worktree_path, "checkout", "--", "."])
     if out.returncode != 0:
         raise RuntimeError(f"git checkout -- . failed: {out.stderr.strip()[:1000]}")
@@ -157,11 +130,8 @@ def revert_worktree(worktree_path: str) -> None:
 
 
 def remove_worktree(repo_path: str, worktree_path: str) -> None:
-    """Remove a temp worktree and prune stale registrations. Jail check
-    first: the realpath of `worktree_path` must live strictly under
-    worktrees_root() (realpath+commonpath, the same convention as
-    routing_context.safe_repo_path) -- `git worktree remove --force` deletes
-    the directory, so an unjailed path here would be an arbitrary-delete."""
+    """Remove a temp worktree; the path must be jailed under worktrees_root(),
+    since `git worktree remove --force` deletes it."""
     jail = os.path.realpath(worktrees_root())
     candidate = os.path.realpath(worktree_path)
     if candidate == jail or os.path.commonpath([jail, candidate]) != jail:

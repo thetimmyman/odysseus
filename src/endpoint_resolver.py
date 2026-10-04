@@ -199,6 +199,19 @@ def build_headers(api_key: Optional[str], base: str) -> Dict[str, str]:
     """Build auth headers for an endpoint."""
     provider = _detect_provider(base)
     headers: Dict[str, str] = {}
+    # Opt-in scout sessions use the provider's documented client/session headers.
+    # Capacity collection and inference both resolve through this same function,
+    # so these exact headers remain inside the offer credential fingerprint.
+    from urllib.parse import urlsplit
+    import os
+    parsed = urlsplit(base)
+    session_id = os.environ.get("ODYSSEUS_OPENCODE_SESSION", "")
+    if (session_id and parsed.scheme == "https" and parsed.hostname == "opencode.ai"
+            and parsed.path.rstrip("/") == "/zen/go/v1" and not parsed.query and not parsed.fragment):
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", session_id):
+            raise ValueError("invalid OpenCode session identity")
+        headers.update({"User-Agent": "odysseus-scout/0.1", "x-opencode-session": session_id})
     if provider == "anthropic":
         if api_key:
             headers["x-api-key"] = api_key

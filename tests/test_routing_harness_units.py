@@ -63,7 +63,6 @@ DET_ROUTE = {
 }
 
 
-# ---------- strict parser ----------
 def test_parse_decision_valid_full():
     d = parse_decision(VALID_DECISION)
     assert isinstance(d, CoordinatorDecision)
@@ -119,7 +118,6 @@ def test_confidence_score_out_of_range_rejected():
     assert any("invalid_value:confidence.score" in e for e in exc.value.errors)
 
 
-# ---------- wrapper fallback chain ----------
 def test_wrapper_passes_clean_decision():
     res = wrap_coordinator_output(json.dumps(VALID_DECISION), GateContext(task_id="t1"))
     assert res.ok and res.decision is not None
@@ -215,7 +213,6 @@ def test_approval_required_satisfied_marks_approved():
     assert res.route["approved"] is True
 
 
-# ---------- redaction ----------
 def test_redact_masks_api_keys_and_passwords():
     text = 'key is sk-abcdefghij0123456789 and password="hunter2hunter2" done'
     red, applied = redact_text(text)
@@ -234,7 +231,6 @@ def test_redact_clean_text_untouched():
     assert applied is False
 
 
-# ---------- audit hmac ----------
 def test_hmac_sign_deterministic_and_input_sensitive(tmp_path, monkeypatch):
     import src.secret_storage as ss
     # Point the key at a throwaway path so the test never touches data/.app_key.
@@ -248,7 +244,6 @@ def test_hmac_sign_deterministic_and_input_sensitive(tmp_path, monkeypatch):
     assert len(a1) == 64 and all(c in "0123456789abcdef" for c in a1)
 
 
-# ---------- escalation (unchanged module, kept for coverage) ----------
 def test_escalation_all_conditions_met():
     ctx = EscalationContext(
         task_id="t", risk=Risk.HIGH, cheaper_attempts=3,
@@ -289,7 +284,6 @@ def test_emergency_override_ttl_capped_and_postmortem():
     assert o.post_mortem_required is True
 
 
-# ---------- reliability (unchanged module, kept for coverage) ----------
 def test_reliability_signal_advisory_only():
     sig = compute_signal(ReliabilityInput(
         subject_type="engineer", subject_id="e1",

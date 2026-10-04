@@ -1,13 +1,7 @@
 """Regression test for a py/polynomial-redos sink over untrusted model text.
 
-Imported for PS-602 (the applicable half of upstream #4943; our fork's
-`agent_loop.py` does not carry the continuation matcher).
-
-`routes/skills_routes.py` extracted a verdict from a teacher/verifier model's
-PROSE with `["\\'\\s:]*\\s*` -- the class already matches `\\s`, so the trailing
-`\\s*` was a redundant second quantifier that backtracked O(n^2) when the
-keyword failed to match after a whitespace flood. Dropping it keeps the exact
-match set and makes the scan linear.
+The verdict extractor in `routes/skills_routes.py` must not stack a redundant
+`\\s*` after a class that already matches `\\s` (O(n^2) on a whitespace flood).
 """
 
 import time

@@ -1,10 +1,7 @@
-"""Dev Preview routes — admin-only control surface for running a repo's dev
-server inside the container and previewing it.
+"""Admin-only routes for running and previewing a repo's dev server.
 
-Every endpoint requires an ADMIN COOKIE session (require_admin_cookie — rejects
-bearer/api/internal-tool; does NOT honor the loopback). The process manager
-(src/dev_preview.py) is path-confined to REPOS_ROOT, uses fixed command
-templates (no arbitrary shell), npm-only, single-server, killable, capped logs.
+Every endpoint requires an admin cookie (no bearer, no loopback). The process
+manager is confined to REPOS_ROOT with fixed npm command templates.
 """
 
 import logging
@@ -37,11 +34,8 @@ class _EnvSetBody(BaseModel):
 
 
 def _same_origin_or_reject(request: Request) -> bool:
-    """Fail-closed CSRF guard for state-changing env writes (on top of the
-    session cookie's SameSite=Lax). ACCEPT iff Sec-Fetch-Site is same-origin/
-    same-site when present AND Origin host-matches the request Host when present;
-    REJECT when BOTH are absent on an unsafe method (a real SPA always sends
-    Origin on PUT/DELETE, so this only blocks header-stripped curl-shaped calls)."""
+    """Fail-closed CSRF guard for env writes: require same-origin/same-site
+    Sec-Fetch-Site and a matching Origin when present; reject if both are absent."""
     sfs = request.headers.get("sec-fetch-site")
     origin = request.headers.get("origin")
     if sfs is not None and sfs not in ("same-origin", "same-site"):
@@ -58,18 +52,12 @@ def _same_origin_or_reject(request: Request) -> bool:
 
 
 def _env_write_transport_reason(request: Request) -> Optional[str]:
-    """None if a value-write is allowed over this transport, else a refusal
-    reason. The PUT body (the secret) and the session cookie both cross the wire
-    in cleartext on plaintext HTTP, so refuse plaintext NON-loopback writes by
-    default — unless HTTPS, a loopback client (e.g. SSH tunnel), or an explicit
-    operator opt-in (DEV_PREVIEW_ALLOW_INSECURE_ENV_WRITE=true)."""
+    """Return a refusal reason unless the write is over HTTPS, from loopback, or
+    DEV_PREVIEW_ALLOW_INSECURE_ENV_WRITE is set: secrets would cross in cleartext."""
     if os.environ.get("DEV_PREVIEW_ALLOW_INSECURE_ENV_WRITE", "").lower() == "true":
         return None
-    # request.url.scheme is the source of truth. uvicorn only folds
-    # X-Forwarded-Proto into it when started with --forwarded-allow-ips for a
-    # TRUSTED proxy, so an untrusted client cannot spoof HTTPS. We deliberately do
-    # NOT read the X-Forwarded-Proto header ourselves — trusting a client-supplied
-    # forwarding header would be a spoofable bypass of this gate.
+    # Trust only request.url.scheme (uvicorn sets it from X-Forwarded-Proto for
+    # trusted proxies only); reading the header ourselves would be spoofable.
     if request.url.scheme == "https":
         return None
     client = (request.client.host if request.client else "") or ""
@@ -133,8 +121,7 @@ def setup_dev_preview_routes() -> APIRouter:
 
     @router.put("/app/{app_id}/env")
     def env_set(request: Request, app_id: str, body: _EnvSetBody):
-        # WRITE-ONLY: the value is in the request body and is NEVER logged or
-        # echoed. Admin cookie + fail-closed CSRF guard + transport gate.
+        # Write-only: the value is never logged or echoed.
         require_admin_cookie(request)
         if not _same_origin_or_reject(request):
             raise HTTPException(403, "cross-site request refused")
@@ -164,9 +151,8 @@ def setup_dev_preview_routes() -> APIRouter:
 
     @router.post("/app/{app_id}/env/source")
     def env_source(request: Request, app_id: str, body: _SourceBody):
-        # Fetches the mapped value from k3s/Vaultwarden (server-side, via ssh
-        # minipc) and writes it to .env.local. WRITE-ONLY: the value is never
-        # returned. Same admin + CSRF + transport + gitignore gates as a set.
+        # Fetches the mapped secret server-side and writes it to .env.local.
+        # Write-only: the value is never returned.
         require_admin_cookie(request)
         if not _same_origin_or_reject(request):
             raise HTTPException(403, "cross-site request refused")
@@ -188,8 +174,7 @@ def setup_dev_preview_routes() -> APIRouter:
 
     @router.put("/config")
     def put_config(request: Request, body: _ConfigBody):
-        # Writes runtime-safe config (enabled/app_allowlist/package_manager) to
-        # settings.json. No transport gate — these are config, not secret values.
+        # Non-secret config, so no transport gate.
         require_admin_cookie(request)
         if not _same_origin_or_reject(request):
             raise HTTPException(403, "cross-site request refused")
@@ -212,8 +197,7 @@ def setup_dev_preview_routes() -> APIRouter:
 
     @router.put("/app/{app_id}/vault-map")
     def vault_map_set(request: Request, app_id: str, body: _VaultMapBody):
-        # Stores ONLY a validated locator (k3s ns/secret/key or vw item_id/field),
-        # never a value. Admin + CSRF; no transport gate (locators aren't secret).
+        # Stores only a validated locator, never a value; no transport gate.
         require_admin_cookie(request)
         if not _same_origin_or_reject(request):
             raise HTTPException(403, "cross-site request refused")

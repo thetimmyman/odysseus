@@ -1,8 +1,7 @@
-"""PS-605 — deterministic execution-target selection and a real receipt.
+"""Deterministic execution-target selection and a real receipt.
 
-The slice has to prove the receipt is REAL, not decorative: every field the ticket
-names is populated from a decision that was actually taken, and the hard
-invariants are negative controls, not comments:
+Every receipt field comes from a decision actually taken, and the hard
+invariants are negative controls:
 
   * a runtime adapter cannot reroute itself (there is no API to call);
   * the selected target is pinned, and re-running the selector cannot move it;
@@ -24,9 +23,12 @@ import datetime
 import pytest
 
 from src import dispatch_routing as dr
+from src.execution_package import make_dispatch_receipt
+from src.provider_capacity import (AuthorizationClass, CapacityState, Entitlement,
+                                   make_capacity_receipt)
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
-PROFILE_ID = "rtx4500-ollama-qwen38-27b"
+PROFILE_ID = "sim-gpu-ollama-qwen38-27b"
 POLICY = dr.policy_snapshot(policy={"routingPolicyVersion": "1.2",
                                     "remoteSensitivityCeiling": "confidential"})
 
@@ -37,13 +39,13 @@ IMPLEMENTER_CAPS = frozenset({
 
 def profile(**overrides) -> dr.ExecutionTargetProfile:
     fields = {
-        "target_id": "local-rtx4500", "profile_id": PROFILE_ID, "provider": "ollama",
-        "host": "minipc", "runtime_kind": "ollama", "runtime_version": "0.32.11",
+        "target_id": "local-sim-gpu", "profile_id": PROFILE_ID, "provider": "ollama",
+        "host": "gpu-host", "runtime_kind": "ollama", "runtime_version": "0.32.11",
         "model": "qwen3.8:27b", "model_digest": "d94d9646", "backend": "cuda",
         "endpoint_url": "http://127.0.0.1:11434/v1",
         "locality": dr.LOCALITY_LOCAL,
         "roles": frozenset({dr.ROLE_IMPLEMENTER, dr.ROLE_REPAIR}),
-        "tools": frozenset({"write_file"}), "network_policy": "tailnet-loopback",
+        "tools": frozenset({"write_file"}), "network_policy": "private-loopback",
         "budget_class": "dev", "cost_rank": 0,
     }
     fields.update(overrides)
@@ -53,20 +55,36 @@ def profile(**overrides) -> dr.ExecutionTargetProfile:
 def receipt(**overrides) -> dr.LegacyCapabilityView:
     fields = {
         "receipt_id": "cap-rtx-1", "profile_id": PROFILE_ID,
-        "target_id": "local-rtx4500", "capabilities": IMPLEMENTER_CAPS,
+        "target_id": "local-sim-gpu", "capabilities": IMPLEMENTER_CAPS,
         "exactness": dr.EXACTNESS_EXACT, "observed_at": "2026-09-15T11:00:00+00:00",
-        "ttl_s": 86400, "healthy": True, "host": "minipc",
+        "ttl_s": 86400, "healthy": True, "host": "gpu-host",
         "runtime_version": "0.32.11", "model_digest": "d94d9646",
     }
     fields.update(overrides)
     return dr.make_legacy_capability_view(**fields)
 
 
+def capacity_receipt(**overrides):
+    fields = {
+        "provider": "openrouter", "pool_id": "openrouter:subscription",
+        "account_identity": "subscription:primary",
+        "credential_sha256": "a" * 64, "endpoint_url": "https://openrouter.ai/api/v1",
+        "authorization_class": AuthorizationClass.AGENT_SDK,
+        "entitlement": Entitlement.AGENT_SDK,
+        "exposed_models": ("qwen3.8:27b",), "observed_at": NOW.isoformat(),
+        "ttl_seconds": 3600, "collector_id": "test-collector",
+        "evidence_source": "fixture", "evidence_reference": "capacity-1",
+        "state": CapacityState.AVAILABLE, "concurrency_remaining": 4,
+    }
+    fields.update(overrides)
+    return make_capacity_receipt(**fields)
+
+
 def request(**overrides) -> dr.RoutingRequest:
     fields = {
         "domain": "general_swe", "role": dr.ROLE_IMPLEMENTER, "run_id": "run-1",
         "packet_id": "P-1", "execution_package_hash": "pkg-hash-1",
-        "required_tools": ("write_file",), "network_policy": "tailnet-loopback",
+        "required_tools": ("write_file",), "network_policy": "private-loopback",
         "budget_class": "dev", "write_scope": ("src/thing.py",),
     }
     fields.update(overrides)
@@ -80,21 +98,107 @@ def select(req=None, *, profiles=None, receipts=None, **kwargs):
         policy=POLICY, now=NOW, **kwargs)
 
 
-# ================================================================ the control ===
+def test_capacity_refusal_codes_and_hash_stable_optional_receipt_refs():
+    for code in (dr.REFUSED_CAPACITY_MISSING, dr.REFUSED_CAPACITY_STALE,
+                 dr.REFUSED_CAPACITY_UNUSABLE):
+        assert code in dr.KNOWN_REFUSALS
+    dr.RoutingRefused(dr.REFUSED_CAPACITY_MISSING, "reason")
+
+    decision = select()
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert "capacity_receipt_refs" not in kwargs
+    assert make_dispatch_receipt(**kwargs).receipt_hash == decision.receipt_hash
+
+    with_ref = dataclasses.replace(decision, capacity_receipt_refs=("cap-a",))
+    changed = dataclasses.replace(decision, capacity_receipt_refs=("cap-b",))
+    assert "capacity_receipt_refs" in with_ref.to_ps638_receipt_kwargs()
+    assert (make_dispatch_receipt(**with_ref.to_ps638_receipt_kwargs()).receipt_hash
+            != make_dispatch_receipt(**changed.to_ps638_receipt_kwargs()).receipt_hash)
+
+
+def test_ps638_receipt_hash_matches_for_capacity_refs():
+    """Non-empty capacity_receipt_refs must hash identically across both modules.
+
+    Tuple-of-string refs must take the list-normalization path (not
+    _normalize_authority) and agree with the receipt core's own hash.
+    """
+    decision = dataclasses.replace(select(), capacity_receipt_refs=("capacity:deadbeef",))
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert dr.ps638_receipt_hash(kwargs) == make_dispatch_receipt(**kwargs).receipt_hash
+
+
 def test_the_positive_control_selects_and_receipts():
     decision = select(decision_id="dec-1")
     assert decision.selected_profile.profile_id == PROFILE_ID
+
+
+def hosted_profile():
+    return profile(target_id="hosted-target", profile_id="hosted-profile",
+                   provider="openrouter", host="api.openrouter.ai",
+                   locality=dr.LOCALITY_HOSTED, credential_sha256="a" * 64,
+                   endpoint_url="https://openrouter.ai/api/v1")
+
+
+def hosted_select(capacity, **capacity_overrides):
+    target = hosted_profile()
+    cap = capacity(**capacity_overrides)
+    cap_receipt = receipt(profile_id=target.profile_id, target_id=target.target_id)
+    return select(profiles=[target], receipts=[cap_receipt],
+                  capacity_receipts=[cap], decision_id="hosted-decision")
+
+
+def test_hosted_capacity_gate_classifies_missing_stale_and_unusable():
+    target = hosted_profile()
+    cap_view = receipt(profile_id=target.profile_id, target_id=target.target_id)
+    for cap in (None, capacity_receipt(exposed_models=("other-model",)),
+                capacity_receipt(observed_at="2026-09-15T11:00:00+00:00", ttl_seconds=1),
+                capacity_receipt(state=CapacityState.EXHAUSTED)):
+        with pytest.raises(dr.RoutingRefused) as err:
+            select(profiles=[target], receipts=[cap_view],
+                   capacity_receipts=[] if cap is None else [cap])
+        expected = (dr.REFUSED_CAPACITY_MISSING if cap is None or
+                    cap.exposed_models == ("other-model",) else
+                    dr.REFUSED_CAPACITY_STALE if cap.ttl_seconds == 1 else
+                    dr.REFUSED_CAPACITY_UNUSABLE)
+        assert err.value.code == expected
+
+
+def test_hosted_interactive_entitlement_is_unusable():
+    with pytest.raises(dr.RoutingRefused) as err:
+        hosted_select(capacity_receipt, entitlement=Entitlement.INTERACTIVE_NATIVE)
+    assert err.value.code == dr.REFUSED_CAPACITY_UNUSABLE
+
+
+def test_hosted_capacity_refs_are_recorded_and_receipt_hash_matches():
+    cap = capacity_receipt()
+    decision = hosted_select(lambda **kw: cap)
+    assert decision.capacity_receipt_refs == (cap.ref,)
+    kwargs = decision.to_ps638_receipt_kwargs()
+    assert kwargs["capacity_receipt_refs"] == (cap.ref,)
+    assert make_dispatch_receipt(**kwargs).receipt_hash == decision.receipt_hash
+
+
+def test_capacity_receipt_order_does_not_change_decision_hash():
+    first = capacity_receipt(pool_id="pool-a", evidence_reference="capacity-a")
+    second = capacity_receipt(pool_id="pool-b", evidence_reference="capacity-b")
+    target = hosted_profile()
+    view = receipt(profile_id=target.profile_id, target_id=target.target_id)
+    a = select(profiles=[target], receipts=[view], capacity_receipts=[first, second],
+               decision_id="hosted-decision")
+    b = select(profiles=[target], receipts=[view], capacity_receipts=[second, first],
+               decision_id="hosted-decision")
+    assert a.decision_hash == b.decision_hash
     # No preference was expressed, so nothing was substituted: the deterministic
     # order decided. A preferred-order case is asserted separately.
-    assert decision.reason_code == dr.REASON_SELECTED_DETERMINISTIC
-    assert decision.fallback_used is False
-    assert decision.receipt_hash and len(decision.receipt_hash) == 64
-    assert decision.pin()["model"] == "qwen3.8:27b"
-    assert decision.pin()["granted_tools"] == ["write_file"]
+    assert a.reason_code == dr.REASON_SELECTED_DETERMINISTIC
+    assert a.fallback_used is False
+    assert a.receipt_hash and len(a.receipt_hash) == 64
+    assert a.pin()["model"] == "qwen3.8:27b"
+    assert a.pin()["granted_tools"] == ["write_file"]
 
 
 def test_the_receipt_carries_everything_the_ticket_requires():
-    """Every field the ticket names, asserted on the receipt itself."""
+    """Every required field, asserted on the receipt itself."""
     kwargs = select(decision_id="dec-1").to_ps638_receipt_kwargs()
     assert kwargs["run_id"] == "run-1" and kwargs["packet_id"] == "P-1"
     assert kwargs["execution_package_hash"] == "pkg-hash-1"
@@ -102,8 +206,8 @@ def test_the_receipt_carries_everything_the_ticket_requires():
     assert set(kwargs["requested_capabilities"]) == IMPLEMENTER_CAPS
     assert kwargs["policy_ref"].startswith("routing_policy@1.2+sha256:")
     assert kwargs["decided_by"] == dr.DECIDED_BY_POLICY == "ps605_policy"
-    assert kwargs["selected_target_id"] == "local-rtx4500"
-    assert kwargs["selected_host"] == "minipc"
+    assert kwargs["selected_target_id"] == "local-sim-gpu"
+    assert kwargs["selected_host"] == "gpu-host"
     assert kwargs["selected_model"] == "qwen3.8:27b"
     assert kwargs["selected_runtime_kind"] == "ollama"
     assert kwargs["selected_runtime_version"] == "0.32.11"
@@ -111,7 +215,7 @@ def test_the_receipt_carries_everything_the_ticket_requires():
     assert kwargs["selected_backend"] == "cuda"
     assert kwargs["granted_tools"] == ("write_file",)
     assert kwargs["granted_write_scope"] == ("src/thing.py",)
-    assert kwargs["network_policy"] == "tailnet-loopback"
+    assert kwargs["network_policy"] == "private-loopback"
     assert kwargs["decided_at"] == NOW.isoformat()
     assert kwargs["reason"].startswith(dr.REASON_SELECTED_DETERMINISTIC)
     assert kwargs["capability_receipt_refs"] == (receipt().receipt_hash,)
@@ -131,18 +235,16 @@ def test_the_receipt_carries_everything_the_ticket_requires():
 def test_the_receipt_field_set_is_the_ps638_contract():
     """The mapping is a CONTRACT, asserted rather than discovered later.
 
-    ``authority`` (PS-638 DR-01+DR-09) is the one field in
-    ``PS638_RECEIPT_FIELDS`` that is OPTIONAL in the kwargs a decision without
-    one actually emits: an authority-free decision must omit the key itself,
-    not merely set it to ``None`` (review fix F-1, 2026-09-16) -- an
-    unconditional ``None`` entry would change ``seal_dispatch_evidence``'s
-    ``evidence_hash`` for every authority-free dispatch. So the contract here
-    is a subset relation for the optional field, and an exact-set match for
-    every field that is not optional.
+    ``authority`` is the one OPTIONAL field in ``PS638_RECEIPT_FIELDS``: an
+    authority-free decision must omit the key, not set it to ``None``, or every
+    authority-free ``evidence_hash`` would change. So the optional field is a
+    subset relation; every other field is an exact-set match.
     """
     kwargs = select().to_ps638_receipt_kwargs()
     assert set(kwargs) <= set(dr.PS638_RECEIPT_FIELDS)
-    required_fields = set(dr.PS638_RECEIPT_FIELDS) - {"authority"}
+    required_fields = set(dr.PS638_RECEIPT_FIELDS) - {
+        "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests"
+    }
     assert required_fields <= set(kwargs)
     assert "authority" not in kwargs  # this decision was built with none
     assert dr.PS638_RECEIPT_FIELDS[-1] == "schema_version"
@@ -154,7 +256,7 @@ def test_the_receipt_field_set_includes_authority_when_present():
     """The optional field appears in the kwargs exactly when it is set."""
     decision = dataclasses.replace(select(), authority={"grant_id": "g1"})
     kwargs = decision.to_ps638_receipt_kwargs()
-    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS)
+    assert set(kwargs) == set(dr.PS638_RECEIPT_FIELDS) - {"capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests"}
     assert kwargs["authority"] == {"grant_id": "g1"}
 
 
@@ -176,7 +278,7 @@ def test_the_same_inputs_produce_the_same_decision_hash():
     assert first.decision_hash == second.decision_hash
     # Same candidate SET, reversed input order: the record is canonical, so the
     # hash and the chosen profile are identical.
-    other = profile(target_id="local-rtx4500-b", profile_id="rtx4500-b-vulkan",
+    other = profile(target_id="local-sim-gpu-b", profile_id="sim-gpu-b-vulkan",
                     backend="vulkan", cost_rank=1)
     other_receipt = receipt(receipt_id="cap-rtx-b", profile_id=other.profile_id,
                             target_id=other.target_id)
@@ -193,7 +295,6 @@ def test_the_same_inputs_produce_the_same_decision_hash():
     assert first.decision_hash != forward.decision_hash
 
 
-# ============================================================ hard invariants ===
 def test_a_runtime_adapter_cannot_reroute_itself():
     """MUTATION CONTROL: there is no routing API for an adapter to call.
 
@@ -234,7 +335,7 @@ def test_the_selected_target_is_pinned_and_the_pin_is_complete():
                              profile()],
                    receipts=[receipt()], decision_id="dec-1")
     assert other.selected_profile.profile_id == PROFILE_ID
-    assert decision.pin()["target_id"] == "local-rtx4500"
+    assert decision.pin()["target_id"] == "local-sim-gpu"
 
 
 def test_sensitive_local_only_work_fails_closed_to_hosted():
@@ -285,7 +386,7 @@ def test_ms_r1_can_never_route_as_an_inference_target():
 
 
 def test_an_approximate_profile_cannot_satisfy_exact_intent():
-    approx = profile(profile_id="rtx4500-qwen-ream-60pct",
+    approx = profile(profile_id="sim-gpu-qwen-ream-60pct",
                      exactness=dr.EXACTNESS_APPROXIMATE)
     with pytest.raises(dr.RoutingRefused) as err:
         select(profiles=[approx],
@@ -322,12 +423,12 @@ def test_stale_and_unhealthy_receipts_are_ineligible():
 
 def test_a_receipt_must_belong_to_the_profile_it_qualifies():
     """A receipt for the SAME target but a different PROFILE is not a receipt."""
-    other_profile = profile(profile_id="rtx4500-vulkan-qwen38-27b",
+    other_profile = profile(profile_id="sim-gpu-vulkan-qwen38-27b",
                             backend="vulkan")
     with pytest.raises(dr.RoutingRefused) as err:
         select(profiles=[other_profile],
                receipts=[receipt(profile_id=PROFILE_ID,
-                                 target_id="local-rtx4500")])
+                                 target_id="local-sim-gpu")])
     assert err.value.code == dr.REFUSED_RECEIPT_MISMATCH
     assert err.value.assessments[0].rule == dr.REFUSED_RECEIPT_MISMATCH
     # A receipt for a different TARGET entirely is simply absent.
@@ -362,20 +463,20 @@ def test_tool_network_budget_and_resource_filters_bind():
         select(profiles=[profile(cost_rank=3)])
     assert err.value.code == dr.REFUSED_BUDGET
     with pytest.raises(dr.RoutingRefused) as err:
-        select(resources={"local-rtx4500": {"available": False,
+        select(resources={"local-sim-gpu": {"available": False,
                                             "reason": "gtt is held by load"}})
     assert err.value.code == dr.REFUSED_RESOURCE
 
 
-# ================================================================== fallback ===
 def test_a_fallback_must_satisfy_the_same_policy_as_the_preferred_candidate():
     """MUTATION CONTROL: fallback is a lower rank, never a weaker standard."""
     hosted = profile(target_id="openrouter-v4pro", profile_id="or-v4pro",
                      provider="openrouter", host="api.openrouter.ai",
                      locality=dr.LOCALITY_HOSTED, budget_class="dev", cost_rank=1,
+                     endpoint_url="https://openrouter.ai/api/v1", credential_sha256="a" * 64,
                      roles=frozenset({dr.ROLE_IMPLEMENTER}),
                      tools=frozenset({"write_file"}),
-                     network_policy="tailnet-loopback")
+                     network_policy="private-loopback")
     hosted_receipt = receipt(receipt_id="cap-or-1", profile_id="or-v4pro",
                              target_id="openrouter-v4pro", host="api.openrouter.ai")
     # The preferred local candidate's receipt is stale, so it is ineligible.
@@ -384,7 +485,8 @@ def test_a_fallback_must_satisfy_the_same_policy_as_the_preferred_candidate():
     # hosted selection a fallback rather than the deterministic default.
     decision = select(request(preferred_profile_ids=(PROFILE_ID,)),
                       profiles=[profile(), hosted],
-                      receipts=[stale, hosted_receipt], decision_id="dec-fb")
+                      receipts=[stale, hosted_receipt],
+                      capacity_receipts=[capacity_receipt()], decision_id="dec-fb")
     assert decision.selected_profile.profile_id == "or-v4pro"
     assert decision.fallback_used is True
     assert decision.reason_code == dr.REASON_SELECTED_FALLBACK
@@ -408,7 +510,7 @@ def test_a_local_only_request_cannot_fall_back_to_hosted():
                      provider="openrouter", host="api.openrouter.ai",
                      locality=dr.LOCALITY_HOSTED, budget_class="sensitive",
                      cost_rank=1, tools=frozenset({"write_file"}),
-                     network_policy="tailnet-loopback")
+                     network_policy="private-loopback")
     stale = receipt(observed_at="2026-09-13T00:00:00+00:00", ttl_s=3600)
     with pytest.raises(dr.RoutingRefused) as err:
         select(request(domain="finance", budget_class="sensitive"),
@@ -421,7 +523,6 @@ def test_a_local_only_request_cannot_fall_back_to_hosted():
     assert all(not a.eligible for a in err.value.assessments)
 
 
-# ================================================================ fail closed ===
 def test_a_role_mismatch_is_refused_rather_than_downgraded():
     with pytest.raises(dr.RoutingRefused) as err:
         select(request(role=dr.ROLE_PLANNER))
@@ -464,3 +565,47 @@ def test_the_refusal_is_serializable_and_names_every_candidate():
     assert payload["run_id"] == "run-1" and payload["packet_id"] == "P-1"
     assert payload["candidates"][0]["rule"] == dr.REFUSED_BUDGET
     assert payload["candidates"][0]["eligible"] is False
+
+@pytest.mark.parametrize("changes", [
+    {"provider": "other-provider"}, {"endpoint_url": ""},
+    {"endpoint_url": "https://other.example/v1"},
+    {"credential_sha256": ""}, {"credential_sha256": "b" * 64},
+])
+def test_hosted_capacity_cannot_cross_provider_endpoint_or_credential(changes):
+    target = hosted_profile()
+    assert dr.classify_capacity_for(target, [capacity_receipt()], now=NOW)[0]
+    assert not dr.classify_capacity_for(target, [capacity_receipt(**changes)], now=NOW)[0]
+    assert not dr.classify_capacity_for(dataclasses.replace(target, credential_sha256=""),
+                                        [capacity_receipt()], now=NOW)[0]
+
+
+def test_selected_capacity_refs_share_assessment_time(monkeypatch):
+    """A receipt expiring between candidate check and ref collection stays pinned once."""
+    import datetime as dt
+
+    target = hosted_profile()
+    observed = dt.datetime.now(dt.timezone.utc)
+    cap = capacity_receipt(observed_at=observed.isoformat(), ttl_seconds=60)
+    cap_view = receipt(profile_id=target.profile_id, target_id=target.target_id,
+                       observed_at=observed.isoformat(), ttl_s=60)
+    original = dr.classify_capacity_for
+    seen = []
+
+    def time_advancing_classify(profile, receipts, *, now=None):
+        # Slow selection: the binding check runs well after the short TTL, so
+        # a second clock read would see the receipt expired.
+        effective = now if now is not None else (observed if not seen else observed + dt.timedelta(seconds=61))
+        seen.append(effective)
+        return original(profile, receipts, now=effective)
+
+    monkeypatch.setattr(dr, "classify_capacity_for", time_advancing_classify)
+    decision = dr.select_target(request(), profiles=[target], receipts=[cap_view],
+                                capacity_receipts=[cap], policy=POLICY)
+    assert len(seen) == 2
+    assert seen[0] == seen[1]
+    assert decision.capacity_receipt_refs == (cap.ref,)
+
+
+@pytest.mark.parametrize("entitlement", [Entitlement.THIRD_PARTY_HARNESS, Entitlement.INTERACTIVE_NATIVE, Entitlement.UNKNOWN, Entitlement.LOCAL])
+def test_hosted_entitlement_requires_explicit_api_or_sdk(entitlement):
+    assert not dr.classify_capacity_for(hosted_profile(), [capacity_receipt(entitlement=entitlement)], now=NOW)[0]

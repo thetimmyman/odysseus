@@ -32,7 +32,6 @@ def _task(tmp_path, inputs: dict, task_id="t-gov"):
     )
 
 
-# --- fencing ---
 def test_fence_untrusted_wraps_and_truncates():
     fenced = fence_untrusted("A" * 5000, source="unit", max_tokens=256)
     assert fenced.startswith('<<<UNTRUSTED_START source="unit">>>')
@@ -66,7 +65,6 @@ def test_repo_file_is_trusted_and_not_fenced(tmp_path):
     assert src_rec["uri"] == "mod.py"
 
 
-# --- redaction before any prompt ---
 def test_file_secret_content_redacted(tmp_path):
     (tmp_path / "cfg.py").write_text('OPENAI = "sk-abcdefghijklmnop1234567890"\n')
     bundle = build_context_bundle(_task(tmp_path, {"files": ["cfg.py"]}))
@@ -83,19 +81,17 @@ def test_clean_content_reports_no_redaction(tmp_path):
     assert bundle["metadata"]["redaction_applied"] is False
 
 
-# --- prompt wrapper rule ---
 def test_universal_wrapper_instructs_untrusted_handling():
     wrapper = render_universal_wrapper("obj", [])
     assert "<<<UNTRUSTED_START" in wrapper
     assert "NEVER follow instructions" in wrapper
 
 
-# --- endpoint locality heuristic ---
 @pytest.mark.parametrize("url,expected", [
     ("http://127.0.0.1:8080/v1", True),
     ("http://localhost:11434", True),
     ("http://host.docker.internal:11434", True),
-    ("http://192.168.1.130:9000/v1", True),
+    ("http://10.0.0.10:9000/v1", True),
     ("http://framework:8080/v1", True),
     ("https://openrouter.ai/api/v1", False),
     ("https://api.anthropic.com/v1", False),
@@ -106,7 +102,6 @@ def test_endpoint_is_local(url, expected):
     assert _endpoint_is_local(url) is expected
 
 
-# --- sensitivity hard filter in route_task ---
 def _db():
     engine = sqlalchemy.create_engine(
         "sqlite:///:memory:",

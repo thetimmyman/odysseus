@@ -91,7 +91,6 @@ def _make_app_and_client():
     return app, TestClient(app)
 
 
-# ---------- GET /budget ----------
 def test_budget_get_shape():
     _app, client = _make_app_and_client()
     r = client.get("/api/config/budget", headers=ADMIN)
@@ -107,7 +106,6 @@ def test_budget_get_shape():
         assert k in body["spend"]
 
 
-# ---------- publish ----------
 def test_publish_bumps_version_and_persists():
     _app, client = _make_app_and_client()
     r = client.post("/api/config/budget/publish", headers=ADMIN, json=GOOD_CAPS)
@@ -151,7 +149,6 @@ def test_publish_400_on_premium_above_general():
     assert any("premium_daily" in d for d in r.json()["detail"])
 
 
-# ---------- versions + rollback ----------
 def test_versions_and_rollback_roundtrip():
     _app, client = _make_app_and_client()
     # publish A (1.1), then B (1.2)
@@ -189,7 +186,6 @@ def test_rollback_bad_name_400():
     assert isinstance(r.json()["detail"], list)
 
 
-# ---------- effective ----------
 def test_effective_returns_honest_item_set():
     _app, client = _make_app_and_client()
     r = client.get("/api/config/effective", headers=ADMIN)
@@ -222,7 +218,6 @@ def test_effective_surfaces_full_policy_with_danger_flags():
     assert ver and ver["danger"] is False and ver["editable"] is False
 
 
-# ---------- auth gating (AUTH_ENABLED=true, real gate code paths) ----------
 class TestAuthGating:
     def setup_method(self):
         os.environ["AUTH_ENABLED"] = "true"

@@ -1,16 +1,9 @@
 """CalDAV account passwords must never sit in plaintext in data/user_prefs.json.
 
-Background (POS-AI-14 follow-up, 2026-08-25 cross-stack audit): every
-*interactive* CalDAV write path already encrypted, but the legacy
-``caldav`` -> ``caldav_accounts`` migration in ``_load_caldav_accounts``
-copied ``legacy["password"]`` verbatim. Because ``decrypt()`` passes
-plaintext straight through, the resulting plaintext value was read happily
-forever and nothing ever re-encrypted it — so a live deployment ended up with
-a world-readable plaintext password on disk while the code "supported
-encryption".
-
-These tests pin both halves: the migration must encrypt, and an account
-already stored plaintext must be upgraded in place on the next load.
+``decrypt()`` passes plaintext straight through, so a plaintext value would be
+read forever without error. The legacy ``caldav`` -> ``caldav_accounts``
+migration must encrypt, and an account already stored plaintext must be
+upgraded in place on the next load.
 """
 import json
 import os
@@ -42,9 +35,6 @@ def _write_prefs(prefs_file, payload):
     prefs_file.write_text(json.dumps(payload), encoding="utf-8")
 
 
-# ── the migration hole ────────────────────────────────────────────────────
-
-
 def test_legacy_migration_encrypts_password(prefs_env):
     """legacy `caldav` -> `caldav_accounts` must not carry plaintext across."""
     from src.caldav_sync import _load_caldav_accounts
@@ -66,9 +56,6 @@ def test_legacy_migration_encrypts_password(prefs_env):
 
     from src.secret_storage import decrypt
     assert decrypt(accounts[0]["password"]) == "legacy-plaintext-pw"
-
-
-# ── the existing-value upgrade ────────────────────────────────────────────
 
 
 def test_existing_plaintext_account_is_upgraded_in_place(prefs_env):
@@ -160,9 +147,6 @@ def test_empty_password_left_alone(prefs_env):
     assert accounts[0]["password"] == ""
 
 
-# ── fail-safe ─────────────────────────────────────────────────────────────
-
-
 def test_broken_key_leaves_plaintext_rather_than_bricking_sync(prefs_env, monkeypatch):
     """If encryption cannot round-trip, keep the working plaintext credential.
 
@@ -191,9 +175,6 @@ def test_encrypt_helper_is_a_noop_on_encrypted_values(prefs_env):
 
     assert changed is False
     assert out[0]["password"] == token
-
-
-# ── at-rest file permissions ──────────────────────────────────────────────
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits only")

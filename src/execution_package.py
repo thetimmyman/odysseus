@@ -1,26 +1,12 @@
-"""src/execution_package.py — ExecutionPackage + DispatchDecisionReceipt (PS-638).
+"""ExecutionPackage and DispatchDecisionReceipt: the immutable intent, hashed
+before anything runs so the run can only be compared against it.
 
-The immutable INTENT written down before anything runs.
-
-PS-638 splits the envelope along one question: *what was asked* versus *what
-happened*. This module is the first half. Everything here is authored before
-dispatch and then hashed, so afterwards the run can only be compared against it —
-it cannot quietly become it.
-
-Two decisions in here are about honesty rather than mechanism.
-
-**The interface is the packet's, not a copy.** ``ExecutionPackage`` stores the
-same ``InterfaceField`` values the ``WorkPacket`` primitive validates, and its
-``interface_digest`` delegates to that primitive. A second, package-local notion
-of "the interface" is exactly how a sealed package and a dispatched worker come
-to disagree — and the whole PS-635 failure this work descends from was a worker
-and a verifier disagreeing about key names.
-
-**Dispatch provenance does not pretend to be routing policy.** PS-605 owns
-routing. Until production policy is wired, a receipt must say ``explicit_pin``
-and carry no policy reference; a receipt that claims ``ps605_policy`` without a
-policy revision is refused. "Routed local-first" as prose is not a decision
-record, and neither is a policy claim with nothing behind it.
+* The interface is the packet's own ``InterfaceField`` values, and
+  ``interface_digest`` delegates to ``WorkPacket``, so package and worker can't
+  disagree about it.
+* Dispatch provenance doesn't pretend to be policy: without a wired policy a
+  receipt says ``explicit_pin``; claiming ``ps605_policy`` without a policy
+  revision is refused.
 """
 from __future__ import annotations
 
@@ -43,7 +29,9 @@ from src.evidence_contract import (
 from src.source_snapshot import SourceSnapshotIdentity, source_snapshot_from_dict
 from src.work_packet import WorkPacket, make_work_packet
 
-EXECUTION_PACKAGE_SCHEMA_VERSION = 1
+#: v2 renamed the core field ``jira_key`` to ``ticket_key``; v1 payloads still
+#: hash-validate because ``package_hash_is_valid`` re-hashes the serialized keys.
+EXECUTION_PACKAGE_SCHEMA_VERSION = 2
 DISPATCH_RECEIPT_SCHEMA_VERSION = 1
 
 #: How the target was actually chosen. Recorded, not inferred.
@@ -62,13 +50,9 @@ def _canonical(payload: object) -> bytes:
 
 
 def _normalize_authority(value: Mapping[str, Any]) -> dict:
-    """Canonical form of an optional ``authority`` block.
-
-    A content-addressed contract cannot let the same fact hash two different
-    ways, so a sub-field a caller left out and the same sub-field explicitly set
-    to ``None`` must be indistinguishable at hash time: both are dropped here.
-    This is normalization, not validation — no key is required, no value is
-    checked, any mapping the caller passes is otherwise accepted as-is.
+    """Canonical form of an optional ``authority`` block. An omitted sub-field and
+    one set to ``None`` must hash identically, so both are dropped.
+    Normalization only; nothing is required or checked.
     """
     return {k: v for k, v in dict(value).items() if v is not None}
 
@@ -82,7 +66,6 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ------------------------------------------------------------------ budgets ---
 @dataclass(frozen=True)
 class Budgets:
     """The envelope the run may spend. Zero means "not declared", not "unlimited"."""
@@ -109,17 +92,11 @@ class Budgets:
                 "max_repair_chars": self.max_repair_chars}
 
 
-# ------------------------------------------------------- verification plan ---
 @dataclass(frozen=True)
 class VerificationPlan:
-    """What will judge the work, and how that judge is identified.
-
-    ``verifier_digests`` are sealed HERE, before dispatch, whenever the verifier
-    is harness-owned or hidden. That is what makes "the hidden control was not
-    swapped after seeing the model output" checkable rather than asserted — and
-    it is why the digest is recorded without the content ever entering the
-    worker's context.
-    """
+    """What will judge the work. ``verifier_digests`` for harness-owned or hidden
+    verifiers are sealed before dispatch, so a swapped control is detectable
+    without the content entering the worker's context."""
 
     verifier_id: str
     command: str
@@ -163,23 +140,16 @@ def seal_verifier_digests(worktree: str, paths: Sequence[str]
     return pairs
 
 
-# ------------------------------------------------------ dispatch provenance ---
 @dataclass(frozen=True)
 class DispatchDecisionReceipt:
-    """Why THIS target ran THIS packet, written down as data.
+    """Why this target ran this packet, as data.
 
-    Shaped to be a subset of a future full PS-605 receipt: the fields PS-605 will
-    populate more richly — candidates, capability receipts, policy revision — are
-    present and may be empty, so a later real policy decision can fill them
-    without a schema migration and without any old receipt changing meaning.
+    Candidate, capability-receipt and policy-revision fields may be empty now so
+    a richer policy decision can fill them without a schema change.
 
-    ``authority`` (PS-638 DR-01+DR-09, added 2026-09-16) is an optional,
-    unvalidated record of who/what asked and on whose credential — it RECORDS
-    AND AUDITS; it is not enforced authorization and must never be described as
-    an access-control or security boundary. When omitted (``None``), it is left
-    out of ``core()`` entirely, so every receipt sealed before this field
-    existed keeps hashing exactly as it always did. When present, its (already
-    null-normalized) contents are part of the hash like any other field.
+    ``authority`` records who asked and on whose credential; it is not
+    authorization. Omitted from ``core()`` when ``None`` so older receipts hash
+    unchanged; hashed like any field when present.
     """
 
     receipt_id: str
@@ -196,6 +166,9 @@ class DispatchDecisionReceipt:
     policy_ref: str = ""
     candidates_considered: Tuple[Mapping[str, Any], ...] = ()
     capability_receipt_refs: Tuple[str, ...] = ()
+    capacity_receipt_refs: Tuple[str, ...] = ()
+    offer_receipt_refs: Tuple[str, ...] = ()
+    offer_quote_digests: Tuple[str, ...] = ()
     selected_runtime_kind: str = ""
     selected_runtime_version: str = ""
     selected_model_digest: str = ""
@@ -220,8 +193,7 @@ class DispatchDecisionReceipt:
             raise ExecutionPackageError(
                 f"unknown decided_by {self.decided_by!r}; "
                 f"known: {sorted(KNOWN_DECIDED_BY)}")
-        # Honesty gates. A policy claim must name the policy; a pin must not
-        # borrow policy authority it does not have.
+        # A policy claim must name the policy; a pin can't borrow policy authority.
         if self.decided_by == DECIDED_BY_POLICY and not self.policy_ref.strip():
             raise ExecutionPackageError(
                 "decided_by=ps605_policy requires a policy_ref: a routing claim "
@@ -258,11 +230,15 @@ class DispatchDecisionReceipt:
             "reason": self.reason,
             "decided_at": self.decided_at,
         }
-        # Additive, DR-01+DR-09: omitted when absent so every receipt sealed
-        # before this field existed hashes exactly as before; included and
-        # hash-bound when present. Records/audits — not enforced authorization.
+        # Omitted when absent so older receipts hash unchanged.
         if self.authority is not None:
             payload["authority"] = _normalize_authority(self.authority)
+        if self.capacity_receipt_refs:
+            payload["capacity_receipt_refs"] = list(self.capacity_receipt_refs)
+        if self.offer_receipt_refs:
+            payload["offer_receipt_refs"] = list(self.offer_receipt_refs)
+        if self.offer_quote_digests:
+            payload["offer_quote_digests"] = list(self.offer_quote_digests)
         return payload
 
     def to_dict(self) -> dict:
@@ -295,14 +271,13 @@ def make_dispatch_receipt(**kwargs: Any) -> DispatchDecisionReceipt:
     if not payload.get("decided_at"):
         payload["decided_at"] = utc_now()
     for name in ("requested_capabilities", "candidates_considered",
-                 "capability_receipt_refs", "granted_tools",
+                 "capability_receipt_refs", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests", "granted_tools",
                  "granted_write_scope", "granted_read_scope"):
         if name in payload and payload[name] is not None:
             payload[name] = tuple(payload[name])
     return _seal(DispatchDecisionReceipt, payload, "receipt_hash")
 
 
-# --------------------------------------------------------------- default set ---
 REQ_DETERMINISTIC_VERIFICATION = "deterministic_verification"
 REQ_NEGATIVE_CONTROL = "negative_control"
 REQ_SCOPE_CHECK = "scope_check"
@@ -312,13 +287,8 @@ REQ_SOURCE_BINDING = "source_binding"
 def default_requirements(verification: VerificationPlan, *,
                          negative_control: str = ""
                          ) -> Tuple[EvidenceRequirement, ...]:
-    """The requirement set every real packet gets, unless it declares its own.
-
-    Derived rather than left empty on purpose: a package with no requirements
-    would validate trivially, and "no requirement was stated" would become the
-    cheapest way to pass. These are the minimum a worker-run packet can be held
-    to, and each is closable by a receipt the harness can actually produce.
-    """
+    """The default requirement set for packets that declare none, so an empty
+    set can't pass trivially. Each is closable by a receipt the harness produces."""
     requirements = [
         EvidenceRequirement(
             requirement_id=REQ_DETERMINISTIC_VERIFICATION,
@@ -356,13 +326,8 @@ def default_requirements(verification: VerificationPlan, *,
 
 @dataclass(frozen=True)
 class ExecutionPackage:
-    """Immutable intent, hashed before anything runs.
-
-    ``package_hash`` covers every substantive field — including the interface and
-    the sealed verifier digests — so "the interface changed after the packet was
-    sealed" and "the verifier fixture was swapped" are detectable by re-hashing,
-    not by asking anyone whether they remember editing something.
-    """
+    """Immutable intent. ``package_hash`` covers every substantive field,
+    including the interface and verifier digests, so later edits are detectable."""
 
     package_id: str
     run_id: str
@@ -383,7 +348,7 @@ class ExecutionPackage:
     negative_control: str = ""
     stop_conditions: Tuple[str, ...] = ()
     budgets: Budgets = field(default_factory=Budgets)
-    jira_key: str = ""
+    ticket_key: str = ""
     parent_ids: Tuple[str, ...] = ()
     schema_version: int = EXECUTION_PACKAGE_SCHEMA_VERSION
     package_hash: str = field(default="")
@@ -402,7 +367,6 @@ class ExecutionPackage:
                 "deterministic verifier cannot be judged")
         requirement_index(self.evidence_requirements)
 
-    # ------------------------------------------------------------- identity ---
     @property
     def is_writable(self) -> bool:
         """A package that may write must own a scope AND declare its interface."""
@@ -427,14 +391,13 @@ class ExecutionPackage:
                 return req
         return None
 
-    # ------------------------------------------------------------ serialize ---
     def core(self) -> dict:
         return {
             "schema_version": self.schema_version,
             "package_id": self.package_id,
             "run_id": self.run_id,
             "packet_id": self.packet_id,
-            "jira_key": self.jira_key,
+            "ticket_key": self.ticket_key,
             "parent_ids": list(self.parent_ids),
             "source": self.source.to_dict(),
             "objective": self.objective,
@@ -468,15 +431,9 @@ def compute_package_hash(core: Mapping[str, Any]) -> str:
 
 
 def package_hash_is_valid(payload: Mapping[str, Any]) -> bool:
-    """True when a serialized package's hash matches its own fields.
-
-    Deliberately a RE-HASH of the serialized form rather than a rebuild of the
-    dataclass: ``core()`` renders the interface to its normalized strings, which
-    are lossy as constructor input, so a rebuild-and-compare would report a false
-    mismatch on every package. Hashing what was actually written is both simpler
-    and the property the contract wants — mutate any field after sealing and the
-    hash no longer matches.
-    """
+    """True when a serialized package's hash matches its own fields. Re-hashes
+    the serialized form, since the normalized interface strings can't round-trip
+    through the constructor."""
     if not isinstance(payload, Mapping) or not payload.get("package_hash"):
         return False
     core = {k: v for k, v in payload.items() if k != "package_hash"}
@@ -490,7 +447,7 @@ def build_execution_package(
     verification: VerificationPlan,
     run_id: str,
     package_id: str = "",
-    jira_key: str = "",
+    ticket_key: str = "",
     execution_role: str = "",
     required_capabilities: Sequence[str] = (),
     allowed_tools: Sequence[str] = (),
@@ -502,18 +459,11 @@ def build_execution_package(
     stop_conditions: Optional[Sequence[str]] = None,
     parent_ids: Sequence[str] = (),
 ) -> ExecutionPackage:
-    """Validate a packet and seal it into an immutable ExecutionPackage.
+    """Validate a packet via ``make_work_packet`` and seal it.
 
-    The packet is validated by ``make_work_packet`` — the ONE definition of a
-    dispatchable packet — so a writable packet with no declared interface is
-    refused here, before a package exists to dispatch, rather than after a model
-    has been asked to guess. Manager-side keys the primitive does not know
-    (``role``, ``base_sha``) are filtered out, not rejected: they are annotations
-    the package records, not packet identity.
-
-    ``write_scope`` may be NARROWED but never widened. The packet owns the
-    authorization; a package that could grant itself more would make the packet
-    advisory.
+    A writable packet without a declared interface is refused before dispatch.
+    Manager-only keys (``role``, ``base_sha``) are filtered, not rejected.
+    ``write_scope`` may be narrowed, never widened: the packet owns authorization.
     """
     if not str(run_id or "").strip():
         raise ExecutionPackageError("run_id is required to seal a package")
@@ -549,7 +499,7 @@ def build_execution_package(
         "package_id": package_id or f"{validated.packet_id}:{run_id}",
         "run_id": run_id,
         "packet_id": validated.packet_id,
-        "jira_key": jira_key,
+        "ticket_key": ticket_key,
         "parent_ids": list(parent_ids),
         "source": source,
         "objective": validated.objective,

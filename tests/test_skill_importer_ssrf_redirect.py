@@ -1,11 +1,8 @@
-"""Skill importer SSRF hardening (PS-602 / upstream #5261): redirects re-validated per hop.
+"""Skill importer SSRF hardening: redirects re-validated per hop.
 
-Previously the importer ran the lenient guard on the *initial* URL only and let
-``httpx`` follow redirects itself, so a ``3xx`` to an internal/metadata address
-(``127.0.0.1``, ``169.254.169.254``) was still connected to. ``_get_checked``
-now follows redirects by hand and re-runs the guard with ``block_private=True``
-on every hop. These tests are hermetic: every host is an IP literal (no DNS) and
-the HTTP layer is faked (no socket).
+``_get_checked`` follows redirects by hand and re-runs the guard with
+``block_private=True`` on every hop, so a ``3xx`` to an internal/metadata address
+is refused. Hermetic: every host is an IP literal and the HTTP layer is faked.
 """
 import pytest
 

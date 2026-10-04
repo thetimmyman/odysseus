@@ -115,5 +115,5 @@ with the store's own reason recorded in the sealed refusal.
 audit behaviour, and one test per negative control (digest mutation, runtime/profile
 identity mutation, expiry, future-dated, missing receipt, corrupt receipt, measured
 capability removed, declared-only vs measured requirement, MS-R1 inference, and a
-receipt that is not the one bound into the evidence).
-`tests/test_ps605_ps632_seam.py` — the translation layer and the harness guards.
+receipt that is not the one bound into the evidence). The PS-605→PS-632 seam
+(`persisted_routing_inputs`) is exercised through the same file.

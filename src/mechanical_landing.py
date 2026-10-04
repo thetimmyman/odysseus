@@ -1,4 +1,4 @@
-"""PS-578 deterministic landing over PS-638 sealed evidence.
+"""Deterministic landing over sealed evidence.
 
 ExecutionPackage.source is input provenance. A writable run's accepted
 candidate is the source snapshot named by its passing VerificationReceipt(s).
@@ -33,7 +33,7 @@ class LandingRefusalCode(str, Enum):
     UNRESOLVED_REWORK = "UNRESOLVED_REWORK"
     LANDING_STRATEGY_NOT_ALLOWED = "LANDING_STRATEGY_NOT_ALLOWED"
     LANDED_TREE_NOT_EQUIVALENT = "LANDED_TREE_NOT_EQUIVALENT"
-    JIRA_RECONCILIATION_FAILED = "JIRA_RECONCILIATION_FAILED"
+    TRACKER_RECONCILIATION_FAILED = "TRACKER_RECONCILIATION_FAILED"
 
 
 class LandingRefused(ValueError):
@@ -143,8 +143,8 @@ def _verified_candidate_digest(evidence_package: Mapping[str, Any]) -> str | Non
 def _candidate_matches(source: Mapping[str, Any], acceptance: SemanticAcceptance) -> bool:
     """Match only fields owned by canonical SourceSnapshotIdentity.
 
-    ``candidate_tree_sha`` is repository landing material, not a field of the
-    PS-638 snapshot. It is intentionally checked only by equivalence proof.
+    ``candidate_tree_sha`` is repository landing material, not a snapshot
+    field, so it is checked only by equivalence proof.
     """
     return (source.get("snapshot_digest") == acceptance.candidate_source_digest
             and source.get("head_sha") == acceptance.candidate_head_sha
@@ -195,7 +195,7 @@ def evaluate_landing_eligibility(
     strategy: LandingStrategy = LandingStrategy.FAST_FORWARD,
     unresolved_dispositions: Sequence[str] = (),
 ) -> LandingEligibility:
-    """Pure deterministic evaluation; no merge, Jira, or deployment side effect."""
+    """Pure deterministic evaluation; no merge, tracker, or deployment side effect."""
     failures: list[LandingRefused] = []
     if not _canonical_source_is_valid(current_source):
         failures.append(LandingRefused(
@@ -285,7 +285,7 @@ class RepositoryLandingAdapter(Protocol):
     def current_source(self) -> Mapping[str, Any]: ...
 
 
-class JiraReconciliationAdapter(Protocol):
+class TrackerReconciliationAdapter(Protocol):
     def reconcile(self, receipt: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
 
@@ -304,7 +304,7 @@ class LandingReceipt:
     equivalence: EquivalenceResult
     repository: str
     destination_branch: str
-    jira_result: Mapping[str, Any]
+    tracker_result: Mapping[str, Any]
     reconciliation_state: str
     reconciliation_error_code: str = ""
     deployment_implication: str = "none"
@@ -326,7 +326,7 @@ class LandingReceipt:
             "equivalence": self.equivalence.to_dict(),
             "repository": self.repository,
             "destination_branch": self.destination_branch,
-            "jira_result": dict(self.jira_result),
+            "tracker_result": dict(self.tracker_result),
             "reconciliation_state": self.reconciliation_state,
             "reconciliation_error_code": self.reconciliation_error_code,
             "deployment_implication": self.deployment_implication,
@@ -344,7 +344,7 @@ def landing_receipt_hash_is_valid(payload: Mapping[str, Any]) -> bool:
 
 
 def land_exact_candidate(*, evidence_package: Mapping[str, Any], acceptance: SemanticAcceptance,
-                        repository: RepositoryLandingAdapter, jira: JiraReconciliationAdapter | None,
+                        repository: RepositoryLandingAdapter, tracker: TrackerReconciliationAdapter | None,
                         current_source: Mapping[str, Any], governance: Sequence[Any],
                         policy: LandingPolicy, strategy: LandingStrategy,
                         unresolved_dispositions: Sequence[str] = ()) -> LandingReceipt:
@@ -377,19 +377,19 @@ def land_exact_candidate(*, evidence_package: Mapping[str, Any], acceptance: Sem
         landed_tree_sha=str(landed.get("tree_sha", "")), equivalence=equivalence,
         repository=str(landed.get("repository", "")),
         destination_branch=str(landed.get("destination_branch", "")),
-        jira_result={}, reconciliation_state="PENDING")
+        tracker_result={}, reconciliation_state="PENDING")
 
-    jira_result: Mapping[str, Any] = {}
-    state, error_code = "REPOSITORY_LANDED_JIRA_PENDING", ""
-    if jira is not None:
+    tracker_result: Mapping[str, Any] = {}
+    state, error_code = "REPOSITORY_LANDED_TRACKER_PENDING", ""
+    if tracker is not None:
         try:
-            jira_result = jira.reconcile(provisional.to_dict())
+            tracker_result = tracker.reconcile(provisional.to_dict())
             state = "RECONCILED"
         except Exception as exc:
-            jira_result = {"ok": False, "error": str(exc)}
-            state = "REPOSITORY_LANDED_JIRA_FAILED"
-            error_code = LandingRefusalCode.JIRA_RECONCILIATION_FAILED.value
-    final = LandingReceipt(**{**provisional.__dict__, "jira_result": jira_result,
+            tracker_result = {"ok": False, "error": str(exc)}
+            state = "REPOSITORY_LANDED_TRACKER_FAILED"
+            error_code = LandingRefusalCode.TRACKER_RECONCILIATION_FAILED.value
+    final = LandingReceipt(**{**provisional.__dict__, "tracker_result": tracker_result,
                               "reconciliation_state": state,
                               "reconciliation_error_code": error_code})
     return LandingReceipt(**{**final.__dict__, "receipt_hash": _digest(final.core())})

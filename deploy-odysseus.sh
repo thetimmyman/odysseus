@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# deploy-odysseus.sh — repeatable deploy from the canonical repo checkout.
-#
-# Usage: ./deploy-odysseus.sh
+# Repeatable deploy from the canonical repo checkout.
 #
 # Host-specific settings come from the environment (or the compose .env file):
 #   ODYSSEUS_REPO_DIR   repo checkout to deploy from   (default: this script's dir)
 #   ODYSSEUS_BRANCH     branch to fast-forward deploy  (default: main)
-#   ODYSSEUS_LAN_URL    optional extra health-check URL, e.g. http://192.168.1.50:7000
+#   ODYSSEUS_LAN_URL    optional extra health-check URL
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,10 +56,8 @@ if [ -n "${ODYSSEUS_LAN_URL:-}" ]; then
 fi
 
 echo "=== 8. Verifying build identity (PS-621) ==="
-# The app must report the SHA it was BUILT with -- never a runtime `git` read
-# from a mutable checkout. Positive control: app git_sha == the deployed HEAD.
-# A mismatch (or status != pinned) FAILS the deploy, so an operator can prove
-# remotely that live SHA == intended branch SHA without trusting the disk tree.
+# The app must report the SHA it was built with, never a runtime `git` read.
+# A mismatch with the deployed HEAD (or status != pinned) fails the deploy.
 DEPLOYED_SHA="$(git rev-parse --short HEAD)"
 VERSION_JSON="$(curl -fsS http://127.0.0.1:7000/api/version || true)"
 APP_SHA="$(printf '%s' "$VERSION_JSON" | sed -n 's/.*"git_sha":[[:space:]]*"\([^"]*\)".*/\1/p')"

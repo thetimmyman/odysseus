@@ -1,15 +1,6 @@
-// static/js/routingHarness.js — Routing Harness admin tool: coordinator
-// decision audit viewer + manual wrap workflow, model-profile registry,
-// versioned routing policy, budget dashboard, route preview, and break-glass
-// emergency overrides. UI slice over routes/routing_harness_routes.py.
-//
-// Mirrors devPreview/crewPanel: a Tools overlay, cookie _api (same-origin,
-// credentials carried), XSS-safe rendering (textContent / _esc only), and
-// display-side admin gating — every /api/harness route enforces the admin
-// cookie server-side; on 401/403 each panel shows ONE inline "Admin session
-// required" state instead of crashing. The Emergency tab additionally
-// surfaces the security_admin refusal (normal admin cookies are rejected
-// for break-glass by design).
+// Routing Harness admin tool. Admin gating is enforced server-side; on 401/403
+// a panel shows an inline notice. Break-glass additionally needs security_admin.
+// Render with textContent / _esc only.
 
 let API_BASE = '';
 let _open = false;
@@ -44,9 +35,7 @@ async function _api(path, opts) {
 function _post(path, body) {
   return _api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 }
-// Same-origin PATCH/DELETE: the browser auto-attaches Origin + Sec-Fetch-Site,
-// satisfying the server's CSRF guard; credentials:'same-origin' carries the
-// admin cookie (same pattern as devPreview's _put/_del).
+// Same-origin requests carry Origin + Sec-Fetch-Site for the server's CSRF guard.
 function _patch(path, body) {
   return _api(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 }
@@ -54,7 +43,6 @@ function _del(path) {
   return _api(path, { method: 'DELETE' });
 }
 
-// --- shared render helpers -----------------------------------------------------
 function _isAuthErr(e) { return e && (e.status === 401 || e.status === 403); }
 
 // One inline "Admin session required" state per panel; never crash the tab.
@@ -144,7 +132,6 @@ function _pre(text) {
   pre.textContent = text == null ? '' : String(text);
   return pre;
 }
-// Policy-version stamps ({routingPolicyVersion: "1.0", ...}) as small chips.
 function _versionChips(pv) {
   const wrap = document.createElement('span');
   if (!pv || typeof pv !== 'object') return wrap;
@@ -164,7 +151,6 @@ function _parseJsonInput(raw, what) {
   }
 }
 
-// --- Decisions: coordinator audit archive + manual wrap ------------------------
 async function _loadAudit() {
   const tbody = _el('harness-audit-rows');
   if (!tbody) return;
@@ -297,7 +283,6 @@ async function _wrapSubmit() {
   }
 }
 
-// --- Registry: model profiles --------------------------------------------------
 async function _loadRegistry() {
   const tbody = _el('harness-registry-rows');
   if (!tbody) return;
@@ -439,8 +424,6 @@ async function _regDelete(id) {
     await _loadRegistry();
   } catch (e) {
     if (_gate('registry', e)) return;
-    // Surfaces the server's 400 refusal ("profile has recorded model runs —
-    // disable instead of delete") verbatim.
     _err('Delete refused: ' + (e.message || e));
   }
 }
@@ -483,7 +466,6 @@ async function _regCreate() {
   }
 }
 
-// --- Policy: versioned config --------------------------------------------------
 async function _loadPolicy() {
   try {
     const [cur, vers] = await Promise.all([
@@ -562,7 +544,6 @@ async function _policyRollback(archive) {
   }
 }
 
-// --- Budget: caps + spend + per-task preview -----------------------------------
 async function _loadBudget() {
   let s;
   try {
@@ -602,7 +583,6 @@ async function _loadBudget() {
   _loadObservability();
 }
 
-// --- Observability: Section 20 metrics (Budget tab subsection) -------------------
 const _OBS_METRICS = [
   ['costPerSuccessfulPatchUsd', 'cost / accepted patch', 'usd'],
   ['coordinatorSchemaValidityRate', 'schema validity', 'rate'],
@@ -684,7 +664,6 @@ async function _budgetPreview() {
   }
 }
 
-// --- Route preview: ranked candidates ------------------------------------------
 async function _routePreview() {
   const task = _parseJsonInput(_el('harness-route-task').value, 'Task');
   if (!task) return;
@@ -731,7 +710,6 @@ async function _routePreview() {
   }
 }
 
-// --- Tests: generated-test registry + verification viewer ------------------------
 let _testsTask = '';         // task id whose tests are currently listed
 
 async function _testsLoad(taskId) {
@@ -880,7 +858,7 @@ async function _verifLoad() {
   }
 }
 
-// --- Knowledge: evidence-grounded lessons (advisory only, never policy) ----------
+// Knowledge entries are advisory only, never policy.
 let _kbRows = [];            // last GET /knowledge payload
 let _kbSel = null;           // selected entry id
 
@@ -929,7 +907,6 @@ async function _kbLoad() {
   }
 }
 
-// Per-status action buttons (validation queue: Validate/Reject on drafts).
 function _kbRowActions(k) {
   const wrap = document.createElement('span');
   const mk = (label, act, clear) => {
@@ -1125,7 +1102,6 @@ async function _kbRetrieve() {
   }
 }
 
-// --- Emergency: break-glass overrides -------------------------------------------
 async function _loadEmergency() {
   try {
     _emRows = await _api('/api/harness/emergency/active');
@@ -1212,8 +1188,7 @@ async function _emCreate() {
     await _loadEmergency();
   } catch (e) {
     if (e.status === 403) {
-      // Deliberately NOT the whole-panel gate: listing works for any admin,
-      // but break-glass needs the security_admin privilege on top.
+      // Listing works for any admin; only break-glass needs security_admin.
       msg.className = 'preview-env-warn is-bad';
       msg.textContent = 'security_admin required — normal admin sessions are refused for break-glass (Section 14). Grant the privilege in auth config, then retry.';
       msg.style.display = '';
@@ -1243,11 +1218,9 @@ async function _emRevoke(id) {
   }
 }
 
-// --- Benchmark: Phase 8 coordinator capstone -----------------------------------
 let _benchRuns = [];         // last GET /coordinator/benchmark payload
 let _benchSel = null;        // selected run id
 
-// Compact per-gate PASS/FAIL chips for a run's gates map.
 function _benchGateChips(gates) {
   const wrap = document.createElement('span');
   const entries = Object.entries(gates || {});
@@ -1396,7 +1369,6 @@ async function _benchRun() {
     if (r.run_id) _benchSelect(r.run_id);
   } catch (e) {
     if (_gate('benchmark', e)) return;
-    // Surfaces the server's clear 400 (e.g. unresolvable endpoint) verbatim.
     msg.className = 'preview-env-warn is-bad';
     msg.textContent = 'Benchmark failed: ' + (e.message || e);
     msg.style.display = '';
@@ -1405,7 +1377,6 @@ async function _benchRun() {
   }
 }
 
-// --- tabs + overlay --------------------------------------------------------------
 const _LOADERS = {
   decisions: _loadAudit,
   registry: _loadRegistry,
@@ -1471,7 +1442,6 @@ function init(apiBase) {
     if (e.key === 'Escape' && ov && ov.style.display !== 'none') _closeOverlay();
   });
 
-  // Decisions
   _el('harness-audit-refresh')?.addEventListener('click', _loadAudit);
   _el('harness-audit-filter')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') _loadAudit(); });
   _el('harness-audit-rows')?.addEventListener('click', (e) => {
@@ -1484,7 +1454,6 @@ function init(apiBase) {
   });
   _el('harness-wrap-submit')?.addEventListener('click', _wrapSubmit);
 
-  // Registry
   _el('harness-registry-refresh')?.addEventListener('click', _loadRegistry);
   _el('harness-registry-newtoggle')?.addEventListener('click', () => {
     const card = _el('harness-registry-newcard');
@@ -1501,7 +1470,6 @@ function init(apiBase) {
     } else if (ctl.dataset.act === 'delete') _regDelete(ctl.dataset.profileId);
   });
 
-  // Policy
   _el('harness-policy-publish')?.addEventListener('click', _policyPublish);
   _el('harness-policy-reload')?.addEventListener('click', _loadPolicy);
   _el('harness-policy-versions')?.addEventListener('click', (e) => {
@@ -1509,15 +1477,12 @@ function init(apiBase) {
     if (btn) _policyRollback(btn.dataset.archive);
   });
 
-  // Budget + Route preview
   _el('harness-budget-preview')?.addEventListener('click', _budgetPreview);
   _el('harness-route-preview')?.addEventListener('click', _routePreview);
 
-  // Observability (Budget tab subsection)
   _el('harness-obs-refresh')?.addEventListener('click', _loadObservability);
   _el('harness-obs-days')?.addEventListener('change', _loadObservability);
 
-  // Tests + verification viewer
   _el('harness-tests-load')?.addEventListener('click', () => _testsLoad());
   _el('harness-tests-task')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') _testsLoad(); });
   _el('harness-tests-rows')?.addEventListener('click', (e) => {
@@ -1532,7 +1497,6 @@ function init(apiBase) {
   if (_el('harness-budget-task')) _el('harness-budget-task').value = example;
   if (_el('harness-route-task')) _el('harness-route-task').value = example;
 
-  // Knowledge
   _el('harness-kb-refresh')?.addEventListener('click', _kbLoad);
   _el('harness-kb-status')?.addEventListener('change', _kbLoad);
   _el('harness-kb-newtoggle')?.addEventListener('click', () => {
@@ -1550,7 +1514,6 @@ function init(apiBase) {
     if (tr) _kbSelect(tr.dataset.kbId);
   });
 
-  // Benchmark
   _el('harness-bench-refresh')?.addEventListener('click', _benchLoad);
   _el('harness-bench-run')?.addEventListener('click', _benchRun);
   _el('harness-bench-rows')?.addEventListener('click', (e) => {
@@ -1558,7 +1521,6 @@ function init(apiBase) {
     if (tr) _benchSelect(tr.dataset.benchId);
   });
 
-  // Emergency
   _el('harness-em-refresh')?.addEventListener('click', _loadEmergency);
   _el('harness-em-create')?.addEventListener('click', _emCreate);
   _el('harness-em-list')?.addEventListener('click', (e) => {

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """odysseus-absis — host-side dispatcher CLI for the ABSIS conformance job
 queue (routing harness v0.5 §7, backend absis_tacticus_job_queue). Runs
-every operation as a one-shot inside the absis-orchestrator pod over
-ssh + kubectl exec; transport config lives in config/routing_policy.json
-under "absis" (disabled by default — no workers are deployed yet).
+every operation as a one-shot inside the ABSIS orchestrator pod over
+ssh + kubectl exec; transport config lives in the routing policy under
+"absis" (disabled by default; the committed ssh target and exec prefix are
+placeholders, the real ones belong in the live data-volume policy).
 
     odysseus-absis workers [--worker-class C] [--capability X ...]
     odysseus-absis enqueue --scenario ID --worker-class llm_inference|oracle_runner

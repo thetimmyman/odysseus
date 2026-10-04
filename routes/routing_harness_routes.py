@@ -1,19 +1,12 @@
 
 """
-routes/routing_harness_routes.py — v0.5 harness control surface.
+Routing harness control surface: coordinator wrapper and audit archive,
+routing/budget previews, versioned policy, model profiles, generated-test
+registry and verification, escalation, break-glass overrides, reliability.
 
-Exposes the coordinator deterministic wrapper (+ its audit archive), routing
-and budget previews, the versioned policy config, the model-profile registry,
-the Section 16 generated-test registry (+ promote/demote authority grants and
-mode-aware verification), escalation evaluation, emergency override
-(break-glass), and the workflow reliability monitor. All persistence lands in
-core/database.py models.
-
-Auth: every endpoint is gated on require_admin_cookie (cookie admin only —
-bearer tokens and the internal-tool loopback are rejected; a harness route
-decides where code and possibly-sensitive context get executed, so it gets
-the same gate as the Argo approval surface). The break-glass endpoints
-ADDITIONALLY require the security_admin privilege.
+Every endpoint requires an admin cookie (no bearer or internal-tool loopback),
+since these routes decide where code and sensitive context execute.
+Break-glass endpoints additionally require security_admin.
 """
 from __future__ import annotations
 
@@ -103,49 +96,42 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/harness", tags=["routing-harness"])
 
 
-# ---------- request bodies ----------
 class WrapRequest(BaseModel):
     task_id: str
     raw_coordinator_output: str
-    # Section 9 exception must be affirmatively granted per-call, never assumed.
+    # The data-policy exception must be granted per call, never assumed.
     remote_exception_approved: bool = False
-    # None = "compute it from the live budget checks for this task".
+    # None = compute from the live budget checks for this task.
     budget_ok: Optional[bool] = None
     backend_available: bool = True
-    # Fail-closed default: an approval-requiring decision without an explicit
-    # satisfied flag is rejected by the gates.
+    # Fail closed: an approval-requiring decision without this flag is rejected.
     approval_satisfied: bool = False
     sandbox_ok: bool = True
 
 
 class DecideRequest(BaseModel):
-    """Generate a coordinator decision for a stored task from the resident
-    endpoint (same GateContext knobs as WrapRequest, minus raw output)."""
+    """Generate a coordinator decision for a stored task from the resident endpoint."""
     task_id: str
     remote_exception_approved: bool = False
     budget_ok: Optional[bool] = None
     backend_available: bool = True
-    # Fail-closed default: an approval-requiring generated decision without an
-    # explicit satisfied flag is diverted by the gates.
+    # Fail closed: an approval-requiring decision without this flag is diverted.
     approval_satisfied: bool = False
     sandbox_ok: bool = True
 
 
 class BenchmarkRunRequest(BaseModel):
-    """Run the Phase 8 coordinator benchmark against a registered ModelEndpoint.
-    replays is capped server-side (this calls the LLM fixtures*replays times).
-    fixtures_path is deliberately NOT exposed over HTTP — the resident fixture
-    suite is the only thing the admin UI needs, and an arbitrary path is both a
-    500 vector (bad path / bad JSON) and an unbounded-fan-out lever. The CLI
-    (odysseus-coordinator-bench --fixtures) is the path-taking surface."""
+    """Run the coordinator benchmark against a registered ModelEndpoint.
+    replays is capped server-side (fixtures*replays LLM calls). fixtures_path is
+    not exposed over HTTP: an arbitrary path is a 500 and fan-out lever; the CLI
+    takes paths."""
     endpoint_name: str
     replays: Optional[int] = None
     model: Optional[str] = None
 
 
 class TaskRefRequest(BaseModel):
-    """Either an inline OdysseusTask-shaped dict (never persisted) or the id
-    of an existing RoutingTask row."""
+    """An inline task dict (never persisted) or an existing RoutingTask id."""
     task: Optional[Dict[str, Any]] = None
     task_id: Optional[str] = None
 
@@ -216,8 +202,7 @@ class GeneratedTestCreateRequest(BaseModel):
 class VerifyRequest(BaseModel):
     model_run_id: str
     allow_dirty: bool = False
-    # None = task.verification_mode, else infer_mode(task) — same chain as
-    # `odysseus-exec verify` without --mode.
+    # None = task.verification_mode, else infer_mode(task).
     mode: Optional[str] = None
 
 
@@ -235,8 +220,7 @@ class ReliabilityRequest(BaseModel):
 class KnowledgeCreateRequest(BaseModel):
     title: str
     body: str
-    # REQUIRED non-empty (400 otherwise): run ids / model-run ids / manifest
-    # ids / artifact paths / verification results grounding the lesson.
+    # Required non-empty (400): ids/paths/results grounding the lesson.
     evidence: List[Any] = Field(default_factory=list)
     category: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
@@ -246,8 +230,7 @@ class KnowledgeCreateRequest(BaseModel):
 
 
 class KnowledgeValidateRequest(BaseModel):
-    # Explicit human decision required to re-validate an EXPIRED entry;
-    # never a default (draft validation ignores it).
+    # Re-validating an expired entry needs an explicit human decision.
     revalidate_expired: bool = False
 
 
@@ -268,17 +251,15 @@ def _now():
 
 
 def _body_fields(model: BaseModel, exclude_unset: bool = False) -> dict:
-    # pydantic v2 renamed .dict() -> .model_dump(); support both so the route
-    # file doesn't pin the app's pydantic major.
+    # Support pydantic v1 .dict() and v2 .model_dump().
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_unset=exclude_unset)
     return model.dict(exclude_unset=exclude_unset)
 
 
 def _resolve_task(db, body: TaskRefRequest):
-    """Resolve a preview body to a RoutingTask: an existing row by id, or a
-    TRANSIENT (never added to the session, never committed) row built from an
-    inline task dict."""
+    """Resolve a preview body to an existing RoutingTask, or a transient
+    (never added or committed) row built from an inline task dict."""
     if body.task_id:
         row = db.get(RoutingTask, body.task_id)
         if not row:
@@ -289,19 +270,15 @@ def _resolve_task(db, body: TaskRefRequest):
     raise HTTPException(400, "provide either task (inline dict) or task_id")
 
 
-# Section 8 tier-2 fallback route builder lives in src.routing_coordinator_decide
-# now (single source of truth shared with the /coordinator/decide generation
-# path); aliased here to preserve the /coordinator/wrap call site.
+# Tier-2 fallback route builder, shared with /coordinator/decide.
 _deterministic_route = build_deterministic_route
 
 
 def setup_routing_harness_routes():
-    """No external deps needed; closure just groups the handlers."""
 
-    # ---------- coordinator wrapper + audit archive ----------
     @router.post("/coordinator/wrap")
     def coordinator_wrap(req: WrapRequest, request: Request):
-        """Section 8: deterministic wrapper around a coordinator decision."""
+        """Deterministic wrapper around a coordinator decision."""
         require_admin_cookie(request)
         policy = routing_policy.load_policy()
         max_bytes = int(policy.get("rawOutputMaxBytes") or 262144)
@@ -339,10 +316,8 @@ def setup_routing_harness_routes():
                 repair_fn=repair_fn, deterministic_fn=deterministic_fn,
             )
 
-            # Archive raw output + outcome (Section 6/8 audit requirement).
-            # Redacted BEFORE storage so a pasted credential never persists;
-            # the HMAC covers the redacted text (tamper-evidence for what is
-            # actually on disk, not for a string we refused to keep).
+            # Redact before storage so a pasted credential never persists; the
+            # HMAC covers the redacted text actually on disk.
             red, applied = redact_text(req.raw_coordinator_output)
             pv = routing_policy.policy_versions()
             audit = CoordinatorAudit(
@@ -423,15 +398,12 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- server-side coordinator decision generation (Phase 8) ----------
     @router.post("/coordinator/decide")
     def coordinator_decide(req: DecideRequest, request: Request):
-        """Close the coordinator loop: GENERATE a decision from the resident
-        coordinator endpoint for a stored task, then run it through the SAME
-        deterministic wrapper + CoordinatorAudit archive as /coordinator/wrap.
-        400 when coordinator.provider is 'external' (decisions arrive via
-        /wrap). Endpoint failures degrade to the deterministic/safe_scout tier
-        and are audited — never a 500."""
+        """Generate a decision from the resident coordinator endpoint and run it
+        through the same wrapper and audit archive as /coordinator/wrap. 400 when
+        the provider is 'external'. Endpoint failures degrade to the safe tier and
+        are audited, never a 500."""
         require_admin_cookie(request)
         policy = routing_policy.load_policy()
         client = CoordinatorClient.from_policy(policy)
@@ -464,7 +436,6 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- coordinator benchmark (Phase 8 capstone) ----------
     def _benchmark_run_out(r: CoordinatorBenchmarkRun) -> dict:
         return {
             "id": r.id,
@@ -479,12 +450,9 @@ def setup_routing_harness_routes():
 
     @router.post("/coordinator/benchmark")
     def coordinator_benchmark_run(req: BenchmarkRunRequest, request: Request):
-        """Replay the coordinator fixture suite N times against a registered
-        ModelEndpoint, score the 12 dimensions, enforce the Section-20 hard
-        gates, and persist a CoordinatorBenchmarkRun. This calls the LLM
-        (fixtures * replays) times, so replays is capped at MAX_REPLAYS. An
-        unresolvable endpoint returns a clear 400 (never a 500). REPORTS the
-        gate verdict — never flips coordinator.provider (Tim's decision)."""
+        """Replay the fixture suite against a ModelEndpoint, enforce hard gates and
+        persist a CoordinatorBenchmarkRun. replays is capped at MAX_REPLAYS.
+        Reports the verdict only; never flips coordinator.provider."""
         require_admin_cookie(request)
         policy = routing_policy.load_policy()
         replays = req.replays if req.replays is not None else default_replays(policy)
@@ -549,12 +517,9 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- previews (read-only, nothing persisted) ----------
     @router.post("/route/preview")
     def route_preview(body: TaskRefRequest, request: Request):
-        """Same ranked-candidate output as `odysseus-route preview` (both call
-        routing_engine.route_task on a context bundle), without persisting the
-        inline task."""
+        """Ranked candidates as `odysseus-route preview`, without persisting."""
         require_admin_cookie(request)
         db = SessionLocal()
         try:
@@ -565,8 +530,7 @@ def setup_routing_harness_routes():
                 "task_id": task.id,
                 "context_token_estimate": bundle["metadata"]["token_estimate"],
                 "candidates": decision["candidates"],
-                # WP3 known gap closed (WP6): pass route_task's Section 9
-                # data-policy verdict through instead of dropping it.
+                # Pass route_task's data-policy verdict through.
                 "dataPolicy": decision["dataPolicy"],
             }
         finally:
@@ -574,8 +538,7 @@ def setup_routing_harness_routes():
 
     @router.post("/budget/preview")
     def budget_preview(body: TaskRefRequest, request: Request):
-        """routing_budget's own check results, verbatim, plus current spend —
-        what would happen if this task ran right now."""
+        """Budget check results plus current spend, as if this task ran now."""
         require_admin_cookie(request)
         db = SessionLocal()
         try:
@@ -598,7 +561,6 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- versioned policy config (Section 19) ----------
     @router.get("/policy")
     def policy_get(request: Request):
         require_admin_cookie(request)
@@ -608,21 +570,13 @@ def setup_routing_harness_routes():
         }
 
     def _authorize_policy_candidate(request: Request, candidate: dict):
-        """Shared authorization for ANY path that makes a policy live — publish
-        AND rollback. Returns (actor, danger_changed).
+        """Shared authorization for publish and rollback, so they can't drift.
+        Returns (actor, danger_changed).
 
-        A candidate that CHANGES a danger-zone value (sandbox image/allowlist,
-        sensitivity ceiling, coordinator provider/endpoint, ABSIS transport) vs
-        the current live policy is break-glass-class and gated on
-        security_admin ALONE — never stacked with require_admin_cookie, which
-        would make it un-callable (security_admin is popped out of the admin
-        privilege set, so an admin never holds it; see require_security_admin /
-        the Emergency endpoints). Safe-only changes keep the admin-cookie gate.
-        Also enforces the coordinator.provider=endpoint => enabled-ModelEndpoint
-        invariant. Extracting this means publish and rollback can never drift so
-        that one gates a danger-zone change the other waves through (the exact
-        bug where a plain admin could re-instate a security_admin-gated policy
-        by rolling back to it)."""
+        Changing a danger-zone value requires security_admin alone: stacking it
+        with require_admin_cookie would be uncallable, since admins never hold
+        security_admin. Safe-only changes need the admin cookie. Also enforces
+        that coordinator.provider=endpoint names an enabled ModelEndpoint."""
         current = routing_policy.load_policy()
         danger_changed = routing_policy.danger_zone_changes(candidate, current)
         if danger_changed:
@@ -631,10 +585,7 @@ def setup_routing_harness_routes():
         else:
             actor = require_admin_cookie(request) or "admin"
 
-        # coordinator.provider=endpoint must name an ENABLED ModelEndpoint
-        # (mirrors CoordinatorClient._resolve_endpoint) so a publish/rollback
-        # can't point the coordinator at a missing/disabled endpoint and
-        # silently degrade.
+        # Else the coordinator would silently degrade to a missing endpoint.
         coord = candidate.get("coordinator") if isinstance(candidate, dict) else None
         if isinstance(coord, dict) and coord.get("provider") == "endpoint":
             name = coord.get("endpointName")
@@ -678,12 +629,8 @@ def setup_routing_harness_routes():
 
     @router.post("/policy/rollback")
     def policy_rollback(body: PolicyRollbackRequest, request: Request):
-        # A rollback re-instates an archived policy, which can re-introduce a
-        # danger-zone value — so it must clear the SAME authorization bar as
-        # publishing that value directly. Read the target archive first, gate on
-        # its effective content, THEN apply. (Previously this was admin-cookie
-        # only, letting a plain admin re-instate a security_admin-gated policy by
-        # rolling back to an archived snapshot — the danger-zone bypass.)
+        # A rollback can re-introduce a danger-zone value, so gate on the
+        # archive's content before applying, exactly like a publish.
         try:
             candidate = routing_policy.read_policy_version(body.archive)
         except FileNotFoundError as e:
@@ -703,7 +650,6 @@ def setup_routing_harness_routes():
             "dangerZoneChanged": danger_changed,
         }
 
-    # ---------- model-profile registry ----------
     def _profile_out(p: RoutingModelProfile, ep: Optional[ModelEndpoint]) -> dict:
         return {
             "id": p.id,
@@ -781,8 +727,7 @@ def setup_routing_harness_routes():
             row = db.get(RoutingModelProfile, profile_id)
             if not row:
                 raise HTTPException(404, "profile not found")
-            # Historical runs reference the profile (historical_score joins on
-            # it); deleting would orphan the scoring record — disable instead.
+            # Historical scores join on the profile; disable instead of deleting.
             referenced = db.query(RoutingModelRun).filter(
                 RoutingModelRun.model_profile_id == profile_id
             ).first()
@@ -794,12 +739,9 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- budget dashboard ----------
     @router.get("/budget/summary")
     def budget_summary(request: Request):
-        """Spend aggregates from RoutingRun's per-run totals + the configured
-        caps, shaped for a dashboard. (spend_summary() aggregates per-attempt
-        RoutingModelRun costs; this is the coarser per-run view.)"""
+        """Per-run spend aggregates plus configured caps, for the dashboard."""
         require_admin_cookie(request)
         cfg = load_budget_config()
         now = datetime.utcnow()
@@ -827,11 +769,8 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- observability (spec Section 20 metrics) ----------
-    # The exact error strings run_hard_gates() emits (routing_coordinator.py)
-    # — persisted verbatim into CoordinatorAudit.validation_errors on every
-    # gates-failed path, which is what makes policyViolationRate derivable
-    # from stored data rather than re-adjudicated.
+    # Exact error strings run_hard_gates() persists into validation_errors, so
+    # policyViolationRate is derived from stored data.
     _GATE_ERRORS = (
         "premium_over_budget",
         "restricted_data_remote_blocked",
@@ -844,8 +783,7 @@ def setup_routing_harness_routes():
         return err in _GATE_ERRORS or any(err.startswith(p) for p in _GATE_ERROR_PREFIXES)
 
     def _metric(numerator, denominator, note=None, scale=None):
-        """{value, numerator, denominator, note?}. Fail-truthful: value is
-        None (never 0, never faked) when the denominator is empty."""
+        """{value, numerator, denominator, note?}; value is None on an empty denominator."""
         if denominator:
             value = numerator / denominator
             if scale is not None:
@@ -859,19 +797,14 @@ def setup_routing_harness_routes():
 
     @router.get("/observability")
     def observability(request: Request, days: int = 30):
-        """Spec Section 20 operational metrics over a trailing window
-        (?days=N, default 30, clamped 1..365). Every metric is derived from
-        persisted rows only — nothing is re-executed — and reports its
-        numerator/denominator so the derivation is auditable. Metrics the
-        stored data cannot support yet return value=null with a note instead
-        of a fabricated number (fail-truthful)."""
+        """Operational metrics over ?days=N (default 30, clamped 1..365), from
+        persisted rows only. Unsupported metrics return value=null with a note."""
         require_admin_cookie(request)
         days = max(1, min(int(days), 365))
         # created_at columns are naive-UTC (datetime.utcnow defaults).
         since = datetime.utcnow() - timedelta(days=days)
         db = SessionLocal()
         try:
-            # --- model-run-derived: cost per successful patch ---
             model_runs = db.query(RoutingModelRun).filter(
                 RoutingModelRun.created_at >= since).all()
             total_cost = 0.0
@@ -891,7 +824,6 @@ def setup_routing_harness_routes():
                      "whose persisted scores.verification.patch_accepted is true",
             )
 
-            # --- coordinator-audit-derived rates ---
             audits = db.query(CoordinatorAudit).filter(
                 CoordinatorAudit.created_at >= since).all()
             total_audits = len(audits)
@@ -913,12 +845,9 @@ def setup_routing_harness_routes():
                 errs = [e for e in errs if isinstance(e, str)]
                 if any(_is_gate_error(e) for e in errs):
                     gate_blocked += 1
-                # approvalGateMissRate: only ACCEPTED decisions (parsed ok and
-                # not diverted to the deterministic/safe-scout tiers) can have
-                # been executed. approvalRecommendation.required comes from the
-                # archived (redacted) raw decision JSON; redaction preserves
-                # JSON structure, but a row whose raw output no longer parses
-                # is excluded (counted in the note) rather than guessed at.
+                # approvalGateMissRate: only accepted decisions can have executed.
+                # Rows whose redacted raw output no longer parses are excluded
+                # (counted in the note), not guessed at.
                 if a.parsed_ok and a.fallback_path in (None, "none", "repair"):
                     try:
                         raw = json.loads(a.raw_output) if a.raw_output else None
@@ -966,10 +895,8 @@ def setup_routing_harness_routes():
                 approval_misses, approval_required_accepted, scale=3, note=approval_note,
             )
 
-            # flakyTestRate: the persisted verification result keeps only the
-            # LATEST run per model run and records no base commit for the
-            # worktrees, so a pass/fail flip on the same command cannot be
-            # attributed to flakiness vs. a different patch or repo drift.
+            # flakyTestRate: only the latest run per model run is kept, with no
+            # base commit, so flips can't be attributed to flakiness.
             flaky_metric = {
                 "value": None, "numerator": None, "denominator": None,
                 "note": "insufficient data model: scores.verification stores only the "
@@ -995,10 +922,9 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- escalation ----------
     @router.post("/escalation/evaluate")
     def escalation_evaluate(req: EscalationRequest, request: Request):
-        """Section 11: premium escalation gate policy."""
+        """Premium escalation gate policy."""
         require_admin_cookie(request)
         try:
             risk = Risk(req.risk)
@@ -1029,15 +955,11 @@ def setup_routing_harness_routes():
             "reasons": verdict.reasons,
         }
 
-    # ---------- emergency override (break-glass) ----------
     @router.post("/emergency/override")
     def emergency_override(req: EmergencyOverrideRequest, request: Request):
-        """Section 14 break-glass. security_admin is the SOLE gate — NOT also
-        require_admin_cookie: `security_admin` is popped from the admin
-        privilege set, so stacking both gates can never pass (an admin lacks
-        security_admin; a security_admin holder is a separate role). The
-        approver is the authenticated security_admin; the requester is named in
-        the body (may differ — e.g. an on-call engineer asking)."""
+        """Break-glass. security_admin is the sole gate (admins never hold it, so
+        stacking require_admin_cookie could never pass). The requester named in
+        the body may differ from the approver."""
         require_security_admin(request)
         approver = get_current_user(request)
         if not approver:
@@ -1069,8 +991,7 @@ def setup_routing_harness_routes():
 
     @router.post("/emergency/{override_id}/revoke")
     def emergency_revoke(override_id: str, request: Request):
-        """Deactivate an emergency override (status flip, never overwrite).
-        security_admin is the sole gate (see emergency_override)."""
+        """Deactivate an override (status flip, never overwrite). security_admin only."""
         require_security_admin(request)
         actor = get_current_user(request)
         db = SessionLocal()
@@ -1090,10 +1011,8 @@ def setup_routing_harness_routes():
 
     @router.get("/emergency/active")
     def emergency_active(request: Request):
-        """List non-expired, still-active overrides (TTL enforced here too).
-        Viewable by an admin OR a security_admin — the roles are disjoint
-        (see require_security_admin), and the security_admin who created an
-        override must be able to see and revoke it."""
+        """List active, non-expired overrides. Viewable by admin or security_admin
+        (disjoint roles), so the creator can see and revoke it."""
         try:
             require_admin_cookie(request)
         except HTTPException:
@@ -1118,7 +1037,6 @@ def setup_routing_harness_routes():
             db.close()
         return out
 
-    # ---------- generated-test registry + mode-aware verification (Section 16) ----------
     def _generated_test_out(t: GeneratedTest) -> dict:
         return {
             "id": t.id,
@@ -1131,8 +1049,7 @@ def setup_routing_harness_routes():
             "promoted_at": t.promoted_at.isoformat() if t.promoted_at else None,
             "notes": t.notes,
             "created_at": t.created_at.isoformat() if t.created_at else None,
-            # (authority == human_authored_acceptance_test) OR promoted — the
-            # only rows verification lets flip `passed`.
+            # The only rows verification lets flip `passed`.
             "blocking_eligible": is_blocking_eligible(t),
         }
 
@@ -1151,10 +1068,8 @@ def setup_routing_harness_routes():
 
     @router.post("/tests")
     def generated_tests_create(body: GeneratedTestCreateRequest, request: Request):
-        """Register a test in the Section 16 registry. Generated rows start
-        promoted=False (authority weight 0 — advisory until a human promotes
-        them). The command is allowlist-checked here AND again at run time
-        (run_in_sandbox), so a later policy tightening still fails closed."""
+        """Register a test. Generated rows start unpromoted (advisory). The command
+        is allowlist-checked here and again at run time, so tightening fails closed."""
         require_admin_cookie(request)
         valid_authorities = {a.value for a in TestAuthority}
         if body.authority not in valid_authorities:
@@ -1190,10 +1105,8 @@ def setup_routing_harness_routes():
 
     @router.post("/tests/{test_id}/promote")
     def generated_tests_promote(test_id: str, request: Request):
-        """The HUMAN authority grant (spec Section 16): a promoted generated
-        test becomes blocking-eligible in verification. Persistent (promoted/
-        promoted_by/promoted_at columns) and auditable (notes trail entry
-        recording actor + timestamp)."""
+        """Human authority grant: a promoted test becomes blocking-eligible.
+        Persisted and recorded in the notes trail."""
         actor = require_admin_cookie(request) or "admin"
         db = SessionLocal()
         try:
@@ -1213,9 +1126,7 @@ def setup_routing_harness_routes():
 
     @router.post("/tests/{test_id}/demote")
     def generated_tests_demote(test_id: str, request: Request):
-        """Revoke a promotion: the row returns to advisory (weight 0). The
-        promoted_by/promoted_at columns are cleared (they reflect CURRENT
-        state); the notes trail keeps the full promote/demote history."""
+        """Revoke a promotion; promoted_by/at are cleared, the notes trail keeps history."""
         actor = require_admin_cookie(request) or "admin"
         db = SessionLocal()
         try:
@@ -1234,18 +1145,11 @@ def setup_routing_harness_routes():
 
     @router.post("/verify")
     def harness_verify(body: VerifyRequest, request: Request):
-        """Run Section 16 mode-aware verification for an archived model run
-        (routing_verification.verify_model_run) and return the persisted
-        VerificationResult.
+        """Run mode-aware verification for an archived model run.
 
-        NOTE: verification executes docker on the HOST. In the deployed
-        container docker is unavailable, so run_in_sandbox reports
-        docker_unavailable — that surfaces here as
-        verification.infrastructure_error (fail-closed: passed stays False,
-        but the result is flagged so it is never scored as "the patch broke
-        the tests"). The `odysseus-exec verify` CLI on the host is the real
-        execution surface for now; this endpoint exists for parity/automation
-        and for hosts running the app outside a container."""
+        Verification runs docker on the host; inside the container it reports
+        docker_unavailable as an infrastructure_error (passed stays False but is
+        never scored as a broken patch)."""
         require_admin_cookie(request)
         db = SessionLocal()
         try:
@@ -1264,8 +1168,7 @@ def setup_routing_harness_routes():
             except ValueError as e:
                 raise HTTPException(400, str(e))
             except RuntimeError as e:
-                # e.g. dirty source tree without allow_dirty — caller error,
-                # not a verification verdict.
+                # Caller error (e.g. dirty tree), not a verification verdict.
                 raise HTTPException(409, str(e))
             return {"model_run_id": model_run.id, "verification": result}
         finally:
@@ -1273,12 +1176,8 @@ def setup_routing_harness_routes():
 
     @router.get("/model-runs/{model_run_id}/verification")
     def model_run_verification(model_run_id: str, request: Request):
-        """Read-only viewer for the verification block verify_model_run
-        persisted into RoutingModelRun.scores["verification"]. POST /verify
-        re-EXECUTES verification (docker on the host, expensive) — this
-        endpoint only returns what is already stored, so the UI can render
-        layers/commands/notes without triggering a run. 404 when the model
-        run doesn't exist OR it has never been verified."""
+        """Return the stored verification block without re-running it.
+        404 if the model run is missing or never verified."""
         require_admin_cookie(request)
         db = SessionLocal()
         try:
@@ -1304,10 +1203,9 @@ def setup_routing_harness_routes():
         finally:
             db.close()
 
-    # ---------- workflow reliability monitor ----------
     @router.post("/reliability/signal")
     def reliability_signal(req: ReliabilityRequest, request: Request):
-        """Section 13: compute + persist an advisory review-readiness signal."""
+        """Compute and persist an advisory review-readiness signal."""
         require_admin_cookie(request)
         conf = Confounders(
             flaky_tests_observed=req.confounders.get("flaky_tests_observed", False),
@@ -1347,16 +1245,12 @@ def setup_routing_harness_routes():
             db.close()
         return {"id": rid, **sig.to_dict()}
 
-    # ---------- knowledge base (spec Phase 6 / Section 19) ----------
-    # Lessons are ADVISORY context only — nothing served here may gate, veto,
-    # or block any routing/verification decision (src/routing_knowledge
-    # docstring + tests/test_routing_knowledge.py enforce the invariant).
+    # Lessons are advisory only: nothing here may gate or veto any routing or
+    # verification decision (enforced by tests/test_routing_knowledge.py).
     @router.get("/knowledge")
     def knowledge_list(request: Request, status: Optional[str] = None,
                        category: Optional[str] = None, limit: int = 100):
-        """List entries (any status — this is the admin curation surface, not
-        the advisory retrieval surface). Drafts float to the top so the list
-        doubles as the validation queue."""
+        """List entries of any status for curation; drafts first (validation queue)."""
         require_admin_cookie(request)
         limit = max(1, min(int(limit), 500))
         db = SessionLocal()
@@ -1368,8 +1262,7 @@ def setup_routing_harness_routes():
                 q = q.filter(KnowledgeBaseEntry.category == category)
             rows = q.order_by(KnowledgeBaseEntry.created_at.desc(),
                               KnowledgeBaseEntry.id.desc()).limit(limit).all()
-            # Validation queue ordering: drafts first, then everything else,
-            # each newest-first (stable sort preserves the SQL ordering).
+            # Drafts first, then the rest; stable sort keeps newest-first.
             rows.sort(key=lambda r: 0 if r.status == "draft" else 1)
             return [entry_to_dict(r) for r in rows]
         finally:
@@ -1379,10 +1272,8 @@ def setup_routing_harness_routes():
     def knowledge_retrieve(request: Request, category: Optional[str] = None,
                            tag: Optional[str] = None,
                            task_type: Optional[str] = None, limit: int = 20):
-        """The advisory retrieval surface: VALIDATED entries only, each
-        wrapped with an explicit advisory label. Suitable as review context
-        for a task's area (e.g. filter by the task's task_type/category) —
-        and for nothing else: never an input to gates or verification."""
+        """Advisory retrieval: validated entries only, labelled advisory. Never an
+        input to gates or verification."""
         require_admin_cookie(request)
         db = SessionLocal()
         try:
@@ -1398,7 +1289,7 @@ def setup_routing_harness_routes():
 
     @router.post("/knowledge")
     def knowledge_create(body: KnowledgeCreateRequest, request: Request):
-        """Create a draft lesson. Evidence is REQUIRED non-empty (400)."""
+        """Create a draft lesson. Evidence is required (400)."""
         require_admin_cookie(request)
         db = SessionLocal()
         try:
@@ -1419,10 +1310,8 @@ def setup_routing_harness_routes():
 
     @router.post("/knowledge/draft-from-run")
     def knowledge_draft_from_run(body: KnowledgeDraftFromRunRequest, request: Request):
-        """Assemble a draft lesson from a model run's archived artifacts —
-        a mechanical template (no LLM call), evidence auto-populated with
-        the run/model-run/manifest ids and the persisted verification
-        verdict. A human or lesson-generator model edits before validation."""
+        """Assemble a draft lesson from a model run's artifacts (no LLM call),
+        with evidence pre-filled. Edited by a human before validation."""
         require_admin_cookie(request)
         db = SessionLocal()
         try:
@@ -1456,9 +1345,8 @@ def setup_routing_harness_routes():
     @router.post("/knowledge/{entry_id}/validate")
     def knowledge_validate(entry_id: str, request: Request,
                            body: Optional[KnowledgeValidateRequest] = None):
-        """draft -> validated (human action; actor = the admin cookie user).
-        Re-validating an EXPIRED entry additionally requires the explicit
-        revalidate_expired flag in the body — a deliberate human decision."""
+        """draft -> validated. Re-validating an expired entry requires the
+        revalidate_expired flag."""
         actor = require_admin_cookie(request) or "admin"
         reval = bool(body and body.revalidate_expired)
         return _knowledge_transition(entry_id, validate_entry, actor,
@@ -1481,8 +1369,7 @@ def setup_routing_harness_routes():
     @router.post("/knowledge/{entry_id}/expire")
     def knowledge_expire(entry_id: str, body: KnowledgeExpireRequest,
                          request: Request):
-        """validated -> expired, rationale required (e.g. "substantial code
-        change in area X")."""
+        """validated -> expired; rationale required."""
         actor = require_admin_cookie(request) or "admin"
         return _knowledge_transition(entry_id, expire_entry, actor,
                                      body.rationale)

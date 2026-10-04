@@ -1,17 +1,10 @@
-"""src/routing_knowledge.py — Phase 6 (spec Section 19) knowledge base
-lifecycle: evidence-grounded lessons distilled from routing runs.
+"""Knowledge base lifecycle: evidence-grounded lessons from routing runs.
 
-INVARIANT (sacred, same family as routing_reliability's advisory-only rule):
-knowledge entries are ADVISORY CONTEXT ONLY. Retrieval output may be surfaced
-to reviewers and lesson-aware prompts, but NOTHING here (or in any consumer)
-may use a knowledge entry to gate, veto, or block a routing, budget, or
-verification decision. retrieve_validated() stamps every item with an
-explicit {"advisory": True, ...} label so downstream code and humans can't
-mistake a lesson for policy; tests/test_routing_knowledge.py additionally
-asserts no src/ module outside this file imports the retrieval surface.
+Invariant: entries are advisory context only and must never gate a routing,
+budget or verification decision. Retrieved items carry an explicit advisory
+label, and tests assert no other src/ module imports the retrieval surface.
 
-Lifecycle (every transition below is a human/admin action; the acting user is
-recorded on the row AND in an append-only audit_log trail):
+Lifecycle (human/admin actions, recorded on the row and in audit_log):
 
     draft      -> validated   validate_entry(actor)
     draft      -> rejected    reject_entry(actor)
@@ -19,17 +12,10 @@ recorded on the row AND in an append-only audit_log trail):
     validated  -> expired     expire_entry(actor, rationale)   # rationale required
     expired    -> validated   validate_entry(actor, revalidate_expired=True)
 
-Everything else is illegal and raises KnowledgeTransitionError (HTTP 409 at
-the route layer). rejected and superseded are terminal. expired is
-terminal-ish: re-validation is allowed ONLY as an explicit human decision
-(the revalidate_expired flag — judgment call: an expired lesson's evidence
-may become relevant again after a revert, but that must never happen
-implicitly), and the expiry is preserved in the audit trail.
+Anything else raises KnowledgeTransitionError. Re-validating an expired entry
+must be an explicit human decision, never implicit.
 
-Evidence: EVERY entry carries a non-empty JSON list of grounding references
-(run ids, model-run ids, manifest ids, artifact paths, verification results).
-create_draft/draft_from_run refuse to build an entry without it (ValueError,
-HTTP 400 at the route layer).
+Every entry needs non-empty grounding evidence (ValueError otherwise).
 """
 from __future__ import annotations
 
@@ -48,7 +34,7 @@ ADVISORY_NOTE = "knowledge entries are advisory context, never policy"
 
 
 class KnowledgeTransitionError(Exception):
-    """An illegal lifecycle transition was requested (route layer -> 409)."""
+    """An illegal lifecycle transition was requested."""
 
 
 def _now() -> datetime:
@@ -100,14 +86,12 @@ def entry_to_dict(row) -> Dict[str, Any]:
     }
 
 
-# ---------- creation ----------
 def create_draft(db, *, title: str, body: str, evidence: List[Any],
                  category: Optional[str] = None, tags: Optional[List[str]] = None,
                  source_task_id: Optional[str] = None,
                  source_model_run_id: Optional[str] = None,
                  created_by: str = "human"):
-    """Create a status=draft entry. Evidence is REQUIRED non-empty
-    (ValueError otherwise) — an ungrounded lesson is never persisted."""
+    """Create a draft; an ungrounded lesson (empty evidence) is never persisted."""
     from core.database import KnowledgeBaseEntry
 
     if not (title or "").strip():
@@ -135,7 +119,6 @@ def create_draft(db, *, title: str, body: str, evidence: List[Any],
     return row
 
 
-# ---------- lifecycle transitions ----------
 def _get_entry(db, entry_id: str):
     from core.database import KnowledgeBaseEntry
 
@@ -147,9 +130,7 @@ def _get_entry(db, entry_id: str):
 
 def validate_entry(db, entry_id: str, actor: str, *,
                    revalidate_expired: bool = False):
-    """draft -> validated. Also expired -> validated, but ONLY when the
-    caller passes revalidate_expired=True (an explicit human decision —
-    never a default). rejected/superseded/validated can't be validated."""
+    """draft -> validated; expired -> validated only with revalidate_expired=True."""
     row = _get_entry(db, entry_id)
     if row.status == "expired" and revalidate_expired:
         _append_audit(row, f"re-validated from expired by {actor} "
@@ -171,7 +152,6 @@ def validate_entry(db, entry_id: str, actor: str, *,
 
 
 def reject_entry(db, entry_id: str, actor: str):
-    """draft -> rejected (terminal)."""
     row = _get_entry(db, entry_id)
     if row.status != "draft":
         raise KnowledgeTransitionError(
@@ -184,8 +164,7 @@ def reject_entry(db, entry_id: str, actor: str):
 
 
 def supersede_entry(db, entry_id: str, actor: str, replacement_id: str):
-    """validated -> superseded, with a link to the replacement entry
-    (terminal). The replacement must exist and be a different entry."""
+    """validated -> superseded; the replacement must exist and differ."""
     row = _get_entry(db, entry_id)
     if row.status != "validated":
         raise KnowledgeTransitionError(
@@ -207,9 +186,7 @@ def supersede_entry(db, entry_id: str, actor: str, replacement_id: str):
 
 
 def expire_entry(db, entry_id: str, actor: str, rationale: str):
-    """validated -> expired, rationale REQUIRED (e.g. "substantial code
-    change in area X"). Re-validation of an expired entry is possible only
-    via validate_entry(revalidate_expired=True)."""
+    """validated -> expired; rationale is required."""
     row = _get_entry(db, entry_id)
     if row.status != "validated":
         raise KnowledgeTransitionError(
@@ -225,23 +202,11 @@ def expire_entry(db, entry_id: str, actor: str, rationale: str):
     return row
 
 
-# ---------- draft from a completed model run ----------
 def draft_from_run(db, model_run):
-    """Build a status=draft lesson from a completed model run's ARCHIVED
-    artifacts — no LLM call: the body is a structured template around what the
-    run already recorded (objective, outcome, artifact paths, verification
-    verdict), with an explicit note that a human or a lesson-generator model
-    must edit it before validation. Evidence is auto-populated with the
-    task/run/model-run ids, the run-manifest id when one exists, the artifact
-    paths, and the persisted verification verdict — so the draft is grounded
-    from birth.
+    """Template a draft lesson from a model run's archived artifacts (no LLM call).
 
-    created_by is the origin model's label (the lesson content derives from
-    that model's run); the templated-draft provenance is recorded in the
-    audit trail. As a cheap WP6 tie-in, the origin model's lesson-generation
-    aggregate (routing_scoring.model_lesson_gen_by_task — NEVER a routing
-    input) is quoted in the draft body to help a human rank competing drafts
-    in the validation queue."""
+    Evidence is auto-populated so the draft is grounded from birth. The origin
+    model's lesson-gen aggregate is quoted for reviewers only, never routing."""
     from core.database import RoutingRun, RoutingTask, RoutingModelProfile, RunManifestRecord
     from src.routing_scoring import model_lesson_gen_by_task
 
@@ -265,7 +230,6 @@ def draft_from_run(db, model_run):
     if not isinstance(verification, dict):
         verification = None
 
-    # --- evidence: the grounding references (REQUIRED non-empty) ---
     evidence: List[Dict[str, Any]] = [{"type": "model_run", "id": model_run.id}]
     if run:
         evidence.append({"type": "run", "id": run.id})
@@ -292,7 +256,6 @@ def draft_from_run(db, model_run):
             "patch_accepted": verification.get("patch_accepted"),
         })
 
-    # --- WP6 tie-in: quote the origin model's lesson-gen aggregate ---
     lesson_gen_line = "Origin model lesson-gen score (advisory): not yet scored"
     if model_run.model_profile_id and task:
         try:
@@ -308,7 +271,6 @@ def draft_from_run(db, model_run):
         except Exception:  # aggregate failure must never block a draft
             logger.debug("lesson-gen aggregate lookup failed", exc_info=True)
 
-    # --- structured template body (no LLM — humans/lesson models edit it) ---
     title = f"Lesson: {task.title}" if task else f"Lesson from model run {model_run.id}"
     outcome = ("completed" if model_run.completed else
                "errored" if model_run.errored else
@@ -361,17 +323,13 @@ def draft_from_run(db, model_run):
     )
 
 
-# ---------- retrieval (advisory-only surface) ----------
 def retrieve_validated(db, *, category: Optional[str] = None,
                        tag: Optional[str] = None,
                        task_type: Optional[str] = None,
                        limit: int = 20) -> List[Dict[str, Any]]:
-    """Return ONLY status=validated entries, newest first, each wrapped with
-    an explicit advisory label so no consumer can mistake a lesson for
-    policy. Filters: category (exact), tag (membership in the entry's tags
-    list), task_type (the source task's type, via join). This function is the
-    ONLY sanctioned retrieval surface, and it must never be imported by
-    routing/verification/budget decision code (grep-asserted in tests)."""
+    """Validated entries only, newest first, each labelled advisory.
+
+    The only sanctioned retrieval surface; decision code must never import it."""
     from core.database import KnowledgeBaseEntry, RoutingTask
 
     limit = max(1, min(int(limit), 200))

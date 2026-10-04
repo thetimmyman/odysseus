@@ -1,19 +1,6 @@
-// static/js/configPanel.js — Settings: the app's configuration home.
-//
-// PR-A slice: a dedicated Settings overlay reusing the crew-modal / admin-tabs /
-// harness-* classes exactly like routingHarness.js, with a fully-working versioned
-// Budget editor (structured caps + inline validation + reusable dirty-state +
-// confirm-on-publish + version history + rollback + read-only spend cards) and a
-// read-only Effective-config view. UI slice over routes/config_routes.py.
-//
-// Same-origin cookie fetch, display-side admin gating (every /api/config route
-// enforces the admin cookie server-side; on 401/403 each panel shows ONE inline
-// "Admin session required" state instead of crashing), and XSS-safe rendering
-// (textContent / _esc only). The dirty-state helper (createDirtyState) is built
-// here as the reusable, app-wide bit the codebase was missing.
-//
-// This module self-initialises (deferred module scripts run after DOM parse) and
-// also exposes window.configPanelModule for parity with the other tool modules.
+// Settings overlay: versioned budget editor, providers, policy and effective config.
+// Admin gating is enforced server-side; on 401/403 a panel shows an inline notice.
+// Render with textContent / _esc only.
 
 let API_BASE = '';
 let _wired = false;
@@ -21,12 +8,10 @@ let _open = false;
 let _tab = 'budget';
 let _loaded = {};            // tab -> has loaded at least once this session
 
-// Budget tab state --------------------------------------------------------------
 let _server = null;          // last GET /api/config/budget payload (server truth)
 let _buffer = {};            // field -> raw input string (the edited buffer)
 let _budgetDirty = null;     // dirty-state tracker (createDirtyState)
 
-// --- XSS-safe + fetch helpers (mirrors routingHarness.js) -----------------------
 function _esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -44,8 +29,7 @@ async function _api(path, opts) {
     let detail = `${r.status}`;
     let raw = null;
     try { const j = await r.json(); if (j && j.detail != null) { raw = j.detail; detail = j.detail; } } catch { /* noop */ }
-    // The CONTRACT returns 400 {detail:[reason,...]}; keep the list intact on the
-    // error so the publish/rollback handlers can render each reason on its own line.
+    // Keep a 400 {detail:[...]} list intact so each reason renders on its own line.
     const e = new Error(Array.isArray(detail) ? detail.join('; ') : String(detail));
     e.status = r.status;
     e.detail = raw;
@@ -57,7 +41,6 @@ function _post(path, body) {
   return _api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 }
 
-// --- shared render helpers ------------------------------------------------------
 function _isAuthErr(e) { return e && (e.status === 401 || e.status === 403); }
 
 function _gate(tab, e) {
@@ -112,10 +95,7 @@ function _td(content, cls) {
   return td;
 }
 
-// --- reusable dirty-state (the app-wide gap this PR fills) -----------------------
-// A tiny, dependency-free tracker: flips a flag element on/off and offers a
-// confirm-on-discard gate. Any future Settings tab (or panel) can reuse it —
-// it knows nothing about budgets.
+// Reusable dirty-state tracker with a confirm-on-discard gate.
 function createDirtyState(opts) {
   opts = opts || {};
   let dirty = false;
@@ -128,7 +108,6 @@ function createDirtyState(opts) {
       if (opts.flagEl) opts.flagEl.style.display = v ? '' : 'none';
       if (typeof opts.onChange === 'function') opts.onChange(v);
     },
-    // Returns true if it is safe to proceed (not dirty, or the user confirmed).
     confirmDiscard(msg) {
       if (!dirty) return true;
       return window.confirm(msg || 'You have unsaved changes. Discard them?');
@@ -136,8 +115,7 @@ function createDirtyState(opts) {
   };
 }
 
-// --- Budget: caps definition ----------------------------------------------------
-// order + labels + captions; ENFORCED=false marks the advisory monthly cap.
+// ENFORCED=false marks the advisory monthly cap.
 const _CAPS = [
   { field: 'daily_max_usd', label: 'Daily', caption: 'General daily spend cap — a hard block; never per-run overridable.' },
   { field: 'weekly_max_usd', label: 'Weekly', caption: 'General weekly spend cap — a hard block; never per-run overridable.' },
@@ -146,16 +124,13 @@ const _CAPS = [
   { field: 'premium_weekly_max_usd', label: 'Premium weekly', caption: 'Premium-model weekly cap. Must be ≤ the general weekly cap.' },
 ];
 
-// Parse a raw input string to a number, or NaN when blank/non-numeric.
 function _num(raw) {
   const s = String(raw == null ? '' : raw).trim();
   if (s === '') return NaN;
   return Number(s);
 }
 
-// Mirror the server-side validate_budget contract on the client for instant
-// feedback (the server remains the authority — a rejected publish never writes).
-// Returns { reasons:[...], badFields:Set }.
+// Client mirror of validate_budget for instant feedback; the server stays authoritative.
 function _validateBuffer() {
   const reasons = [];
   const badFields = new Set();
@@ -181,25 +156,20 @@ function _validateBuffer() {
   return { reasons, badFields };
 }
 
-// Has the buffer diverged from the server's caps? (drives the dirty flag)
 function _bufferChanged() {
   if (!_server || !_server.caps) return false;
   for (const c of _CAPS) {
     const b = _num(_buffer[c.field]);
     const s = Number(_server.caps[c.field]);
-    // Compare numerically when both parse; otherwise compare raw strings so a
-    // half-typed value still reads as dirty.
+    // Fall back to raw strings so a half-typed value still reads as dirty.
     if (isFinite(b) && isFinite(s)) { if (b !== s) return true; }
     else if (String(_buffer[c.field] ?? '') !== String(_server.caps[c.field] ?? '')) return true;
   }
   return false;
 }
 
-// Re-run validation + dirty detection and reflect it in the UI. Called on every
-// keystroke and after any (re)load.
 function _refreshBudgetState() {
   const { reasons, badFields } = _validateBuffer();
-  // per-field highlight + caption state
   for (const c of _CAPS) {
     const card = document.querySelector(`#cfg-budget-caps .cfg-cap[data-cap-field="${c.field}"]`);
     if (!card) continue;
@@ -209,7 +179,6 @@ function _refreshBudgetState() {
     card.classList.toggle('is-bad', bad);
     card.classList.toggle('is-dirty', !bad && !!changed);
   }
-  // aggregate warning box
   const warn = _el('cfg-budget-warn');
   if (warn) {
     if (reasons.length) {
@@ -346,9 +315,8 @@ function _renderVersions(versions) {
   }
 }
 
-// GET /api/config/budget (+ /versions). `force` bypasses the unsaved-buffer guard.
+// `force` bypasses the unsaved-buffer guard.
 async function _loadBudget(force) {
-  // Guard the open-time / explicit refetch against clobbering an unsaved buffer.
   if (!force && _budgetDirty && _budgetDirty.isDirty()) {
     if (!_budgetDirty.confirmDiscard('Reload will discard your unsaved budget changes. Continue?')) return;
   }
@@ -396,8 +364,7 @@ async function _publishBudget() {
     + 'Raising a cap increases spend exposure. The general daily/weekly caps are '
     + 'never per-run overridable. The outgoing version is archived and the change '
     + 'is logged.')) return;
-  // Body = the 5 cap floats only. The server owns + auto-bumps the version; we
-  // never send a client-supplied version.
+  // Caps only: the server owns the version.
   const body = {};
   for (const c of _CAPS) body[c.field] = _num(_buffer[c.field]);
   const btn = _el('cfg-budget-publish');
@@ -439,7 +406,6 @@ async function _rollbackBudget(archiveName) {
   }
 }
 
-// --- Effective: read-only source-of-truth table ---------------------------------
 const _SURFACE = {
   runtime: { word: 'runtime', kind: 'crew-st-ok' },
   needs_redeploy: { word: 'needs redeploy', kind: 'crew-st-block' },
@@ -502,14 +468,8 @@ async function _loadEffective() {
   }
 }
 
-// --- Providers: AI endpoints + API keys (surfaces /api/model-endpoints) ---------
-// The provider CRUD + encrypted-at-rest key storage + test-connection already
-// exist server-side (routes/model_routes.py, gate `require_admin` — the admin
-// cookie passes). This tab surfaces them; it adds NO new backend. Security: the
-// plaintext key is WRITE-ONLY here — the server never returns it (only has_key +
-// a sha256[:8] fingerprint), so we render a masked fingerprint, offer
-// replace-only rotation, and clear the key field after every send. No API key
-// ever lives in this module's state.
+// Providers: API keys are write-only. The server returns only a fingerprint, the
+// key field is cleared after every send, and no key is kept in module state.
 const _PROVIDERS = [
   { label: 'Custom URL', url: '' },
   { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
@@ -526,8 +486,7 @@ const _PROVIDERS = [
   { label: 'Z.AI (Zhipu)', url: 'https://api.z.ai/api/paas/v4' },
 ];
 
-// The model-endpoint routes take FORM bodies for create/test and a JSON body
-// for PATCH — separate helpers so the content-type is always right.
+// Create/test take form bodies, PATCH takes JSON.
 function _postForm(path, fields) {
   const body = new URLSearchParams();
   for (const [k, v] of Object.entries(fields)) body.set(k, v == null ? '' : String(v));
@@ -751,14 +710,9 @@ async function _deleteProvider(ep) {
   }
 }
 
-// --- Policy: structured safe-knob editor (over /api/harness/policy) --------------
-// The SAFE policy fields get friendly typed inputs with client-side validation
-// mirroring the server (src/routing_policy._validate_policy). Danger-zone knobs
-// (sandbox image/allowlist, sensitivity ceiling, coordinator provider/endpoint,
-// ABSIS) are shown READ-ONLY — they need security_admin via the raw Routing
-// Harness > Policy tab. On publish we send the FULL current policy with only the
-// safe fields overridden, so the danger-zone values are unchanged → the publish
-// route sees no danger-zone change and the admin cookie suffices.
+// Policy: only safe fields are editable; danger-zone knobs are read-only here.
+// Publishing sends the full policy with safe fields overridden, so no
+// danger-zone change is seen and the admin cookie suffices.
 let _polServer = null;   // last GET /api/harness/policy (server truth, typed)
 let _polBuf = null;      // working deep-clone; safe edits coerce into it
 let _policyDirty = null;
@@ -1044,9 +998,6 @@ async function _rollbackPolicy(archive) {
   }
 }
 
-// --- tabs + overlay --------------------------------------------------------------
-// _LOADERS-style map: adding another tab later is just a new tab button + panel
-// + one entry here.
 const _LOADERS = {
   budget: _loadBudget,
   providers: _loadProviders,
@@ -1054,13 +1005,8 @@ const _LOADERS = {
   effective: _loadEffective,
 };
 
-// Confirm-on-discard gate shared by tab-switch / close / (guarded) reload.
-// On a CONFIRMED discard it actually discards — resets the buffer to server
-// truth and clears the dirty flag — so reopening (or switching back) shows the
-// clean server values and Publish is never left live over a value the admin
-// explicitly chose to drop. (Previously the prompt only gated the action and
-// left _buffer/_budgetDirty untouched, so a confirmed "Discard" was a no-op and
-// the reopen path — guarded by _loaded['budget'] — resurrected the edits.)
+// A confirmed discard must reset the buffer to server truth, or reopening
+// resurrects the dropped edits.
 function _confirmLeave(actionMsg) {
   if (_tab === 'budget' && _budgetDirty && _budgetDirty.isDirty()) {
     if (!_budgetDirty.confirmDiscard(actionMsg)) return false;
@@ -1094,8 +1040,7 @@ function _openOverlay() {
   if (!ov) return;
   ov.style.display = '';
   _open = true;
-  // Do NOT reset _loaded / the buffer on open — this is what guards an unsaved
-  // buffer from being clobbered by a reopen. Lazy-load only tabs not yet loaded.
+  // Don't reset _loaded or the buffer on open; that protects unsaved edits.
   _showTab(_tab);
 }
 function _closeOverlay() {
@@ -1128,7 +1073,6 @@ function init(apiBase) {
     if (e.key === 'Escape' && ov && ov.style.display !== 'none') _closeOverlay();
   });
 
-  // Budget
   _el('cfg-budget-publish')?.addEventListener('click', _publishBudget);
   _el('cfg-budget-revert')?.addEventListener('click', _revertBudget);
   _el('cfg-budget-reload')?.addEventListener('click', () => _loadBudget(false));
@@ -1137,12 +1081,10 @@ function init(apiBase) {
     if (btn) _rollbackBudget(btn.dataset.archive);
   });
 
-  // Providers
   _el('cfg-prov-reload')?.addEventListener('click', _loadProviders);
   _el('cfg-prov-test')?.addEventListener('click', _testProvider);
   _el('cfg-prov-add')?.addEventListener('click', _addProvider);
 
-  // Policy
   _el('cfg-policy-publish')?.addEventListener('click', _publishPolicy);
   _el('cfg-policy-revert')?.addEventListener('click', _revertPolicy);
   _el('cfg-policy-reload')?.addEventListener('click', () => _loadPolicy(false));
@@ -1151,7 +1093,6 @@ function init(apiBase) {
     if (btn) _rollbackPolicy(btn.dataset.archive);
   });
 
-  // Effective
   _el('cfg-effective-reload')?.addEventListener('click', _loadEffective);
 
   // Native page-unload guard (covers browser reload / tab close while dirty).
@@ -1165,8 +1106,7 @@ const configPanelModule = { init, refresh, createDirtyState };
 export default configPanelModule;
 window.configPanelModule = configPanelModule;
 
-// Self-initialise: module scripts are deferred, so the DOM is parsed by the time
-// this runs. app.js is not owned by this slice, so we wire ourselves.
+// Module scripts are deferred, so the DOM is parsed by now.
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => init(''));
 } else {

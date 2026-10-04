@@ -1,34 +1,17 @@
-"""src/local_target_routing.py — the PS-632 fleet registry feeding PS-605.
+"""Translate the measured local fleet registry into dispatch routing inputs.
 
-This module is the seam, and only the seam:
-
-    src.local_targets.probe_fleet / fleet_snapshot     (PS-632: MEASUREMENT)
-        -> routing_inputs(records)                     (here: TRANSLATION)
-        -> dispatch_boundary.resolve_from_estate       (PS-605: SELECTION)
+    src.local_targets.probe_fleet / fleet_snapshot     (measurement)
+        -> routing_inputs(records)                     (here: translation)
+        -> dispatch_boundary.resolve_from_estate       (selection)
         -> the decision's pin                          (what may run)
 
-Three rules hold it together.
-
-**No second chooser.** Nothing here ranks, prefers or falls back. Every ordering
-decision belongs to PS-605's single filter path; this module turns measured records
-into profiles and receipts and asks PS-605 what to do. `select_local_target` stays
-where it is — a library for callers that have no routing policy to consult — and is
-deliberately NOT called by the integrated worker path, because two choosers is how
-a router stops being authoritative.
-
-**One vocabulary.** The registry names the requirements a packet may state
-(``native_tools``, ``readonly_analysis``, ``streaming``) and the network class
-(``tailnet-loopback``); the packet, the profile, the receipt and the request all use
-those SAME strings. :data:`CAPABILITY_MAP` is the single place a registry name
-becomes a PS-605 capability, and an unmapped requirement is a refusal rather than a
-silent pass.
-
-**Measured or absent.** A receipt is built from ``LocalTargetCapability`` —
-``proven_capabilities()`` (never the declared list), ``health``, ``last_probe`` and
-the model digest — and a record that is unhealthy, unprobed or unmeasured produces
-no receipt at all, which makes its target ineligible instead of optimistically
-available. Freshness is profile-specific: each receipt carries its own probe time
-and TTL, so one node's stale measurement cannot be spent as another's.
+* No second chooser: nothing here ranks or falls back; selection belongs to
+  dispatch routing. `select_local_target` is not used on the worker path.
+* One vocabulary: :data:`CAPABILITY_MAP` is the only place a registry name
+  becomes a routing capability; unmapped requirements are refused.
+* Measured or absent: receipts come from ``proven_capabilities()``, health,
+  probe time and digest; unhealthy/unprobed/unmeasured records get no receipt.
+  Each receipt carries its own probe time and TTL.
 """
 from __future__ import annotations
 
@@ -44,20 +27,18 @@ from src.local_targets import (
     KNOWN_CAPABILITIES, NETWORK_TAILNET, PRIVACY_LOCAL_ONLY, ROLE_INFERENCE,
     LocalTargetCapability, TargetCapabilityReceipt, receipt_from_capability)
 
-#: Registry requirement name -> the PS-605 capabilities it proves. Total for the
-#: registry's known names; anything else refuses (see ``requirement_capabilities``).
+#: Registry requirement name -> the routing capabilities it proves; anything
+#: else refuses (see ``requirement_capabilities``).
 CAPABILITY_MAP: Mapping[str, Tuple[str, ...]] = {
-    # A proven native tool call is the same measurement PS-605 calls a single
-    # tool call. It also proves the packet can act at all, not just read.
+    # A proven native tool call is a single tool call, and proves the packet can act.
     CAP_NATIVE_TOOLS: (dr.CAP_SINGLE_TOOL_CALL,),
     # Completion-only work: the node can summarize/classify/review prose exactly.
     CAP_READONLY_ANALYSIS: (dr.CAP_TEXT_GENERATION, dr.CAP_EXACT_REFERENCE_SEMANTICS),
     CAP_STREAMING: (dr.CAP_STREAMING,),
 }
 
-#: Default TTL for a measured capability receipt, in seconds. A measurement is
-#: evidence with an expiry: an hour keeps a routing decision tied to a probe a human
-#: could still see in the fleet snapshot, without re-probing per dispatch.
+#: Measured receipt TTL: an hour ties decisions to a visible probe without
+#: re-probing per dispatch.
 DEFAULT_RECEIPT_TTL_S = 3600
 
 
@@ -67,7 +48,7 @@ class FleetRoutingError(RuntimeError):
 
 def _legacy_view_from_receipt(receipt: TargetCapabilityReceipt, profile: Any,
                               *, now: Optional[datetime.datetime] = None) -> Any:
-    """Project canonical PS-632 evidence into PS-605's non-authoritative view."""
+    """Project canonical capability evidence into the routing (non-authoritative) view."""
     mapped = set()
     for name in receipt.capabilities.measured:
         mapped.update(CAPABILITY_MAP.get(name, (name,)))
@@ -119,11 +100,8 @@ def _parse_probe_time(value: str) -> Optional[datetime.datetime]:
 
 
 def requirement_capabilities(required: Sequence[str]) -> Tuple[str, ...]:
-    """Translate packet requirements into PS-605 capabilities, fail-closed.
-
-    An unknown requirement name is refused rather than dropped: a packet that asks
-    for something the registry cannot name is a packet this seam cannot route.
-    """
+    """Translate packet requirements into routing capabilities; unknown names are
+    refused, not dropped."""
     translated: List[str] = []
     for name in required:
         if name not in KNOWN_CAPABILITIES:
@@ -139,13 +117,9 @@ def requirement_capabilities(required: Sequence[str]) -> Tuple[str, ...]:
 
 
 def roles_from_capabilities(capabilities: Iterable[str]) -> Tuple[str, ...]:
-    """Roles that follow from PS-605-level capabilities.
-
-    A proven tool channel is what makes a node an implementer/repair/debug/review
-    target; text generation alone makes it a read-only analyst. Deriving roles from
-    capability (rather than from a spec field) is what stops a role being re-added by
-    editing configuration without a new measurement.
-    """
+    """Roles implied by capabilities: a tool channel makes an implementer/repair/
+    debug/review target, text alone a read-only analyst. Deriving from capability
+    means config edits can't add roles without a new measurement."""
     caps = set(capabilities)
     roles: List[str] = []
     if dr.CAP_SINGLE_TOOL_CALL in caps:
@@ -157,14 +131,8 @@ def roles_from_capabilities(capabilities: Iterable[str]) -> Tuple[str, ...]:
 
 
 def roles_for_record(record: LocalTargetCapability) -> Tuple[str, ...]:
-    """The roles a measured node may serve, derived from PROVEN capability.
-
-    A node with a proven tool call can implement and repair; any healthy node can do
-    read-only analysis — which is exactly why a tool-less node stays useful here
-    instead of being written off. The derivation is from proof, never from the
-    declared capability list, so a runtime that merely advertises tools cannot be
-    handed implementer work.
-    """
+    """Roles derived from proven capability, never the declared list: a proven
+    tool call allows implement/repair; any healthy node can do read-only analysis."""
     proven = set(record.proven_capabilities())
     roles: List[str] = []
     if CAP_NATIVE_TOOLS in proven:
@@ -176,13 +144,9 @@ def roles_for_record(record: LocalTargetCapability) -> Tuple[str, ...]:
 
 
 def _skip_reason(record: LocalTargetCapability, *, now: datetime.datetime) -> str:
-    """Why this record cannot become a routing input, or "" when it can.
-
-    The role/qualification gate is the registry's topology policy and applies to the
-    in-memory path exactly as it does to the persisted one: MS-R1 has no inference
-    role, and Framework has no qualification reference, so neither becomes a
-    candidate just because a probe answered.
-    """
+    """Why this record can't become a routing input, or "". The registry's
+    role/qualification gate applies here too, so a node without an inference
+    role or qualification ref never becomes a candidate just because it answered."""
     roles = tuple(record.spec.roles or ())
     if ROLE_INFERENCE not in roles:
         return (f"the registry does not give this host the inference role "
@@ -206,12 +170,8 @@ def _skip_reason(record: LocalTargetCapability, *, now: datetime.datetime) -> st
 def routing_inputs(records: Sequence[LocalTargetCapability], *,
                    ttl_s: int = DEFAULT_RECEIPT_TTL_S,
                    now: Optional[datetime.datetime] = None) -> FleetRoutingInputs:
-    """Measured records -> PS-605 profiles and receipts (NO selection).
-
-    Every record either yields a profile WITH a measured, freshness-bound receipt or
-    is skipped with a reason the caller can seal. There is no third outcome: a target
-    can never become a candidate without evidence for the capabilities it claims.
-    """
+    """Measured records -> routing profiles and receipts (no selection). Each
+    record yields a profile with a fresh measured receipt or a sealable skip reason."""
     moment = now or datetime.datetime.now(datetime.timezone.utc)
     profiles: List[Any] = []
     receipts: List[Any] = []
@@ -233,8 +193,8 @@ def routing_inputs(records: Sequence[LocalTargetCapability], *,
         for name in proven:
             capabilities.update(CAPABILITY_MAP.get(name, ()))
         digest = model_digest_of(record)
-        # The registry's own vocabulary, used verbatim on both the profile and the
-        # request so a constraint on the network class cannot silently stop matching.
+        # Use the registry's vocabulary verbatim on profile and request so network
+        # constraints keep matching.
         network_class = record.spec.network_class or NETWORK_TAILNET
         network_classes[target_id] = network_class
         profiles.append(dr.make_target_profile(
@@ -249,8 +209,7 @@ def routing_inputs(records: Sequence[LocalTargetCapability], *,
             tools=frozenset({"write_file"}) if CAP_NATIVE_TOOLS in proven
             else frozenset(),
             network_policy=network_class,
-            # A node is an inference target when it can generate text at all, and
-            # the registry's read-only capability is proof of exactly that.
+            # Read-only capability proves text generation, i.e. an inference target.
             inference=bool({dr.CAP_TEXT_GENERATION} & capabilities),
             cost_rank=0, budget_class="local"))
         receipts.append(dr.make_legacy_capability_view(
@@ -273,14 +232,9 @@ def request_for_packet(packet: Mapping[str, Any], *, role: str,
                        inputs: FleetRoutingInputs,
                        packet_metadata: Optional[Mapping[str, Any]] = None,
                        execution_package_hash: str = "", run_id: str = "") -> dr.RoutingRequest:
-    """The PS-605 request a worker packet implies — from the PACKET, not an operator.
-
-    ``local_only`` is forced: the registry is local-only by construction and the
-    PS-635 worker path has no hosted leg, so a hosted candidate could never win here
-    even if one were added to the estate. The domain comes from the packet's own
-    metadata when it declares one (``policy_domain``) — that is where a sensitive
-    packet states its class — otherwise the work is general software engineering.
-    """
+    """The routing request a worker packet implies. ``local_only`` is forced (the
+    registry and worker path are local-only). The domain comes from the packet's
+    ``policy_domain`` if declared, else general software engineering."""
     metadata = dict(packet_metadata or packet)
     required = tuple(packet.get("target_requirements") or ())
     declared_writes = tuple(packet.get("write_scope") or ())
@@ -292,10 +246,9 @@ def request_for_packet(packet: Mapping[str, Any], *, role: str,
         exactness=dr.EXACTNESS_EXACT,
         sensitivity=str(metadata.get("data_sensitivity") or "internal"),
         local_only=True,
-        # A writable packet needs the tool channel; a read-only one does not, and
-        # asking anyway would refuse a node the registry proves is useful.
+        # Only writable packets need the tool channel; requiring it otherwise
+        # would refuse useful nodes.
         required_tools=("write_file",) if declared_writes else (),
-        # The registry's network class, stated by the packet in the same words.
         network_policy=str(metadata.get("network_policy") or NETWORK_TAILNET),
         max_cost_rank=0)
 
@@ -309,13 +262,9 @@ def resolve_fleet_dispatch(records: Sequence[LocalTargetCapability], *,
                            capability_store: Any = None,
                            now: Optional[datetime.datetime] = None,
                            decision_id: str = "") -> Tuple[Any, FleetRoutingInputs]:
-    """Ask PS-605 to choose. Returns (BoundDispatch, the inputs it chose from).
-
-    ``preferred_target_id`` is a STATED PREFERENCE, not a pin: PS-605 records it,
-    picks it when it is independently eligible, and otherwise records why it could
-    not — with the fallback rule and the reason code in the receipt. A preference
-    that cannot be satisfied never silently becomes a weaker standard.
-    """
+    """Ask the dispatch router to choose; returns (BoundDispatch, its inputs).
+    ``preferred_target_id`` is a preference, not a pin: honoured only when
+    independently eligible, otherwise recorded with the reason."""
     if capability_store is None:
         raise FleetRoutingError(
             "canonical PS-632 capability store is required for dispatch")
@@ -341,7 +290,6 @@ def resolve_fleet_dispatch(records: Sequence[LocalTargetCapability], *,
 
 
 
-# ================================================ persisted receipts (PS-632 store) ===
 @dataclass(frozen=True)
 class PersistedRoutingInputs:
     """Routing inputs built from PERSISTED receipts, with every refusal recorded."""
@@ -364,16 +312,11 @@ def sync_receipts_from_records(store, records: Sequence[LocalTargetCapability], 
                                profiles_by_host: Mapping[str, Mapping[str, Any]] = None,
                                ttl_s: int = DEFAULT_RECEIPT_TTL_S,
                                health_ttl_s: int = 300) -> List[Mapping[str, Any]]:
-    """MEASURE -> PERSIST. The only writer of the capability store (PS-632).
+    """Measure and persist: the only writer of the capability store. Routing never
+    calls this, so it can't make a capability appear by wanting it.
 
-    Routing never calls this: a router that measures is a router that can make a
-    capability appear by wanting it. The discovery command measures and stores; the
-    router reads what is stored.
-
-    ``profiles_by_host`` carries the profile-level facts a probe cannot observe
-    (configured context, the empirically safe context and its source, backend and
-    host baseline). A record with no such entry is stored UNQUALIFIED rather than
-    given a plausible default.
+    ``profiles_by_host`` supplies profile facts a probe can't observe; records
+    without one are stored unqualified rather than defaulted.
     """
     by_host = dict(profiles_by_host or {})
     stored: List[Mapping[str, Any]] = []
@@ -406,18 +349,15 @@ def sync_receipts_from_records(store, records: Sequence[LocalTargetCapability], 
 
 def persisted_routing_inputs(store, *, now=None,
                              specs: Sequence[Any] = None) -> PersistedRoutingInputs:
-    """PERSISTED receipts -> PS-605 routing inputs. Reads only; selects nothing.
+    """Persisted receipts -> routing inputs (read-only). A host is a candidate only if:
 
-    A host contributes a candidate only when ALL of these hold, and each failure is
-    recorded with its own reason so a refusal is auditable:
-
-      * the registry gives the host the inference role and a qualification ref
-        (MS-R1 has neither; Framework has no qualification yet);
-      * the store has a current receipt for it (no receipt is not "unlimited");
-      * the receipt's qualification is valid — not expired, not future-dated, not
-        invalidated, not identity-drifted, with a MEASURED safe context and an exact
-        artifact digest;
+      * the registry grants it the inference role and a qualification ref;
+      * the store has a current receipt (no receipt is not "unlimited");
+      * the qualification is valid: not expired, future-dated, invalidated or
+        identity-drifted, with a measured safe context and exact digest;
       * its short-lived liveness is live.
+
+    Each failure is recorded with its own reason.
     """
     from src.local_targets import (INVALIDATED_UNHEALTHY, ROLE_INFERENCE,
                                    registered_targets)
@@ -471,11 +411,9 @@ def persisted_routing_inputs(store, *, now=None,
         mapped: set = set()
         for name in receipt.capabilities.measured:
             mapped.update(CAPABILITY_MAP.get(name, ()))
-        # Roles come from the RECEIPT (registry policy recorded at measurement time),
-        # so a role cannot be re-added by editing a spec without a new receipt.
-        # The registry's roles are POLICY (they gate routability); PS-605's role
-        # vocabulary is what the selector understands, so the profile declares the
-        # intersection plus the roles its proven capabilities imply.
+        # Roles come from the receipt, so spec edits can't add roles. The profile
+        # declares registry roles intersected with the router's vocabulary, plus
+        # those its proven capabilities imply.
         policy_roles = [r for r in (receipt.roles or spec.roles or ())
                         if r in dr.ROLE_CAPABILITIES]
         roles = tuple(dict.fromkeys(
@@ -529,13 +467,8 @@ def resolve_persisted_dispatch(inputs: PersistedRoutingInputs, *,
                                policy: Any = None,
                                now: Optional[datetime.datetime] = None,
                                decision_id: str = "") -> Any:
-    """Ask PS-605 to choose among PERSISTED receipts. Selects nothing itself.
-
-    Takes the already-read inputs (so the caller can seal exactly what routing saw)
-    and binds them through PS-605's single selection path. A stated preference is
-    still only a preference: PS-605 records whether it could honour it, and the
-    caller decides whether a different target is a refusal.
-    """
+    """Ask the router to choose among persisted receipts. Takes pre-read inputs so
+    the caller can seal exactly what routing saw; a preference is only recorded."""
     if not inputs.profiles:
         raise FleetRoutingError(
             "no persisted capability receipt is routable: "
