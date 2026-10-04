@@ -251,11 +251,14 @@ def project_offer_quota(
     if not isinstance(quota.reset_at, CapacityUnknownValue):
         try:
             reset_at = datetime.fromisoformat(str(quota.reset_at).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
+            if reset_at.tzinfo is None or reset_at.utcoffset() is None:
+                raise ValueError("quota reset timestamp must include a timezone")
+            reset_at = reset_at.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
             return result("unknown", "quota_reset_unusable", (
                 _quota_projection(offer, capacity, quota, status="unknown", reason="quota_reset_unusable"),
             ), "identity_same_unit")
-        if reset_at.tzinfo is None or reset_at.astimezone(timezone.utc) <= current:
+        if reset_at <= current:
             return result("unknown", "quota_reset_elapsed", (
                 _quota_projection(offer, capacity, quota, status="unknown", reason="quota_reset_elapsed"),
             ), "identity_same_unit")

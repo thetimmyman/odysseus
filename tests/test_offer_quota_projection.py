@@ -11,7 +11,7 @@ from src.offer_economics import project_offer_quota, quote_profile
 from src.provider_capacity import (
     CapacityError, CostClass, PriceObservation, PricingSource, QuotaDimension,
     UNKNOWN as CAPACITY_UNKNOWN,
-    make_capacity_receipt,
+    capacity_receipt_hash_is_valid, make_capacity_receipt,
 )
 from src.provider_capacity_store import ProviderCapacityStore
 from src.provider_model_offer import (
@@ -368,6 +368,29 @@ def test_future_capacity_evidence_never_produces_a_numeric_projection(configured
     assert result.status == "unknown"
     assert result.reason == "capacity_source_not_current"
     assert all(item.request_count is None for item in result.projections)
+
+
+@pytest.mark.parametrize("reset_at", [
+    "0001-01-01T00:00:00+01:00",
+    "9999-12-31T23:59:59-01:00",
+])
+def test_canonical_receipt_extreme_reset_offsets_fail_closed(configured, reset_at):
+    _, _, _, record, _, capacity = configured
+    current = datetime.now(timezone.utc)
+    quota = _quota(capacity, "extreme-reset", "credits", remaining=20)
+    # The capacity factory seals nested quota data without re-running the
+    # QuotaDimension constructor, matching the canonical receipt path that
+    # exposes these accepted but unnormalizable reset timestamps.
+    object.__setattr__(quota, "reset_at", reset_at)
+    edge_capacity = _capacity_with_quotas(capacity, (quota,))
+    assert capacity_receipt_hash_is_valid(edge_capacity.to_dict())
+    edge_offer = _offer_for_capacity(
+        record, edge_capacity, credit=CreditEffect("credits", 2, "per_request_debit")
+    )
+    result = project_offer_quota(edge_offer, edge_capacity, now=current)
+    assert result.status == "unknown"
+    assert result.reason == "quota_reset_unusable"
+    assert result.projections[0].request_count is None
 
 
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -1])
