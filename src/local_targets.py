@@ -940,7 +940,9 @@ class TargetCapabilityReceipt:
             return INVALIDATED_EXPIRED
         if not self.model.is_exact():
             return INVALIDATED_IDENTITY_DRIFT
-        if int(self.context.safe_working_context) <= 0:
+        if (int(self.context.safe_working_context) <= 0 or
+                not isinstance(self.context.safe_context_source, str) or
+                not self.context.safe_context_source.strip()):
             return INVALIDATED_SAFE_CONTEXT_UNMEASURED
         if current_identity_digest and current_identity_digest != self.identity_digest():
             return INVALIDATED_IDENTITY_DRIFT
