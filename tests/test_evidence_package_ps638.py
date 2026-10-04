@@ -5,6 +5,7 @@ it is rejected by the named semantic rule rather than by the package hash.
 ``test_the_positive_fixture_is_verified`` is the control.
 """
 import hashlib
+import json
 import subprocess
 
 import pytest
@@ -26,6 +27,8 @@ from src.evidence_package import (
     MISSING_REQUIRED_NEGATIVE_CONTROL,
     PREEXISTING_FAILURE_WITHOUT_BASELINE,
     RETRY_HISTORY_OMITTED,
+    SCHEMA_VERSION_INVALID,
+    UNSUPPORTED_SCHEMA_VERSION,
     SECRET_SHAPED_FIXTURE_LEAK,
     SOURCE_CHANGED_AFTER_VERIFICATION,
     SOURCE_IDENTITY_MISSING_OR_AMBIGUOUS,
@@ -241,6 +244,177 @@ def _apply_edits(payload, package_payload, opts):
         package_payload = dict(package_payload, objective="quietly reworded")
         payload = dict(payload, execution_package=package_payload)
     return payload
+
+
+def _hash_json(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                    ensure_ascii=False, default=str).encode()).hexdigest()
+
+
+def _reseal_receipt(row, *, verification=False):
+    core = {key: value for key, value in row.items()
+            if key != "receipt_hash" and not (verification and key == "outcome")}
+    row["receipt_hash"] = _hash_json(core)
+
+
+def _reseal_graph(payload):
+    """Rebind a synthetic fixture after a nested schema-only mutation."""
+    package = payload["execution_package"]
+    package.pop("package_hash", None)
+    package["package_hash"] = _hash_json(package)
+    package_hash = package["package_hash"]
+    for row in payload.get("dispatch_receipts", ()):
+        row["execution_package_hash"] = package_hash
+        _reseal_receipt(row)
+    dispatch_hash = (payload.get("dispatch_receipts") or [{}])[0].get(
+        "receipt_hash", "")
+    for row in payload.get("attempt_receipts", ()):
+        row["execution_package_hash"] = package_hash
+        row["dispatch_receipt_hash"] = dispatch_hash
+        _reseal_receipt(row)
+    for row in payload.get("verification_receipts", ()):
+        row["execution_package_hash"] = package_hash
+        _reseal_receipt(row, verification=True)
+    payload.pop("evidence_package_hash", None)
+    payload["evidence_package_hash"] = _hash_json({
+        key: value for key, value in payload.items()
+        if key != "evidence_package_hash"})
+    return payload
+
+
+@pytest.fixture()
+def schema_repo(tmp_path, monkeypatch):
+    """Build the evidence fixture without creating a nested Git repository."""
+    from src.source_snapshot import _finalize
+
+    root = tmp_path / "schema-repo"
+    (root / "src").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / ARTIFACT).write_text("def order(): return [1, 2, 3]\n")
+    (root / VERIFIER).write_text("assert True\n")
+
+    def snapshot(worktree, *, base_sha="", relevant_paths=(), **_kwargs):
+        pairs = tuple((name, "a" * 64) for name in relevant_paths)
+        return _finalize({
+            "schema_version": 1, "repo_root": str(root),
+            "repo_identity": "synthetic-schema-fixture", "base_sha": base_sha,
+            "head_sha": "synthetic-head", "branch": "synthetic",
+            "worktree": str(root), "detached": False,
+            "staged_paths": (), "unstaged_paths": (), "untracked_paths": (),
+            "tracked_diff_digest": "", "untracked_digest": "b" * 64,
+            "relevant_digests": pairs, "truncated_paths": (),
+            "diff_truncated": False,
+        })
+
+    monkeypatch.setattr(__import__(__name__), "take_source_snapshot",
+                        snapshot)
+    return root
+
+
+def _assert_resealed_graph(payload):
+    from src.attempt_receipt import (
+        attempt_receipt_hash_is_valid, verification_receipt_hash_is_valid)
+    from src.evidence_package import evidence_package_hash_is_valid
+    from src.execution_package import package_hash_is_valid
+    from src.source_snapshot import snapshot_digest_is_valid
+
+    assert evidence_package_hash_is_valid(payload)
+    assert package_hash_is_valid(payload["execution_package"])
+    assert snapshot_digest_is_valid(payload["execution_package"]["source"])
+    assert all(attempt_receipt_hash_is_valid(row)
+               for row in payload.get("attempt_receipts", ()))
+    assert all(verification_receipt_hash_is_valid(row)
+               for row in payload.get("verification_receipts", ()))
+    for row in payload.get("dispatch_receipts", ()):
+        assert row["receipt_hash"] == _hash_json({
+            key: value for key, value in row.items() if key != "receipt_hash"})
+
+
+def test_schema_version_guard_rejects_outer_versions_after_resealing(schema_repo):
+    for version, expected in ((999, UNSUPPORTED_SCHEMA_VERSION),
+                              (True, SCHEMA_VERSION_INVALID),
+                              ("1", SCHEMA_VERSION_INVALID),
+                              (None, SCHEMA_VERSION_INVALID),
+                              ("absent", SCHEMA_VERSION_INVALID)):
+        payload, _ = make_run(schema_repo)
+        if version == "absent":
+            payload.pop("schema_version")
+        else:
+            payload["schema_version"] = version
+        payload["evidence_package_hash"] = compute_evidence_package_hash(
+            {key: value for key, value in payload.items()
+             if key != "evidence_package_hash"})
+        _assert_resealed_graph(payload)
+        result = validate_evidence_package(payload)
+        assert result.ok is False
+        assert result.issues[0].code == expected
+        assert result.issues[0].subject == "schema_version"
+        assert result.issues[0].code != EVIDENCE_PACKAGE_HASH_MISMATCH
+
+
+@pytest.mark.parametrize("record_path", [
+    "execution_package", "execution_package.source", "dispatch_receipts[0]",
+    "attempt_receipts[0]", "verification_receipts[0]",
+])
+@pytest.mark.parametrize("version, expected", [
+    (999, UNSUPPORTED_SCHEMA_VERSION), (True, SCHEMA_VERSION_INVALID),
+    ("1", SCHEMA_VERSION_INVALID), (None, SCHEMA_VERSION_INVALID),
+    ("absent", SCHEMA_VERSION_INVALID), (0, UNSUPPORTED_SCHEMA_VERSION),
+    (-1, UNSUPPORTED_SCHEMA_VERSION),
+])
+def test_nested_schema_versions_are_checked_before_hash_validation(
+        schema_repo, record_path, version, expected):
+    payload, _ = make_run(schema_repo)
+    if record_path == "execution_package":
+        record = payload["execution_package"]
+    elif record_path == "execution_package.source":
+        record = payload["execution_package"]["source"]
+    else:
+        group, index = record_path.rsplit("[", 1)
+        record = payload[group][int(index[:-1])]
+    if version == "absent":
+        record.pop("schema_version")
+    else:
+        record["schema_version"] = version
+    if record_path == "execution_package.source":
+        raw_source = dict(record)
+        rebuilt_source = source_snapshot_from_dict(raw_source).to_dict()
+        raw_source["snapshot_digest"] = rebuilt_source["snapshot_digest"]
+        payload["execution_package"]["source"] = raw_source
+    payload = _reseal_graph(payload)
+    _assert_resealed_graph(payload)
+    result = validate_evidence_package(payload)
+    assert result.ok is False
+    assert result.issues[0].code == expected
+    assert result.issues[0].subject == f"{record_path}.schema_version"
+    assert result.issues[0].code != EVIDENCE_PACKAGE_HASH_MISMATCH
+
+
+def test_schema_guard_rejects_malformed_embedded_records_with_subject(schema_repo):
+    payload, _ = make_run(schema_repo)
+    payload["attempt_receipts"] = [None]
+    result = validate_evidence_package(payload)
+    assert result.ok is False
+    assert result.issues[0].code == "malformed_record"
+    assert result.issues[0].subject == "attempt_receipts[0]"
+
+
+def test_execution_package_v2_ticket_key_envelope_remains_verifiable(schema_repo):
+    payload, _ = make_run(schema_repo)
+    result = validate_evidence_package(payload)
+    assert payload["execution_package"]["schema_version"] == 2
+    assert "ticket_key" in payload["execution_package"]
+    assert result.ok is True, result.explain()
+
+
+def test_execution_package_v1_jira_key_envelope_remains_verifiable(schema_repo):
+    payload, _ = make_run(schema_repo)
+    package = payload["execution_package"]
+    package["schema_version"] = 1
+    package["jira_key"] = package.pop("ticket_key")
+    payload = _reseal_graph(payload)
+    result = validate_evidence_package(payload)
+    assert result.ok is True, result.explain()
 
 
 def test_the_positive_fixture_is_verified(repo):

@@ -73,6 +73,8 @@ SECRET_SHAPED_FIXTURE_LEAK = "secret_shaped_fixture_leak"
 NO_ATTEMPTS = "no_attempts"
 REQUIREMENT_STATE_TAMPERED = "requirement_state_tampered"
 MALFORMED_RECORD = "malformed_record"
+SCHEMA_VERSION_INVALID = "schema_version_invalid"
+UNSUPPORTED_SCHEMA_VERSION = "unsupported_schema_version"
 
 # Closure
 REQUIREMENT_UNRESOLVED = "requirement_unresolved"
@@ -93,6 +95,7 @@ KNOWN_REASONS = frozenset({
     WORKER_AUTHORED_EVIDENCE_NOT_INDEPENDENT, SECRET_SHAPED_FIXTURE_LEAK,
     NO_ATTEMPTS, REQUIREMENT_STATE_TAMPERED, REQUIREMENT_UNRESOLVED,
     REQUIREMENT_FAILED, REQUIREMENT_BLOCKED_NOT_ALLOWED, MALFORMED_RECORD,
+    SCHEMA_VERSION_INVALID, UNSUPPORTED_SCHEMA_VERSION,
 })
 
 #: Secret shapes that should never appear in any payload; a hit is an
@@ -802,6 +805,65 @@ def _check_closure(requirements: Sequence[EvidenceRequirement],
                 "be satisfied, not excused", subject=req.requirement_id))
 
 
+def _schema_version_issues(payload: Mapping[str, Any]) -> Tuple[ValidationIssue, ...]:
+    """Validate only the versioned record shapes before any recursive traversal."""
+    issues: list = []
+
+    def check(record: Mapping[str, Any], subject: str,
+              supported: Tuple[int, ...]) -> None:
+        version = record.get("schema_version")
+        if "schema_version" not in record or type(version) is not int:
+            issues.append(ValidationIssue(
+                SCHEMA_VERSION_INVALID,
+                "schema_version must be a present, non-boolean integer",
+                subject=f"{subject}.schema_version" if subject else "schema_version"))
+        elif version not in supported:
+            issues.append(ValidationIssue(
+                UNSUPPORTED_SCHEMA_VERSION,
+                f"schema_version {version} is unsupported; "
+                f"supported versions are {list(supported)}",
+                subject=f"{subject}.schema_version" if subject else "schema_version"))
+
+    check(payload, "", (EVIDENCE_PACKAGE_SCHEMA_VERSION,))
+    package = payload.get("execution_package")
+    if not isinstance(package, Mapping):
+        issues.append(ValidationIssue(
+            MALFORMED_RECORD, "execution_package must be a mapping",
+            subject="execution_package"))
+        return tuple(issues)
+    check(package, "execution_package", (1, 2))
+
+    source = package.get("source")
+    if not isinstance(source, Mapping):
+        issues.append(ValidationIssue(
+            MALFORMED_RECORD, "source snapshot must be a mapping",
+            subject="execution_package.source"))
+    else:
+        check(source, "execution_package.source", (1,))
+
+    for field_name, label in (("dispatch_receipts", "DispatchDecisionReceipt"),
+                              ("attempt_receipts", "AttemptReceipt"),
+                              ("verification_receipts", "VerificationReceipt")):
+        records = payload.get(field_name, ())
+        if records is None:
+            records = ()
+        if not isinstance(records, (list, tuple)):
+            issues.append(ValidationIssue(
+                MALFORMED_RECORD, f"{field_name} must be a list or tuple",
+                subject=field_name))
+            continue
+        supported = (1,)
+        for index, record in enumerate(records):
+            subject = f"{field_name}[{index}]"
+            if not isinstance(record, Mapping):
+                issues.append(ValidationIssue(
+                    MALFORMED_RECORD, f"{label} must be a mapping",
+                    subject=subject))
+            else:
+                check(record, subject, supported)
+    return tuple(issues)
+
+
 def validate_evidence_package(
     payload: Mapping[str, Any],
     *,
@@ -814,13 +876,16 @@ def validate_evidence_package(
     different tree is invalidated. ``artifact_extensions`` supplies bytes for
     non-file URIs.
     """
-    issues: list = []
-    extensions = dict(artifact_extensions or {})
     if not isinstance(payload, Mapping):
         return ValidationResult(False, (ValidationIssue(
             MALFORMED_RECORD,
             f"evidence package must be a mapping, got {type(payload).__name__}"),))
+    schema_issues = _schema_version_issues(payload)
+    if schema_issues:
+        return ValidationResult(False, schema_issues)
 
+    issues: list = []
+    extensions = dict(artifact_extensions or {})
     if not evidence_package_hash_is_valid(payload):
         issues.append(ValidationIssue(
             EVIDENCE_PACKAGE_HASH_MISMATCH,
