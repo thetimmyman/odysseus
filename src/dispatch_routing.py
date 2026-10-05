@@ -90,9 +90,14 @@ ROLE_ESCALATION = "escalation"
 #: Harness spellings of the two roles that differ from the canonical names.
 ROLE_IMPLEMENTER_ROUTER = "implementer"
 ROLE_SCOUT_ROUTER = "scout"
+#: Explicit bounded roles; existing role requirements never become weaker.
+ROLE_APPROXIMATE_IMPLEMENTER = "approximate_implementer"
+ROLE_APPROXIMATE_ANALYST = "approximate_analyst"
 
 #: A role's capabilities when the request names none; shorthand, never a substitute.
 ROLE_CAPABILITIES: Mapping[str, Tuple[str, ...]] = {
+    ROLE_APPROXIMATE_IMPLEMENTER: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL),
+    ROLE_APPROXIMATE_ANALYST: (CAP_TEXT_GENERATION,),
     ROLE_IMPLEMENTER: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL,
                        CAP_EXACT_REFERENCE_SEMANTICS),
     ROLE_REPAIR: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL,
@@ -334,10 +339,13 @@ class LegacyCapabilityView:
     #: Hash of the persisted capability receipt this came from, when there is
     #: one, so readers can re-derive the evidence instead of trusting a summary.
     source_receipt_hash: str = ""
+    safe_working_context: int = 0
     schema_version: int = SCHEMA_VERSION
     receipt_hash: str = field(default="")
 
     def __post_init__(self) -> None:
+        if type(self.safe_working_context) is not int or self.safe_working_context < 0:
+            raise DispatchRoutingError("safe_working_context must be a non-negative integer")
         for name in ("receipt_id", "profile_id", "target_id", "observed_at"):
             if not str(getattr(self, name) or "").strip():
                 raise DispatchRoutingError(
@@ -375,7 +383,7 @@ class LegacyCapabilityView:
         return age is not None and 0 <= age <= int(self.ttl_s)
 
     def core(self) -> dict:
-        return {
+        payload = {
             "schema_version": self.schema_version, "receipt_id": self.receipt_id,
             "profile_id": self.profile_id, "target_id": self.target_id,
             "capabilities": sorted(self.capabilities), "exactness": self.exactness,
@@ -385,6 +393,10 @@ class LegacyCapabilityView:
             "provenance": self.provenance,
             "source_receipt_hash": self.source_receipt_hash,
         }
+
+        if self.safe_working_context:
+            payload["safe_working_context"] = self.safe_working_context
+        return payload
 
     def to_dict(self) -> dict:
         payload = self.core()
@@ -541,8 +553,11 @@ class RoutingRequest:
     preferred_profile_ids: Tuple[str, ...] = ()
     write_scope: Tuple[str, ...] = ()
     read_scope: Tuple[str, ...] = ()
+    minimum_context_tokens: int = 0
 
     def __post_init__(self) -> None:
+        if type(self.minimum_context_tokens) is not int or self.minimum_context_tokens < 0:
+            raise DispatchRoutingError("minimum_context_tokens must be a non-negative integer")
         if not str(self.domain or "").strip():
             raise DispatchRoutingError("routing request domain must be non-empty")
         if not str(self.role or "").strip():
@@ -573,7 +588,7 @@ class RoutingRequest:
                    for cap in self.required_capabilities())
 
     def core(self) -> dict:
-        return {
+        payload = {
             "run_id": self.run_id, "packet_id": self.packet_id,
             "execution_package_hash": self.execution_package_hash,
             "domain": self.domain, "role": self.role,
@@ -587,6 +602,10 @@ class RoutingRequest:
             "write_scope": list(self.write_scope),
             "read_scope": list(self.read_scope),
         }
+
+        if self.minimum_context_tokens:
+            payload["minimum_context_tokens"] = self.minimum_context_tokens
+        return payload
 
     def to_dict(self) -> dict:
         return self.core()
@@ -793,6 +812,10 @@ def _assess(profile: ExecutionTargetProfile,
     if not receipt.healthy:
         return fate(False, REFUSED_RECEIPT_UNHEALTHY,
                     f"receipt reports the profile unhealthy: {receipt.notes}")
+
+    if request.minimum_context_tokens > receipt.safe_working_context:
+        return fate(False, REFUSED_CAPABILITY_MISSING,
+                    "measured safe context is below the originating requirement")
 
     # 9. measured capabilities (the receipt's evidence, not the profile's claim).
     missing = sorted(set(required) - set(receipt.capabilities))
