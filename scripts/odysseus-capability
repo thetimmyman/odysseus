@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Audit/import measured receipts and explicitly activate or refresh exact profiles.
+
+No discovery metadata or health response can create a qualification. Receipt
+imports must already contain sealed, source-linked measurement evidence.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.local_targets import (make_target_capability_receipt,
+                              target_capability_receipt_hash_is_valid, _digest_of)
+from src.target_capability_store import TargetCapabilityStore
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--store', default='')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('verify')
+    load = commands.add_parser('import')
+    load.add_argument('receipt')
+    load.add_argument('--supersedes', default='')
+    activate = commands.add_parser('activate')
+    activate.add_argument('host_id')
+    activate.add_argument('profile_id')
+    activate.add_argument('--expected-profile', required=True)
+    activate.add_argument('--identity-digest', required=True)
+    refresh = commands.add_parser('refresh')
+    refresh.add_argument('observation')
+    args = parser.parse_args()
+    try:
+        store = TargetCapabilityStore(args.store)
+        if args.command == 'verify':
+            result = store.verify()
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result['ok'] else 1
+        if args.command == 'import':
+            with open(args.receipt, encoding='utf-8') as handle:
+                raw = json.load(handle)
+            if not target_capability_receipt_hash_is_valid(raw):
+                raise ValueError('receipt hash does not cover imported evidence')
+            receipt = make_target_capability_receipt(**raw)
+            result = store.append(receipt, supersedes=args.supersedes)
+        elif args.command == 'activate':
+            store.activate_profile(args.host_id, args.profile_id,
+                                   expected_profile_id=args.expected_profile,
+                                   current_identity_digest=args.identity_digest)
+            result = {'host_id': args.host_id, 'active_profile_id': args.profile_id}
+        else:
+            with open(args.observation, encoding='utf-8') as handle:
+                observation = json.load(handle)
+            material = observation['current_material_identity']
+            if not isinstance(material, dict) or not material:
+                raise ValueError('refresh requires freshly observed material identity')
+            result = store.refresh_observation(
+                observation['profile_id'], current_identity_digest=_digest_of(material),
+                health=observation['health'], checked_at=observation['checked_at']).to_dict()
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except Exception as exc:
+        print(f'capability registry refused: {exc}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

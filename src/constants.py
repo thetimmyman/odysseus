@@ -104,3 +104,8 @@ def internal_api_base() -> str:
     if override:
         return override.rstrip("/")
     return f"http://127.0.0.1:{os.environ.get('APP_PORT', '7000')}"
+
+# Local capability registry authority files and explicit profile override.
+TARGET_CAPABILITY_ACTIVE_FILENAME = "active.json"
+TARGET_CAPABILITY_LOCK_FILENAME = ".writer.lock"
+TARGET_CAPABILITY_PROFILE_REGISTRY_ENV = "PS632_PROFILE_REGISTRY"

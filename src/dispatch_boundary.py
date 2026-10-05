@@ -49,6 +49,8 @@ from src.dispatch_routing import (
     PROVENANCE_MEASURED,
     REFUSED_PRIVACY_LOCAL_ONLY,
     ROLE_DEBUGGER,
+    ROLE_APPROXIMATE_IMPLEMENTER,
+    ROLE_APPROXIMATE_ANALYST,
     ROLE_ESCALATION,
     ROLE_GOVERNANCE_CI,
     ROLE_IMPLEMENTER,
@@ -89,6 +91,7 @@ DETECTABLE_CAPABILITIES: Tuple[str, ...] = (
 INFERENCE_ROLE_NAMES: FrozenSet[str] = frozenset({
     ROLE_IMPLEMENTER, ROLE_IMPLEMENTER_ROUTER, ROLE_REPAIR, ROLE_PLANNER,
     ROLE_SCOUT, ROLE_SCOUT_ROUTER, ROLE_DEBUGGER, ROLE_REVIEWER, ROLE_ESCALATION,
+    ROLE_APPROXIMATE_IMPLEMENTER, ROLE_APPROXIMATE_ANALYST,
 })
 
 
@@ -227,7 +230,7 @@ def _canonical_profile_from_receipt(profile: Any, receipt: Any) -> Any:
         runtime_options=receipt.context.options,
         configured_context=receipt.context.configured_context,
         configured_served_context=receipt.context.configured_served_context,
-        locality=locality)
+        locality=locality, exactness=receipt.routing_exactness())
 
 
 @dataclass(frozen=True)
@@ -610,6 +613,7 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
             "legacy capability view cannot authorize dispatch")
     from src.local_target_routing import _legacy_view_from_receipt
     canonical_receipts = []
+    source_receipts = []
     canonical_profiles = []
     for profile in estate.profiles:
         if dict(getattr(profile, "execution_options", {}) or {}):
@@ -632,10 +636,12 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
             raise DispatchBoundaryError(
                 f"profile_receipt_identity_mismatch for {profile.profile_id!r}")
         canonical_profiles.append(canonical_profile)
+        source_receipts.append(canonical)
         canonical_receipts.append(
             _legacy_view_from_receipt(canonical, canonical_profile, now=now))
     estate = dataclasses.replace(estate, profiles=tuple(canonical_profiles),
-                                receipts=tuple(canonical_receipts))
+                                receipts=tuple(canonical_receipts),
+                                canonical_receipts=tuple(source_receipts))
     snapshot = policy or policy_snapshot()
     if not estate.profiles:
         raise DispatchBoundaryError(
@@ -650,7 +656,7 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                     or profile.network_policy)
                 for profile in estate.profiles),
             receipts=estate.receipts, skipped=estate.skipped,
-            candidates=estate.candidates)
+            candidates=estate.candidates, canonical_receipts=estate.canonical_receipts)
     capacity = tuple(capacity_receipts or ())
     decision = select_target(
         request, profiles=estate.profiles, receipts=estate.receipts,
@@ -982,6 +988,7 @@ def _receipt_hash_of(recorded: Mapping[str, Any]) -> str:
             notes=str(recorded.get("notes") or ""),
             provenance=str(recorded.get("provenance") or PROVENANCE_DECLARED),
             source_receipt_hash=str(recorded.get("source_receipt_hash") or ""),
+            safe_working_context=int(recorded.get("safe_working_context") or 0),
         ).receipt_hash
     except Exception:
         # An unreadable record cannot be re-derived, so it cannot be trusted.

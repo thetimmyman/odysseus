@@ -77,7 +77,7 @@ def record(raw=None, *, spec_=None, probed_at=""):
 def receipt(*, raw=None, spec_=None, safe=32768, configured=32768,
             observed_at="", ttl_s=DEFAULT_QUALIFICATION_TTL_S,
             health_ttl_s=DEFAULT_HEALTH_TTL_S, probed_at="", notes=""):
-    return receipt_from_capability(
+    measured = receipt_from_capability(
         record(raw, spec_=spec_, probed_at=probed_at),
         configured_context=configured, safe_working_context=safe,
         safe_context_source="test measurement", backend="cuda",
@@ -85,6 +85,11 @@ def receipt(*, raw=None, spec_=None, safe=32768, configured=32768,
         observed_at=observed_at or NOW.isoformat(),
         roles=(spec_ or spec()).roles,
         qualification_ref=(spec_ or spec()).qualification_ref, notes=notes)
+    # This fixture explicitly includes independent reference qualification;
+    # text/tool success on its own is no longer promoted to reference semantics.
+    evidence = measured.capabilities.to_dict()
+    evidence["measured"] += [dr.CAP_EXACT_REFERENCE_SEMANTICS]
+    return make_target_capability_receipt(**{**measured.to_dict(), "capabilities": evidence})
 
 
 def store(tmp_path) -> TargetCapabilityStore:
@@ -135,7 +140,7 @@ def test_declared_capabilities_are_recorded_but_never_measured():
     assert r.capabilities.tool_semantics == TOOLS_DECLARED_ONLY
     assert "tools" in r.capabilities.declared
     assert "native_tools" not in r.capabilities.measured
-    assert r.capabilities.measured == ("readonly_analysis",)
+    assert tuple(r.capabilities.measured) == ("readonly_analysis", dr.CAP_EXACT_REFERENCE_SEMANTICS)
     assert receipt().capabilities.tool_semantics == TOOLS_PROVEN
     assert "native_tools" in receipt().capabilities.measured
 

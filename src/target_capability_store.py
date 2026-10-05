@@ -14,19 +14,24 @@ makes ``current()`` raise rather than silently skip a line.
 from __future__ import annotations
 
 import json
+import fcntl
+from contextlib import contextmanager
 import os
 import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from src.constants import TARGET_CAPABILITY_ACTIVE_FILENAME, TARGET_CAPABILITY_LOCK_FILENAME
 from src.local_targets import (
-    TargetCapabilityReceipt, _canonical_bytes, make_target_capability_receipt,
+    TargetCapabilityReceipt, LocalTargetUnavailable, _canonical_bytes, make_target_capability_receipt,
     target_capability_receipt_hash_is_valid)
 from src.routing_workdir import data_root
 
 STORE_DIRNAME = "target_capabilities"
 RECEIPTS_FILENAME = "receipts.jsonl"
 INDEX_FILENAME = "current.json"
+ACTIVE_FILENAME = TARGET_CAPABILITY_ACTIVE_FILENAME
+LOCK_FILENAME = TARGET_CAPABILITY_LOCK_FILENAME
 #: Override so tests can use a throwaway store.
 STORE_ENV = "PS632_CAPABILITY_STORE"
 
@@ -46,6 +51,7 @@ class TargetCapabilityStore:
         self.directory = os.path.abspath(directory or default_store_dir())
         self.receipts_path = os.path.join(self.directory, RECEIPTS_FILENAME)
         self.index_path = os.path.join(self.directory, INDEX_FILENAME)
+        self.active_path = os.path.join(self.directory, ACTIVE_FILENAME)
 
     def entries(self) -> Tuple[TargetCapabilityReceipt, ...]:
         """Every stored receipt, oldest first. Corrupt content raises."""
@@ -74,7 +80,7 @@ class TargetCapabilityStore:
                         "its own content")
                 try:
                     receipt = make_target_capability_receipt(**dict(payload))
-                except (TypeError, ValueError, KeyError) as exc:
+                except (TypeError, ValueError, KeyError, LocalTargetUnavailable) as exc:
                     raise CapabilityStoreError(
                         f"{self.receipts_path}:{number} is not a valid receipt: {exc}")
                 if receipt.receipt_hash != str(payload.get("receipt_hash") or ""):
@@ -96,14 +102,15 @@ class TargetCapabilityStore:
         if wanted:
             for receipt in receipts:
                 if receipt.receipt_hash == wanted:
+                    if receipt.profile_id != profile_id:
+                        raise CapabilityStoreError("index receipt belongs to another profile")
                     return receipt
             raise CapabilityStoreError(
                 f"index points at {wanted} for {profile_id!r}, which is not in "
-                f"{self.receipts_path}")
-        candidates = [r for r in receipts if r.profile_id == profile_id]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda r: (r.observed_at, r.receipt_hash))
+                f"{self.receipts_path} (missing from the ledger)")
+        if any(r.profile_id == profile_id for r in receipts):
+            raise CapabilityStoreError("profile has evidence but no current index authority")
+        return None
 
     def current_all(self) -> Dict[str, TargetCapabilityReceipt]:
         """Every profile's current receipt, keyed by profile id."""
@@ -119,12 +126,72 @@ class TargetCapabilityStore:
         """The host's current INFERENCE profile, if it has one."""
         from src.local_targets import ROLE_INFERENCE
 
-        candidates = [r for r in self.entries()
-                      if r.host_id == host_id and ROLE_INFERENCE in (r.roles or ())]
-        if not candidates:
+        profile_id = str(self._read_active().get(host_id) or "")
+        if not profile_id:
+            if any(r.host_id == host_id and ROLE_INFERENCE in r.roles for r in self.entries()):
+                raise CapabilityStoreError("host has evidence but no active profile authority")
             return None
-        newest = max(candidates, key=lambda r: (r.observed_at, r.receipt_hash))
-        return self.current(newest.profile_id)
+        receipt = self.current(profile_id)
+        if receipt is None or receipt.host_id != host_id or ROLE_INFERENCE not in receipt.roles:
+            raise CapabilityStoreError("active profile does not resolve to this inference host")
+        return receipt
+
+    @contextmanager
+    def _writer_lock(self):
+        os.makedirs(self.directory, exist_ok=True)
+        with open(os.path.join(self.directory, LOCK_FILENAME), "a", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _read_active(self) -> Dict[str, str]:
+        if not os.path.exists(self.active_path):
+            return {}
+        try:
+            with open(self.active_path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (ValueError, OSError) as exc:
+            raise CapabilityStoreError(f"active profile index unusable: {exc}") from exc
+        if not isinstance(payload, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str) or not v
+                for k, v in payload.items()):
+            raise CapabilityStoreError("active profile index is malformed")
+        return payload
+
+    def activate_profile(self, host_id: str, profile_id: str, *,
+                         expected_profile_id: str, current_identity_digest: str) -> None:
+        """Explicit compare-and-swap activation, never newest-observation selection."""
+        from src.local_targets import ROLE_INFERENCE
+        with self._writer_lock():
+            active = self._read_active()
+            if str(active.get(host_id) or "") != expected_profile_id:
+                raise CapabilityStoreError("active profile changed before activation")
+            receipt = self.current(profile_id)
+            if receipt is None or receipt.host_id != host_id or ROLE_INFERENCE not in receipt.roles:
+                raise CapabilityStoreError("activation requires this host's inference receipt")
+            if not current_identity_digest or receipt.qualification_state(
+                    current_identity_digest=current_identity_digest) != "valid":
+                raise CapabilityStoreError("activation requires fresh matching measured identity")
+            active[host_id] = profile_id
+            self._write_json(self.active_path, active)
+
+    def refresh_observation(self, profile_id: str, *, current_identity_digest: str,
+                            health: str, checked_at: str) -> TargetCapabilityReceipt:
+        """Refresh liveness without moving semantic observation or TTL; drift invalidates."""
+        with self._writer_lock():
+            receipt = self.current(profile_id)
+            if receipt is None or not current_identity_digest:
+                raise CapabilityStoreError("refresh requires a receipt and observed identity")
+            state = receipt.qualification_state(current_identity_digest=current_identity_digest)
+            payload = {**receipt.to_dict(), "health": health,
+                       "health_checked_at": checked_at, "supersedes": receipt.receipt_hash}
+            if state != "valid":
+                payload["invalidation_reason"] = state
+            refreshed = make_target_capability_receipt(**payload)
+            self._append(refreshed, supersedes=receipt.receipt_hash)
+            return self.current(profile_id)
 
     def verify(self) -> Dict[str, Any]:
         """A full audit: every line hashes, and every index entry resolves."""
@@ -137,7 +204,19 @@ class TargetCapabilityStore:
         report["receipts"] = len(receipts)
         report["profiles"] = sorted({r.profile_id for r in receipts})
         known = {r.receipt_hash for r in receipts}
-        for profile_id, entry in sorted(self._read_index().items()):
+        try:
+            index = self._read_index()
+            active = self._read_active()
+            from src.local_targets import ROLE_INFERENCE
+            for host_id in set(active) | {r.host_id for r in receipts if ROLE_INFERENCE in r.roles}:
+                self.current_for_host(host_id)
+            for receipt in receipts:
+                self.current(receipt.profile_id)
+        except CapabilityStoreError as exc:
+            report["ok"] = False
+            report["problems"].append(str(exc))
+            return report
+        for profile_id, entry in sorted(index.items()):
             wanted = str(entry.get("receipt_hash") or "")
             if wanted and wanted not in known:
                 report["ok"] = False
@@ -149,6 +228,14 @@ class TargetCapabilityStore:
     def append(self, receipt: TargetCapabilityReceipt,
                *, supersedes: str = "") -> Dict[str, Any]:
         """Append a receipt and make it current; ``supersedes`` records what it replaced."""
+        with self._writer_lock():
+            return self._append(receipt, supersedes=supersedes)
+
+    def _append(self, receipt: TargetCapabilityReceipt, *, supersedes: str = "") -> Dict[str, Any]:
+        if not target_capability_receipt_hash_is_valid(receipt.to_dict()):
+            raise CapabilityStoreError("refusing to store an invalid receipt hash")
+        index = self._read_index()
+        active = self._read_active()
         history = self.entries()
         existing = self.current(receipt.profile_id) if history else None
         if existing is not None and existing.receipt_hash != receipt.receipt_hash and not supersedes:
@@ -201,6 +288,13 @@ class TargetCapabilityStore:
             entry["previous_receipt_hash"] = previous.get("receipt_hash", "")
         index[receipt.profile_id] = entry
         self._write_index(index)
+        from src.local_targets import ROLE_INFERENCE
+        if receipt.host_id not in active and ROLE_INFERENCE in receipt.roles:
+            # Only the first recorded profile initializes authority. Later profiles
+            # require explicit activation, even if newer or higher capability.
+            if not any(r.host_id == receipt.host_id for r in history):
+                active[receipt.host_id] = receipt.profile_id
+                self._write_json(self.active_path, active)
         return entry
 
     def mark_invalidated(self, profile_id: str, reason: str,
@@ -222,15 +316,21 @@ class TargetCapabilityStore:
         try:
             with open(self.index_path, encoding="utf-8") as handle:
                 payload = json.load(handle)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             raise CapabilityStoreError(f"{self.index_path} is not valid JSON: {exc}")
         if not isinstance(payload, Mapping):
             raise CapabilityStoreError(f"{self.index_path} is not an object")
-        return {str(k): dict(v) for k, v in payload.items() if isinstance(v, Mapping)}
+        if any(not isinstance(v, Mapping) or not v.get("receipt_hash")
+               or v.get("profile_id") != k for k, v in payload.items()):
+            raise CapabilityStoreError("current profile index contains malformed authority")
+        return {str(k): dict(v) for k, v in payload.items()}
 
     def _write_index(self, index: Mapping[str, Mapping[str, Any]]) -> None:
+        self._write_json(self.index_path, {k: dict(v) for k, v in sorted(index.items())})
+
+    def _write_json(self, path: str, value: Mapping[str, Any]) -> None:
         os.makedirs(self.directory, exist_ok=True)
-        payload = json.dumps({k: dict(v) for k, v in sorted(index.items())},
+        payload = json.dumps(value,
                              indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         handle = tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", dir=self.directory, delete=False,
@@ -240,7 +340,7 @@ class TargetCapabilityStore:
             handle.flush()
             os.fsync(handle.fileno())
             handle.close()
-            os.replace(handle.name, self.index_path)
+            os.replace(handle.name, path)
         except BaseException:
             handle.close()
             if os.path.exists(handle.name):
