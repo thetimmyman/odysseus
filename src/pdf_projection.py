@@ -99,6 +99,36 @@ def extract(path: str) -> dict:
         raise PDFProjectionError("unavailable", "Bounded PDF projection is unavailable") from exc
 
 
+def keyword_chunks(projection: dict, size: int = 1000, overlap: int = 200) -> tuple[list, list]:
+    """Keep the existing character chunker across pages; record exact page intervals."""
+    if size <= 0 or not 0 <= overlap < size:
+        raise ValueError("Invalid chunk bounds")
+    text = ""
+    spans = []
+    for page in projection["pages"]:
+        start = len(text)
+        text += page["text"]
+        spans.append((start, len(text), page["physical_page"]))
+        text += "\n\n"
+    left = len(text) - len(text.lstrip())
+    right = len(text.rstrip())
+    chunks, metadata = [], []
+    start = left
+    while start < right:
+        end = min(start + size, right)
+        pages = [page for begin, finish, page in spans if begin < end and finish > start]
+        if not pages:
+            raise PDFProjectionError("failed", "Chunk has no source-page interval")
+        chunks.append(text[start:end])
+        meta = chunk_metadata(projection, pages[0])
+        meta["physical_page_end"] = pages[-1]
+        metadata.append(meta)
+        if end == right:
+            break
+        start = end - overlap
+    return chunks, metadata
+
+
 def chunk_metadata(projection: dict, physical_page: int) -> dict:
     return {"pdf_projection": PROFILE, "source_sha256": projection["source_sha256"],
             "physical_page": physical_page, "pdf_page_count": projection["page_count"],
@@ -109,10 +139,12 @@ def citation(metadata: dict) -> str:
     digest = metadata.get("source_sha256", "")
     page = metadata.get("physical_page")
     count = metadata.get("pdf_page_count")
+    last = metadata.get("physical_page_end", page)
     if (metadata.get("pdf_projection") == PROFILE and isinstance(digest, str)
             and re.fullmatch(r"[0-9a-f]{64}", digest) and type(page) is int
-            and type(count) is int and 1 <= page <= count <= 48):
-        return f" :: physical page {page} :: sha256 {digest}"
+            and type(count) is int and type(last) is int and 1 <= page <= last <= count <= 48):
+        label = f"physical page {page}" if page == last else f"physical pages {page}-{last}"
+        return f" :: {label} :: sha256 {digest}"
     return ""
 
 

@@ -33,8 +33,8 @@ def test_keyword_keeps_ranking_and_adds_physical_page_hash(source):
     index = personal_docs.load_personal_index(str(source.parent))
     found = personal_docs.retrieve_personal_keyword(index, "release checklist", 1)
     assert len(found) == 1
-    assert "physical page 2" in found[0] and "sha256 " + projection.source_digest(str(source)) in found[0]
-    assert found[0].endswith("release checklist")
+    assert "physical pages 1-2" in found[0] and "sha256 " + projection.source_digest(str(source)) in found[0]
+    assert "release checklist" in found[0]
 
 
 @pytest.mark.parametrize("change", ["edit", "delete"])
@@ -113,3 +113,13 @@ def test_complete_requires_runtime_and_version_receipts(field):
     observation.pop(field)
     with pytest.raises(projection.PDFProjectionError):
         projection.validate_result(observation, hashlib.sha256(data).hexdigest(), len(data))
+
+
+def test_cross_section_chunks_preserve_character_overlap_and_page_intervals():
+    data = b"source"
+    observation = result(data, ("a" * 900, "b" * 900, "c" * 900))
+    chunks, metadata = projection.keyword_chunks(observation)
+    assert [len(c) for c in chunks] == [1000, 1000, 1000, 304]
+    assert chunks[0][-200:] == chunks[1][:200]
+    assert [(m["physical_page"], m["physical_page_end"]) for m in metadata] == [
+        (1, 2), (1, 2), (2, 3), (3, 3)]

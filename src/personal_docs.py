@@ -111,12 +111,8 @@ def load_personal_index(
                 record = {"name": display, "path": p, "size": size, "chunks": []}
                 try:
                     projection = pdf_projection.extract(p)
-                    metadata = []
-                    for page in projection["pages"]:
-                        page_chunks = split_chunks(page["text"])
-                        record["chunks"].extend(page_chunks)
-                        metadata.extend(pdf_projection.chunk_metadata(projection, page["physical_page"])
-                                        for _ in page_chunks)
+                    record["chunks"], metadata = pdf_projection.keyword_chunks(
+                        projection, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
                     record.update(chunk_metadata=metadata, projection_status="complete")
                 except pdf_projection.PDFProjectionError as exc:
                     record["projection_status"] = exc.status

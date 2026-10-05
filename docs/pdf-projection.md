@@ -14,7 +14,8 @@ result. No adapter or model is automatically installed. An empty setting keeps
 the prior parser. Keep the existing broker as the only route for local inference;
 this adapter performs none.
 
-The personal index retains physical-page metadata beside its existing chunks.
+The personal index keeps its character chunk size/overlap across pages and attaches
+physical-page intervals beside those chunks.
 PDF vector ingestion uses the existing sentence chunker within each physical
 page, retaining owner-scoped content IDs, embedding lanes and the hybrid score
 formula. Page boundaries can change chunks and ranking outcomes. A repeated
