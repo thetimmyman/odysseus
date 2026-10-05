@@ -28,6 +28,7 @@ services:
       # Ollama at http://host.docker.internal:11434.
       - "host.docker.internal:host-gateway"
     environment:
+      - ODYSSEUS_PDF_PROJECTION_COMMAND=${ODYSSEUS_PDF_PROJECTION_COMMAND:-}
       - LLM_HOST=${LLM_HOST:-localhost}
       - LLM_HOSTS=${LLM_HOSTS:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

@@ -7,6 +7,7 @@ from typing import List, Dict, Set, Any, Tuple
 from dataclasses import dataclass
 
 from src.markitdown_runtime import MARKITDOWN_EXTS
+from src import pdf_projection
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,19 @@ def load_personal_index(
                 continue
             size = os.path.getsize(p)
             ext = os.path.splitext(name)[1].lower()
+            if ext == ".pdf" and pdf_projection.enabled():
+                display = os.path.relpath(p, personal_dir)
+                record = {"name": display, "path": p, "size": size, "chunks": []}
+                try:
+                    projection = pdf_projection.extract(p)
+                    record["chunks"], metadata = pdf_projection.keyword_chunks(
+                        projection, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+                    record.update(chunk_metadata=metadata, projection_status="complete")
+                except pdf_projection.PDFProjectionError as exc:
+                    record["projection_status"] = exc.status
+                    logger.warning("PDF projection %s for %s", exc.status, display)
+                files.append(record)
+                continue
             if ext == ".pdf":
                 text = extract_pdf_text(p)
             elif ext in MARKITDOWN_EXTS:
@@ -136,15 +150,19 @@ def retrieve_personal_keyword(personal_index: List[Dict], query: str, k: int = 5
     for f in personal_index:
         if not isinstance(f, dict):
             continue
+        metadata = f.get("chunk_metadata") or []
+        if not pdf_projection.current(metadata[0] if metadata else {}, f.get("path", "")):
+            continue
         for idx, ch in enumerate(f.get("chunks") or []):
             score = len(q & tokenize(ch))
             if score > 0:
-                scored.append((score, f.get("name", ""), idx, ch))
+                meta = metadata[idx] if idx < len(metadata) else {}
+                scored.append((score, f.get("name", ""), idx, ch, meta))
     scored.sort(key=lambda x: x[0], reverse=True)
 
     out = []
-    for s, fname, idx, ch in scored[:k]:
-        out.append(f"[{fname} :: chunk {idx+1}]\n{ch}")
+    for s, fname, idx, ch, meta in scored[:k]:
+        out.append(f"[{fname} :: chunk {idx+1}{pdf_projection.citation(meta)}]\n{ch}")
     return out
 
 def retrieve_personal(personal_index: List[Dict], query: str, k: int = 5,
@@ -175,11 +193,15 @@ def retrieve_personal(personal_index: List[Dict], query: str, k: int = 5,
                     # Extract filename from path
                     source = result["metadata"].get("source", "")
                     filename = os.path.basename(source)
+                    metadata = result["metadata"]
+                    if not pdf_projection.current(metadata, source):
+                        continue
 
                     # Format the result
-                    formatted = f"[{filename} :: vector search]\n{result['document']}"
+                    formatted = f"[{filename} :: vector search{pdf_projection.citation(metadata)}]\n{result['document']}"
                     out.append(formatted)
-                return out
+                if out:
+                    return out
         except Exception as e:
             logger.warning(f"Vector search failed, falling back to keyword search: {e}")
 
