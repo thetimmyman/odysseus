@@ -142,7 +142,7 @@ def test_real_candidate_producing_path_uses_verified_output_B(repo):
     assert validate_evidence_package(package, current_source=source_b.to_dict()).ok
     result = evaluate_landing_eligibility(
         package, acceptance_for(package, source_b), current_source=source_b.to_dict(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1), strategy=LandingStrategy.SQUASH)
     assert result.eligible
 
 
@@ -152,7 +152,7 @@ def test_all_canonical_source_bindings_reach_preflight(repo, tree_sha, diff):
     result = evaluate_landing_eligibility(
         package, acceptance_for(package, source_b, tree_sha=tree_sha, diff=diff),
         current_source=source_b.to_dict(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1), strategy=LandingStrategy.SQUASH)
     assert result.eligible
 
 
@@ -171,7 +171,7 @@ def test_acceptance_of_input_A_is_not_acceptance_of_verified_B(repo):
     package, source_a, source_b, _, _ = make_real_run(repo)
     result = evaluate_landing_eligibility(
         package, acceptance_for(package, source_a), current_source=source_b.to_dict(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()))
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1))
     assert LandingRefusalCode.ACCEPTANCE_SOURCE_MISMATCH.value in result.codes
 
 
@@ -180,7 +180,7 @@ def test_current_C_after_acceptance_B_refuses(repo):
     current_c = dict(source_b.to_dict(), snapshot_digest="c" * 64)
     result = evaluate_landing_eligibility(
         package, acceptance_for(package, source_b), current_source=current_c,
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()))
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1))
     assert LandingRefusalCode.EVIDENCE_STALE.value in result.codes
     assert LandingRefusalCode.CANDIDATE_CHANGED.value in result.codes
 
@@ -196,7 +196,7 @@ def test_current_source_integrity_is_canonical_and_fail_closed(repo):
     for current in (mutated, fabricated, fabricated_with_tree):
         result = evaluate_landing_eligibility(
             package, acceptance, current_source=current,
-            policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+            policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1), strategy=LandingStrategy.SQUASH)
         assert LandingRefusalCode.EVIDENCE_INVALID.value in result.codes
 
 
@@ -204,7 +204,7 @@ def test_real_out_of_scope_attempt_refuses(repo):
     package, _, source_b, _, _ = make_real_run(repo, out_of_scope=True)
     result = evaluate_landing_eligibility(
         package, acceptance_for(package, source_b), current_source=source_b.to_dict(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()))
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1))
     assert LandingRefusalCode.WRITE_SCOPE_MISMATCH.value in result.codes
 
 
@@ -213,14 +213,14 @@ def test_real_invalid_and_stale_evidence_refuse(repo):
     invalid = dict(package, evidence_package_hash="0" * 64)
     result = evaluate_landing_eligibility(
         invalid, acceptance_for(package, source_b), current_source=source_b.to_dict(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()))
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1))
     assert LandingRefusalCode.EVIDENCE_INVALID.value in result.codes
     (repo / ARTIFACT).write_text("def thing():\n    return 'C'\n")
     stale = take_source_snapshot(str(repo), base_sha="HEAD",
                                  relevant_paths=[ARTIFACT, VERIFIER])
     result = evaluate_landing_eligibility(
         package, acceptance_for(package, source_b), current_source=stale.to_dict(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1), strategy=LandingStrategy.SQUASH)
     assert LandingRefusalCode.EVIDENCE_STALE.value in result.codes
 
 
@@ -235,7 +235,7 @@ def test_governance_receipt_must_bind_candidate(repo):
         control_passed=True)
     result = evaluate_landing_eligibility(
         package, acceptance_for(package, source_b), current_source=source_b.to_dict(),
-        governance=(wrong,), policy=LandingPolicy((LandingStrategy.SQUASH,), ("negative_control",)),
+        governance=(wrong,), policy=LandingPolicy((LandingStrategy.SQUASH,), ("negative_control",), minimum_evidence_version=1),
         strategy=LandingStrategy.SQUASH)
     assert LandingRefusalCode.GOVERNANCE_NOT_GREEN.value in result.codes
 
@@ -263,7 +263,7 @@ def test_receipt_is_complete_revalidatable_and_preserves_adapter_result(repo):
         evidence_package=package, acceptance=acceptance,
         repository=Repo(source_b.to_dict(), landed), tracker=Tracker(),
         current_source=source_b.to_dict(), governance=(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1), strategy=LandingStrategy.SQUASH)
     payload = receipt.to_dict()
     assert landing_receipt_hash_is_valid(payload)
     assert payload["evidence_package_id"] == "ev-1"
@@ -281,7 +281,7 @@ def test_tracker_failure_keeps_truthful_partial_receipt(repo):
         repository=Repo(source_b.to_dict(), {"head_sha": "squashed",
                   "diff_digest": source_b.tracked_diff_digest}), tracker=Tracker(fail=True),
         current_source=source_b.to_dict(), governance=(),
-        policy=LandingPolicy((LandingStrategy.SQUASH,), ()), strategy=LandingStrategy.SQUASH)
+        policy=LandingPolicy((LandingStrategy.SQUASH,), (), minimum_evidence_version=1), strategy=LandingStrategy.SQUASH)
     assert receipt.reconciliation_state == "REPOSITORY_LANDED_TRACKER_FAILED"
     assert receipt.reconciliation_error_code == "TRACKER_RECONCILIATION_FAILED"
     assert receipt.landed_head == "squashed"
@@ -299,5 +299,5 @@ def test_equivalence_and_strategy_controls(repo):
         LandingStrategy.SQUASH).equivalent
     result = evaluate_landing_eligibility(
         package, acceptance, current_source=source_b.to_dict(),
-        policy=LandingPolicy((LandingStrategy.FAST_FORWARD,), ()), strategy=LandingStrategy.SQUASH)
+        policy=LandingPolicy((LandingStrategy.FAST_FORWARD,), (), minimum_evidence_version=1), strategy=LandingStrategy.SQUASH)
     assert LandingRefusalCode.LANDING_STRATEGY_NOT_ALLOWED.value in result.codes

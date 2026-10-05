@@ -373,6 +373,8 @@ def _evaluate(evidence: Mapping[str, Any], facts: Mapping[str, Any],
         except (TypeError, ValueError) as exc:
             raise OutcomeError("candidate source snapshot cannot be reconstructed") from exc
     evidence_fields = set(EvidencePackage.__dataclass_fields__) | {"evidence_package_hash"}
+    if evidence.get("schema_version") == 1:
+        evidence_fields.discard("acceptance_context")
     if (not isinstance(evidence, Mapping) or set(evidence) != evidence_fields
             or not evidence_package_hash_is_valid(evidence)):
         raise OutcomeError("canonical evidence package hash or schema mismatch")
@@ -447,8 +449,11 @@ def _evaluate(evidence: Mapping[str, Any], facts: Mapping[str, Any],
             if row.get(field) and selected and row[field] != selected:
                 raise OutcomeError(f"attempt {field} conflicts with selected dispatch runtime")
     for row in verifications:
+        receipt_fields = set(VerificationReceipt.__dataclass_fields__) | {"outcome"}
+        if "proof_vantage" not in row:
+            receipt_fields.discard("proof_vantage")
         if (not isinstance(row, Mapping)
-                or set(row) != set(VerificationReceipt.__dataclass_fields__) | {"outcome"}
+                or set(row) != receipt_fields
                 or not verification_receipt_hash_is_valid(row)):
             raise OutcomeError("verification receipt hash or schema mismatch")
         if type(row.get("exit_code")) is not int:
@@ -494,7 +499,10 @@ def _evaluate(evidence: Mapping[str, Any], facts: Mapping[str, Any],
     issue_codes = {i.code for i in validation.issues}
     if missing_verification_attempts:
         issue_codes.add("verification_missing_for_attempt")
-    raw_outcomes = {recompute_outcome(row) for row in verifications}
+    acceptance_verifications = verifications
+    if evidence.get("schema_version") == 2:
+        acceptance_verifications = [row for row in verifications if row["attempt"] == max(numbers)]
+    raw_outcomes = {recompute_outcome(row) for row in acceptance_verifications}
     requirement_states = {state.state for state in validation.requirement_states}
     if "FAIL" in raw_outcomes or STATE_FAILED in requirement_states:
         verified = _gate_record("OBSERVED", False,
@@ -510,10 +518,10 @@ def _evaluate(evidence: Mapping[str, Any], facts: Mapping[str, Any],
         verified = _gate_record("UNKNOWN", reason=reason or "verification evidence is incomplete")
     else:
         verified = _gate_record("OBSERVED", True)
-    source_digests = {row.get("source_snapshot_digest") for row in verifications
+    source_digests = {row.get("source_snapshot_digest") for row in acceptance_verifications
                       if recompute_outcome(row) == "PASS"}
     source_digests.discard("")
-    all_verification_sources = {row.get("source_snapshot_digest") for row in verifications}
+    all_verification_sources = {row.get("source_snapshot_digest") for row in acceptance_verifications}
     all_verification_sources.discard("")
     if len(source_digests) > 1:
         raise OutcomeError("passing verification receipts disagree on candidate source")

@@ -1,10 +1,11 @@
 # PS-638 — the execution/evidence contract (canonical, consolidated)
 
-**This document is a consolidation, not a redesign** (PACKAGES.md B.7,
+The original v1 contract below consolidates the landed primitives (PACKAGES.md B.7,
 OPERATOR_RULINGS.md CHECKPOINT §5). Every statement below is sourced from code
 already approved and landed on `origin/main` (`e787725fdf74bd03d7cb1cb48b5e7803fa0613a6`
 via PR #38, `7afd55bad7034d789c98be4ee6e9ebcfcc97cdba`), or from the PS-638 tracker
-item description. No statement here is new design. No `DESIGN_NOW` / second-wave
+item description. The v2 consumer integration described below implements the
+remaining source/profile/verifier binding and retention acceptance. No `DESIGN_NOW` / second-wave
 concept (DR-02, DR-06, DR-10, DR-14, DR-17, DR-18, DR-21, DR-24) appears as a
 required runtime field — where one is mentioned at all, it is named explicitly
 as not-yet-required, deferred, or unassigned.
@@ -131,7 +132,7 @@ Design rules the module enforces:
 ### Schema-version compatibility
 
 The validator checks the `schema_version` of each versioned record before
-hash validation or recursive traversal. It accepts `EvidencePackage` v1,
+hash validation or recursive traversal. It accepts `EvidencePackage` v1 and v2,
 `ExecutionPackage` v1 and v2, and v1 `SourceSnapshotIdentity`,
 `DispatchDecisionReceipt`, `AttemptReceipt`, and `VerificationReceipt` records.
 Version values must be exact non-boolean integers. Missing, malformed, or
@@ -141,6 +142,71 @@ retains its `jira_key` field and original serialized hash, while v2 uses
 `ticket_key`. It does not add schema fields to unversioned evidence types, and
 `authority_schema_version` remains opaque recorded content rather than an
 authorization or compatibility gate.
+
+### Consumer integration (v2)
+
+New `run_local_worker_loop` calls require a `current_source` measurement callback.
+The callback captures the actual candidate before and after verification; the
+input ExecutionPackage remains immutable. `VerificationExecution.controls`
+retains separate positive/negative control receipts. v2 seals an
+`acceptance_context` containing canonical source snapshots, complete sealed
+PS-605 routing evidence indexed by dispatch hash, and any referenced exact-base
+baseline command receipts. Routing evidence preserves the full existing target
+profile (runtime/backend/model/options/context identity), rather than defining
+a parallel capability registry.
+
+Only the final attempt's receipts close requirements for current acceptance.
+Earlier attempts, outputs and verifier failures remain in the sealed history.
+The measured `SourceSnapshotIdentity.changed_paths` covers tracked changes
+against the base, including clean committed changes. Measured dirty/untracked
+paths and relevant-file changes must reconcile to recorded writes and both
+the packet scope and the referenced dispatch scope. Serialized command records
+must satisfy the same invariants as constructed receipts.
+
+`validate_evidence_package` accepts current source, profile, verifier digests,
+policy revision and a clock. Changed bindings produce `INVALIDATED`; live
+requirements use `freshness_rule: ttl_seconds:<positive integer>` and expire
+to `STALE`. Command end time is the observation timestamp. Unknown TTL syntax,
+future live timestamps, missing routing/source bindings, wrong command vantage,
+approximate execution for an exact requirement, and detached baseline claims
+fail with named reasons. Current observations never rewrite historical receipts.
+
+`evaluate_landing_eligibility` defaults to v2 and requires current profile,
+verifier and policy observations. `land_exact_candidate` calls its
+`acceptance_facts` callback again immediately before repository mutation and
+checks source again. Semantic acceptance and landed-tree equivalence remain
+separate from VERIFIED. Historical v1 inspection retains original hashes;
+replaying a legacy worker requires `allow_legacy_evidence=True`, and historical
+landing requires an explicit `LandingPolicy(minimum_evidence_version=1)`.
+Neither is the default for new work. Unsupported versions remain rejected.
+
+`evidence_io.retain_evidence_bundle` stores immutable hash-addressed bundles and
+blobs, pinning every receipt consumer/locator, including failed retries and
+baseline logs. Publication follows artifact hash/size and secret checks. It
+does not introduce lifecycle state or a second ledger. It provides no garbage
+collector; reachable evidence is retained. `read_evidence_bundle` verifies
+bytes after relocation. `project_evidence_summary` regenerates Markdown from
+the package and current validation. `execution_outcomes` consumes either
+compatible envelope, preserves first-attempt history and evaluates the v2 final
+candidate separately.
+
+New worker seals retain the canonical PS-632 capability receipts alongside
+their routing projections. Validation re-derives each eligible candidate's
+projection using its own target identity; recorded replay preserves the
+canonical receipt index. Direct historical dispatch sealing keeps its existing
+shape by default; new consumers use `include_canonical_receipts=True`.
+Dispatch read/write/tool grants must narrow the sealed execution envelope.
+
+Run the bounded synthetic real-runtime canary under an existing RTX broker
+lease with `scripts/verify_execution_chain.py --worktree <new synthetic repo>
+--output-directory <private evidence dir> --endpoint <reachable local Ollama>
+--model <already resident model>`. It refuses missing leases and model reloads,
+does not override context, observes runtime version/model digest/effective
+context before and after, records a hash of the actual lease identity, preserves
+the raw response, and runs a preregistered hidden oracle with positive and
+negative controls. The oracle reconstructs only an allowlisted AST operation;
+worker source is not freely executed. This is execution/evidence acceptance,
+not a capability qualification, deployment or scheduler installation.
 
 ## 7. VERIFIED != ACCEPTED
 
