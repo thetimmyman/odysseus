@@ -236,3 +236,15 @@ def test_existing_stronger_role_cannot_be_weakened_by_approximate_intent(tmp_pat
     with pytest.raises(dr.RoutingRefused):
         db.resolve_from_estate(db.TargetEstate(profiles=view.profiles),request,
                               capability_store=view.capability_store)
+
+
+def test_packet_requirements_use_canonical_measured_capability_names(tmp_path):
+    a=measured();view=inputs(tmp_path,a)
+    packet={'packet_id':'synthetic','target_exactness':dr.EXACTNESS_APPROXIMATE,
+            'minimum_context_tokens':32768,
+            'target_requirements':[dr.CAP_TEXT_GENERATION,dr.CAP_CONTEXT_INTEGRITY]}
+    bound=ltr.resolve_persisted_dispatch(view,packet=packet,role=dr.ROLE_APPROXIMATE_IMPLEMENTER)
+    assert bound.decision.selected_profile.profile_id==a.profile_id
+    packet['target_requirements'].append(dr.CAP_PARALLEL_TOOL_CALLS)
+    with pytest.raises(dr.RoutingRefused):
+        ltr.resolve_persisted_dispatch(view,packet=packet,role=dr.ROLE_APPROXIMATE_IMPLEMENTER)

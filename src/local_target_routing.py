@@ -105,11 +105,12 @@ def requirement_capabilities(required: Sequence[str]) -> Tuple[str, ...]:
     refused, not dropped."""
     translated: List[str] = []
     for name in required:
-        if name not in KNOWN_CAPABILITIES:
+        if name not in KNOWN_CAPABILITIES and name not in dr.KNOWN_CAPABILITIES:
             raise FleetRoutingError(
                 f"unknown target requirement {name!r}; known: "
                 f"{sorted(KNOWN_CAPABILITIES)}")
-        because = CAPABILITY_MAP.get(name)
+        because = CAPABILITY_MAP.get(
+            name, (name,) if name in dr.KNOWN_CAPABILITIES else None)
         if not because:
             raise FleetRoutingError(
                 f"requirement {name!r} has no PS-605 capability mapping")
