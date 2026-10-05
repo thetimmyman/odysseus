@@ -178,6 +178,7 @@ class SourceSnapshotIdentity:
     diff_truncated: bool = False
     schema_version: int = SOURCE_SNAPSHOT_SCHEMA_VERSION
     snapshot_digest: str = ""
+    changed_paths: Tuple[str, ...] = ()
 
     @property
     def is_clean(self) -> bool:
@@ -205,7 +206,7 @@ class SourceSnapshotIdentity:
 
     def core(self) -> dict:
         """Every field identity covers — i.e. all of them but the digest."""
-        return {
+        core = {
             "schema_version": self.schema_version,
             "repo_root": self.repo_root,
             "repo_identity": self.repo_identity,
@@ -223,6 +224,9 @@ class SourceSnapshotIdentity:
             "truncated_paths": list(self.truncated_paths),
             "diff_truncated": self.diff_truncated,
         }
+        if self.changed_paths:
+            core["changed_paths"] = list(self.changed_paths)
+        return core
 
     def to_dict(self) -> dict:
         payload = self.core()
@@ -244,6 +248,7 @@ def _finalize(core: dict) -> SourceSnapshotIdentity:
     fields["relevant_digests"] = tuple(
         tuple(p) for p in (fields.get("relevant_digests") or ()))
     fields["truncated_paths"] = tuple(fields.get("truncated_paths") or ())
+    fields["changed_paths"] = tuple(fields.get("changed_paths") or ())
     fields["snapshot_digest"] = ""
     digest = _sha256_hex(_canonical(SourceSnapshotIdentity(**fields).core()))
     return SourceSnapshotIdentity(**{**fields, "snapshot_digest": digest})
@@ -287,6 +292,9 @@ def take_source_snapshot(worktree: str, *, base_sha: str = "",
     base_ref = base_sha or head_sha
     diff_digest, diff_complete = _tracked_diff_digest(
         worktree, base_ref, max_bytes=max_diff_bytes) if base_ref else ("", True)
+    rc, changed, _ = _git(worktree, ["diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base_ref, "--"], text=False)
+    changed_complete = rc == 0 and len(changed) <= max_diff_bytes
+    changed_paths = sorted(p.decode("utf-8", "replace") for p in changed.split(b"\0") if p) if changed_complete else []
 
     untracked_pairs, untracked_truncated = _hash_paths(
         worktree, untracked, max_bytes=max_hash_bytes)
@@ -313,7 +321,8 @@ def take_source_snapshot(worktree: str, *, base_sha: str = "",
         "untracked_digest": untracked_digest,
         "relevant_digests": list(relevant_pairs),
         "truncated_paths": list(truncated),
-        "diff_truncated": not diff_complete,
+        "diff_truncated": not diff_complete or not changed_complete,
+        "changed_paths": changed_paths,
     })
 
 

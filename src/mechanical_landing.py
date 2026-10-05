@@ -122,6 +122,7 @@ class LandingEligibility:
 class LandingPolicy:
     allowed_strategies: Tuple[LandingStrategy, ...] = (LandingStrategy.FAST_FORWARD,)
     required_checks: Tuple[str, ...] = ()
+    minimum_evidence_version: int = 2
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -134,6 +135,9 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _verified_candidate_digest(evidence_package: Mapping[str, Any]) -> str | None:
     receipts = evidence_package.get("verification_receipts") or ()
+    if evidence_package.get("schema_version") == 2:
+        last = max((a.get("attempt", 0) for a in evidence_package.get("attempt_receipts", ())), default=0)
+        receipts = [r for r in receipts if r.get("attempt") == last]
     digests = {str(r.get("source_snapshot_digest") or "") for r in receipts
                if recompute_outcome(r) == "PASS"}
     digests.discard("")
@@ -155,7 +159,7 @@ def _candidate_matches(source: Mapping[str, Any], acceptance: SemanticAcceptance
 def _validation_failures(validation: Any) -> list[LandingRefused]:
     codes = {issue.code for issue in validation.issues}
     failures: list[LandingRefused] = []
-    if SOURCE_CHANGED_AFTER_VERIFICATION in codes:
+    if (SOURCE_CHANGED_AFTER_VERIFICATION in codes or validation.state in {"STALE", "INVALIDATED"}):
         failures.append(LandingRefused(LandingRefusalCode.EVIDENCE_STALE,
                                        "canonical evidence no longer matches current source"))
     if WRITE_OUTSIDE_AUTHORIZED_SCOPE in codes:
@@ -194,14 +198,26 @@ def evaluate_landing_eligibility(
     policy: LandingPolicy = LandingPolicy(),
     strategy: LandingStrategy = LandingStrategy.FAST_FORWARD,
     unresolved_dispositions: Sequence[str] = (),
+    artifact_extensions=None, current_profiles=None, current_verifier_digests=None,
+    current_policy_ref=None, now=None,
 ) -> LandingEligibility:
     """Pure deterministic evaluation; no merge, tracker, or deployment side effect."""
     failures: list[LandingRefused] = []
+    if evidence_package.get("schema_version", 0) < policy.minimum_evidence_version:
+        failures.append(LandingRefused(LandingRefusalCode.EVIDENCE_NOT_VERIFIED,
+                                       "historical evidence requires explicit legacy landing policy"))
     if not _canonical_source_is_valid(current_source):
         failures.append(LandingRefused(
             LandingRefusalCode.EVIDENCE_INVALID,
             "current_source is not a valid canonical SourceSnapshotIdentity"))
-    validation = validate_evidence_package(evidence_package, current_source=current_source)
+    if evidence_package.get("schema_version") == 2 and any(value is None for value in (
+            current_profiles, current_verifier_digests, current_policy_ref)):
+        failures.append(LandingRefused(LandingRefusalCode.EVIDENCE_NOT_VERIFIED,
+                                       "v2 landing requires current runtime, verifier and policy observations"))
+    validation = validate_evidence_package(
+        evidence_package, current_source=current_source, artifact_extensions=artifact_extensions,
+        current_profiles=current_profiles, current_verifier_digests=current_verifier_digests,
+        current_policy_ref=current_policy_ref, now=now)
     if not validation.ok:
         failures.extend(_validation_failures(validation))
 
@@ -347,15 +363,24 @@ def land_exact_candidate(*, evidence_package: Mapping[str, Any], acceptance: Sem
                         repository: RepositoryLandingAdapter, tracker: TrackerReconciliationAdapter | None,
                         current_source: Mapping[str, Any], governance: Sequence[Any],
                         policy: LandingPolicy, strategy: LandingStrategy,
-                        unresolved_dispositions: Sequence[str] = ()) -> LandingReceipt:
+                        unresolved_dispositions: Sequence[str] = (),
+                        acceptance_facts=None, artifact_extensions=None) -> LandingReceipt:
+    facts = dict(acceptance_facts()) if acceptance_facts is not None else {}
     eligibility = evaluate_landing_eligibility(
         evidence_package, acceptance, current_source=current_source,
         governance=governance, policy=policy, strategy=strategy,
-        unresolved_dispositions=unresolved_dispositions)
+        unresolved_dispositions=unresolved_dispositions, artifact_extensions=artifact_extensions,
+        **facts)
     eligibility.require()
     if repository.current_source() != current_source:
         raise LandingRefused(LandingRefusalCode.CANDIDATE_CHANGED,
                              "source changed at landing boundary")
+    if acceptance_facts is not None:
+        evaluate_landing_eligibility(
+            evidence_package, acceptance, current_source=repository.current_source(),
+            governance=governance, policy=policy, strategy=strategy,
+            unresolved_dispositions=unresolved_dispositions, artifact_extensions=artifact_extensions,
+            **dict(acceptance_facts())).require()
     landed = dict(repository.land(strategy))
     equivalence = prove_landed_equivalence(acceptance, landed, strategy)
     if not equivalence.equivalent:

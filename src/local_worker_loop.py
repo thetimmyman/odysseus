@@ -20,7 +20,7 @@ from src.attempt_receipt import (
     make_attempt_receipt,
     verification_receipt_hash_is_valid,
 )
-from src.dispatch_boundary import verify_invocation
+from src.dispatch_boundary import seal_dispatch_evidence, verify_invocation
 from src.evidence_contract import requirement_index
 from src.evidence_package import (
     requirement_from_dict, seal_evidence_package, validate_evidence_package,
@@ -91,6 +91,7 @@ class WorkerExecution:
 class VerificationExecution:
     receipt: Any
     artifacts: Mapping[str, bytes] = field(default_factory=dict)
+    controls: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -291,7 +292,8 @@ def _receipt_matches(receipt: Any, package: Any, attempt: int, dispatch_hash: st
             and set(receipt.declared_write_set) == set(p.get("write_scope") or ()))
 
 
-def _verification_matches(receipt: Any, package: Any, attempt: int) -> bool:
+def _verification_matches(receipt: Any, package: Any, attempt: int,
+                          source_digest: Optional[str] = None) -> bool:
     p = _package_payload(package)
     plan = p.get("verification") or {}
     digest_set = {d for _path, d in plan.get("verifier_digests") or ()}
@@ -302,7 +304,7 @@ def _verification_matches(receipt: Any, package: Any, attempt: int) -> bool:
             and receipt.attempt == attempt
             and receipt.verifier_id == plan.get("verifier_id")
             and receipt.normalized_command == plan.get("command")
-            and receipt.source_snapshot_digest == (p.get("source") or {}).get("snapshot_digest")
+            and receipt.source_snapshot_digest == (source_digest or (p.get("source") or {}).get("snapshot_digest"))
             and receipt.verifier_digest in digest_set)
 
 
@@ -336,11 +338,11 @@ def _artifact_matches(ref: Any, data: Optional[bytes]) -> bool:
 
 def _seal(package: Any, attempts: Sequence[Any], verifications: Sequence[Any],
           dispatches: Sequence[Any], artifacts: Mapping[str, bytes], *,
-          package_id: str) -> tuple[Mapping[str, Any], Any]:
+          package_id: str, acceptance_context=None) -> tuple[Mapping[str, Any], Any]:
     ep = seal_evidence_package(
         evidence_package_id=package_id, execution_package=package,
         attempt_receipts=attempts, verification_receipts=verifications,
-        dispatch_receipts=dispatches)
+        dispatch_receipts=dispatches, acceptance_context=acceptance_context)
     payload = ep.to_dict()
     validation = validate_evidence_package(payload, artifact_extensions=artifacts)
     return payload, validation
@@ -355,13 +357,17 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
                           select_fresh: Optional[Callable[[Any, int], Any]] = None,
                           advise: Optional[Callable[[PlannerInput], Any]] = None,
                           advisory_budget: int = 1,
-                          max_excerpt: int = 2000) -> LoopResult:
+                          max_excerpt: int = 2000,
+                          current_source: Optional[Callable[[], Mapping[str, Any]]] = None,
+                          allow_legacy_evidence: bool = False) -> LoopResult:
     """Run bounded G1/repair attempts against an immutable package.
 
     Adapter callbacks do the actual local work; this coordinator validates
     identities and evidence. `select_fresh` receives only the original bound
     request and retry number and is called once only after DR-10 invalidation.
     """
+    if current_source is None and not allow_legacy_evidence:
+        return LoopResult(REFUSED, refusal_reason="new worker runs require measured output source and v2 evidence")
     if type(advisory_budget) is not int or advisory_budget not in (0, 1):
         return LoopResult(REFUSED, refusal_reason="advisory budget must be the frozen integer 0 or 1")
     if advise is not None and not callable(advise):
@@ -380,6 +386,9 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
         return LoopResult(REFUSED, refusal_reason="package has no attempt budget")
     attempts, verifications, dispatches = [], [], []
     artifacts: dict[str, bytes] = {}
+    acceptance_context = ({"source_snapshots": {p["source"]["snapshot_digest"]: p["source"]},
+                           "dispatch_evidence": {}, "baseline_receipts": []}
+                          if current_source is not None else None)
     seen_fingerprints: set[str] = set()
     prior_fingerprint: Optional[str] = None
     advisor_calls = 0
@@ -407,7 +416,7 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
         try:
             payload, validation = _seal(
                 frozen_package, attempts, verifications, dispatches, artifacts,
-                package_id=f"{p['run_id']}-worker-loop")
+                package_id=f"{p['run_id']}-worker-loop", acceptance_context=acceptance_context)
             return LoopResult(status, tuple(attempts), tuple(verifications),
                               tuple(dispatches), payload, validation, reason,
                               dict(artifacts))
@@ -475,6 +484,9 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
             return history_result(BLOCKED, f"dispatch pin refused: {exc}")
         if not dispatches or dispatches[-1].receipt_hash != dispatch_receipt.receipt_hash:
             dispatches.append(dispatch_receipt)
+        if acceptance_context is not None:
+            acceptance_context["dispatch_evidence"][dispatch_receipt.receipt_hash] = seal_dispatch_evidence(
+                bound, attempts=(), invocations=(), include_canonical_receipts=True)
         if number == 1:
             context = render_initial_context(p)
             repair_of = 0
@@ -552,21 +564,45 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
             guard_failure = package_guard(bound)
             if guard_failure:
                 return history_result(BLOCKED, guard_failure)
+            candidate = dict(current_source()) if current_source is not None else p["source"]
+            if (not snapshot_digest_is_valid(candidate) or candidate.get("truncated_paths")
+                    or candidate.get("diff_truncated")):
+                return history_result(BLOCKED, "candidate snapshot is incomplete or invalid")
+            if acceptance_context is not None:
+                acceptance_context["source_snapshots"][candidate["snapshot_digest"]] = candidate
             checked = execute_verifier(bound, ar, number)
         except Exception as exc:
             return history_result(BLOCKED, f"verifier adapter failed: {exc}")
         vr = checked.receipt
-        if not _verification_matches(vr, p, number):
+        if not _verification_matches(vr, p, number, candidate["snapshot_digest"]):
             return history_result(BLOCKED, "verification receipt failed identity validation")
         verifications.append(vr)
+        for control in checked.controls:
+            if not _verification_matches(control, p, number, candidate["snapshot_digest"]):
+                return history_result(BLOCKED, "control receipt failed identity validation")
+            verifications.append(control)
         try:
             _collect_artifacts(artifacts, checked.artifacts)
         except Exception as exc:
             return history_result(BLOCKED, str(exc))
+        if current_source is not None:
+            try:
+                if dict(current_source()) != candidate:
+                    return history_result(BLOCKED, "candidate changed during verification")
+            except Exception as exc:
+                return history_result(BLOCKED, f"candidate recapture failed: {type(exc).__name__}")
         if vr.outcome == CLAIM_PASS:
+            if current_source is not None:
+                try:
+                    valid, reason, _immutable = _decision_facts_match(
+                        bound, p, current_facts(bound, number), immutable_runtime_identity=immutable_runtime_identity)
+                except Exception as exc:
+                    return history_result(BLOCKED, f"post-verification runtime observation failed: {type(exc).__name__}")
+                if not valid:
+                    return history_result(BLOCKED, "post-verification execution invalidation: " + reason)
             payload, validation = _seal(
                 frozen_package, attempts, verifications, dispatches, artifacts,
-                package_id=f"{p['run_id']}-worker-loop")
+                package_id=f"{p['run_id']}-worker-loop", acceptance_context=acceptance_context)
             status = ACCEPTED_CANDIDATE if validation.ok else BLOCKED
             return LoopResult(status, tuple(attempts), tuple(verifications),
                               tuple(dispatches), payload, validation,

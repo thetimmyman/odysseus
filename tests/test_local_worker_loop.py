@@ -324,7 +324,7 @@ def _run(package, bound, verification_codes, *, facts_mutator=None,
             return invocation_mutator(current_bound, identity)
         return identity
 
-    result = run_local_worker_loop(
+    result = run_local_worker_loop(allow_legacy_evidence=True,
         execution_package=package, standing_dispatch=bound,
         current_facts=facts, invocation=invocation,
         execute_worker=worker, execute_verifier=verifier,
@@ -336,7 +336,7 @@ def _run(package, bound, verification_codes, *, facts_mutator=None,
 
 def test_malformed_package_is_refused_before_any_runtime_callback():
     calls = []
-    result = run_local_worker_loop(
+    result = run_local_worker_loop(allow_legacy_evidence=True,
         execution_package={"package_hash": "bad"},
         standing_dispatch=SimpleNamespace(),
         current_facts=lambda *_: calls.append("facts"),
@@ -358,7 +358,7 @@ def test_resealed_but_invalid_verifier_contract_is_refused_before_any_callback()
     request = replace(original.request, execution_package_hash=payload["package_hash"])
     fake_bound = SimpleNamespace(request=request, decision=SimpleNamespace(request=request))
     calls = []
-    result = run_local_worker_loop(
+    result = run_local_worker_loop(allow_legacy_evidence=True,
         execution_package=payload, standing_dispatch=fake_bound,
         current_facts=lambda *_: calls.append("facts"),
         invocation=lambda *_: calls.append("invoke"),
@@ -1106,7 +1106,7 @@ def test_facts_refresh_package_mutation_is_caught_before_advisor_callback():
         return result
 
     advisor_calls = []
-    result = run_local_worker_loop(
+    result = run_local_worker_loop(allow_legacy_evidence=True,
         execution_package=package, standing_dispatch=bound,
         current_facts=facts, invocation=_invocation,
         execute_worker=worker, execute_verifier=verifier,
@@ -1169,7 +1169,7 @@ def test_advisory_budget_rejects_values_outside_frozen_zero_or_one(budget):
     package = _package(max_attempts=1)
     bound = _bound(package)
     calls = []
-    result = run_local_worker_loop(
+    result = run_local_worker_loop(allow_legacy_evidence=True,
         execution_package=package, standing_dispatch=bound,
         current_facts=lambda *_: calls.append("facts"),
         invocation=lambda *_: calls.append("invocation"),
@@ -1248,7 +1248,7 @@ def test_missing_or_tampered_failure_artifact_blocks_instead_of_building_repair(
         result.artifacts[f"memory://stdout/{attempt}"] = b"tampered output\n"
         verifiers.append(result)
         return result
-    result = run_local_worker_loop(
+    result = run_local_worker_loop(allow_legacy_evidence=True,
         execution_package=package, standing_dispatch=bound,
         current_facts=lambda b, _n: _facts(b, package), invocation=_invocation,
         execute_worker=worker, execute_verifier=verifier,
