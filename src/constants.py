@@ -104,3 +104,6 @@ def internal_api_base() -> str:
     if override:
         return override.rstrip("/")
     return f"http://127.0.0.1:{os.environ.get('APP_PORT', '7000')}"
+
+# Optional trusted, bounded PDF adapter argv as JSON. Empty keeps the existing parser.
+PDF_PROJECTION_COMMAND = os.getenv("ODYSSEUS_PDF_PROJECTION_COMMAND", "")

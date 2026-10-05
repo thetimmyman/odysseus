@@ -172,6 +172,14 @@ class VectorRAG:
             try:
                 existing = lane.collection.get(ids=[doc_id])
                 if existing["ids"]:
+                    if metadata.get("pdf_projection"):
+                        prior = (existing.get("metadatas") or [{}])[0]
+                        # Existing content IDs remain authoritative. Never rebind
+                        # another source/owner's deduplicated chunk as this PDF.
+                        if (prior.get("source") != metadata.get("source")
+                                or prior.get("owner") != metadata.get("owner")):
+                            continue
+                        lane.collection.update(ids=[doc_id], metadatas=[metadata])
                     wrote = True
                     continue
                 lane.collection.add(
@@ -284,6 +292,9 @@ class VectorRAG:
                     distance = results["distances"][0][idx]
                     doc_text = results["documents"][0][idx]
                     meta = results["metadatas"][0][idx]
+                    from src import pdf_projection
+                    if not pdf_projection.current(meta, meta.get("source", "")):
+                        continue
 
                     vector_sim = 1.0 - distance
                     doc_words = set(doc_text.lower().split())
@@ -327,6 +338,9 @@ class VectorRAG:
                 for i, doc in enumerate(all_docs["documents"]):
                     meta = all_docs["metadatas"][i]
                     if owner and meta.get("owner") != owner:
+                        continue
+                    from src import pdf_projection
+                    if not pdf_projection.current(meta, meta.get("source", "")):
                         continue
                     doc_lower = doc.lower()
                     score = sum(1 for w in query_words if w in doc_lower)
@@ -419,9 +433,15 @@ class VectorRAG:
                         continue
 
                     try:
+                        projection = None
                         if ext == '.pdf':
-                            from src.personal_docs import extract_pdf_text
-                            content = extract_pdf_text(fpath)
+                            from src import pdf_projection
+                            if pdf_projection.enabled():
+                                projection = pdf_projection.extract(fpath)
+                                content = "\n".join(page["text"] for page in projection["pages"])
+                            else:
+                                from src.personal_docs import extract_pdf_text
+                                content = extract_pdf_text(fpath)
                         else:
                             with open(fpath, 'r', encoding='utf-8') as f:
                                 content = f.read()
@@ -438,8 +458,14 @@ class VectorRAG:
                         if owner:
                             meta['owner'] = owner
 
-                        for i, chunk in enumerate(self._split_into_chunks(content)):
-                            if self.add_document(chunk, {**meta, 'chunk_id': i}):
+                        if projection:
+                            chunks = [(chunk, pdf_projection.chunk_metadata(projection, page["physical_page"]))
+                                      for page in projection["pages"]
+                                      for chunk in self._split_into_chunks(page["text"])]
+                        else:
+                            chunks = [(chunk, {}) for chunk in self._split_into_chunks(content)]
+                        for i, (chunk, provenance) in enumerate(chunks):
+                            if self.add_document(chunk, {**meta, 'chunk_id': i, **provenance}):
                                 indexed += 1
                             else:
                                 failed += 1
