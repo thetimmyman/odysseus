@@ -117,3 +117,45 @@ identity mutation, expiry, future-dated, missing receipt, corrupt receipt, measu
 capability removed, declared-only vs measured requirement, MS-R1 inference, and a
 receipt that is not the one bound into the evidence). The PS-605→PS-632 seam
 (`persisted_routing_inputs`) is exercised through the same file.
+
+## Installed-profile closeout
+
+New measured receipts use schema 2 with an explicit `qualification_disposition`:
+`QUALIFIED`, `ADOPT_ROLE_SPECIFIC`, `QUALIFIED_EXPERIMENTAL`, `REJECTED`, or
+`UNQUALIFIED`. Only the first two are eligible. Schema 1 receipt bytes and hashes
+remain readable. Schema 2 profile IDs additionally cover full material host and
+auxiliary artifact identity. A healthy host or an exactly identified artifact does
+not prove reference semantics: `exact_reference_semantics` requires separate
+measured evidence. Role-specific work must explicitly request approximate intent;
+default requests retain reference intent, and explicit stronger capabilities remain
+required even with approximate intent. `minimum_context_tokens` is checked against
+the measured safe context, including every fallback.
+
+`active.json` records the explicitly selected profile per physical host. Appending
+another profile never activates it. Missing or corrupt authority fails closed;
+readers never choose the newest ledger observation. Writers serialize append and
+activation with a file lock. The first profile initializes the host index; replacing
+it requires compare-and-swap activation plus current material identity. Importing a
+historical store requires explicit activation, rather than silently reconstructing
+its authority.
+
+`PS632_PROFILE_REGISTRY` can point at a JSON list of `LocalTargetSpec` records to
+replace retired endpoint/model configuration with explicit installed profiles.
+The canonical persisted seam checks schema 2 endpoint, host, model, qualification
+reference and inference-role bindings. MS-R1 cannot acquire an inference role
+through this override. Generic Framework metadata remains unqualified.
+
+`scripts/odysseus-capability --store DIRECTORY verify` audits evidence and indexes.
+`import RECEIPT [--supersedes HASH]` requires an already sealed receipt;
+`activate HOST PROFILE --expected-profile OLD --identity-digest OBSERVED` explicitly
+changes the active profile. `refresh OBSERVATION` consumes a current material
+identity/health snapshot. It only refreshes liveness: observation time and semantic
+TTL remain unchanged. Material drift or expired qualification appends invalidation
+instead of resurrecting evidence. Callers can supply `current_identity_digests` to
+`persisted_routing_inputs`; a missing observation then refuses that host.
+
+Live measurements and endpoint configuration remain external private artifacts.
+A registry import is separate from deployment and from the PS-641 production
+composition acceptance run. Short synthetic context tests establish a bounded
+working floor, never the advertised maximum or multi-session capacity. Client
+stream closure alone never qualifies server-side cancellation.

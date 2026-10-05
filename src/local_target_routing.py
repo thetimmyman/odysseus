@@ -18,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from src import dispatch_boundary as dbd
 from src import dispatch_routing as dr
@@ -33,7 +33,7 @@ CAPABILITY_MAP: Mapping[str, Tuple[str, ...]] = {
     # A proven native tool call is a single tool call, and proves the packet can act.
     CAP_NATIVE_TOOLS: (dr.CAP_SINGLE_TOOL_CALL,),
     # Completion-only work: the node can summarize/classify/review prose exactly.
-    CAP_READONLY_ANALYSIS: (dr.CAP_TEXT_GENERATION, dr.CAP_EXACT_REFERENCE_SEMANTICS),
+    CAP_READONLY_ANALYSIS: (dr.CAP_TEXT_GENERATION,),
     CAP_STREAMING: (dr.CAP_STREAMING,),
 }
 
@@ -58,7 +58,7 @@ def _legacy_view_from_receipt(receipt: TargetCapabilityReceipt, profile: Any,
         profile_id=receipt.profile_id,
         target_id=profile.target_id,
         capabilities=frozenset(mapped),
-        exactness=dr.EXACTNESS_EXACT, observed_at=receipt.observed_at,
+        exactness=receipt.routing_exactness(), observed_at=receipt.observed_at,
         ttl_s=int(receipt.ttl_s),
         healthy=(receipt.qualification_state(now=now) == "valid"
                  and receipt.health_state(now=now) == "live"),
@@ -66,7 +66,8 @@ def _legacy_view_from_receipt(receipt: TargetCapabilityReceipt, profile: Any,
         host=receipt.host.ssh_host or receipt.host_id,
         notes="PS-632 canonical receipt projection",
         provenance=dr.PROVENANCE_MEASURED,
-        source_receipt_hash=receipt.receipt_hash)
+        source_receipt_hash=receipt.receipt_hash,
+        safe_working_context=receipt.context.safe_working_context)
 
 
 @dataclass(frozen=True)
@@ -243,7 +244,8 @@ def request_for_packet(packet: Mapping[str, Any], *, role: str,
         run_id=run_id, packet_id=str(packet.get("packet_id") or ""),
         execution_package_hash=execution_package_hash,
         capabilities=requirement_capabilities(required),
-        exactness=dr.EXACTNESS_EXACT,
+        exactness=str(metadata.get("target_exactness") or dr.EXACTNESS_EXACT),
+        minimum_context_tokens=metadata.get("minimum_context_tokens", 0),
         sensitivity=str(metadata.get("data_sensitivity") or "internal"),
         local_only=True,
         # Only writable packets need the tool channel; requiring it otherwise
@@ -341,14 +343,16 @@ def sync_receipts_from_records(store, records: Sequence[LocalTargetCapability], 
             health_ttl_s=int(facts.get("health_ttl_s") or health_ttl_s),
             roles=spec.roles, qualification_ref=spec.qualification_ref,
             notes=str(facts.get("notes") or ""))
-        existing = store.current_for_host(spec.target_id)
+        existing = store.current(receipt.profile_id)
         stored.append(store.append(
             receipt, supersedes=(existing.receipt_hash if existing else "")))
     return stored
 
 
 def persisted_routing_inputs(store, *, now=None,
-                             specs: Sequence[Any] = None) -> PersistedRoutingInputs:
+                             specs: Sequence[Any] = None,
+                             current_identity_digests: Mapping[str, str] = None
+                             ) -> PersistedRoutingInputs:
     """Persisted receipts -> routing inputs (read-only). A host is a candidate only if:
 
       * the registry grants it the inference role and a qualification ref;
@@ -395,7 +399,19 @@ def persisted_routing_inputs(store, *, now=None,
                 "odysseus-capability discover")})
             continue
 
-        state = receipt.qualification_state(now=moment)
+        if receipt.schema_version == 2 and (receipt.host_id != host_id or receipt.model.model_id != spec.model
+                or receipt.qualification_ref != spec.qualification_ref
+                or ROLE_INFERENCE not in receipt.roles
+                or receipt.runtime.endpoint_url != spec.endpoint):
+            skipped.append({"target_id": host_id, "reason":
+                            "registered_profile_binding_mismatch"})
+            continue
+        live_digest = (current_identity_digests or {}).get(host_id, "")
+        if current_identity_digests is not None and not live_digest:
+            skipped.append({"target_id": host_id, "reason": "live_identity_missing"})
+            continue
+        state = receipt.qualification_state(
+            now=moment, current_identity_digest=live_digest)
         if state != "valid":
             skipped.append({"target_id": host_id, "profile_id": receipt.profile_id,
                             "receipt_hash": receipt.receipt_hash,
@@ -410,7 +426,7 @@ def persisted_routing_inputs(store, *, now=None,
 
         mapped: set = set()
         for name in receipt.capabilities.measured:
-            mapped.update(CAPABILITY_MAP.get(name, ()))
+            mapped.update(CAPABILITY_MAP.get(name, (name,) if name in dr.KNOWN_CAPABILITIES else ()))
         # Roles come from the receipt, so spec edits can't add roles. The profile
         # declares registry roles intersected with the router's vocabulary, plus
         # those its proven capabilities imply.
@@ -429,7 +445,8 @@ def persisted_routing_inputs(store, *, now=None,
             model=receipt.model.model_id, model_digest=receipt.model.digest,
             backend=receipt.runtime.backend,
             backend_version=receipt.runtime.backend_version,
-            locality=dr.LOCALITY_LOCAL, endpoint_url=spec.endpoint or "",
+            locality=dr.LOCALITY_LOCAL, endpoint_url=receipt.runtime.endpoint_url,
+            exactness=receipt.routing_exactness(),
             endpoint_type=receipt.runtime.endpoint_type,
             runtime_options=receipt.context.options,
             configured_context=receipt.context.configured_context,
@@ -442,7 +459,7 @@ def persisted_routing_inputs(store, *, now=None,
         receipts.append(dr.make_legacy_capability_view(
             receipt_id=receipt.receipt_hash, profile_id=receipt.profile_id,
             target_id=host_id, capabilities=frozenset(mapped),
-            exactness=dr.EXACTNESS_EXACT, observed_at=receipt.observed_at,
+            exactness=receipt.routing_exactness(), observed_at=receipt.observed_at,
             ttl_s=int(receipt.ttl_s), healthy=True,
             runtime_version=receipt.runtime.version,
             model_digest=receipt.model.digest,
@@ -450,7 +467,8 @@ def persisted_routing_inputs(store, *, now=None,
             notes=(f"ps632 persisted receipt {receipt.receipt_hash[:16]} "
                    f"(profile {receipt.profile_id})"),
             provenance=dr.PROVENANCE_MEASURED,
-            source_receipt_hash=receipt.receipt_hash))
+            source_receipt_hash=receipt.receipt_hash,
+        safe_working_context=receipt.context.safe_working_context))
         network_classes[host_id] = receipt.network_class
         bound[host_id] = receipt.receipt_hash
 

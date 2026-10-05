@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from src.constants import TARGET_CAPABILITY_PROFILE_REGISTRY_ENV
 from src.endpoint_identity import canonical_endpoint_identity
 
 
@@ -160,12 +162,27 @@ DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
 
 def registered_targets() -> Tuple[LocalTargetSpec, ...]:
     """The fleet's identity half. Never returns one collapsed ``local_qwen``."""
-    return DEFAULT_TARGETS
+    path = os.environ.get(TARGET_CAPABILITY_PROFILE_REGISTRY_ENV, "")
+    if not path:
+        return DEFAULT_TARGETS
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, list):
+        raise ValueError("profile registry must be a list of explicit host specs")
+    overrides = {}
+    for row in payload:
+        spec = LocalTargetSpec(**row)
+        if spec.target_id in overrides:
+            raise ValueError("duplicate host specification")
+        if spec.target_id == TARGET_MSR1 and ROLE_INFERENCE in spec.roles:
+            raise ValueError("MS-R1 is not an inference target")
+        overrides[spec.target_id] = spec
+    return tuple(overrides.pop(spec.target_id, spec) for spec in DEFAULT_TARGETS) + tuple(overrides.values())
 
 
 def target_by_id(target_id: str) -> Optional[LocalTargetSpec]:
     """Lookup by stable ID. Unknown ID returns ``None`` — callers must refuse."""
-    for spec in DEFAULT_TARGETS:
+    for spec in registered_targets():
         if spec.target_id == target_id:
             return spec
     return None
@@ -874,8 +891,17 @@ class TargetCapabilityReceipt:
     notes: str = ""
     schema_version: int = CAPABILITY_RECEIPT_SCHEMA_VERSION
     receipt_hash: str = field(default="")
+    qualification_disposition: str = ""
 
     def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version not in (1, 2):
+            raise ValueError("unsupported capability receipt schema")
+        if self.schema_version == 1 and self.qualification_disposition:
+            raise ValueError("schema 1 cannot carry schema 2 disposition metadata")
+        if self.schema_version == 2 and self.qualification_disposition not in (
+                "QUALIFIED", "ADOPT_ROLE_SPECIFIC", "QUALIFIED_EXPERIMENTAL",
+                "REJECTED", "UNQUALIFIED"):
+            raise ValueError("schema 2 requires an explicit qualification disposition")
         for name in ("host_id", "profile_id", "observed_at"):
             if not str(getattr(self, name) or "").strip():
                 raise LocalTargetUnavailable(
@@ -936,6 +962,17 @@ class TargetCapabilityReceipt:
             return INVALIDATED_FUTURE
         if self.invalidation_reason:
             return self.invalidation_reason
+        if self.schema_version == 2:
+            if self.qualification_disposition not in ("QUALIFIED", "ADOPT_ROLE_SPECIFIC"):
+                return "disposition_" + self.qualification_disposition.lower()
+            if not self.qualification_ref.strip():
+                return "qualification_reference_missing"
+            if not (self.runtime.image_digest or self.runtime.commit):
+                return "runtime_build_unidentified"
+            if not self.model.quantization or self.model.quantization.lower() == "unknown":
+                return "model_quantization_unidentified"
+            if self.context.safe_working_context > self.context.semantic_verified_context:
+                return INVALIDATED_SAFE_CONTEXT_UNMEASURED
         if (moment - observed).total_seconds() > float(self.ttl_s):
             return INVALIDATED_EXPIRED
         if not self.model.is_exact():
@@ -967,6 +1004,11 @@ class TargetCapabilityReceipt:
             return "liveness_expired"
         return "live"
 
+    def routing_exactness(self) -> str:
+        """Artifact identity never proves reference semantics."""
+        return ("exact_reference_intent" if "exact_reference_semantics" in self.capabilities.measured
+                else "approximate")
+
     def measured_capabilities(self) -> Tuple[str, ...]:
         """Only the measured class; declared tool claims never appear."""
         return tuple(self.capabilities.measured)
@@ -977,7 +1019,7 @@ class TargetCapabilityReceipt:
         return payload
 
     def core(self) -> dict:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "host_id": self.host_id,
             "profile_id": self.profile_id,
@@ -1002,6 +1044,9 @@ class TargetCapabilityReceipt:
             "supersedes": self.supersedes,
             "notes": self.notes,
         }
+        if self.schema_version == 2:
+            payload["qualification_disposition"] = self.qualification_disposition
+        return payload
 
 #: Tool semantics, as observed.
 TOOLS_PROVEN = "native_call_proven"
@@ -1058,6 +1103,11 @@ def make_target_capability_receipt(**kwargs: Any) -> TargetCapabilityReceipt:
             configured_context=context.configured_context,
             configured_served_context=context.configured_served_context)
     provisional = TargetCapabilityReceipt(**payload)
+    if provisional.schema_version == 2:
+        # Schema 1 IDs remain readable. New IDs cover host and auxiliary identity,
+        # which must not inherit a qualification when either changes.
+        payload["profile_id"] += ":mat" + provisional.identity_digest()[:16]
+        provisional = TargetCapabilityReceipt(**payload)
     return TargetCapabilityReceipt(
         **{**payload, "receipt_hash": _digest_of(provisional.core())})
 

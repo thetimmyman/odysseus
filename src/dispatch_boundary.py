@@ -227,7 +227,7 @@ def _canonical_profile_from_receipt(profile: Any, receipt: Any) -> Any:
         runtime_options=receipt.context.options,
         configured_context=receipt.context.configured_context,
         configured_served_context=receipt.context.configured_served_context,
-        locality=locality)
+        locality=locality, exactness=receipt.routing_exactness())
 
 
 @dataclass(frozen=True)
@@ -975,6 +975,8 @@ def _receipt_hash_of(recorded: Mapping[str, Any]) -> str:
             host=str(recorded.get("host") or ""),
             notes=str(recorded.get("notes") or ""),
             provenance=str(recorded.get("provenance") or PROVENANCE_DECLARED),
+            source_receipt_hash=str(recorded.get("source_receipt_hash") or ""),
+            safe_working_context=int(recorded.get("safe_working_context") or 0),
         ).receipt_hash
     except Exception:
         # An unreadable record cannot be re-derived, so it cannot be trusted.
@@ -1042,6 +1044,8 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     # still hash to what was recorded.
     by_profile = {str(r.get("profile_id")): r for r in receipts}
     known_hashes = {str(r.get("receipt_hash")) for r in receipts}
+    known_hashes.update(str(r["source_receipt_hash"]) for r in receipts
+                        if r.get("source_receipt_hash"))
     for ref in (receipt.get("capability_receipt_refs") or ()):
         if str(ref) not in known_hashes:
             codes.append(EVIDENCE_RECEIPT_CHANGED)
