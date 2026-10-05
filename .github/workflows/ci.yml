@@ -137,4 +137,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: python -m pytest -q tests/test_pdf_projection.py tests/test_rag_pdf_projection.py tests/test_personal_docs_pdf_index.py tests/test_rag_owner_scoped_doc_id.py tests/test_rag_keyword_fallback_owner.py tests/test_rag_remove_directory_scope.py
+      - run: python -m pytest -q tests/test_pdf_projection.py tests/test_rag_pdf_projection.py tests/test_personal_docs_pdf_index.py tests/test_rag_owner_scoped_doc_id.py tests/test_rag_keyword_fallback_owner.py tests/test_rag_remove_directory_scope.py tests/test_gpu_compose_standalone.py
