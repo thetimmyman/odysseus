@@ -90,9 +90,14 @@ ROLE_ESCALATION = "escalation"
 #: Harness spellings of the two roles that differ from the canonical names.
 ROLE_IMPLEMENTER_ROUTER = "implementer"
 ROLE_SCOUT_ROUTER = "scout"
+#: Explicit bounded roles; existing role requirements never become weaker.
+ROLE_APPROXIMATE_IMPLEMENTER = "approximate_implementer"
+ROLE_APPROXIMATE_ANALYST = "approximate_analyst"
 
 #: A role's capabilities when the request names none; shorthand, never a substitute.
 ROLE_CAPABILITIES: Mapping[str, Tuple[str, ...]] = {
+    ROLE_APPROXIMATE_IMPLEMENTER: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL),
+    ROLE_APPROXIMATE_ANALYST: (CAP_TEXT_GENERATION,),
     ROLE_IMPLEMENTER: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL,
                        CAP_EXACT_REFERENCE_SEMANTICS),
     ROLE_REPAIR: (CAP_TEXT_GENERATION, CAP_SINGLE_TOOL_CALL,
@@ -572,9 +577,7 @@ class RoutingRequest:
     def required_capabilities(self) -> Tuple[str, ...]:
         """Explicit capabilities unioned with the role's shorthand; a role can
         only add requirements."""
-        merged = [cap for cap in ROLE_CAPABILITIES.get(self.role, ())
-                  if cap != CAP_EXACT_REFERENCE_SEMANTICS
-                  or self.exactness == EXACTNESS_EXACT]
+        merged = list(ROLE_CAPABILITIES.get(self.role, ()))
         for cap in self.capabilities:
             if cap not in merged:
                 merged.append(cap)

@@ -47,7 +47,7 @@ def inputs(tmp_path, r, **kwargs):
 
 
 def dispatch(view, *, exactness=dr.EXACTNESS_APPROXIMATE, context=32768):
-    req=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_IMPLEMENTER,
+    req=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_APPROXIMATE_IMPLEMENTER,
                           exactness=exactness,minimum_context_tokens=context,local_only=True)
     return db.resolve_from_estate(db.TargetEstate(profiles=view.profiles),req,
                                  capability_store=view.capability_store)
@@ -61,7 +61,7 @@ def test_role_specific_positive_and_stronger_reference_context_controls(tmp_path
     for kwargs in [dict(exactness=dr.EXACTNESS_EXACT),dict(context=32769)]:
         with pytest.raises(dr.RoutingRefused):dispatch(view,**kwargs)
     with pytest.raises(dr.RoutingRefused):
-        req=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_IMPLEMENTER,
+        req=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_APPROXIMATE_IMPLEMENTER,
                               exactness=dr.EXACTNESS_APPROXIMATE,
                               capabilities=(dr.CAP_PARALLEL_TOOL_CALLS,))
         db.resolve_from_estate(db.TargetEstate(profiles=view.profiles),req,
@@ -180,7 +180,7 @@ def test_fallback_retains_originating_context_requirement(tmp_path):
     fallback=measured(host_id='local-rtx4500',host=HostBaseline(host_id='local-rtx4500',kernel='synthetic'))
     store=TargetCapabilityStore(str(tmp_path));store.append(insufficient);store.append(fallback)
     view=ltr.persisted_routing_inputs(store,specs=[spec(insufficient),spec(fallback)])
-    request=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_IMPLEMENTER,
+    request=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_APPROXIMATE_IMPLEMENTER,
                              exactness=dr.EXACTNESS_APPROXIMATE,minimum_context_tokens=32768,
                              preferred_profile_ids=(insufficient.profile_id,),local_only=True)
     bound=db.resolve_from_estate(db.TargetEstate(profiles=view.profiles),request,capability_store=store)
@@ -220,3 +220,19 @@ def test_operator_cli_import_audit_refresh_and_tamper_refusal(tmp_path):
     raw=a.to_dict();raw['context']['safe_working_context']=131072;p.write_text(json.dumps(raw))
     bad=subprocess.run(command+['import',str(p)],capture_output=True,text=True)
     assert bad.returncode==2 and 'hash does not cover' in bad.stderr
+
+
+def test_existing_stronger_role_cannot_be_weakened_by_approximate_intent(tmp_path):
+    a=measured();view=inputs(tmp_path,a)
+    request=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_IMPLEMENTER,
+                             exactness=dr.EXACTNESS_APPROXIMATE,local_only=True)
+    assert dr.CAP_EXACT_REFERENCE_SEMANTICS in request.required_capabilities()
+    with pytest.raises(dr.RoutingRefused):
+        db.resolve_from_estate(db.TargetEstate(profiles=view.profiles),request,
+                              capability_store=view.capability_store)
+    # Even the new bounded role retains explicitly requested stronger proof.
+    request=dataclasses.replace(request,role=dr.ROLE_APPROXIMATE_IMPLEMENTER,
+                               capabilities=(dr.CAP_EXACT_REFERENCE_SEMANTICS,))
+    with pytest.raises(dr.RoutingRefused):
+        db.resolve_from_estate(db.TargetEstate(profiles=view.profiles),request,
+                              capability_store=view.capability_store)

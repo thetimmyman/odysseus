@@ -32,7 +32,7 @@ from src.local_targets import (
 CAPABILITY_MAP: Mapping[str, Tuple[str, ...]] = {
     # A proven native tool call is a single tool call, and proves the packet can act.
     CAP_NATIVE_TOOLS: (dr.CAP_SINGLE_TOOL_CALL,),
-    # Completion-only work: the node can summarize/classify/review prose exactly.
+    # Completion-only evidence proves text generation, never reference semantics.
     CAP_READONLY_ANALYSIS: (dr.CAP_TEXT_GENERATION,),
     CAP_STREAMING: (dr.CAP_STREAMING,),
 }
@@ -125,9 +125,9 @@ def roles_from_capabilities(capabilities: Iterable[str]) -> Tuple[str, ...]:
     roles: List[str] = []
     if dr.CAP_SINGLE_TOOL_CALL in caps:
         roles.extend([dr.ROLE_IMPLEMENTER, dr.ROLE_REPAIR, dr.ROLE_DEBUGGER,
-                      dr.ROLE_REVIEWER])
+                      dr.ROLE_REVIEWER, dr.ROLE_APPROXIMATE_IMPLEMENTER])
     if dr.CAP_TEXT_GENERATION in caps:
-        roles.extend([dr.ROLE_SCOUT, dr.ROLE_SCOUT_ROUTER])
+        roles.extend([dr.ROLE_SCOUT, dr.ROLE_SCOUT_ROUTER, dr.ROLE_APPROXIMATE_ANALYST])
     return tuple(dict.fromkeys(roles))
 
 
@@ -138,9 +138,9 @@ def roles_for_record(record: LocalTargetCapability) -> Tuple[str, ...]:
     roles: List[str] = []
     if CAP_NATIVE_TOOLS in proven:
         roles.extend([dr.ROLE_IMPLEMENTER, dr.ROLE_REPAIR, dr.ROLE_DEBUGGER,
-                      dr.ROLE_REVIEWER])
+                      dr.ROLE_REVIEWER, dr.ROLE_APPROXIMATE_IMPLEMENTER])
     if CAP_READONLY_ANALYSIS in proven:
-        roles.extend([dr.ROLE_SCOUT, dr.ROLE_SCOUT_ROUTER])
+        roles.extend([dr.ROLE_SCOUT, dr.ROLE_SCOUT_ROUTER, dr.ROLE_APPROXIMATE_ANALYST])
     return tuple(dict.fromkeys(roles))
 
 
@@ -396,7 +396,7 @@ def persisted_routing_inputs(store, *, now=None,
         if receipt is None:
             skipped.append({"target_id": host_id, "reason": (
                 "no persisted capability receipt for this host: measure it with "
-                "odysseus-capability discover")})
+                "odysseus-capability import")})
             continue
 
         if receipt.schema_version == 2 and (receipt.host_id != host_id or receipt.model.model_id != spec.model

@@ -104,8 +104,8 @@ a typed reason for every failure. Each candidate's PS-605 profile carries the **
 `DispatchDecisionReceipt.capability_receipt_refs` names the **PS-632 receipt hash** —
 the identity a later reader resolves back to the capability evidence.
 
-`scripts/odysseus-capability discover` is the only writer: it probes the registered
-host and persists the receipt. Routing never measures, so a router cannot make a
+`scripts/odysseus-capability import` persists already sealed measurement evidence;
+`refresh` updates observed identity/liveness and `activate` changes active authority. Routing never measures, so a router cannot make a
 capability appear by wanting it. A missing, expired or corrupt receipt is a REFUSAL
 with the store's own reason recorded in the sealed refusal.
 
@@ -126,8 +126,9 @@ New measured receipts use schema 2 with an explicit `qualification_disposition`:
 remain readable. Schema 2 profile IDs additionally cover full material host and
 auxiliary artifact identity. A healthy host or an exactly identified artifact does
 not prove reference semantics: `exact_reference_semantics` requires separate
-measured evidence. Role-specific work must explicitly request approximate intent;
-default requests retain reference intent, and explicit stronger capabilities remain
+measured evidence. Role-specific work must explicitly request `approximate_implementer` or
+`approximate_analyst` plus approximate intent. Existing role requirements stay
+unchanged; default requests retain reference intent, and stronger capabilities remain
 required even with approximate intent. `minimum_context_tokens` is checked against
 the measured safe context, including every fallback.
 
