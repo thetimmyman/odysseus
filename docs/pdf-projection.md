@@ -8,9 +8,12 @@ executable for the admitted `document-page-projection-v1` adapter. For example:
 ```
 
 This trusted configuration is a host process, not an uploaded document setting.
-The qualified native profile needs a Linux x86_64 systemd user session and
-bubblewrap. Containers without that boundary return an explicit unavailable
-result. No adapter or model is automatically installed. An empty setting keeps
+The native profile needs a Linux x86_64 systemd user session with either
+bubblewrap or the independently qualified Docker host launcher. An application
+container may use a host-pinned SSH connection with a key restricted to that
+launcher's forced command; it receives no Docker socket. Missing qualified
+boundaries return an explicit unavailable result. No adapter or model is
+automatically installed. An empty setting keeps
 the prior parser. Keep the existing broker as the only route for local inference;
 this adapter performs none.
 
