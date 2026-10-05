@@ -430,10 +430,19 @@ assign it to PS-635 or to any other lane.
 Carried here because `docs/PS641-PRODUCTION-COMPOSITION.md` quotes it
 verbatim as a requirement PS-641 must respect. **DR-10 is RULED
 (`OPERATOR_RULINGS.md` D9, 2026-09-17): `ACCEPT_DELTA_NOW` / `IMPLEMENT_NOW`
-in `CONTRACT_DELTA_REGISTER.md`** — a required integration invariant,
-currently UNSATISFIED. Semantics: normally revalidate the standing dispatch
-decision cheaply (freshness/TTL, policy revision, target identity, effect
-envelope); invoke a fresh PS-605 selection only when one of those checks
-finds the standing decision invalidated. See
-`docs/PS641-PRODUCTION-COMPOSITION.md` for the full text and the measured gap
-(`PS635_OWNERSHIP_FINDINGS.md` §4-§5).
+in `CONTRACT_DELTA_REGISTER.md`** — a required integration invariant, now
+SATISFIED on the canonical lineage. Semantics: normally revalidate the
+standing dispatch decision cheaply (freshness/TTL, policy revision, target
+identity, effect envelope); invoke a fresh PS-605 selection only when one of
+those checks finds the standing decision invalidated. Landed by Package D
+(Plane PS-678; PR #68 `7c5b714`, PR #69 `d3939a3` onto `main`, synced to
+`dev` by PR #75 `f15604b`): `run_local_worker_loop` revalidates
+`CurrentDispatchFacts` against the standing decision via
+`_decision_facts_match` before every attempt and calls `select_fresh` at
+most once, only after an observed invalidation
+(`src/local_worker_loop.py:433-472`). Covered by
+`tests/test_local_worker_loop.py::test_routable_dr10_invalidation_selects_once_then_dispatches_only_fresh_bound`
+and `::test_immutable_dr10_drift_fails_closed_without_selector_or_second_worker`.
+See `docs/PS641-PRODUCTION-COMPOSITION.md` for the full text and the
+now-closed gap previously measured against `PS635_OWNERSHIP_FINDINGS.md`
+§4-§5.

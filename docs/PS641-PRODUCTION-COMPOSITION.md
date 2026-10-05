@@ -71,21 +71,29 @@ integration.
 
 **DR-10 (RULED, `OPERATOR_RULINGS.md` D9, 2026-09-17).** DR-10 is now
 `ACCEPT_DELTA_NOW` / `IMPLEMENT_NOW` in `CONTRACT_DELTA_REGISTER.md`: a
-**required integration invariant, currently UNSATISFIED**. Satisfying it is
-cheap and does not move retry policy into PS-605: a re-dispatch may reuse the
-standing decision only when, at re-dispatch time, its capability receipts are
-still within TTL, the policy revision is unchanged, and the resolved endpoint
-identity still matches the pin — a freshness/identity check against an
-existing decision, never a re-run of policy evaluation and never a new
-selection call per attempt; otherwise, a fresh PS-605 selection is required,
-or the attempt fails closed. This is the accepted satisfaction semantics for
-the verbatim invariant above ("every re-dispatch requires a new PS-605
-selection"): the *normal* path is cheap revalidation against the standing
-decision; a **fresh PS-605 selection is invoked only when revalidation finds
-the standing decision invalidated**. This is not documentation of existing
-behaviour — the gap measured above is real and open — it is the accepted
-rule the bounded DR-10 integration ticket (ahead of PS-641 implementation)
-must satisfy.
+**required integration invariant, now SATISFIED on the canonical lineage**
+(Package D, Plane PS-678; PR #68 `7c5b714`, PR #69 `d3939a3` onto `main`,
+synced to `dev` by PR #75 `f15604b`). Satisfying it is cheap and does not
+move retry policy into PS-605: a re-dispatch may reuse the standing decision
+only when, at re-dispatch time, its capability receipts are still within
+TTL, the policy revision is unchanged, and the resolved endpoint identity
+still matches the pin — a freshness/identity check against an existing
+decision, never a re-run of policy evaluation and never a new selection call
+per attempt; otherwise, a fresh PS-605 selection is required, or the attempt
+fails closed. This is the accepted satisfaction semantics for the verbatim
+invariant above ("every re-dispatch requires a new PS-605 selection"): the
+*normal* path is cheap revalidation against the standing decision; a
+**fresh PS-605 selection is invoked only when revalidation finds the
+standing decision invalidated**. `run_local_worker_loop` now implements
+exactly this revalidate-then-reselect-once sequence
+(`src/local_worker_loop.py:433-472`), covered by
+`tests/test_local_worker_loop.py::test_routable_dr10_invalidation_selects_once_then_dispatches_only_fresh_bound`
+and `::test_immutable_dr10_drift_fails_closed_without_selector_or_second_worker`.
+The gap measured above against `work/ps635-ps605-integration @ acc0ebda`
+describes that preserved evidence branch, not the canonical lineage; it is
+closed there by the bounded DR-10 integration ticket (Package D), ahead of
+PS-641 implementation, which PS-641 must now compose rather than
+reimplement.
 
 ## The measured PS-641 clause: no attempt loop, no retry authority
 
