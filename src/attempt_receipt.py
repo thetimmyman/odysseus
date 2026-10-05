@@ -305,6 +305,7 @@ class VerificationReceipt:
     baseline_failure_fingerprint: str = ""
     schema_version: int = VERIFICATION_RECEIPT_SCHEMA_VERSION
     receipt_hash: str = field(default="")
+    proof_vantage: str = ""
 
     def __post_init__(self) -> None:
         for name in ("receipt_id", "run_id", "packet_id", "execution_package_hash",
@@ -380,7 +381,7 @@ class VerificationReceipt:
                 and self.verifier_digest == verifier_digest)
 
     def core(self) -> dict:
-        return {
+        core = {
             "schema_version": self.schema_version,
             "receipt_id": self.receipt_id,
             "run_id": self.run_id,
@@ -429,6 +430,9 @@ class VerificationReceipt:
             "baseline_failure_fingerprint": self.baseline_failure_fingerprint,
             "outcome": self.outcome,
         }
+        if self.proof_vantage:
+            core["proof_vantage"] = self.proof_vantage
+        return core
 
     def to_dict(self) -> dict:
         payload = self.core()

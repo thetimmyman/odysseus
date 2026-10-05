@@ -19,7 +19,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from src.attempt_receipt import (
     BASELINE_CHANGED,
@@ -27,9 +27,6 @@ from src.attempt_receipt import (
     BASELINE_UNPROVEN,
 )
 from src.evidence_contract import (
-    CLAIM_BLOCKED,
-    CLAIM_FAIL,
-    CLAIM_INCONCLUSIVE,
     CLAIM_PASS,
     INDEPENDENCE_WORKER_AUTHORED,
     STATE_BLOCKED,
@@ -96,6 +93,12 @@ KNOWN_REASONS = frozenset({
     NO_ATTEMPTS, REQUIREMENT_STATE_TAMPERED, REQUIREMENT_UNRESOLVED,
     REQUIREMENT_FAILED, REQUIREMENT_BLOCKED_NOT_ALLOWED, MALFORMED_RECORD,
     SCHEMA_VERSION_INVALID, UNSUPPORTED_SCHEMA_VERSION,
+    "live_evidence_stale", "runtime_profile_changed", "policy_changed",
+    "acceptance_context_invalid", "dispatch_evidence_missing", "runtime_identity_missing",
+    "approximate_profile_for_exact_requirement", "verification_receipt_unbound",
+    "command_capture_missing", "missing_required_positive_control", "freshness_rule_invalid",
+    "proof_vantage_mismatch",
+    "attempt_capture_missing",
 })
 
 #: Secret shapes that should never appear in any payload; a hit is an
@@ -195,6 +198,18 @@ class ValidationResult:
     def codes(self) -> Tuple[str, ...]:
         return tuple(issue.code for issue in self.issues)
 
+    @property
+    def state(self) -> str:
+        if self.ok:
+            return "VERIFIED"
+        if "live_evidence_stale" in self.codes:
+            return "STALE"
+        if any(code in self.codes for code in (
+                SOURCE_CHANGED_AFTER_VERIFICATION, "runtime_profile_changed",
+                VERIFIER_IDENTITY_MISMATCH, "policy_changed")):
+            return "INVALIDATED"
+        return "INCOMPLETE"
+
     def has(self, code: str) -> bool:
         return code in self.codes
 
@@ -204,7 +219,8 @@ class ValidationResult:
         return "REJECTED: " + "; ".join(str(i) for i in self.issues)
 
     def to_dict(self) -> dict:
-        return {"ok": self.ok, "issues": [i.to_dict() for i in self.issues],
+        return {"ok": self.ok, "state": self.state,
+                "issues": [i.to_dict() for i in self.issues],
                 "requirement_states": [s.to_dict() for s in self.requirement_states]}
 
 
@@ -224,6 +240,7 @@ class EvidencePackage:
     sealed_at: str = ""
     schema_version: int = EVIDENCE_PACKAGE_SCHEMA_VERSION
     evidence_package_hash: str = field(default="")
+    acceptance_context: Optional[Mapping[str, Any]] = None
 
     def __post_init__(self) -> None:
         if not str(self.evidence_package_id or "").strip():
@@ -246,7 +263,7 @@ class EvidencePackage:
         return str(self.execution_package.get("package_hash", ""))
 
     def core(self) -> dict:
-        return {
+        core = {
             "schema_version": self.schema_version,
             "evidence_package_id": self.evidence_package_id,
             "sealed_at": self.sealed_at,
@@ -258,6 +275,9 @@ class EvidencePackage:
             "waivers": dict(self.waivers),
             "seals": [dict(s) for s in self.seals],
         }
+        if self.acceptance_context is not None:
+            core["acceptance_context"] = dict(self.acceptance_context)
+        return core
 
     def to_dict(self) -> dict:
         payload = self.core()
@@ -301,6 +321,7 @@ def seal_evidence_package(
     waivers: Optional[Mapping[str, str]] = None,
     seals: Sequence[Mapping[str, Any]] = (),
     sealed_at: str = "",
+    acceptance_context: Optional[Mapping[str, Any]] = None,
 ) -> EvidencePackage:
     """Seal a package, computing closure from the receipts so callers can't
     supply favourable states. ``waivers`` (with reasons) is the only route to
@@ -314,7 +335,10 @@ def seal_evidence_package(
         requirement_from_dict(r)
         for r in (package_payload.get("evidence_requirements") or ()))
     claims = []
+    latest = max((a.attempt for a in attempt_receipts), default=0)
     for receipt in verification_receipts:
+        if acceptance_context is not None and receipt.attempt != latest:
+            continue
         claims.extend(receipt.claims())
     states = close_requirements(requirements, claims, waivers=waivers or {})
 
@@ -328,12 +352,14 @@ def seal_evidence_package(
         waivers=dict(waivers or {}),
         seals=tuple(dict(s) for s in seals),
         sealed_at=sealed_at or utc_now(),
+        acceptance_context=(json.loads(_canonical(acceptance_context))
+                            if acceptance_context is not None else None),
     )
 
 
 def _seal_evidence(**core) -> EvidencePackage:
     core = {k: v for k, v in core.items() if k != "evidence_package_hash"}
-    core["schema_version"] = EVIDENCE_PACKAGE_SCHEMA_VERSION
+    core["schema_version"] = 2 if core.get("acceptance_context") is not None else 1
     provisional = EvidencePackage(**core)
     digest = compute_evidence_package_hash(provisional.core())
     return EvidencePackage(**{**core, "evidence_package_hash": digest})
@@ -381,6 +407,13 @@ def _iter_artifact_refs(payload: Mapping[str, Any]
             ref = receipt.get(key)
             if isinstance(ref, Mapping):
                 yield f"verification[{index}].{key}", ref
+    context = payload.get("acceptance_context")
+    if isinstance(context, Mapping):
+        for index, receipt in enumerate(context.get("baseline_receipts") or ()):
+            for key in ("stdout_ref", "stderr_ref"):
+                ref = receipt.get(key)
+                if isinstance(ref, Mapping):
+                    yield f"baseline[{index}].{key}", ref
 
 
 def _check_artifacts(payload: Mapping[str, Any], extensions: Mapping[str, bytes],
@@ -401,7 +434,7 @@ def _check_artifacts(payload: Mapping[str, Any], extensions: Mapping[str, bytes]
                 "cannot be produced proves nothing",
                 subject=label))
             continue
-        if _sha256_hex(data) != digest:
+        if _sha256_hex(data) != digest or len(data) != ref.get("size"):
             issues.append(ValidationIssue(
                 ARTIFACT_HASH_MISMATCH,
                 "loaded bytes do not match the declared sha256",
@@ -437,6 +470,13 @@ def _check_receipt_hashes(payload: Mapping[str, Any], issues: list) -> None:
     package = payload.get("execution_package") or {}
     from src.execution_package import package_hash_is_valid
 
+    for index, receipt in enumerate(payload.get("dispatch_receipts") or ()):
+        core = {k: v for k, v in receipt.items() if k != "receipt_hash"}
+        if receipt.get("receipt_hash") != _sha256_hex(_canonical(core)):
+            issues.append(ValidationIssue(
+                RECEIPT_HASH_MISMATCH, "dispatch receipt hash does not match its fields",
+                subject=f"dispatch_receipts[{index}]"))
+
     if not package_hash_is_valid(package):
         issues.append(ValidationIssue(
             EXECUTION_PACKAGE_HASH_MISMATCH,
@@ -446,7 +486,6 @@ def _check_receipt_hashes(payload: Mapping[str, Any], issues: list) -> None:
 
 def _check_source(package: Mapping[str, Any], issues: list) -> str:
     """Source identity must be present, self-consistent and COMPLETE."""
-    from src.source_snapshot import snapshot_digest_is_valid
 
     source = package.get("source")
     if not isinstance(source, Mapping):
@@ -551,6 +590,13 @@ def _check_attempts(payload: Mapping[str, Any], package: Mapping[str, Any],
         actual_target = (str(attempt.get("target_id", "")),
                          str(attempt.get("host", "")),
                          str(attempt.get("model", "")))
+        referenced = next((d for d in dispatches if d.get("receipt_hash") ==
+                           attempt.get("dispatch_receipt_hash")), None)
+        if referenced is None or actual_target != tuple(str(referenced.get(key, ""))
+                for key in ("selected_target_id", "selected_host", "selected_model")):
+            issues.append(ValidationIssue(
+                DISPATCH_TARGET_MISMATCH,
+                "attempt does not match the dispatch it actually references", subject=label))
         if authorized_targets and actual_target not in authorized_targets:
             issues.append(ValidationIssue(
                 DISPATCH_TARGET_MISMATCH,
@@ -572,7 +618,10 @@ def _recompute_closure(payload: Mapping[str, Any], package: Mapping[str, Any]):
         requirement_from_dict(r)
         for r in (package.get("evidence_requirements") or ()))
     claims = []
+    latest = max((a.get("attempt", 0) for a in payload.get("attempt_receipts", ())), default=0)
     for receipt in payload.get("verification_receipts") or ():
+        if payload.get("schema_version") == 2 and receipt.get("attempt") != latest:
+            continue
         for requirement_id in receipt.get("requirement_ids") or ():
             claims.append(RequirementClaim(
                 requirement_id=str(requirement_id),
@@ -615,6 +664,14 @@ def _check_verifications(payload: Mapping[str, Any], package: Mapping[str, Any],
 
     for index, receipt in enumerate(receipts):
         label = f"verification_receipts[{index}]"
+        from src.attempt_receipt import VerificationReceipt
+        try:
+            VerificationReceipt(**{k: v for k, v in receipt.items()
+                                   if k in VerificationReceipt.__dataclass_fields__})
+        except (TypeError, ValueError):
+            issues.append(ValidationIssue(MALFORMED_RECORD,
+                                          "serialized command violates receipt invariants", subject=label))
+            continue
         if planned_id and str(receipt.get("verifier_id") or "") != planned_id:
             issues.append(ValidationIssue(
                 VERIFIER_IDENTITY_MISMATCH,
@@ -665,6 +722,9 @@ def _check_verified_source(payload: Mapping[str, Any], source_digest: str,
                            receipts: Sequence[Mapping[str, Any]],
                            issues: list) -> None:
     """The tree a verification ran against must be coherent and explicable."""
+    if payload.get("schema_version") == 2:
+        last = max((a.get("attempt", 0) for a in payload.get("attempt_receipts", ())), default=0)
+        receipts = [r for r in receipts if r.get("attempt") == last]
     verified = {str(r.get("source_snapshot_digest") or "") for r in receipts}
     verified.discard("")
     if len(verified) > 1:
@@ -824,7 +884,7 @@ def _schema_version_issues(payload: Mapping[str, Any]) -> Tuple[ValidationIssue,
                 f"supported versions are {list(supported)}",
                 subject=f"{subject}.schema_version" if subject else "schema_version"))
 
-    check(payload, "", (EVIDENCE_PACKAGE_SCHEMA_VERSION,))
+    check(payload, "", (1, 2))
     package = payload.get("execution_package")
     if not isinstance(package, Mapping):
         issues.append(ValidationIssue(
@@ -869,6 +929,10 @@ def validate_evidence_package(
     *,
     current_source: Optional[Mapping[str, Any]] = None,
     artifact_extensions: Optional[Mapping[str, bytes]] = None,
+    current_profiles: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    current_verifier_digests: Optional[Mapping[str, str]] = None,
+    current_policy_ref: Optional[str] = None,
+    now: Optional[datetime] = None,
 ) -> ValidationResult:
     """Decide VERIFIED or not, with a named reason for every rejection.
 
@@ -911,11 +975,18 @@ def validate_evidence_package(
     if current_source is not None:
         current = (current_source.get("snapshot_digest", "")
                    if isinstance(current_source, Mapping) else "")
-        verified = {str(r.get("source_snapshot_digest") or "")
-                    for r in payload.get("verification_receipts") or ()}
+        receipts = payload.get("verification_receipts") or ()
+        if payload.get("schema_version") == 2:
+            last = max((a.get("attempt", 0) for a in payload.get("attempt_receipts", ())), default=0)
+            receipts = [r for r in receipts if r.get("attempt") == last]
+        verified = {str(r.get("source_snapshot_digest") or "") for r in receipts}
         verified.discard("")
         accepted = verified or {source_digest}
-        if not current or current not in accepted:
+        try:
+            current_valid = isinstance(current_source, Mapping) and snapshot_digest_is_valid(dict(current_source))
+        except (TypeError, ValueError, KeyError):
+            current_valid = False
+        if not current_valid or not current or current not in accepted:
             issues.append(ValidationIssue(
                 SOURCE_CHANGED_AFTER_VERIFICATION,
                 "the source measured now differs from the source this evidence "
@@ -938,6 +1009,13 @@ def validate_evidence_package(
     _check_independence(requirements, claims, issues)
     _check_closure(requirements, states, payload.get("requirement_states") or (),
                    issues)
+
+    if payload.get("schema_version") == 2:
+        from src.evidence_acceptance import acceptance_issues
+        issues.extend(acceptance_issues(
+            payload, current_profiles=current_profiles,
+            current_verifier_digests=current_verifier_digests,
+            current_policy_ref=current_policy_ref, now=now))
 
     return ValidationResult(ok=not issues, issues=tuple(issues),
                             requirement_states=states)

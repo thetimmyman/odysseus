@@ -200,6 +200,26 @@ def test_projection_hash_covers_canonical_source_and_measured_context(tmp_path):
         assert db._receipt_hash_of(changed)!=projected['receipt_hash']
 
 
+@pytest.mark.parametrize('network_override', [False, True])
+def test_persisted_profile_dispatch_retains_canonical_receipt_for_consumer(tmp_path, network_override):
+    from copy import deepcopy
+    a=measured();view=inputs(tmp_path,a)
+    request=dr.RoutingRequest(domain='general_swe',role=dr.ROLE_APPROXIMATE_IMPLEMENTER,
+                             exactness=dr.EXACTNESS_APPROXIMATE,minimum_context_tokens=32768,
+                             local_only=True)
+    bound=db.resolve_from_estate(db.TargetEstate(profiles=view.profiles),request,
+                                capability_store=view.capability_store,
+                                network_classes={a.profile_id:a.network_class} if network_override else None)
+    payload=db.seal_dispatch_evidence(bound,attempts=(),invocations=(),include_canonical_receipts=True)
+    assert payload['canonical_capability_receipts']==[a.to_dict()]
+    assert db.validate_dispatch_evidence(payload)==(True,())
+    # A new outer seal cannot authorize dropping the cited canonical evidence.
+    changed=deepcopy(payload);changed['canonical_capability_receipts']=[]
+    changed['seal']['evidence_hash']=db._sha256_hex(db._canonical(db.evidence_core(changed)))
+    ok,codes=db.validate_dispatch_evidence(changed)
+    assert not ok and db.EVIDENCE_RECEIPT_CHANGED in codes
+
+
 def test_operator_cli_import_audit_refresh_and_tamper_refusal(tmp_path):
     import subprocess
     import sys

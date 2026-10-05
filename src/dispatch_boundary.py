@@ -242,6 +242,7 @@ class TargetEstate:
     receipts: Tuple[Any, ...] = ()
     skipped: Tuple[Mapping[str, str], ...] = ()
     candidates: Tuple[Mapping[str, Any], ...] = ()
+    canonical_receipts: Tuple[Any, ...] = ()
 
     def receipt_for(self, profile_id: str) -> Optional[Any]:
         for receipt in self.receipts:
@@ -294,6 +295,7 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
     overrides = dict(receipt_overrides or {})
     profiles: List[Any] = []
     receipts: List[Any] = []
+    canonical_receipts: List[Any] = []
     skipped: List[Dict[str, str]] = []
     kept: List[Mapping[str, Any]] = []
 
@@ -387,10 +389,12 @@ def profiles_from_candidates(db: Any, candidates: Sequence[Mapping[str, Any]], *
                 continue
         profiles.append(profile)
         receipts.append(_legacy_view_from_receipt(canonical, profile, now=now))
+        canonical_receipts.append(canonical)
         kept.append(candidate)
 
     return TargetEstate(profiles=tuple(profiles), receipts=tuple(receipts),
-                        skipped=tuple(skipped), candidates=tuple(kept))
+                        skipped=tuple(skipped), candidates=tuple(kept),
+                        canonical_receipts=tuple(canonical_receipts))
 
 
 def _sensitivity_local_only(task: Any) -> bool:
@@ -609,6 +613,7 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
             "legacy capability view cannot authorize dispatch")
     from src.local_target_routing import _legacy_view_from_receipt
     canonical_receipts = []
+    source_receipts = []
     canonical_profiles = []
     for profile in estate.profiles:
         if dict(getattr(profile, "execution_options", {}) or {}):
@@ -631,10 +636,12 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
             raise DispatchBoundaryError(
                 f"profile_receipt_identity_mismatch for {profile.profile_id!r}")
         canonical_profiles.append(canonical_profile)
+        source_receipts.append(canonical)
         canonical_receipts.append(
             _legacy_view_from_receipt(canonical, canonical_profile, now=now))
     estate = dataclasses.replace(estate, profiles=tuple(canonical_profiles),
-                                receipts=tuple(canonical_receipts))
+                                receipts=tuple(canonical_receipts),
+                                canonical_receipts=tuple(source_receipts))
     snapshot = policy or policy_snapshot()
     if not estate.profiles:
         raise DispatchBoundaryError(
@@ -649,7 +656,7 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                     or profile.network_policy)
                 for profile in estate.profiles),
             receipts=estate.receipts, skipped=estate.skipped,
-            candidates=estate.candidates)
+            candidates=estate.candidates, canonical_receipts=estate.canonical_receipts)
     capacity = tuple(capacity_receipts or ())
     decision = select_target(
         request, profiles=estate.profiles, receipts=estate.receipts,
@@ -908,7 +915,7 @@ def seal_dispatch_evidence(bound: BoundDispatch, *,
                            budget_snapshot: Optional[Mapping[str, Any]] = None,
                            resource_snapshot: Optional[Mapping[str, Any]] = None,
                            fixture: Optional[Mapping[str, Any]] = None,
-                           sealed_at: str = "") -> Dict[str, Any]:
+                           sealed_at: str = "", include_canonical_receipts: bool = False) -> Dict[str, Any]:
     """Seal one dispatch into a content-addressed, re-checkable payload holding
     all inputs and the outcome, so changing the selected target is detectable.
     """
@@ -939,6 +946,8 @@ def seal_dispatch_evidence(bound: BoundDispatch, *,
     if bound.capacity_receipts:
         payload["capacity_receipts"] = [
             getattr(r, "to_dict", lambda: dict(r))() for r in bound.capacity_receipts]
+    if include_canonical_receipts:
+        payload["canonical_capability_receipts"] = [r.to_dict() for r in bound.estate.canonical_receipts]
     if bound.offer_quotes:
         payload["offer_quotes"] = [dict(q) for q in bound.offer_quotes]
     payload["seal"] = {
@@ -1020,7 +1029,7 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     if (str(seal.get("selected_target_id") or "") != selected
             or str(seal.get("selected_profile_id") or "") != decision_profile
             or str(seal.get("selected_target_id") or "")
-            != str(decision_profile and f"profile:{decision_profile}")
+            != str(dict(decision.get("selected_profile") or {}).get("target_id") or "")
             or str(decision.get("receipt_hash") or "")
             != str(seal.get("dispatch_receipt_hash") or "")):
         codes.append(EVIDENCE_PIN_CHANGED)
@@ -1047,8 +1056,14 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
     # still hash to what was recorded.
     by_profile = {str(r.get("profile_id")): r for r in receipts}
     known_hashes = {str(r.get("receipt_hash")) for r in receipts}
-    known_hashes.update(str(r["source_receipt_hash"]) for r in receipts
-                        if r.get("source_receipt_hash"))
+    from src.local_targets import target_capability_receipt_hash_is_valid
+    canonical_by_hash = {}
+    for canonical in body.get("canonical_capability_receipts", ()):
+        if not target_capability_receipt_hash_is_valid(canonical):
+            codes.append(EVIDENCE_RECEIPT_CHANGED)
+            continue
+        canonical_by_hash[canonical["receipt_hash"]] = canonical
+    known_hashes.update(canonical_by_hash)
     for ref in (receipt.get("capability_receipt_refs") or ()):
         if str(ref) not in known_hashes:
             codes.append(EVIDENCE_RECEIPT_CHANGED)
@@ -1065,6 +1080,28 @@ def validate_dispatch_evidence(payload: Mapping[str, Any]
         if _receipt_hash_of(recorded) != str(recorded.get("receipt_hash") or ""):
             codes.append(EVIDENCE_RECEIPT_CHANGED)
             break
+        source_hash = recorded.get("source_receipt_hash")
+        if source_hash:
+            canonical = canonical_by_hash.get(source_hash)
+            if canonical is None or canonical.get("profile_id") != recorded.get("profile_id"):
+                codes.append(EVIDENCE_RECEIPT_CHANGED)
+                break
+            try:
+                from types import SimpleNamespace
+                from src.local_targets import make_target_capability_receipt, LocalTargetUnavailable
+                from src.local_target_routing import _legacy_view_from_receipt
+                original = make_target_capability_receipt(**canonical)
+                selected_at = datetime.fromisoformat(str(decision.get("observed_at")).replace("Z", "+00:00"))
+                # The routing projection consumes only the target identity. Each
+                # eligible candidate has its own identity, including fallbacks.
+                expected_profile = SimpleNamespace(target_id=str(candidate["target_id"]))
+                projected = _legacy_view_from_receipt(original, expected_profile, now=selected_at)
+                if original.receipt_hash != source_hash or projected.to_dict() != recorded:
+                    codes.append(EVIDENCE_RECEIPT_CHANGED)
+                    break
+            except (TypeError, ValueError, KeyError, LocalTargetUnavailable):
+                codes.append(EVIDENCE_RECEIPT_CHANGED)
+                break
 
 
     # Capacity receipts must still hash to their content, and every cited ref
@@ -1221,6 +1258,8 @@ def seal_recorded_dispatch(*, record: Mapping[str, Any],
         "invocations": list(record.get("invocations") or ()),
         "fixture": dict(fixture or {}),
     }
+    if "canonical_capability_receipts" in record:
+        payload["canonical_capability_receipts"] = list(record["canonical_capability_receipts"])
     payload["seal"] = {
         "evidence_hash": _sha256_hex(_canonical(payload)),
         "policy_ref": payload["policy"].get("policy_ref", ""),
