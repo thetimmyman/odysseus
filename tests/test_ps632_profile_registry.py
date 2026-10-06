@@ -275,4 +275,4 @@ def test_direct_http_profile_carries_endpoint_host_into_dispatch_receipt(tmp_pat
     bound = dispatch(inputs(tmp_path, r))
     payload = bound.decision.to_dict()
     assert payload['selected_profile']['host'] == r.runtime.endpoint_url
-    assert payload['selected_host'] == r.runtime.endpoint_url
+    assert bound.decision.to_ps638_receipt_kwargs()['selected_host'] == r.runtime.endpoint_url
