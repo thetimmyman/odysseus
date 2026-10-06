@@ -412,7 +412,25 @@ def run_local_worker_loop(*, execution_package: Any, standing_dispatch: Any,
 
     def history_result(status: str, reason: str) -> LoopResult:
         if not attempts:
-            return LoopResult(status, refusal_reason=reason)
+            # Retain refusals in the existing canonical evidence envelope.
+            # No attempt or verification is invented; acceptance stays closed.
+            refusal = {
+                "kind": "composition_refusal",
+                "status": status,
+                "reason": reason,
+                "execution_package_hash": p["package_hash"],
+                "source_snapshot_digest": p["source"]["snapshot_digest"],
+                "standing_dispatch_hash": bound.decision.receipt_hash,
+            }
+            payload = seal_evidence_package(
+                evidence_package_id=f"{p['run_id']}-worker-loop-refusal",
+                execution_package=frozen_package,
+                seals=(refusal,),
+                acceptance_context=acceptance_context,
+            ).to_dict()
+            validation = validate_evidence_package(payload, artifact_extensions=artifacts)
+            return LoopResult(status, evidence_package=payload,
+                              validation=validation, refusal_reason=reason)
         try:
             payload, validation = _seal(
                 frozen_package, attempts, verifications, dispatches, artifacts,

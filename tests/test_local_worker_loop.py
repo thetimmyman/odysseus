@@ -1266,3 +1266,44 @@ def test_unparseable_deterministic_failure_is_not_sent_as_empty_repair():
     assert result.status == BLOCKED
     assert len(workers) == len(verifiers) == 1
     assert "no parsed failing test" in result.refusal_reason
+
+
+def test_pre_attempt_refusal_keeps_sealed_source_bound_evidence():
+    from src.evidence_package import evidence_package_hash_is_valid
+
+    package = _package()
+    bound = _bound(package)
+    calls = []
+    facts = _facts(bound, package)
+    facts["capability_receipts"] = {
+        ref: False for ref in bound.decision.capability_receipt_refs
+    }
+    result = run_local_worker_loop(
+        execution_package=package,
+        standing_dispatch=bound,
+        current_facts=lambda *_: facts,
+        invocation=lambda *_: calls.append("invocation"),
+        execute_worker=lambda *_: calls.append("worker"),
+        execute_verifier=lambda *_: calls.append("verifier"),
+        current_source=lambda: package.source.to_dict(),
+    )
+    assert result.status == BLOCKED
+    assert calls == []
+    assert result.attempts == ()
+    assert result.verifications == ()
+    assert result.evidence_package is not None
+    evidence = result.evidence_package
+    assert evidence_package_hash_is_valid(evidence)
+    refusal = evidence["seals"][0]
+    assert refusal["kind"] == "composition_refusal"
+    assert refusal["reason"] == result.refusal_reason
+    assert refusal["execution_package_hash"] == package.package_hash
+    assert refusal["source_snapshot_digest"] == package.source.snapshot_digest
+    assert refusal["standing_dispatch_hash"] == bound.decision.receipt_hash
+    # Refusal evidence never masquerades as an accepted implementation.
+    assert result.validation is not None
+    assert not result.validation.ok
+    assert "no_attempts" in result.validation.codes
+    tampered = json.loads(json.dumps(evidence))
+    tampered["seals"][0]["reason"] = "permission granted"
+    assert not evidence_package_hash_is_valid(tampered)
