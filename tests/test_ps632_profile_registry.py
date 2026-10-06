@@ -268,3 +268,11 @@ def test_packet_requirements_use_canonical_measured_capability_names(tmp_path):
     packet['target_requirements'].append(dr.CAP_PARALLEL_TOOL_CALLS)
     with pytest.raises(dr.RoutingRefused):
         ltr.resolve_persisted_dispatch(view,packet=packet,role=dr.ROLE_APPROXIMATE_IMPLEMENTER)
+
+
+def test_direct_http_profile_carries_endpoint_host_into_dispatch_receipt(tmp_path):
+    r = measured()
+    bound = dispatch(inputs(tmp_path, r))
+    payload = bound.decision.to_dict()
+    assert payload['selected_profile']['host'] == r.runtime.endpoint_url
+    assert payload['selected_host'] == r.runtime.endpoint_url
