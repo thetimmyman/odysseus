@@ -177,6 +177,25 @@ class TargetCapabilityStore:
             active[host_id] = profile_id
             self._write_json(self.active_path, active)
 
+    def deactivate_profile(self, host_id: str, *, expected_profile_id: str) -> None:
+        """Revoke active authority without deleting measured receipt history.
+
+        The explicit expected profile protects a concurrent replacement from
+        rollback. A host with retained evidence and no active pointer remains
+        fail-closed in current_for_host(), until explicitly reactivated.
+        """
+        if not host_id or not expected_profile_id:
+            raise CapabilityStoreError("deactivation requires a host and expected active profile")
+        with self._writer_lock():
+            active = self._read_active()
+            if active.get(host_id) != expected_profile_id:
+                raise CapabilityStoreError("active profile changed before deactivation")
+            receipt = self.current(expected_profile_id)
+            if receipt is None or receipt.host_id != host_id:
+                raise CapabilityStoreError("active profile does not resolve to this host")
+            del active[host_id]
+            self._write_json(self.active_path, active)
+
     def refresh_observation(self, profile_id: str, *, current_identity_digest: str,
                             health: str, checked_at: str) -> TargetCapabilityReceipt:
         """Refresh liveness without moving semantic observation or TTL; drift invalidates."""
