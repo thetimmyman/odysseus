@@ -110,6 +110,36 @@ def test_the_receipt_separates_the_host_from_the_execution_profile():
             != one.identity_digest())
 
 
+def test_deactivation_revokes_authority_retains_history_and_can_be_reactivated(tmp_path):
+    registry = store(tmp_path)
+    measured = receipt()
+    registry.append(measured)
+    registry.activate_profile(measured.host_id, measured.profile_id,
+                              expected_profile_id=measured.profile_id,
+                              current_identity_digest=measured.identity_digest())
+    before = registry.entries()
+    registry.deactivate_profile(measured.host_id, expected_profile_id=measured.profile_id)
+    assert registry.entries() == before
+    assert registry.current(measured.profile_id).receipt_hash == measured.receipt_hash
+    with pytest.raises(CapabilityStoreError, match='no active profile authority'):
+        registry.current_for_host(measured.host_id)
+    registry.activate_profile(measured.host_id, measured.profile_id,
+                              expected_profile_id='',
+                              current_identity_digest=measured.identity_digest())
+    assert registry.current_for_host(measured.host_id).receipt_hash == measured.receipt_hash
+
+
+def test_stale_deactivation_cannot_revoke_a_replacement_profile(tmp_path):
+    registry = store(tmp_path)
+    measured = receipt()
+    registry.append(measured)
+    with pytest.raises(CapabilityStoreError, match='changed before deactivation'):
+        registry.deactivate_profile(measured.host_id, expected_profile_id='old-profile')
+    assert registry.current_for_host(measured.host_id).profile_id == measured.profile_id
+    with pytest.raises(CapabilityStoreError, match='requires a host'):
+        registry.deactivate_profile(measured.host_id, expected_profile_id='')
+
+
 def test_exact_digest_and_quantization_are_exposed_and_authoritative():
     r = receipt()
     assert r.model.digest == DIGEST

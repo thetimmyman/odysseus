@@ -29,6 +29,9 @@ def main():
     activate.add_argument('profile_id')
     activate.add_argument('--expected-profile', required=True)
     activate.add_argument('--identity-digest', required=True)
+    deactivate = commands.add_parser('deactivate')
+    deactivate.add_argument('host_id')
+    deactivate.add_argument('--expected-profile', required=True)
     refresh = commands.add_parser('refresh')
     refresh.add_argument('observation')
     args = parser.parse_args()
@@ -50,6 +53,9 @@ def main():
                                    expected_profile_id=args.expected_profile,
                                    current_identity_digest=args.identity_digest)
             result = {'host_id': args.host_id, 'active_profile_id': args.profile_id}
+        elif args.command == 'deactivate':
+            store.deactivate_profile(args.host_id, expected_profile_id=args.expected_profile)
+            result = {'host_id': args.host_id, 'active_profile_id': None}
         else:
             with open(args.observation, encoding='utf-8') as handle:
                 observation = json.load(handle)

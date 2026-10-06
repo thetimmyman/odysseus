@@ -160,3 +160,7 @@ A registry import is separate from deployment and from the PS-641 production
 composition acceptance run. Short synthetic context tests establish a bounded
 working floor, never the advertised maximum or multi-session capacity. Client
 stream closure alone never qualifies server-side cancellation.
+
+## Revoking an installed profile
+
+`odysseus-capability deactivate HOST --expected-profile PROFILE` removes only the active authority pointer under the writer lock. It retains all measured receipts and their current indexes. The expected profile must still be active, so a stale rollback cannot revoke a concurrently activated replacement. A host with evidence but no active pointer remains ineligible; reactivation requires the existing fresh qualification and matching observed material identity through `activate`. Revocation does not refresh health or qualification.
