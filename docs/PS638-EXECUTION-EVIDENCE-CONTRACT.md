@@ -83,9 +83,10 @@ Source: `src/attempt_receipt.py`.
 Both directions are deliberately symmetric: truncation poisons a PASS exactly
 as much as it poisons a claim of absence.
 
-## 5. EvidenceRequirement / EvidenceClaim — typed, mechanically closable
+## 5. EvidenceRequirement / RequirementClaim — typed, mechanically closable
 
-Source: `src/evidence_contract.py` (371 lines).
+Sources: `src/evidence_contract.py` (`EvidenceRequirement`) and
+`src/evidence_package.py` (`RequirementClaim`).
 
 > "`ExecutionPackage` carries an explicit set of EvidenceRequirement IDs, and
 > package validation COMPUTES whether each is SATISFIED / FAILED / BLOCKED /
@@ -353,6 +354,16 @@ nothing" — and is asserted directly by
 
 `policy_ref` and all 13 PS-605 ordered filters are untouched.
 
+**Routing carrier naming (PS-656 Δ2):** `DispatchDecision` in
+`src/dispatch_routing.py` carries the optional `authority` block and binds it
+into the dispatch receipt hash. Its request carries the sensitivity rank.
+`RoutingDecision` in `src/routing_domain_policy.py` is a separate privacy-policy
+audit record with a bare-string `sensitivity`; it has no authority block.
+The proposed two-axis sensitivity vocabulary (rank + category) remains deferred;
+it does not require adding an authority field to that audit record or changing
+current serialization. References to an authority-bearing routing decision mean
+`DispatchDecision` / `DispatchDecisionReceipt`.
+
 ### 13.2 DR-05 — `AMBIGUOUS` / `RECONCILED` + `IdempotencyKey` + `ReconciliationRecord`
 
 Vocabulary only; no code in this package.
@@ -360,7 +371,7 @@ Vocabulary only; no code in this package.
 - Two new PS-638 disposition values: `AMBIGUOUS`, `RECONCILED` — additive, no
   existing state renumbered.
 - `IdempotencyKey` as an optional field on `AttemptReceipt`/effect records.
-- `ReconciliationRecord` as an `EvidenceClaim` type.
+- `ReconciliationRecord` as an `RequirementClaim` type.
 - A typed `ActionReceipt` *is-a* PS-638 receipt for non-Dev actions.
 
 **Name-collision, disambiguated here as the amendment requires:** PS-638's
@@ -368,7 +379,7 @@ Vocabulary only; no code in this package.
 **attempts** (an in-process retry counter). The durable-action token this
 delta contemplates fences **external effects** (an idempotency key for a
 side-effecting call outside the process). These are named distinctly —
-`attempt_generation` (existing, `AttemptReceipt`) versus a separately-named
+`generation_token` (existing, `AttemptReceipt`) versus a separately-named
 effect fence (`IdempotencyKey`, not yet implemented) — precisely so
 implementation does not conflate a retry counter with an external-effect
 fence. No mechanism is defined here; this section names the vocabulary only.
