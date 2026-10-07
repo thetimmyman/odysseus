@@ -3,7 +3,7 @@
 CardDAV servers fold lines longer than 75 octets onto continuation lines that
 begin with a space/tab; splitting on raw newlines would truncate EMAIL/FN values.
 """
-from routes.contacts_routes import _parse_vcards
+from src.contacts import _parse_vcards
 
 
 def test_folded_email_is_reassembled():

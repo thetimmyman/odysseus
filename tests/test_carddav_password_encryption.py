@@ -11,15 +11,15 @@ def _import_contacts(tmp_path, monkeypatch):
     sys.modules.setdefault("core.database", MagicMock())
 
     monkeypatch.setattr(
-        "routes.contacts_routes.SETTINGS_FILE",
+        "src.contacts.SETTINGS_FILE",
         tmp_path / "settings.json",
     )
     monkeypatch.setattr(
-        "routes.contacts_routes.DATA_DIR",
+        "src.contacts.DATA_DIR",
         tmp_path,
     )
     monkeypatch.setattr(
-        "routes.contacts_routes.LOCAL_CONTACTS_FILE",
+        "src.contacts.LOCAL_CONTACTS_FILE",
         tmp_path / "contacts.json",
     )
 
@@ -28,8 +28,7 @@ def _import_contacts(tmp_path, monkeypatch):
     monkeypatch.setattr(secret_storage, "_KEY_PATH", tmp_path / ".app_key")
     monkeypatch.setattr(secret_storage, "_fernet", None)
 
-    sys.modules.pop("routes.contacts_routes", None)
-    from routes import contacts_routes
+    from src import contacts as contacts_routes
     return contacts_routes
 
 

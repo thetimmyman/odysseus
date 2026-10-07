@@ -1,6 +1,6 @@
 """Regression test for a py/polynomial-redos sink over untrusted model text.
 
-The verdict extractor in `routes/skills_routes.py` must not stack a redundant
+The verdict extractor in `src/skill_audit.py` must not stack a redundant
 `\\s*` after a class that already matches `\\s` (O(n^2) on a whitespace flood).
 """
 
@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from routes.skills_routes import _VERDICT_PROSE_RE
+from src.skill_audit import _VERDICT_PROSE_RE
 
 _BUDGET_S = 4.0
 

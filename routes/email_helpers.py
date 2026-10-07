@@ -1326,7 +1326,7 @@ def _pre_retrieve_context(
         is_known = False
         if contacts_allowed:
             try:
-                from routes.contacts_routes import _fetch_contacts
+                from src.contacts import _fetch_contacts
                 for c in _fetch_contacts() or []:
                     # Contacts are normalized to plural `emails` lists, but
                     # keep the legacy singular key fallback for older data.
@@ -1426,7 +1426,7 @@ def _pre_retrieve_context(
                 except Exception: pass
 
         try:
-            from routes.contacts_routes import _fetch_contacts
+            from src.contacts import _fetch_contacts
             all_contacts = _fetch_contacts() if contacts_allowed else []
             for term in terms_list:
                 t_lower = term.lower()
