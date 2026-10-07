@@ -15,7 +15,7 @@ from core.constants import internal_api_base
 from src.auth_helpers import get_current_user
 from src.constants import DATA_DIR, EMAIL_URGENCY_CACHE_DIR
 from src.task_scheduler import compute_next_run, HOUSEKEEPING_DEFAULTS
-from routes.prefs_routes import _load_for_user, _save_for_user
+from src.user_preferences import load_for_user, save_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +365,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     @router.get("/onboarding")
     async def get_tasks_onboarding(request: Request):
         user = _owner(request)
-        prefs = _load_for_user(user) or {}
+        prefs = load_for_user(user) or {}
         return {
             "opened": bool(prefs.get("tasks_opened")),
             "enabled": bool(prefs.get("tasks_enabled")),
@@ -374,12 +374,12 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     @router.post("/onboarding")
     async def update_tasks_onboarding(request: Request, body: dict):
         user = _owner(request)
-        prefs = _load_for_user(user) or {}
+        prefs = load_for_user(user) or {}
         prefs["tasks_opened"] = True
         enable = bool(body.get("enabled"))
         if enable:
             prefs["tasks_enabled"] = True
-        _save_for_user(user, prefs)
+        save_for_user(user, prefs)
         if user:
             await task_scheduler.ensure_defaults(user)
 

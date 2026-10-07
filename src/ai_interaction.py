@@ -1397,7 +1397,7 @@ async def do_ui_control(content: str, session_id: Optional[str] = None, owner: O
         ]
         custom_themes = {}
         try:
-            from routes.prefs_routes import _load as _load_prefs
+            from src.user_preferences import load_all as _load_prefs
             custom_themes = _load_prefs().get("custom-themes", {}) or {}
         except Exception:
             pass

@@ -194,15 +194,15 @@ def _delete_route(monkeypatch, TestSessionLocal):
     provider-auth revocation wiring.
     """
     import routes.model_routes as mr
-    import routes.prefs_routes as prefs_routes
+    import src.user_preferences as prefs
     import src.ai_interaction as ai_interaction
 
     monkeypatch.setattr(mr, "SessionLocal", TestSessionLocal)
     monkeypatch.setattr(mr, "require_admin", lambda request: None)
     monkeypatch.setattr(mr, "_load_settings", lambda: {})
     monkeypatch.setattr(mr, "_save_settings", lambda settings: None)
-    monkeypatch.setattr(prefs_routes, "_load", lambda: {})
-    monkeypatch.setattr(prefs_routes, "_save", lambda prefs: None)
+    monkeypatch.setattr(prefs, "load_all", lambda: {})
+    monkeypatch.setattr(prefs, "save_all", lambda prefs: None)
     monkeypatch.setattr(ai_interaction, "get_session_manager", lambda: None)
 
     router = mr.setup_model_routes(model_discovery=None)

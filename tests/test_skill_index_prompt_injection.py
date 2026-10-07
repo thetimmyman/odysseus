@@ -83,12 +83,12 @@ def _patch_prefs(monkeypatch, data_dir):
     import src.constants as _constants
     monkeypatch.setattr(_constants, "DATA_DIR", str(data_dir), raising=False)
 
-    fake_prefs = types.ModuleType("routes.prefs_routes")
-    fake_prefs._load_for_user = lambda user=None: {
+    fake_prefs = types.ModuleType("src.user_preferences")
+    fake_prefs.load_for_user = lambda user=None: {
         "skills_enabled": True,
         "auto_approve_skills": True,
     }
-    monkeypatch.setitem(sys.modules, "routes.prefs_routes", fake_prefs)
+    monkeypatch.setitem(sys.modules, "src.user_preferences", fake_prefs)
 
     # Bust the base-prompt cache so our test re-reads the skill index.
     from src import agent_loop

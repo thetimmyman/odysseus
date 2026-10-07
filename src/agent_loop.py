@@ -1151,7 +1151,7 @@ def _build_system_prompt(
             _skills_on = True
             _prefs = {}
             try:
-                from routes.prefs_routes import _load_for_user as _load_prefs
+                from src.user_preferences import load_for_user as _load_prefs
                 _prefs = _load_prefs(owner) or {}
                 _skills_on = _prefs.get("skills_enabled", True)
             except Exception:

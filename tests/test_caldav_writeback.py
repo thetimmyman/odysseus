@@ -132,8 +132,8 @@ def test_writeback_validates_saved_url_before_remote_call(monkeypatch):
     import src.caldav_sync as sync
     import src.caldav_writeback as wb
 
-    prefs_mod = types.ModuleType("routes.prefs_routes")
-    prefs_mod._load_for_user = lambda owner: {
+    prefs_mod = types.ModuleType("src.user_preferences")
+    prefs_mod.load_for_user = lambda owner: {
         "caldav": {
             "url": " https://dav.example.com/calendars/home/ ",
             "username": owner,
@@ -142,7 +142,7 @@ def test_writeback_validates_saved_url_before_remote_call(monkeypatch):
     }
     secret_mod = types.ModuleType("src.secret_storage")
     secret_mod.decrypt = lambda value: "plain-password"
-    monkeypatch.setitem(sys.modules, "routes.prefs_routes", prefs_mod)
+    monkeypatch.setitem(sys.modules, "src.user_preferences", prefs_mod)
     monkeypatch.setitem(sys.modules, "src.secret_storage", secret_mod)
 
     captured = {}
@@ -190,8 +190,8 @@ def test_writeback_rejects_unsafe_saved_url_before_remote_call(monkeypatch):
     import src.caldav_sync as sync
     import src.caldav_writeback as wb
 
-    prefs_mod = types.ModuleType("routes.prefs_routes")
-    prefs_mod._load_for_user = lambda owner: {
+    prefs_mod = types.ModuleType("src.user_preferences")
+    prefs_mod.load_for_user = lambda owner: {
         "caldav": {
             "url": "http://evil.example/latest/meta-data",
             "username": owner,
@@ -200,7 +200,7 @@ def test_writeback_rejects_unsafe_saved_url_before_remote_call(monkeypatch):
     }
     secret_mod = types.ModuleType("src.secret_storage")
     secret_mod.decrypt = lambda value: "plain-password"
-    monkeypatch.setitem(sys.modules, "routes.prefs_routes", prefs_mod)
+    monkeypatch.setitem(sys.modules, "src.user_preferences", prefs_mod)
     monkeypatch.setitem(sys.modules, "src.secret_storage", secret_mod)
 
     called = False

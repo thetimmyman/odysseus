@@ -167,7 +167,7 @@ def test_providers_requires_admin_before_discovery_and_cache(monkeypatch):
 def test_default_chat_does_not_auto_pick_shared_endpoint_for_fresh_user(monkeypatch):
     _install_model_route_import_stubs(monkeypatch)
     import routes.model_routes as model_routes
-    import routes.prefs_routes as prefs_routes
+    import src.user_preferences as prefs
 
     shared_ep = SimpleNamespace(
         id="shared",
@@ -190,7 +190,7 @@ def test_default_chat_does_not_auto_pick_shared_endpoint_for_fresh_user(monkeypa
     monkeypatch.setattr(model_routes, "owner_filter", scoped_owner_filter)
     monkeypatch.setattr(model_routes, "_normalize_base", lambda base: base.rstrip("/"))
     monkeypatch.setattr(model_routes, "build_chat_url", lambda base: f"{base}/chat/completions")
-    monkeypatch.setattr(prefs_routes, "_load_for_user", lambda user: {})
+    monkeypatch.setattr(prefs, "load_for_user", lambda user: {})
 
     request = SimpleNamespace(
         state=SimpleNamespace(current_user="fresh"),
@@ -209,7 +209,7 @@ def test_default_chat_does_not_auto_pick_shared_endpoint_for_fresh_user(monkeypa
 def test_default_chat_uses_owned_endpoint_as_regular_user_last_resort(monkeypatch):
     _install_model_route_import_stubs(monkeypatch)
     import routes.model_routes as model_routes
-    import routes.prefs_routes as prefs_routes
+    import src.user_preferences as prefs
 
     owned_ep = SimpleNamespace(
         id="owned",
@@ -232,7 +232,7 @@ def test_default_chat_uses_owned_endpoint_as_regular_user_last_resort(monkeypatc
     monkeypatch.setattr(model_routes, "owner_filter", scoped_owner_filter)
     monkeypatch.setattr(model_routes, "_normalize_base", lambda base: base.rstrip("/"))
     monkeypatch.setattr(model_routes, "build_chat_url", lambda base: f"{base}/chat/completions")
-    monkeypatch.setattr(prefs_routes, "_load_for_user", lambda user: {})
+    monkeypatch.setattr(prefs, "load_for_user", lambda user: {})
 
     request = SimpleNamespace(
         state=SimpleNamespace(current_user="fresh"),
@@ -310,7 +310,7 @@ def test_normalize_thinking_handles_lowercase_thinking_process(monkeypatch):
         "starlette.middleware.base",
         "core.models",
         "core.database",
-        "routes.prefs_routes",
+        "src.user_preferences",
         "routes.research_routes",
         "src.llm_core",
         "src.context_compactor",
@@ -343,7 +343,7 @@ async def test_build_chat_context_incognito_does_not_duplicate_current_user_mess
         "starlette.middleware.base",
         "core.models",
         "core.database",
-        "routes.prefs_routes",
+        "src.user_preferences",
         "routes.research_routes",
         "src.llm_core",
         "src.context_compactor",
@@ -713,7 +713,7 @@ def test_default_chat_skips_hidden_first_model(monkeypatch):
     and the first cached model is hidden."""
     _install_model_route_import_stubs(monkeypatch)
     import routes.model_routes as model_routes
-    import routes.prefs_routes as prefs_routes
+    import src.user_preferences as prefs
 
     ep = SimpleNamespace(
         id="ep1",
@@ -730,7 +730,7 @@ def test_default_chat_skips_hidden_first_model(monkeypatch):
     monkeypatch.setattr(model_routes, "owner_filter", lambda q, m, u, **kw: q)
     monkeypatch.setattr(model_routes, "_normalize_base", lambda base: base.rstrip("/"))
     monkeypatch.setattr(model_routes, "build_chat_url", lambda base: f"{base}/chat/completions")
-    monkeypatch.setattr(prefs_routes, "_load_for_user", lambda user: {})
+    monkeypatch.setattr(prefs, "load_for_user", lambda user: {})
 
     request = SimpleNamespace(
         state=SimpleNamespace(current_user="fresh"),

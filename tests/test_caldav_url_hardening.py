@@ -122,16 +122,16 @@ def test_sync_caldav_decrypts_stored_password_and_validates_url(monkeypatch):
         lambda host: [ipaddress.ip_address("93.184.216.34")],
     )
     saved = {}
-    prefs_mod = types.ModuleType("routes.prefs_routes")
-    prefs_mod._load_for_user = lambda owner: {
+    prefs_mod = types.ModuleType("src.user_preferences")
+    prefs_mod.load_for_user = lambda owner: {
         "caldav": {
             "url": " https://calendar.example.com/dav/ ",
             "username": owner,
             "password": "enc:stored",
         }
     }
-    prefs_mod._save_for_user = lambda owner, prefs: saved.update({"owner": owner, "prefs": prefs})
-    monkeypatch.setitem(sys.modules, "routes.prefs_routes", prefs_mod)
+    prefs_mod.save_for_user = lambda owner, prefs: saved.update({"owner": owner, "prefs": prefs})
+    monkeypatch.setitem(sys.modules, "src.user_preferences", prefs_mod)
 
     secret_mod = types.ModuleType("src.secret_storage")
     secret_mod.decrypt = lambda value: "decrypted-password" if value == "enc:stored" else value
