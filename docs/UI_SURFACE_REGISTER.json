@@ -11,10 +11,10 @@
       "routes/admin_wipe_routes.py": "b78047e84499d698ec3009d7ec7eae17baf37153b061ce0690c3dea378658dba",
       "routes/api_token_routes.py": "ceb88f537963e61ddb223c1ae992248c7c28c5e57d29176cfc1c2f1f388f0241",
       "routes/assistant_routes.py": "97e25e8d17c09ef187d31aa847bb98ff402d5459802f3658f7b048f7f83179b4",
-      "routes/auth_routes.py": "b2ec46b49aeb4b3232e98054433c78a6e7ef28e5e1cf3431c922253d1f2af9e0",
-      "routes/backup_routes.py": "8bb652d8a6a64f663e6378e19e96bd9ca9b1734035a50d5e53d07592c3f4c0b2",
-      "routes/calendar_routes.py": "ac3bf71b70faa66c06b52264f8f84b7a394eb1f5ec35e3fa8047d3c6e686508f",
-      "routes/chat_helpers.py": "fed6862287e5c983260367c3483243f1e1fa73972a4b04b63241afbabc34d06f",
+      "routes/auth_routes.py": "c12fe31d0eb1e831786b2681d799127b07d555b77207b8c55ef014252aaf0304",
+      "routes/backup_routes.py": "dbb6ba02af0cec80fd6cbe384c3cbda6612a27da8f87382f57334d59659296bc",
+      "routes/calendar_routes.py": "946367c66e26925c7a864b253790d64d15b88fb18b2b9fc68cd71c1267617627",
+      "routes/chat_helpers.py": "0864e71f07746bed7513c73d597e8d85b91c5014d470713f9e245b1fe57aa1f3",
       "routes/chat_routes.py": "52b82241daf449fb5d368cdf91826da1c3b3f86eaf83025eadb4ea52087da54a",
       "routes/chatgpt_subscription_routes.py": "21e10a76ac4af4d5010d87f671c339fde98bb32ba3a63dc733611717ce7a3811",
       "routes/cleanup_routes.py": "43a69d8c81eda210089bc80e2384288c19b3606e96c114c7c883797c444bcf1d",
@@ -45,11 +45,11 @@
       "routes/hwfit_routes.py": "9f015fb899d09d34c05ef56fbb014fcfd26cffd05a9e287b3aae74f8602710fb",
       "routes/mcp_routes.py": "1746f4cf7b31990fcb96b125d837d7beeb779fe9e5589254498c8de6a2ab03bd",
       "routes/memory_routes.py": "32993b63eb624382a44a611718c5cd58b929094cc889906abab61f375324b70c",
-      "routes/model_routes.py": "f0d60daa6a525e221dade82dcd9cdb4fdaa28a5ec351f33975dcdfe4fd669bbd",
+      "routes/model_routes.py": "7088d95a4e7e164b70340cac0e29d02b39199008e4e1ec33ab952c094447b981",
       "routes/note_routes.py": "5cc0c75045fb5f3021253df542519bbab17d4f8fb25156d94f8b6ddf873b0d6e",
       "routes/personal_routes.py": "bd932d37d3352520012a4633107c0591992ef407b17d3a9dcf26cb0b4614056e",
       "routes/pi_runtime_routes.py": "26e0f119c04084df8cca634c28594279365dccb91a2808f73e2ab62e2456353f",
-      "routes/prefs_routes.py": "7baaeb802b3421855cdbbd7fc86117d50369733499fde144822f125d400ef51b",
+      "routes/prefs_routes.py": "ac4564759253e61490b6968893b3ec257e646adfa8e69fc6b8ce27f7d744c79c",
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
       "routes/project_files_routes.py": "5dcefbdd3a58e8d1b203ca465c9f79c26faaefe91932bea34cea04e2d4dda600",
       "routes/research_routes.py": "8401bb410cfefda7841dcbeb9d2530e082fe7eb62178f366b557f122a45a9b31",
@@ -58,9 +58,9 @@
       "routes/session_routes.py": "4c8bdb2e7838ee3bd750a1e824713889bda4aa6dbeaae29a4883f6fe5fbfcad8",
       "routes/shell_routes.py": "7f76cc62bd0cc663212cc31e993893be70c11fcf14b186b1477bf988ad2fec8e",
       "routes/signature_routes.py": "6ad0eeb6e67b71db0af41e24f6b2aa7e4c2eb39d9c69474c5bbc21fa03425740",
-      "routes/skills_routes.py": "a673f584fd74cf5b792133eff5e1c0af0dbb45ce684164ddce159af651333d7b",
+      "routes/skills_routes.py": "fbd6de4f4579ae6ce5071dfcbe363ccc92a892dee5ce777ba5f5ae456e4b6770",
       "routes/stt_routes.py": "f01ad705f311e90c70049412ab2cc9702083d526823197fd186fb97eb759abc8",
-      "routes/task_routes.py": "67fb254399830ee299660dd5efb264abc9d2bf23206f74e90e469df073435721",
+      "routes/task_routes.py": "a2dcd29970ea13f72b667d993a50703ab9a0d09a310c994cf02ee160a69212f2",
       "routes/terminal_routes.py": "c0d0765da88fbea20c2b6916aa75b7af7e02ba9c97798de03d6ee0c6a8f7a1d8",
       "routes/tts_routes.py": "8524446f454808be65a082271d20c76957378d1b3d3f3a38d69d66006e6e63a6",
       "routes/upload_routes.py": "e503b82c213c4f3ec14a4d21fcc043a74e55045fb1561f4fc13daf28c0bd0bf1",
@@ -2350,7 +2350,7 @@
           {
             "path": "routes/calendar_routes.py",
             "line": 1,
-            "sha256": "ac3bf71b70faa66c06b52264f8f84b7a394eb1f5ec35e3fa8047d3c6e686508f",
+            "sha256": "946367c66e26925c7a864b253790d64d15b88fb18b2b9fc68cd71c1267617627",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -3846,7 +3846,7 @@
           {
             "path": "routes/skills_routes.py",
             "line": 1,
-            "sha256": "a673f584fd74cf5b792133eff5e1c0af0dbb45ce684164ddce159af651333d7b",
+            "sha256": "fbd6de4f4579ae6ce5071dfcbe363ccc92a892dee5ce777ba5f5ae456e4b6770",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -4237,7 +4237,7 @@
           {
             "path": "routes/task_routes.py",
             "line": 1,
-            "sha256": "67fb254399830ee299660dd5efb264abc9d2bf23206f74e90e469df073435721",
+            "sha256": "a2dcd29970ea13f72b667d993a50703ab9a0d09a310c994cf02ee160a69212f2",
             "claim": "Backend route source associated with this surface."
           },
           {
@@ -4441,7 +4441,7 @@
           {
             "path": "routes/prefs_routes.py",
             "line": 1,
-            "sha256": "7baaeb802b3421855cdbbd7fc86117d50369733499fde144822f125d400ef51b",
+            "sha256": "ac4564759253e61490b6968893b3ec257e646adfa8e69fc6b8ce27f7d744c79c",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -5651,7 +5651,7 @@
           {
             "path": "routes/prefs_routes.py",
             "line": 1,
-            "sha256": "7baaeb802b3421855cdbbd7fc86117d50369733499fde144822f125d400ef51b",
+            "sha256": "ac4564759253e61490b6968893b3ec257e646adfa8e69fc6b8ce27f7d744c79c",
             "claim": "Backend route source associated with this surface."
           },
           {
@@ -5974,7 +5974,7 @@
         {
           "path": "routes/auth_routes.py",
           "line": 1,
-          "sha256": "b2ec46b49aeb4b3232e98054433c78a6e7ef28e5e1cf3431c922253d1f2af9e0",
+          "sha256": "c12fe31d0eb1e831786b2681d799127b07d555b77207b8c55ef014252aaf0304",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -5989,7 +5989,7 @@
         {
           "path": "routes/auth_routes.py",
           "line": 1,
-          "sha256": "b2ec46b49aeb4b3232e98054433c78a6e7ef28e5e1cf3431c922253d1f2af9e0",
+          "sha256": "c12fe31d0eb1e831786b2681d799127b07d555b77207b8c55ef014252aaf0304",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -6003,7 +6003,7 @@
           {
             "path": "routes/auth_routes.py",
             "line": 1,
-            "sha256": "b2ec46b49aeb4b3232e98054433c78a6e7ef28e5e1cf3431c922253d1f2af9e0",
+            "sha256": "c12fe31d0eb1e831786b2681d799127b07d555b77207b8c55ef014252aaf0304",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -6029,7 +6029,7 @@
           {
             "path": "routes/auth_routes.py",
             "line": 1,
-            "sha256": "b2ec46b49aeb4b3232e98054433c78a6e7ef28e5e1cf3431c922253d1f2af9e0",
+            "sha256": "c12fe31d0eb1e831786b2681d799127b07d555b77207b8c55ef014252aaf0304",
             "claim": "Login/auth route source."
           }
         ],
