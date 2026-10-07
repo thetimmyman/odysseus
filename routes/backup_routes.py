@@ -37,8 +37,8 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
         features = load_features()
 
         # User preferences
-        from routes.prefs_routes import _load_for_user
-        preferences = _load_for_user(user)
+        from src.user_preferences import load_for_user
+        preferences = load_for_user(user)
 
         export_data = {
             "version": 1,
@@ -192,10 +192,10 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
 
         # ── Preferences ──
         if "preferences" in body and isinstance(body["preferences"], dict):
-            from routes.prefs_routes import _load_for_user, _save_for_user
-            current = _load_for_user(user)
+            from src.user_preferences import load_for_user, save_for_user
+            current = load_for_user(user)
             current.update(body["preferences"])
-            _save_for_user(user, current)
+            save_for_user(user, current)
             imported.append("preferences")
 
         if not imported:

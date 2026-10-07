@@ -597,11 +597,11 @@ def setup_calendar_routes() -> APIRouter:
         return _load_caldav_accounts(owner)
 
     def _save_caldav_accounts(owner: str, accounts: list) -> None:
-        from routes.prefs_routes import _load_for_user, _save_for_user
-        prefs = _load_for_user(owner) or {}
+        from src.user_preferences import load_for_user, save_for_user
+        prefs = load_for_user(owner) or {}
         prefs["caldav_accounts"] = accounts
         prefs.pop("caldav", None)
-        _save_for_user(owner, prefs)
+        save_for_user(owner, prefs)
 
     # ── CalDAV config routes (backward-compat single-account API) ────────────
 

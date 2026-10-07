@@ -31,10 +31,10 @@ def rename_endpoint(monkeypatch):
     monkeypatch.setattr(cdb, "SessionLocal", lambda: MagicMock())
     monkeypatch.setattr(cdb, "Base", SimpleNamespace(registry=SimpleNamespace(mappers=[])), raising=False)
     # Neutralize the JSON-prefs rename.
-    pr = types.ModuleType("routes.prefs_routes")
-    pr._load = lambda: {}
-    pr._save = lambda d: None
-    monkeypatch.setitem(sys.modules, "routes.prefs_routes", pr)
+    pr = types.ModuleType("src.user_preferences")
+    pr.load_all = lambda: {}
+    pr.save_all = lambda d: None
+    monkeypatch.setitem(sys.modules, "src.user_preferences", pr)
 
     am = MagicMock()
     am.is_admin.return_value = True

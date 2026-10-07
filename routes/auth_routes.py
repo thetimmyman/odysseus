@@ -347,7 +347,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
 
         # Per-user prefs are JSON-backed, not SQL-backed.
         try:
-            from routes.prefs_routes import _load as _load_prefs, _save as _save_prefs
+            from src.user_preferences import load_all as _load_prefs, save_all as _save_prefs
             prefs = _load_prefs()
             users = prefs.get("_users") if isinstance(prefs, dict) else None
             if isinstance(users, dict):

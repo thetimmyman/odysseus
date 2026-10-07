@@ -1934,8 +1934,8 @@ def setup_model_routes(model_discovery):
         except Exception:
             _is_admin = False
         if _user and not _is_admin:
-            from routes.prefs_routes import _load_for_user
-            _user_prefs = _load_for_user(_user) or {}
+            from src.user_preferences import load_for_user
+            _user_prefs = load_for_user(_user) or {}
             ep_id = (_user_prefs.get("default_endpoint_id") or "").strip()
             model = (_user_prefs.get("default_model") or "").strip()
             _fallbacks = _user_prefs.get("default_model_fallbacks") or []
@@ -2104,7 +2104,7 @@ def setup_model_routes(model_discovery):
     def _clear_user_prefs_for_endpoint(ep_id: str) -> int:
         """Clear per-user endpoint selections and fallback chains."""
         try:
-            from routes.prefs_routes import _load as _load_prefs, _save as _save_prefs
+            from src.user_preferences import load_all as _load_prefs, save_all as _save_prefs
             all_prefs = _load_prefs()
             cleared_users = _clear_user_pref_endpoint_refs(all_prefs, ep_id)
             if cleared_users:

@@ -17,7 +17,7 @@ from src.context_compactor import maybe_compact, trim_for_context
 from src.auth_helpers import get_current_user
 from src.prompt_security import untrusted_context_message
 from src.settings import get_setting
-from routes.prefs_routes import _load_for_user as load_prefs_for_user
+from src.user_preferences import load_for_user as load_prefs_for_user
 
 from fastapi import HTTPException
 

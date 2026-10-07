@@ -18,8 +18,8 @@ def prefs_env(tmp_path, monkeypatch):
     """Point prefs storage and the Fernet key at a tmp dir, freshly keyed."""
     prefs_file = tmp_path / "user_prefs.json"
 
-    from routes import prefs_routes
-    monkeypatch.setattr(prefs_routes, "PREFS_FILE", str(prefs_file))
+    from src import user_preferences as prefs
+    monkeypatch.setattr(prefs, "PREFS_FILE", str(prefs_file))
 
     from src import secret_storage
     monkeypatch.setattr(secret_storage, "_KEY_PATH", tmp_path / ".app_key")
@@ -183,11 +183,11 @@ def test_prefs_file_written_0600(prefs_env):
 
     Regression guard for the live finding: the file was mode 0644 on the
     framework deployment. A chmod applied by hand does not survive, because
-    `_save` replaces the inode; the mode has to be set by the writer.
+    `save_all` replaces the inode; the mode has to be set by the writer.
     """
-    from routes.prefs_routes import _save_for_user
+    from src.user_preferences import save_for_user
 
-    _save_for_user("alice", {"theme": "dark"})
+    save_for_user("alice", {"theme": "dark"})
 
     mode = stat.S_IMODE(os.stat(prefs_env).st_mode)
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
@@ -196,12 +196,12 @@ def test_prefs_file_written_0600(prefs_env):
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits only")
 def test_prefs_save_reclaims_loosened_mode(prefs_env):
     """A 0644 file left behind by an out-of-band root write self-heals."""
-    from routes.prefs_routes import _save_for_user
+    from src.user_preferences import save_for_user
 
-    _save_for_user("alice", {"theme": "dark"})
+    save_for_user("alice", {"theme": "dark"})
     os.chmod(prefs_env, 0o644)
 
-    _save_for_user("alice", {"theme": "light"})
+    save_for_user("alice", {"theme": "light"})
 
     mode = stat.S_IMODE(os.stat(prefs_env).st_mode)
     assert mode == 0o600, f"expected 0600 after re-save, got {oct(mode)}"

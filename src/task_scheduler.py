@@ -1974,8 +1974,8 @@ class TaskScheduler:
         """Create default housekeeping tasks for this owner (idempotent per action)."""
         from core.database import SessionLocal, ScheduledTask
         try:
-            from routes.prefs_routes import _load_for_user
-            _prefs = _load_for_user(owner) or {}
+            from src.user_preferences import load_for_user
+            _prefs = load_for_user(owner) or {}
         except Exception:
             _prefs = {}
         tasks_enabled = bool(_prefs.get("tasks_enabled"))

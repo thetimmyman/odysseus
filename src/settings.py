@@ -311,13 +311,12 @@ def get_user_setting(key: str, owner: str = "", default: Any = None) -> Any:
     the global setting. Only the small whitelist in `_PER_USER_KEYS` is
     eligible — for any other key this is equivalent to `get_setting(key)`.
 
-    Falls back gracefully if the prefs module can't be imported (cycle/early
-    boot) — admin-global settings keep working.
+    Falls back to the admin-global setting if reading user preferences fails.
     """
     if owner and key in _PER_USER_KEYS:
         try:
-            from routes.prefs_routes import _load_for_user
-            prefs = _load_for_user(owner) or {}
+            from src.user_preferences import load_for_user
+            prefs = load_for_user(owner) or {}
             if key in prefs and prefs[key] not in (None, ""):
                 return prefs[key]
         except Exception:

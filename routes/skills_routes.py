@@ -505,8 +505,8 @@ _skill_audit_jobs: dict = {}
 def _audit_auto_publish_policy(owner) -> tuple[bool, float]:
     """Return (auto_publish_enabled, minimum_confidence) for audit finalization."""
     try:
-        from routes.prefs_routes import _load_for_user
-        prefs = _load_for_user(owner) or {}
+        from src.user_preferences import load_for_user
+        prefs = load_for_user(owner) or {}
     except Exception:
         prefs = {}
     try:
