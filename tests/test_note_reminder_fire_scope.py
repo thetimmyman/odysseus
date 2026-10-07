@@ -62,7 +62,7 @@ def _endpoint(monkeypatch, note=None):
         return {"ok": True}
 
     monkeypatch.setattr(note_routes, "SessionLocal", lambda: db)
-    monkeypatch.setattr(note_routes, "dispatch_reminder", fake_dispatch_reminder)
+    monkeypatch.setattr(note_routes.reminders, "dispatch_reminder", fake_dispatch_reminder)
 
     router = note_routes.setup_note_routes()
     endpoint = next(

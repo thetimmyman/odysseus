@@ -23,8 +23,8 @@ def _add_handler():
 @pytest.fixture
 def _stub_store(monkeypatch):
     created = []
-    monkeypatch.setattr(cr, "_fetch_contacts", lambda *a, **k: [])
-    monkeypatch.setattr(cr, "_create_contact", lambda name, email: created.append((name, email)) or True)
+    monkeypatch.setattr(cr.contacts_backend, "_fetch_contacts", lambda *a, **k: [])
+    monkeypatch.setattr(cr.contacts_backend, "_create_contact", lambda name, email: created.append((name, email)) or True)
     return created
 
 

@@ -44,7 +44,7 @@ def quiet_logs() -> None:
 quiet_logs()
 
 try:
-    from routes.contacts_routes import (
+    from src.contacts import (
         _get_carddav_config,
         _fetch_contacts,
         _create_contact,

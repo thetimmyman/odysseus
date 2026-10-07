@@ -1120,7 +1120,7 @@ async def action_test_skills(owner: str, **kwargs) -> Tuple[str, bool]:
     try:
         from services.memory.skills import SkillsManager
         from src.constants import DATA_DIR
-        from routes.skills_routes import _run_skill_test_once, _skill_test_task
+        from src.skill_audit import _run_skill_test_once, _skill_test_task
         from src.endpoint_resolver import resolve_endpoint
 
         # #3 SCOPE GUARD: refuse to run on a None/empty owner — otherwise
@@ -1234,7 +1234,7 @@ async def action_audit_skills(owner: str, **kwargs) -> Tuple[str, bool]:
     try:
         from services.memory.skills import SkillsManager
         from src.constants import DATA_DIR
-        from routes.skills_routes import (
+        from src.skill_audit import (
             _resolve_audit_models, _run_audit_all_job, _skill_audit_jobs,
         )
 
@@ -1407,7 +1407,7 @@ async def action_ping_notes(owner: str, **kwargs) -> Tuple[str, bool]:
                         pass
                 body = "\n\n".join(p for p in body_parts if p) or title
                 try:
-                    from routes.note_routes import dispatch_reminder
+                    from src.reminders import dispatch_reminder
                     await dispatch_reminder(
                         title=title, note_body=body, note_id=n.id,
                         owner=n.owner or owner or "",
@@ -1900,7 +1900,7 @@ async def action_check_email_urgency(owner: str, **kwargs) -> Tuple[str, bool]:
                 # Call dispatch_reminder DIRECTLY (no HTTP/auth roundtrip — the
                 # endpoint version 401's the background scheduler because it
                 # has no session cookie).
-                from routes.note_routes import dispatch_reminder
+                from src.reminders import dispatch_reminder
                 dispatch_result = await dispatch_reminder(
                     title=title, note_body=body, note_id="urgent-email",
                     owner=owner or "",
