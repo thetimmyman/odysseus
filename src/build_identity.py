@@ -73,6 +73,7 @@ def main(argv=None):
         if args.command == "write":
             value = {"git_sha": args.git_sha, "branch": args.branch, "built_at": args.built_at}
             fields = validate_fields(value) if any(value.values()) else {}
+            Path(BUILD_IDENTITY_FILE).parent.mkdir(parents=True, exist_ok=True)
             Path(BUILD_IDENTITY_FILE).write_text(json.dumps({"format": 1, **fields}, sort_keys=True) + "\n")
             Path(BUILD_IDENTITY_FILE).chmod(0o444)
         else:

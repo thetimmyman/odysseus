@@ -127,9 +127,10 @@ def test_failed_canary_never_changes_production(installation):
     assert 'production was not changed' in p.stderr
 
 
-def test_runtime_code_mount_is_refused_before_build_or_activation(installation):
+@pytest.mark.parametrize('target', ['/app/src', '/usr/local/share/odysseus', '/usr/local/share', '/usr'])
+def test_runtime_code_mount_is_refused_before_build_or_activation(installation, target):
     config = installation[4]
-    value = json.loads(config.read_text());value['services']['odysseus']['volumes'].append({'target': '/app/src', 'source': '/mutable/code', 'type': 'bind'})
+    value = json.loads(config.read_text());value['services']['odysseus']['volumes'].append({'target': target, 'source': '/mutable/code', 'type': 'bind'})
     config.write_text(json.dumps(value))
     p = deploy(installation)
     state = json.loads(installation[3].read_text())
