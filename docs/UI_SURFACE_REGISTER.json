@@ -6,7 +6,7 @@
     "source_file_count": 224,
     "source_pins": {
       "AGENTS.md": "2e2e69f07438d9fb339a760c32528f1f406cea2cc0e2f5be162ed6c8bf900230",
-      "app.py": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+      "app.py": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
       "routes/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "routes/admin_wipe_routes.py": "b78047e84499d698ec3009d7ec7eae17baf37153b061ce0690c3dea378658dba",
       "routes/api_token_routes.py": "ceb88f537963e61ddb223c1ae992248c7c28c5e57d29176cfc1c2f1f388f0241",
@@ -2069,7 +2069,7 @@
             "evidence": {
               "path": "app.py",
               "line": 793,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /."
             }
           }
@@ -2425,7 +2425,7 @@
             "evidence": {
               "path": "app.py",
               "line": 807,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /calendar."
             }
           }
@@ -2813,7 +2813,7 @@
             "evidence": {
               "path": "app.py",
               "line": 815,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /cookbook."
             }
           },
@@ -3190,7 +3190,7 @@
             "evidence": {
               "path": "app.py",
               "line": 819,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /email."
             }
           }
@@ -3457,7 +3457,7 @@
             "evidence": {
               "path": "app.py",
               "line": 827,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /gallery."
             }
           },
@@ -3686,7 +3686,7 @@
             "evidence": {
               "path": "app.py",
               "line": 835,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /library."
             }
           },
@@ -3921,7 +3921,7 @@
             "evidence": {
               "path": "app.py",
               "line": 823,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /memory."
             }
           },
@@ -4120,7 +4120,7 @@
             "evidence": {
               "path": "app.py",
               "line": 803,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /notes."
             }
           },
@@ -4318,7 +4318,7 @@
             "evidence": {
               "path": "app.py",
               "line": 831,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /tasks."
             }
           },
@@ -6050,7 +6050,7 @@
             "evidence": {
               "path": "app.py",
               "line": 844,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /login."
             }
           }
@@ -6100,7 +6100,7 @@
         {
           "path": "app.py",
           "line": 1,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -6109,7 +6109,7 @@
         {
           "path": "app.py",
           "line": 1,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -6134,7 +6134,7 @@
           {
             "path": "app.py",
             "line": 838,
-            "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+            "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
             "claim": "/backgrounds route references static/backgrounds.html; that target is absent from pinned source tree."
           }
         ],
@@ -6145,7 +6145,7 @@
             "evidence": {
               "path": "app.py",
               "line": 839,
-              "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
               "claim": "Direct route /backgrounds."
             }
           }
@@ -6164,7 +6164,7 @@
           {
             "path": "app.py",
             "line": 839,
-            "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+            "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
             "claim": "/backgrounds route points at absent static/backgrounds.html; no DOM root or responsive selector exists in pinned source."
           }
         ],
@@ -6579,7 +6579,7 @@
         "source": {
           "path": "app.py",
           "line": 793,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6591,7 +6591,7 @@
         "source": {
           "path": "app.py",
           "line": 839,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present_target_missing"
@@ -6603,7 +6603,7 @@
         "source": {
           "path": "app.py",
           "line": 807,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6615,7 +6615,7 @@
         "source": {
           "path": "app.py",
           "line": 815,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6627,7 +6627,7 @@
         "source": {
           "path": "app.py",
           "line": 819,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6639,7 +6639,7 @@
         "source": {
           "path": "app.py",
           "line": 827,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6651,7 +6651,7 @@
         "source": {
           "path": "app.py",
           "line": 835,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6663,7 +6663,7 @@
         "source": {
           "path": "app.py",
           "line": 844,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6675,7 +6675,7 @@
         "source": {
           "path": "app.py",
           "line": 823,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6687,7 +6687,7 @@
         "source": {
           "path": "app.py",
           "line": 803,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6699,7 +6699,7 @@
         "source": {
           "path": "app.py",
           "line": 831,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -12599,7 +12599,7 @@
         "source": {
           "path": "app.py",
           "line": 839,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "serve_backgrounds route target."
         }
       },
@@ -12621,7 +12621,7 @@
         "source": {
           "path": "app.py",
           "line": 532,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Router mounting begins; source hash pins the complete application module."
         }
       },
@@ -12632,7 +12632,7 @@
         "source": {
           "path": "app.py",
           "line": 839,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "serve_backgrounds route references missing file."
         }
       }
@@ -12695,7 +12695,7 @@
         "source": {
           "path": "app.py",
           "line": 410,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct API/asset route."
         }
       },
@@ -12706,7 +12706,7 @@
         "source": {
           "path": "app.py",
           "line": 849,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct API route."
         }
       },
@@ -12717,7 +12717,7 @@
         "source": {
           "path": "app.py",
           "line": 854,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct API route."
         }
       },
@@ -12728,7 +12728,7 @@
         "source": {
           "path": "app.py",
           "line": 858,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct API route."
         }
       },
@@ -12739,7 +12739,7 @@
         "source": {
           "path": "app.py",
           "line": 869,
-          "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "Direct API route."
         }
       }
@@ -12750,7 +12750,7 @@
       "source": {
         "path": "app.py",
         "line": 407,
-        "sha256": "aa31530a0ff8ca7a9a75350cf7d2ce7b60973b8cb3c5e07e7400592ffb4222e3",
+        "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
         "claim": "Static file mount."
       }
     },
