@@ -1,6 +1,6 @@
 # Settings home (PS-617)
 
-Open Settings with the sidebar or rail cog, or Ctrl+, on desktop. Administrators
+Open Settings with the sidebar or rail cog. Administrators
 can open **System > Routing & budgets** to edit Budget, Providers and Policy or
 inspect Effective routing. Its **Settings** button returns to the main settings
 window. Unsaved routing edits require confirmation before leaving.
