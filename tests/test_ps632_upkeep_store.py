@@ -1,5 +1,6 @@
 """Stored status is pure; measured renewal preserves active authority and history."""
 from concurrent.futures import ThreadPoolExecutor
+import ast
 import dataclasses
 import datetime as dt
 import json
@@ -100,6 +101,40 @@ def test_status_reports_corrupt_store_without_repairing_it(installed):
     assert not result["ok"] and result["audit"]["problems"]
     assert result["profiles"][0]["status"] == "REFUSED"
     assert result["profiles"][0]["next_action"] == "repair registry evidence"
+    assert bytes_in(store) == before
+
+
+def test_capability_registry_does_not_import_routing_or_dispatch_layers():
+    """Preserve TMOS I8: evidence producers cannot depend on their selector."""
+    tree = ast.parse(Path(store_module.__file__).read_text())
+    dependencies = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            dependencies.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            dependencies.add(node.module or "")
+            dependencies.update((node.module or "") + "." + alias.name for alias in node.names)
+    forbidden = {"src.local_target_routing", "src.dispatch_routing", "src.dispatch_boundary"}
+    assert not dependencies & forbidden
+
+
+@pytest.mark.parametrize("changed", ["model", "endpoint", "qualification_ref", "inference_role"])
+def test_status_reports_native_binding_refusals_without_selecting(installed, changed):
+    store, original = installed
+    registered = spec(original)
+    field, value = {"model": ("model", "other-model"), "endpoint": ("endpoint", "http://other.invalid"),
+                    "qualification_ref": ("qualification_ref", "other-anchor"),
+                    "inference_role": ("roles", ("deterministic_verifier",))}[changed]
+    registered = dataclasses.replace(registered, **{field: value})
+    before = bytes_in(store)
+    result = store.status(specs=[registered])
+    row = result["profiles"][0]
+    if changed == "inference_role":
+        assert row["status"] == "NOT_AN_INFERENCE_TARGET"
+    else:
+        assert row["status"] == "REFUSED" and row["refusal_reason"] == "registered_profile_binding_mismatch"
+    assert result["current_material_identity_observed"] is False
+    assert all(role.startswith("approximate_") for role in row["roles"])
     assert bytes_in(store) == before
 
 
