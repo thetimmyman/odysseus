@@ -22,7 +22,10 @@ reads the running service's Compose labels, resolves the active settings into a
 private rollback packet, pins the previous image by ID, and builds a Git archive
 of the candidate. Untracked files, ignored credentials and local edits cannot
 enter that archive. The Dockerfile bakes source SHA, branch and build time into
-a root-owned read-only file and OCI labels. Runtime Git or environment values
+a root-owned read-only file at `/usr/local/share/odysseus/build-identity.json`
+and OCI labels. Its parent stays root-owned outside the writable `/app` tree;
+the post-startup canary checks that the application user cannot write either.
+Runtime Git or environment values
 cannot replace that identity. The GitHub image publisher supplies the same
 build arguments; an ordinary development build without them reports unknown.
 

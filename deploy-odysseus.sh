@@ -108,13 +108,15 @@ for file in "${CONFIG_FILES[@]}"; do COMPOSE+=(-f "$file"); done
 (cd "$SCRIPT_DIR"; python3 - "$RELEASE" "$PREVIOUS" "$SHA" "$PREVIOUS_REVISION" "$CHECKOUT_BEFORE" "$CHECKOUT_BRANCH" <<'PY'
 import hashlib,json,sys
 from src.build_identity import verify
+from src.constants import BUILD_IDENTITY_FILE
 from pathlib import Path
 root=Path(sys.argv[1]);p=root/'rollback.compose.json';value=json.loads(p.read_text())
 service=value['services']['odysseus']
 code_targets=('/app/app.py','/app/src','/app/core','/app/routes','/app/services','/app/static','/app/mcp_servers','/app/.build-identity.json')
 for volume in service.get('volumes',[]):
  target=volume.get('target','')
- if target=='/app' or any(target==p or target.startswith(p+'/') for p in code_targets):
+ if (target=='/app' or any(target==p or target.startswith(p+'/') for p in code_targets)
+     or target and (target==BUILD_IDENTITY_FILE or BUILD_IDENTITY_FILE.startswith(target.rstrip('/')+'/'))):
   raise SystemExit('refusing runtime mount over baked application code/identity')
 service['image']=sys.argv[2];service.pop('build',None)
 p.write_text(json.dumps(value,indent=2)+'\n')
@@ -154,6 +156,7 @@ done
 [[ "$CANARY_OK" == 1 ]] || die "isolated canary failed; production was not changed"
 docker exec "$CANARY" python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:7000/api/version",timeout=5).read().decode())' |
     (cd "$SCRIPT_DIR"; python3 -m src.build_identity verify --expect-sha "$SHA" --image-revision "$REVISION" --branch main)
+docker exec --user 1000:1000 "$CANARY" python -c 'import os; from pathlib import Path; from src.constants import BUILD_IDENTITY_FILE; p=Path(BUILD_IDENTITY_FILE); assert p.stat().st_uid==0 and p.parent.stat().st_uid==0; assert p.stat().st_mode&0o777==0o444; assert not os.access(p,os.W_OK) and not os.access(p.parent,os.W_OK)'
 docker exec "$CANARY" python -c 'import urllib.request,urllib.error
 try:
  r=urllib.request.urlopen("http://127.0.0.1:7000/api/sessions",timeout=5); raise SystemExit("unauthenticated session access unexpectedly succeeded")

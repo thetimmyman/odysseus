@@ -16,6 +16,12 @@ SHA = 'a' * 40
 NOW = datetime(2026, 10, 7, tzinfo=timezone.utc)
 
 
+def test_installed_identity_is_outside_startup_writable_app_tree():
+    from src.constants import BASE_DIR, BUILD_IDENTITY_FILE
+    assert BUILD_IDENTITY_FILE == '/usr/local/share/odysseus/build-identity.json'
+    assert not Path(BUILD_IDENTITY_FILE).is_relative_to(BASE_DIR)
+
+
 def fields():
     return {'git_sha': SHA, 'branch': 'main', 'built_at': '2026-10-06T00:00:00Z'}
 
