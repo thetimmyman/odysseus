@@ -269,8 +269,8 @@ class TargetCapabilityStore:
         Passing stored checks is distinct from dispatch authorization: current
         material identity and task-specific checks remain unobserved here.
         """
-        from src.local_targets import registered_targets, _parse_utc, ROLE_INFERENCE
-        from src.local_target_routing import persisted_routing_inputs, CAPABILITY_MAP, roles_from_capabilities
+        from src.local_targets import (registered_targets, _parse_utc, ROLE_INFERENCE,
+                                       CAP_READONLY_ANALYSIS, CAP_NATIVE_TOOLS)
 
         moment = now or datetime.now(timezone.utc)
         pool = tuple(registered_targets() if specs is None else specs)
@@ -281,31 +281,43 @@ class TargetCapabilityStore:
             if host_id not in hosts:
                 raise CapabilityStoreError("host is not registered and has no stored evidence")
             hosts = [host_id]
-        skipped = {}
-        if audit["ok"]:
-            view = persisted_routing_inputs(self, specs=pool, now=moment)
-            skipped = {row["target_id"]: row["reason"] for row in view.skipped}
         by_host = {s.target_id: s for s in pool}
         rows = []
         for host in hosts:
             spec = by_host.get(host)
             receipt = self.current_for_host(host) if audit["ok"] else None
-            reason = "; ".join(audit["problems"]) if not audit["ok"] else skipped.get(host, "")
-            if audit["ok"] and spec is None:
-                reason = "host has no registered execution target"
-            if not reason and receipt is None:
-                reason = "no persisted capability receipt"
-            def expires(value, ttl):
-                parsed = _parse_utc(value)
-                return (parsed + timedelta(seconds=ttl)).isoformat() if parsed else None
-            mapped = {cap for name in (receipt.capabilities.measured if receipt else ())
-                      for cap in CAPABILITY_MAP.get(name, (name,))}
-            roles = roles_from_capabilities(mapped) if receipt else ()
-            if receipt and receipt.routing_exactness() == "approximate":
-                roles = tuple(role for role in roles if role.startswith("approximate_"))
             qualification = receipt.qualification_state(now=moment) if receipt else "NO_RECEIPT"
             health = receipt.health_state(now=moment) if receipt else "UNKNOWN"
             non_inference = spec is not None and ROLE_INFERENCE not in spec.roles
+            reason = "; ".join(audit["problems"]) if not audit["ok"] else ""
+            if not reason and spec is None:
+                reason = "host has no registered execution target"
+            elif not reason and non_inference:
+                reason = "registry does not give this host the inference role"
+            elif not reason and not spec.qualification_ref:
+                reason = "unqualified: no independently qualified profile for this host"
+            if not reason and receipt is None:
+                reason = "no persisted capability receipt"
+            if not reason and receipt.schema_version == 2 and (
+                    receipt.host_id != host or receipt.model.model_id != spec.model
+                    or receipt.qualification_ref != spec.qualification_ref
+                    or ROLE_INFERENCE not in receipt.roles
+                    or receipt.runtime.endpoint_url != spec.endpoint):
+                reason = "registered_profile_binding_mismatch"
+            if not reason and qualification != "valid":
+                reason = "receipt not qualified: " + qualification
+            if not reason and health != "live":
+                reason = "liveness not live: " + health
+            def expires(value, ttl):
+                parsed = _parse_utc(value)
+                return (parsed + timedelta(seconds=ttl)).isoformat() if parsed else None
+            # Informational role labels only. The evidence registry must not
+            # depend on or invoke the routing/dispatch layer it supplies.
+            measured = set(receipt.capabilities.measured) if receipt else set()
+            analysis = bool(measured & {CAP_READONLY_ANALYSIS, "text_generation"})
+            roles = ["approximate_analyst"] if analysis else []
+            if analysis and CAP_NATIVE_TOOLS in measured:
+                roles.append("approximate_implementer")
             rows.append({
                 "host_id": host, "profile_id": receipt.profile_id if receipt else None,
                 "receipt_hash": receipt.receipt_hash if receipt else None,
