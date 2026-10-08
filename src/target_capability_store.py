@@ -18,12 +18,13 @@ import fcntl
 from contextlib import contextmanager
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from src.constants import TARGET_CAPABILITY_ACTIVE_FILENAME, TARGET_CAPABILITY_LOCK_FILENAME
 from src.local_targets import (
-    TargetCapabilityReceipt, LocalTargetUnavailable, _canonical_bytes, make_target_capability_receipt,
+    TargetCapabilityReceipt, LocalTargetUnavailable, DEFAULT_HEALTH_TTL_S, _canonical_bytes,
+    make_target_capability_receipt,
     target_capability_receipt_hash_is_valid)
 from src.routing_workdir import data_root
 
@@ -211,6 +212,122 @@ class TargetCapabilityStore:
             refreshed = make_target_capability_receipt(**payload)
             self._append(refreshed, supersedes=receipt.receipt_hash)
             return self.current(profile_id)
+
+    def renew_profile(self, receipt: TargetCapabilityReceipt, *, expected_profile_id: str,
+                      expected_receipt_hash: str, current_identity_digest: str,
+                      identity_checked_at: str) -> TargetCapabilityReceipt:
+        """Apply newly measured qualification to the same active execution profile.
+
+        The caller supplies independently collected material identity. Both active
+        authority and current evidence are compared under the existing writer lock;
+        renewal never selects a replacement profile or enlarges its qualified scope.
+        """
+        from src.local_targets import _parse_utc
+
+        now = datetime.now(timezone.utc)
+        checked = _parse_utc(identity_checked_at)
+        if (not current_identity_digest or checked is None or checked > now
+                or (now - checked).total_seconds() > DEFAULT_HEALTH_TTL_S):
+            raise CapabilityStoreError("renewal requires freshly observed material identity")
+        with self._writer_lock():
+            now = datetime.now(timezone.utc)
+            if checked > now or (now - checked).total_seconds() > DEFAULT_HEALTH_TTL_S:
+                raise CapabilityStoreError("renewal requires freshly observed material identity")
+            active = self._read_active()
+            if not expected_profile_id or active.get(receipt.host_id) != expected_profile_id:
+                raise CapabilityStoreError("active profile changed before renewal")
+            current = self.current(expected_profile_id)
+            if current is None or not expected_receipt_hash or current.receipt_hash != expected_receipt_hash:
+                raise CapabilityStoreError("current receipt changed before renewal")
+            if (receipt.profile_id != current.profile_id or receipt.host_id != current.host_id
+                    or receipt.identity_digest() != current.identity_digest()
+                    or current_identity_digest != receipt.identity_digest()):
+                raise CapabilityStoreError("renewal cannot change the active material identity")
+            if (receipt.qualification_ref != current.qualification_ref
+                    or receipt.schema_version != current.schema_version
+                    or receipt.qualification_disposition != current.qualification_disposition
+                    or receipt.roles != current.roles
+                    or not set(receipt.capabilities.measured).issubset(current.capabilities.measured)
+                    or receipt.context.safe_working_context > current.context.safe_working_context
+                    or receipt.context.semantic_verified_context > current.context.semantic_verified_context
+                    or receipt.ttl_s > current.ttl_s or receipt.health_ttl_s > current.health_ttl_s):
+                raise CapabilityStoreError("renewal cannot change the qualification anchor or enlarge scope")
+            if (receipt.qualification_state(now=now, current_identity_digest=current_identity_digest) != "valid"
+                    or receipt.health_state(now=now) != "live"):
+                raise CapabilityStoreError("renewal requires a valid and live newly measured receipt")
+            observed, previous = _parse_utc(receipt.observed_at), _parse_utc(current.observed_at)
+            if (observed is None or previous is None or observed <= previous
+                    or not receipt.context.safe_context_source
+                    or receipt.context.safe_context_source == current.context.safe_context_source):
+                raise CapabilityStoreError("renewal requires new semantic measurement evidence")
+            self._append(receipt, supersedes=current.receipt_hash)
+            return self.current(expected_profile_id)
+
+    def status(self, *, host_id: str = "", specs=None, now=None) -> Dict[str, Any]:
+        """Read stored clocks and refusal reasons without probing or creating files.
+
+        Passing stored checks is distinct from dispatch authorization: current
+        material identity and task-specific checks remain unobserved here.
+        """
+        from src.local_targets import registered_targets, _parse_utc, ROLE_INFERENCE
+        from src.local_target_routing import persisted_routing_inputs, CAPABILITY_MAP, roles_from_capabilities
+
+        moment = now or datetime.now(timezone.utc)
+        pool = tuple(registered_targets() if specs is None else specs)
+        audit = self.verify()
+        records = self.entries() if audit["ok"] else ()
+        hosts = sorted({s.target_id for s in pool} | {r.host_id for r in records})
+        if host_id:
+            if host_id not in hosts:
+                raise CapabilityStoreError("host is not registered and has no stored evidence")
+            hosts = [host_id]
+        skipped = {}
+        if audit["ok"]:
+            view = persisted_routing_inputs(self, specs=pool, now=moment)
+            skipped = {row["target_id"]: row["reason"] for row in view.skipped}
+        by_host = {s.target_id: s for s in pool}
+        rows = []
+        for host in hosts:
+            spec = by_host.get(host)
+            receipt = self.current_for_host(host) if audit["ok"] else None
+            reason = "; ".join(audit["problems"]) if not audit["ok"] else skipped.get(host, "")
+            if audit["ok"] and spec is None:
+                reason = "host has no registered execution target"
+            if not reason and receipt is None:
+                reason = "no persisted capability receipt"
+            def expires(value, ttl):
+                parsed = _parse_utc(value)
+                return (parsed + timedelta(seconds=ttl)).isoformat() if parsed else None
+            mapped = {cap for name in (receipt.capabilities.measured if receipt else ())
+                      for cap in CAPABILITY_MAP.get(name, (name,))}
+            roles = roles_from_capabilities(mapped) if receipt else ()
+            if receipt and receipt.routing_exactness() == "approximate":
+                roles = tuple(role for role in roles if role.startswith("approximate_"))
+            qualification = receipt.qualification_state(now=moment) if receipt else "NO_RECEIPT"
+            health = receipt.health_state(now=moment) if receipt else "UNKNOWN"
+            non_inference = spec is not None and ROLE_INFERENCE not in spec.roles
+            rows.append({
+                "host_id": host, "profile_id": receipt.profile_id if receipt else None,
+                "receipt_hash": receipt.receipt_hash if receipt else None,
+                "qualification": qualification, "health": health,
+                "qualification_expires_at": expires(receipt.observed_at, receipt.ttl_s) if receipt else None,
+                "health_expires_at": expires(receipt.health_checked_at or receipt.observed_at,
+                                               receipt.health_ttl_s) if receipt else None,
+                "safe_context_tokens": receipt.context.safe_working_context if receipt else None,
+                "roles": list(roles), "refusal_reason": reason or "current material identity not observed",
+                "status": ("NOT_AN_INFERENCE_TARGET" if non_inference else "REFUSED" if reason
+                           else "READY_FOR_IDENTITY_CHECK"),
+                "next_action": ("retain deterministic role" if non_inference else
+                                "repair registry evidence" if not audit["ok"] else
+                                "reconcile the registered profile binding" if reason in {
+                                    "registered_profile_binding_mismatch", "host has no registered execution target"} else
+                                "measure and explicitly register a profile" if receipt is None else
+                                "requalify the installed profile" if qualification != "valid" else
+                                "observe identity and refresh liveness" if health != "live" else
+                                "observe current identity and check the requested task")})
+        return {"ok": audit["ok"], "checked_at": moment.isoformat(), "audit": audit,
+                "profiles": rows, "read_only": True, "provider_calls": 0,
+                "current_material_identity_observed": False}
 
     def verify(self) -> Dict[str, Any]:
         """A full audit: every line hashes, and every index entry resolves."""

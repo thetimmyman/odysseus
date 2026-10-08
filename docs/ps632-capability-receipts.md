@@ -164,3 +164,71 @@ stream closure alone never qualifies server-side cancellation.
 ## Revoking an installed profile
 
 `odysseus-capability deactivate HOST --expected-profile PROFILE` removes only the active authority pointer under the writer lock. It retains all measured receipts and their current indexes. The expected profile must still be active, so a stale rollback cannot revoke a concurrently activated replacement. A host with evidence but no active pointer remains ineligible; reactivation requires the existing fresh qualification and matching observed material identity through `activate`. Revocation does not refresh health or qualification.
+
+## Keeping the installed approximate workers ready
+
+Use `odysseus-capability --store DIRECTORY status [HOST] --json` first. This
+reads existing evidence without changing files or calling a model. It explains
+qualification expiry separately from health expiry, shows the measured context
+and roles, and gives the next action. `READY_FOR_IDENTITY_CHECK` means the stored
+clocks pass; dispatch still needs current identity and the task's normal checks.
+
+An expired qualification needs new measurements. A heartbeat cannot renew it.
+For an unchanged, previously measured approximate 4K profile, obtain its normal
+background capacity lease, then run:
+
+```sh
+scripts/odysseus-qualify --receipt current-receipt.json --spec installed-spec.json \
+  --identity-command collector-argv.json --output-dir new-private-evidence
+```
+
+The private `collector-argv.json` is an operator-controlled JSON argv list for a
+trusted collector. It must independently observe the served artifact, runtime,
+options, endpoint binding and host baseline, and emit `checked_at`, `profile_id`
+and `current_material_identity`. Missing or stale observations refuse the run.
+The included collector is `python -m src.local_target_identity --receipt
+current-receipt.json --config private-collector.json`. Put that argv in
+`collector-argv.json`, using absolute paths and the intended Python interpreter.
+Its private config supplies `kind` (`ollama` or `halogen-flash`), `engine_argv`,
+`container`, loopback `health_url`, installed `endpoint_url`, `request_options`
+and `gpu_query_argv`; optional `ssh_argv` selects the inspected host. Ollama also
+requires `model`, `model_manifest` and `blob_dir`. Flash requires `checkpoint`,
+`checkpoint_env_key` and `template`. The collector verifies published-port and
+native-address ownership, matching endpoint responses, full artifact hashes,
+served template/options, host baseline, and stable container identity. It makes
+no inference calls. Artifact/image-bound catalog facts and uncollected host
+libraries remain explicitly labelled. Proxies and redirects are refused.
+
+Collection brackets two sequential context/tool trials. Both trials must recall
+the exact first, middle and last values, return the expected single tool call,
+finish completely, and report at least 4096 prompt tokens. The returned tool is
+examined as data; no file write is executed. Failed trials or material drift
+issue no receipt. Each attempt uses a new private evidence directory.
+
+This operation produces evidence only. It retains the registered
+`qualification_ref` as the profile's original qualification anchor; the fresh
+report hash is recorded in `context.safe_context_source` and receipt notes.
+The registration therefore stays bound while each renewal remains traceable.
+It preserves the execution profile, limits qualification to approximate 4096
+tokens and one tested tool call, and makes no reference, 32K, maximum-context,
+streaming, cancellation or parallel-tool claim.
+
+Review the measured bundle and collect identity again immediately before apply:
+
+```sh
+scripts/odysseus-capability --store DIRECTORY renew new-private-evidence/receipt.json \
+  fresh-observation.json --expected-profile ACTIVE_PROFILE --expected-receipt CURRENT_HASH
+```
+
+Renewal compares the active profile and current receipt under the existing
+writer lock. A stale expectation, different material identity or enlarged scope
+is refused. Success appends evidence and advances its current index; it preserves
+the active pointer and all previous receipts. A changed model/runtime/profile
+requires separate qualification and explicit registration/activation. Generic
+Framework remains unqualified. MS-R1 remains a deterministic verifier.
+
+After renewal, a small read-only task should use the canonical persisted routing
+and invocation guard, pin the selected local profile, grant no tools or writes,
+and seal its actual result and dispatch evidence. Local targets retain the native
+subscription-capacity exemption; the runtime's background lease still applies.
+Successful synthetic qualification alone is not evidence that a real task ran.
