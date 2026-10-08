@@ -197,6 +197,11 @@ def test_effective_returns_honest_item_set():
     assert surfaces <= {"runtime", "needs_redeploy", "deploy_only"}
     for i in items:
         assert set(i.keys()) >= {"name", "value", "source", "surface", "editable_where"}
+    # Operator instructions must lead to the current Settings home, including
+    # its System section, rather than the removed second Settings launcher.
+    for i in items:
+        if i["name"].startswith("budget.") or (i["name"].startswith("policy.") and i["editable"]):
+            assert i["editable_where"].startswith("Settings > System > Routing & budgets > ")
 
 
 def test_effective_surfaces_full_policy_with_danger_flags():

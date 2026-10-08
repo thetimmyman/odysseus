@@ -5,6 +5,7 @@ import uiModule from './ui.js';
 import searchModule from './search.js';
 import { makeWindowDraggable } from './windowDrag.js';
 import { clearDockSide } from './modalSnap.js';
+import { isMinimized, restore } from './modalManager.js';
 import { sortModelIds } from './modelSort.js';
 import { isAltGrEvent } from './platform.js';
 
@@ -5213,7 +5214,10 @@ function syncAdminVisibility() {
    PUBLIC API
    ═══════════════════════════════════════════ */
 export function open(tab) {
+  // All Settings entry points honor the routing editor's unsaved-change guard.
+  if (window.configPanelModule?.close() === false) return false;
   if (!initialized) initAll();
+  if (isMinimized('settings-modal')) restore('settings-modal');
   syncAppearanceCheckboxes();
   if (modalEl.classList.contains('hidden')) {
     resetWindowPlacement();
@@ -5235,13 +5239,18 @@ export function open(tab) {
   }
 }
 
-export function close() {
+export function close({ immediate = false } = {}) {
   if (!modalEl) return;
   // Always clear the appearance-tab body class so the rest of the app
   // doesn't keep its dimmed state if the modal got closed mid-tab.
   document.body.classList.remove('settings-appearance-open');
   syncAppearanceOpacity(false); // clear any opacity-slider fade
   const content = modalEl.querySelector('.modal-content, .settings-modal-content');
+  if (immediate) {
+    modalEl.classList.add('hidden');
+    content?.classList.remove('modal-closing');
+    return;
+  }
   if (content && !content.classList.contains('modal-closing')) {
     content.classList.add('modal-closing');
     content.addEventListener('animationend', () => {

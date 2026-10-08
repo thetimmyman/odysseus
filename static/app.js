@@ -3586,12 +3586,7 @@ function startOdysseusApp() {
   const _railSettings = el('rail-settings');
   if (_railSettings) {
     _railSettings.addEventListener('click', () => {
-      const sidebar = document.getElementById('sidebar');
-      if (sidebar) sidebar.classList.remove('hidden');
-      syncRailSide();
-      // Scroll to bottom where settings typically are
-      const sidebarInner = document.querySelector('.sidebar-inner');
-      if (sidebarInner) sidebarInner.scrollTo({ top: sidebarInner.scrollHeight, behavior: 'smooth' });
+      settingsModule.open();
     });
   }
 

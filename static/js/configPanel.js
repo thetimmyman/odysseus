@@ -1,6 +1,8 @@
-// Settings overlay: versioned budget editor, providers, policy and effective config.
+// Routing & budgets: versioned budget editor, providers, policy and effective config.
 // Admin gating is enforced server-side; on 401/403 a panel shows an inline notice.
 // Render with textContent / _esc only.
+
+import settingsModule from './settings.js';
 
 let API_BASE = '';
 let _wired = false;
@@ -1038,16 +1040,19 @@ function _showTab(tab) {
 function _openOverlay() {
   const ov = _el('config-overlay');
   if (!ov) return;
+  settingsModule.close({ immediate: true });
   ov.style.display = '';
   _open = true;
   // Don't reset _loaded or the buffer on open; that protects unsaved edits.
   _showTab(_tab);
 }
 function _closeOverlay() {
-  if (!_confirmLeave('You have unsaved changes. Discard them and close?')) return;
+  if (!_open) return true;
+  if (!_confirmLeave('You have unsaved changes. Discard them and close?')) return false;
   const ov = _el('config-overlay');
   if (ov) ov.style.display = 'none';
   _open = false;
+  return true;
 }
 
 function refresh() { /* host-wide tool; nothing per-session */ }
@@ -1064,6 +1069,9 @@ function init(apiBase) {
 
   _el('tool-config-btn')?.addEventListener('click', _openOverlay);
   _el('config-close')?.addEventListener('click', _closeOverlay);
+  _el('config-back')?.addEventListener('click', () => {
+    if (_closeOverlay()) settingsModule.open('system');
+  });
   _el('config-tabs')?.addEventListener('click', (e) => {
     const btn = e.target.closest('.admin-tab[data-cfgtab]');
     if (btn) _showTab(btn.dataset.cfgtab);
@@ -1102,7 +1110,7 @@ function init(apiBase) {
   });
 }
 
-const configPanelModule = { init, refresh, createDirtyState };
+const configPanelModule = { init, refresh, createDirtyState, close: _closeOverlay };
 export default configPanelModule;
 window.configPanelModule = configPanelModule;
 
