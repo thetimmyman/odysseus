@@ -215,9 +215,18 @@ def test_renewal_refuses_changed_or_unmeasured_scope_without_writes(installed, c
     assert bytes_in(store) == before
 
 
-@pytest.mark.parametrize("checked_at", ["", "invalid", moment(-301), moment(60)])
-def test_renewal_requires_current_independent_identity_observation(installed, checked_at):
+@pytest.mark.parametrize("observation", ["missing", "invalid", "expired", "future"])
+def test_renewal_requires_current_independent_identity_observation(installed, observation, monkeypatch):
     store, original = installed
+    observed = dt.datetime.now(dt.timezone.utc)
+    checked_at = {"missing": "", "invalid": "invalid",
+                  "expired": (observed - dt.timedelta(seconds=301)).isoformat(),
+                  "future": (observed + dt.timedelta(seconds=60)).isoformat()}[observation]
+    class Clock:
+        @classmethod
+        def now(cls, zone):
+            return observed
+    monkeypatch.setattr(store_module, "datetime", Clock)
     before = bytes_in(store)
     with pytest.raises(CapabilityStoreError, match="freshly observed"):
         renew(store, original, candidate(original), identity_checked_at=checked_at)
