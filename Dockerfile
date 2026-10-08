@@ -48,6 +48,18 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # Copy app code
 COPY . .
 
+# Source identity is baked after COPY; runtime environment and checkout changes
+# cannot override it. Empty args produce an explicitly unknown development build.
+ARG ODYSSEUS_BUILD_GIT_SHA=""
+ARG ODYSSEUS_BUILD_BRANCH=""
+ARG ODYSSEUS_BUILD_BUILT_AT=""
+RUN python -m src.build_identity write \
+    --git-sha "$ODYSSEUS_BUILD_GIT_SHA" \
+    --branch "$ODYSSEUS_BUILD_BRANCH" \
+    --built-at "$ODYSSEUS_BUILD_BUILT_AT"
+LABEL org.opencontainers.image.revision="$ODYSSEUS_BUILD_GIT_SHA" \
+      org.opencontainers.image.created="$ODYSSEUS_BUILD_BUILT_AT"
+
 # Create data directory (mount a volume here for persistence)
 RUN mkdir -p data logs services/cache/search
 

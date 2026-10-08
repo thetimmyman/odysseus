@@ -42,3 +42,5 @@ timetree*.png
 .gitignore
 *.bak-*
 *.bak2-*
+
+.build-identity.json

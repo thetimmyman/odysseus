@@ -105,10 +105,12 @@ that deployment unless each command is explicitly executed against it.
 
 ## Caveat — what is NOT identity proof
 
-A successful restart is not identity proof. A responding
-model-list/`/api/version` endpoint is not identity proof — `/api/version`
-returns a static `APP_VERSION` constant, not a commit SHA, and any build of
-any version answers identically. A host ping (`ping`, `curl -I` of any
+A successful restart is not identity proof. A responding model-list or version endpoint alone is not identity proof.
+`/api/version` now exposes baked `status`, `git_sha`, `branch` and `built_at`
+alongside the version number. Builds without complete injected metadata report
+`unknown`. Use `deploy-odysseus.sh verify FULL_MAIN_SHA` to compare the live
+application with the actual running image revision and intended main SHA.
+See [the native release procedure](RELEASE.md). A host ping (`ping`, `curl -I` of any
 always-on route) is not identity proof: it shows something is listening, not
 which code is running. Liveness (`/api/health`) and readiness (`/api/ready`)
 likewise show state, not identity. Identity requires the chain above:
