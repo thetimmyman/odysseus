@@ -99,3 +99,5 @@ data.*bak/
 
 # Local secret vault — never commit
 /.odysseus/github_pat.txt
+
+.build-identity.json
