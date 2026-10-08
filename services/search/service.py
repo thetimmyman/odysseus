@@ -1,6 +1,7 @@
 # services/search/service.py
 """Search service — clean interface for web search."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
@@ -42,7 +43,8 @@ class SearchService:
 
     def __init__(self, default_depth: int = 1, fetch_content: bool = True):
         self.default_depth = default_depth
-        self.fetch_content = fetch_content
+        # Retain the legacy keyword without hiding the async fetch_content method.
+        # As in search(), comprehensive search always fetches page content.
 
     async def search(
         self,
@@ -68,7 +70,6 @@ class SearchService:
         # loop so we don't block it, and use the source list as the result rows.
         # `fetch_content` is accepted for API compatibility; the comprehensive
         # search always fetches page content.
-        import asyncio
         _context, raw_results = await asyncio.to_thread(
             comprehensive_web_search,
             query,
@@ -94,8 +95,9 @@ class SearchService:
         )
 
     async def fetch_content(self, url: str) -> Optional[str]:
-        """Fetch content from a URL."""
-        return await fetch_webpage_content(url)
+        """Return page text, or None when the native fetcher fails or finds none."""
+        result = await asyncio.to_thread(fetch_webpage_content, url)
+        return (result.get("content") or None) if result.get("success") else None
 
     def get_config(self) -> Dict[str, Any]:
         """Get current search configuration."""
