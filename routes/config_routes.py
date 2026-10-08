@@ -115,24 +115,24 @@ def budget_rollback(body: BudgetRollbackRequest, request: Request):
 # (dotted path, editable_where, danger). Danger rows are read-only in the
 # structured editor (need security_admin); keep in sync with DANGER_ZONE_KEYS.
 _POLICY_EFFECTIVE_FIELDS = [
-    ("routingPolicyVersion", "Settings > Policy (server-owned)", False),
-    ("verificationPolicyVersion", "Settings > Policy (server-owned)", False),
-    ("verification.defaultMode", "Settings > Policy", False),
-    ("verification.overconfidenceThreshold", "Settings > Policy", False),
+    ("routingPolicyVersion", "Settings > System > Routing & budgets > Policy (server-owned)", False),
+    ("verificationPolicyVersion", "Settings > System > Routing & budgets > Policy (server-owned)", False),
+    ("verification.defaultMode", "Settings > System > Routing & budgets > Policy", False),
+    ("verification.overconfidenceThreshold", "Settings > System > Routing & budgets > Policy", False),
     ("coordinator.provider", "Routing Harness > Policy (security_admin)", True),
     ("coordinator.endpointName", "Routing Harness > Policy (security_admin)", True),
-    ("coordinator.temperature", "Settings > Policy", False),
-    ("coordinator.maxTokens", "Settings > Policy", False),
-    ("coordinator.benchmark.defaultReplays", "Settings > Policy", False),
-    ("maxUntrustedTokens", "Settings > Policy", False),
-    ("rawOutputMaxBytes", "Settings > Policy", False),
+    ("coordinator.temperature", "Settings > System > Routing & budgets > Policy", False),
+    ("coordinator.maxTokens", "Settings > System > Routing & budgets > Policy", False),
+    ("coordinator.benchmark.defaultReplays", "Settings > System > Routing & budgets > Policy", False),
+    ("maxUntrustedTokens", "Settings > System > Routing & budgets > Policy", False),
+    ("rawOutputMaxBytes", "Settings > System > Routing & budgets > Policy", False),
     ("remoteSensitivityCeiling", "Routing Harness > Policy (security_admin)", True),
     ("sandbox.image", "Routing Harness > Policy (security_admin)", True),
-    ("sandbox.cpus", "Settings > Policy", False),
-    ("sandbox.memoryGb", "Settings > Policy", False),
-    ("sandbox.pidsLimit", "Settings > Policy", False),
-    ("sandbox.wallClockSeconds", "Settings > Policy", False),
-    ("sandbox.maxOutputBytes", "Settings > Policy", False),
+    ("sandbox.cpus", "Settings > System > Routing & budgets > Policy", False),
+    ("sandbox.memoryGb", "Settings > System > Routing & budgets > Policy", False),
+    ("sandbox.pidsLimit", "Settings > System > Routing & budgets > Policy", False),
+    ("sandbox.wallClockSeconds", "Settings > System > Routing & budgets > Policy", False),
+    ("sandbox.maxOutputBytes", "Settings > System > Routing & budgets > Policy", False),
     ("absis.enabled", "Routing Harness > Policy (security_admin)", True),
 ]
 
@@ -164,11 +164,11 @@ def effective(request: Request):
                 "danger": danger, "editable": editable, "editable_where": where}
 
     items = [
-        item("budget.caps", _caps(cfg), budget_live, where="Settings > Budget"),
+        item("budget.caps", _caps(cfg), budget_live, where="Settings > System > Routing & budgets > Budget"),
         item("budget.version", cfg.get("version", "unversioned"), budget_live,
-             editable=False, where="Settings > Budget (server-owned, auto-bumped)"),
+             editable=False, where="Settings > System > Routing & budgets > Budget (server-owned, auto-bumped)"),
         item("budget.persisted", True, budget_live, editable=False,
-             where="Settings > Budget — data/ volume, survives redeploy"),
+             where="Settings > System > Routing & budgets > Budget — data/ volume, survives redeploy"),
     ]
     for path, where, danger in _POLICY_EFFECTIVE_FIELDS:
         v = _dotted(policy, path)
