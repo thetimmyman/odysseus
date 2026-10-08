@@ -21,6 +21,9 @@ def main():
     parser.add_argument('--store', default='')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('verify')
+    status = commands.add_parser('status', help='Read stored qualification, liveness and refusal reasons.')
+    status.add_argument('host_id', nargs='?', default='')
+    status.add_argument('--json', action='store_true', help='Status is always emitted as JSON.')
     load = commands.add_parser('import')
     load.add_argument('receipt')
     load.add_argument('--supersedes', default='')
@@ -34,9 +37,18 @@ def main():
     deactivate.add_argument('--expected-profile', required=True)
     refresh = commands.add_parser('refresh')
     refresh.add_argument('observation')
+    renew = commands.add_parser('renew', help='Apply newly measured evidence to the same active profile.')
+    renew.add_argument('receipt')
+    renew.add_argument('observation')
+    renew.add_argument('--expected-profile', required=True)
+    renew.add_argument('--expected-receipt', required=True)
     args = parser.parse_args()
     try:
         store = TargetCapabilityStore(args.store)
+        if args.command == 'status':
+            result = store.status(host_id=args.host_id)
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result['ok'] else 2
         if args.command == 'verify':
             result = store.verify()
             print(json.dumps(result, sort_keys=True))
@@ -48,6 +60,23 @@ def main():
                 raise ValueError('receipt hash does not cover imported evidence')
             receipt = make_target_capability_receipt(**raw)
             result = store.append(receipt, supersedes=args.supersedes)
+        elif args.command == 'renew':
+            with open(args.receipt, encoding='utf-8') as handle:
+                raw = json.load(handle)
+            if not target_capability_receipt_hash_is_valid(raw):
+                raise ValueError('receipt hash does not cover renewal evidence')
+            receipt = make_target_capability_receipt(**raw)
+            with open(args.observation, encoding='utf-8') as handle:
+                observation = json.load(handle)
+            material = observation['current_material_identity']
+            if not isinstance(material, dict) or not material:
+                raise ValueError('renewal requires freshly observed material identity')
+            if observation.get('profile_id', receipt.profile_id) != receipt.profile_id:
+                raise ValueError('observation belongs to another profile')
+            result = store.renew_profile(
+                receipt, expected_profile_id=args.expected_profile,
+                expected_receipt_hash=args.expected_receipt, current_identity_digest=_digest_of(material),
+                identity_checked_at=observation['checked_at']).to_dict()
         elif args.command == 'activate':
             store.activate_profile(args.host_id, args.profile_id,
                                    expected_profile_id=args.expected_profile,
