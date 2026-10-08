@@ -20,7 +20,7 @@
       "routes/cleanup_routes.py": "43a69d8c81eda210089bc80e2384288c19b3606e96c114c7c883797c444bcf1d",
       "routes/codex_routes.py": "b876c8fe5124c25eea6196cd38de4f811bb62a8bfc56706f7db328c504065217",
       "routes/compare_routes.py": "9278c5c64c4421f1e5559975c2ed01fcd101460f07f9a8b6e748227465f3831b",
-      "routes/config_routes.py": "2faae3e3e511746e00895ab167e65c7752b2fe18ff09f1d379037d114aff6425",
+      "routes/config_routes.py": "e720005ab8698be76bfde4f2434081126c5894afa0e72b72eece8562ac8481f0",
       "routes/contacts_routes.py": "4552ce47115c19421a4a9355cb1afdf4d36bd3872afd025a6decb3b8cb75cfdd",
       "routes/cookbook_helpers.py": "1bd783f95cdef0d954f7fb7b6ddf1d45a6c61ddd3a99d80581797538bfafe2e5",
       "routes/cookbook_routes.py": "6980e121cc88f2564ff44cd6e23f0a75652ef58f4ff6d84b2495e7277d742552",
@@ -67,8 +67,8 @@
       "routes/vault_routes.py": "3f96217fc1704d4f27f6b5d2124380f331741837d7360b2950933c0e43c02ee2",
       "routes/webhook_routes.py": "f5901df150159344d9d8b16d9a7628ffca15659b57f03095f77ca4117c3e9aac",
       "routes/workspace_routes.py": "20c5dd5365322cce32b68702dc61cedefa035bb262773a4dc66aef9c2ef13786",
-      "static/app.js": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
-      "static/index.html": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+      "static/app.js": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
+      "static/index.html": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
       "static/js/MODULE_SUMMARY.md": "6f63967ab5d46c641c994f56287583ac074375b126fe34f8f781565a64ff5a46",
       "static/js/a11y.js": "c5dc75f5346b343ad35fdb9e4fe1aed1fd71ebb27a7d2f69bd780353eeef9ee6",
       "static/js/admin.js": "c79ebb9cb5086a1452442f256a7f0fc08b6b33591052387347e4e26494bf1544",
@@ -94,7 +94,7 @@
       "static/js/compare/stream.js": "0261d05480ea8c7f8778214bfd9386746ee7ec0a56a3f64d6c480071a95b7bb9",
       "static/js/compare/vote.js": "0d6069d9d3ebe4abec2fa98dce4bdc064e1bdfd1b235b63a639b433b00db7e0a",
       "static/js/composerArrowUpRecall.js": "82a0d61bb3decee9ec18d9b9729e7a727f75efd5619e474c8aeee6d7efebad4a",
-      "static/js/configPanel.js": "0580fe17735bf5c3a771bf42a9d25ae42e2e02808d99bac5c5863ee7b8d0a7dc",
+      "static/js/configPanel.js": "ece8604c79af6309108bcac65287faaf95d88cfe09f3dbfe52308db6e24151bc",
       "static/js/cookbook-diagnosis.js": "30192f6264e202ce36cb5d8750005931b24163b43b2d00872289a9319bb9e066",
       "static/js/cookbook-hwfit.js": "ccda7cabfc1486de91f09a14bb368a440c5052eeb8870963a540667a89951c53",
       "static/js/cookbook.js": "d262802eeffed5db4c18375b83f6cb321579b563aed80183383122b8efceb747",
@@ -204,7 +204,7 @@
       "static/js/search.js": "b8ebdc5f016196ffdb63d9aa6844a89c6061d60d8dd97d82f30737fc52e668e9",
       "static/js/section-management.js": "81e1d53073d5ab1de64236996a957a72cc193d82e6c9d94f6e1d7f628ebf5d7a",
       "static/js/sessions.js": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
-      "static/js/settings.js": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+      "static/js/settings.js": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
       "static/js/sidebar-layout.js": "107d50b1f442e6b7d09e30cc16db75f6f0758984993459b7343d2565ef657fe8",
       "static/js/signature.js": "fa7ff76a2fec54097c91b6ef37e0b24d896f371250feef958f53e9a8d874ea37",
       "static/js/skills.js": "c6e103e0e7dc300d9ac1d63d0eb3120d1442a7fa50908107f565b1668bd6b174",
@@ -512,33 +512,33 @@
         },
         {
           "id": "tool-config-btn",
-          "tag": "div",
+          "tag": "button",
           "title": "",
-          "line": 934
+          "line": 2270
         },
         {
           "id": "user-bar-profile",
           "tag": "div",
           "title": "",
-          "line": 962
+          "line": 958
         },
         {
           "id": "user-bar-avatar",
           "tag": "div",
           "title": "",
-          "line": 963
+          "line": 959
         },
         {
           "id": "user-bar-name",
           "tag": "span",
           "title": "",
-          "line": 964
+          "line": 960
         },
         {
           "id": "user-bar-settings",
           "tag": "button",
           "title": "Settings",
-          "line": 967
+          "line": 963
         }
       ],
       "index_surface_container_candidates": [
@@ -563,7 +563,7 @@
           "class": [
             "ghost-text-overlay"
           ],
-          "line": 1039
+          "line": 1035
         },
         {
           "id": "custom-preset-modal",
@@ -571,7 +571,7 @@
             "modal",
             "hidden"
           ],
-          "line": 1205
+          "line": 1201
         },
         {
           "id": "rename-session-modal",
@@ -579,7 +579,7 @@
             "modal",
             "hidden"
           ],
-          "line": 1352
+          "line": 1348
         },
         {
           "id": "cookbook-modal",
@@ -587,7 +587,7 @@
             "modal",
             "hidden"
           ],
-          "line": 1378
+          "line": 1374
         },
         {
           "id": "settings-modal",
@@ -595,7 +595,7 @@
             "modal",
             "hidden"
           ],
-          "line": 1389
+          "line": 1385
         },
         {
           "id": "search-overlay",
@@ -603,14 +603,14 @@
             "search-overlay",
             "hidden"
           ],
-          "line": 2358
+          "line": 2360
         },
         {
           "id": "crew-overlay",
           "class": [
             "crew-overlay"
           ],
-          "line": 2371
+          "line": 2373
         },
         {
           "id": "terminal-overlay",
@@ -618,7 +618,7 @@
             "crew-overlay",
             "tool-overlay"
           ],
-          "line": 2402
+          "line": 2404
         },
         {
           "id": "preview-overlay",
@@ -626,7 +626,7 @@
             "crew-overlay",
             "tool-overlay"
           ],
-          "line": 2415
+          "line": 2417
         },
         {
           "id": "harness-overlay",
@@ -634,7 +634,7 @@
             "crew-overlay",
             "tool-overlay"
           ],
-          "line": 2499
+          "line": 2501
         },
         {
           "id": "config-overlay",
@@ -642,7 +642,7 @@
             "crew-overlay",
             "tool-overlay"
           ],
-          "line": 2795
+          "line": 2797
         }
       ],
       "settings_and_config_tabs": [
@@ -669,127 +669,127 @@
         {
           "kind": "data-settings-tab",
           "value": "services",
-          "line": 1403
+          "line": 1399
         },
         {
           "kind": "data-settings-tab",
           "value": "ai",
-          "line": 1407
+          "line": 1403
         },
         {
           "kind": "data-settings-tab",
           "value": "search",
-          "line": 1411
+          "line": 1407
         },
         {
           "kind": "data-settings-tab",
           "value": "integrations",
-          "line": 1419
+          "line": 1415
         },
         {
           "kind": "data-settings-tab",
           "value": "email",
-          "line": 1423
+          "line": 1419
         },
         {
           "kind": "data-settings-tab",
           "value": "reminders",
-          "line": 1427
+          "line": 1423
         },
         {
           "kind": "data-settings-tab",
           "value": "appearance",
-          "line": 1433
+          "line": 1429
         },
         {
           "kind": "data-settings-tab",
           "value": "shortcuts",
-          "line": 1437
+          "line": 1433
         },
         {
           "kind": "data-settings-tab",
           "value": "account",
-          "line": 1443
+          "line": 1439
         },
         {
           "kind": "data-settings-tab",
           "value": "tools",
-          "line": 1449
+          "line": 1445
         },
         {
           "kind": "data-settings-tab",
           "value": "users",
-          "line": 1453
+          "line": 1449
         },
         {
           "kind": "data-settings-tab",
           "value": "system",
-          "line": 1457
+          "line": 1453
         },
         {
           "kind": "data-rhpanel",
           "value": "decisions",
-          "line": 2518
+          "line": 2520
         },
         {
           "kind": "data-rhpanel",
           "value": "registry",
-          "line": 2550
+          "line": 2552
         },
         {
           "kind": "data-rhpanel",
           "value": "policy",
-          "line": 2587
+          "line": 2589
         },
         {
           "kind": "data-rhpanel",
           "value": "budget",
-          "line": 2604
+          "line": 2606
         },
         {
           "kind": "data-rhpanel",
           "value": "route",
-          "line": 2634
+          "line": 2636
         },
         {
           "kind": "data-rhpanel",
           "value": "tests",
-          "line": 2653
+          "line": 2655
         },
         {
           "kind": "data-rhpanel",
           "value": "knowledge",
-          "line": 2680
+          "line": 2682
         },
         {
           "kind": "data-rhpanel",
           "value": "emergency",
-          "line": 2737
+          "line": 2739
         },
         {
           "kind": "data-rhpanel",
           "value": "benchmark",
-          "line": 2764
+          "line": 2766
         },
         {
           "kind": "data-cfgpanel",
           "value": "budget",
-          "line": 2810
+          "line": 2813
         },
         {
           "kind": "data-cfgpanel",
           "value": "providers",
-          "line": 2836
+          "line": 2839
         },
         {
           "kind": "data-cfgpanel",
           "value": "policy",
-          "line": 2868
+          "line": 2871
         },
         {
           "kind": "data-cfgpanel",
           "value": "effective",
-          "line": 2889
+          "line": 2892
         }
       ],
       "generated_literal_dom_ids_by_js_module": {
@@ -1755,7 +1755,7 @@
           "source": {
             "path": "static/index.html",
             "line": 650,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Responsive sidebar toggle."
           }
         },
@@ -1765,7 +1765,7 @@
           "source": {
             "path": "static/index.html",
             "line": 652,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Alternate sidebar show control."
           }
         },
@@ -1775,7 +1775,7 @@
           "source": {
             "path": "static/index.html",
             "line": 684,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Sidebar visibility control."
           }
         },
@@ -1785,7 +1785,7 @@
           "source": {
             "path": "static/index.html",
             "line": 685,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Sidebar new-chat brand control."
           }
         },
@@ -1795,7 +1795,7 @@
           "source": {
             "path": "static/index.html",
             "line": 690,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "New chat shortcut in the sidebar."
           }
         },
@@ -1805,7 +1805,7 @@
           "source": {
             "path": "static/index.html",
             "line": 694,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Search conversations shortcut in the session sidebar."
           }
         },
@@ -1815,7 +1815,7 @@
           "source": {
             "path": "static/index.html",
             "line": 707,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Manage Chats/Library shortcut; shares Document Library in the normal handler path."
           }
         }
@@ -1852,7 +1852,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -1897,7 +1897,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -1974,13 +1974,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -1997,8 +1997,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -2009,7 +2009,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 658,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-new-session is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2019,7 +2019,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 659,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-delete-session is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2029,7 +2029,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 662,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-chats is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2039,7 +2039,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 685,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate sidebar-brand-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2049,7 +2049,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 690,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate sidebar-new-chat-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2059,7 +2059,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 1,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Direct entry for / and listed aliases."
             }
           },
@@ -2093,8 +2093,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 974,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 970,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Primary chat surface root: main#chat-container."
           },
           {
@@ -2134,7 +2134,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -2161,7 +2161,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -2220,13 +2220,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -2243,8 +2243,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -2255,7 +2255,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 663,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-documents is mapped to this surface in the sealed source inventory."
             }
           }
@@ -2315,7 +2315,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -2330,7 +2330,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -2370,13 +2370,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -2393,8 +2393,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -2405,7 +2405,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 665,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-calendar is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2415,7 +2415,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 832,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-calendar-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2484,7 +2484,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -2505,7 +2505,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -2551,13 +2551,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -2574,8 +2574,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -2586,7 +2586,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 666,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-compare is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2596,7 +2596,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 843,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-compare-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2626,8 +2626,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 974,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 970,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Compare reuses the actual main#chat-container SPA root."
           },
           {
@@ -2679,7 +2679,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -2706,7 +2706,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -2758,13 +2758,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -2781,8 +2781,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -2793,7 +2793,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 667,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-cookbook is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2803,7 +2803,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 847,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-cookbook-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2854,8 +2854,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 1378,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 1374,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Cookbook modal root #cookbook-modal."
           },
           {
@@ -2893,7 +2893,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -2908,7 +2908,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -2948,13 +2948,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -2971,8 +2971,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -2983,7 +2983,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 668,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-research is mapped to this surface in the sealed source inventory."
             }
           },
@@ -2993,7 +2993,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 858,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-research-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3078,7 +3078,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -3090,7 +3090,7 @@
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -3099,7 +3099,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -3111,7 +3111,7 @@
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -3145,13 +3145,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -3168,8 +3168,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -3180,7 +3180,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 669,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-email is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3256,7 +3256,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -3313,7 +3313,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -3402,13 +3402,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -3425,8 +3425,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -3437,7 +3437,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 670,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-gallery is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3447,7 +3447,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 862,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-gallery-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3540,7 +3540,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -3561,7 +3561,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -3621,13 +3621,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -3644,8 +3644,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -3656,7 +3656,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 671,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-archive is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3666,7 +3666,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 872,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-library-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3676,7 +3676,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 707,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate chats-library-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3792,7 +3792,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -3804,7 +3804,7 @@
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -3813,7 +3813,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -3825,7 +3825,7 @@
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -3866,13 +3866,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -3889,8 +3889,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -3901,7 +3901,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 672,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-memory is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3911,7 +3911,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 822,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-memory-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -3972,7 +3972,7 @@
           {
             "path": "static/index.html",
             "line": 244,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Brain surface root #memory-modal."
           },
           {
@@ -4010,7 +4010,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4025,7 +4025,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4065,13 +4065,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -4088,8 +4088,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -4100,7 +4100,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 673,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-notes is mapped to this surface in the sealed source inventory."
             }
           },
@@ -4110,7 +4110,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 882,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-notes-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -4189,7 +4189,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4210,7 +4210,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4263,13 +4263,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -4286,8 +4286,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -4298,7 +4298,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 674,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-tasks is mapped to this surface in the sealed source inventory."
             }
           },
@@ -4308,7 +4308,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 892,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-tasks-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -4394,13 +4394,13 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4415,13 +4415,13 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4461,19 +4461,19 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
             "path": "static/js/settings.js",
             "line": 1,
-            "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+            "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -4484,8 +4484,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -4496,7 +4496,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 675,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-theme is mapped to this surface in the sealed source inventory."
             }
           },
@@ -4506,7 +4506,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 906,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-theme-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -4537,7 +4537,7 @@
           {
             "path": "static/index.html",
             "line": 443,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Theme modal root #theme-modal; custom preset is a nested dialog, not the surface root."
           },
           {
@@ -4575,7 +4575,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4596,7 +4596,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4642,7 +4642,7 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape stack."
           },
           {
@@ -4665,8 +4665,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -4677,7 +4677,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 918,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-terminal-btn is mapped to this surface in the sealed source inventory."
             }
           }
@@ -4696,8 +4696,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 2402,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2404,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Terminal root #terminal-overlay; nested .term-modal owns the terminal layout."
           },
           {
@@ -4752,7 +4752,7 @@
         {
           "path": "static/index.html",
           "line": 1,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -4767,7 +4767,7 @@
         {
           "path": "static/index.html",
           "line": 1,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -4808,7 +4808,7 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
@@ -4820,7 +4820,7 @@
           {
             "path": "static/index.html",
             "line": 1,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -4836,8 +4836,8 @@
             "reason": "Overflow menu opens workspace browser through workspaceModule.openWorkspaceBrowser.",
             "evidence": {
               "path": "static/index.html",
-              "line": 1084,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "line": 1080,
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Workspace browser overflow-menu entry."
             }
           }
@@ -4894,7 +4894,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4915,7 +4915,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4961,7 +4961,7 @@
           {
             "path": "static/app.js",
             "line": 3514,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shell initializes Crew panel and refreshes with current session id."
           },
           {
@@ -4990,8 +4990,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -5002,7 +5002,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 922,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-argo-btn is mapped to this surface in the sealed source inventory."
             }
           }
@@ -5021,8 +5021,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 2371,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2373,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Crew surface root #crew-overlay, class .crew-overlay."
           },
           {
@@ -5066,7 +5066,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5087,7 +5087,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5133,7 +5133,7 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape stack."
           },
           {
@@ -5156,8 +5156,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -5168,7 +5168,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 926,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-preview-btn is mapped to this surface in the sealed source inventory."
             }
           }
@@ -5187,8 +5187,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 2415,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2417,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Project Preview root #preview-overlay; nested .preview-modal is the specific layout owner."
           },
           {
@@ -5238,7 +5238,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5259,7 +5259,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5305,7 +5305,7 @@
           {
             "path": "static/app.js",
             "line": 3518,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shell initializes Routing Harness module."
           },
           {
@@ -5328,8 +5328,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -5340,7 +5340,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 930,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate tool-harness-btn is mapped to this surface in the sealed source inventory."
             }
           }
@@ -5359,8 +5359,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 2499,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2501,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Routing Harness root #harness-overlay; nested .harness-modal owns its layout."
           },
           {
@@ -5394,9 +5394,9 @@
     },
     {
       "id": "configuration",
-      "name": "Configuration",
+      "name": "Routing & budgets",
       "purpose": "Host-wide configuration panels for budgets, providers, policy, and effective settings.",
-      "primary_tasks": "Configuration overlay and tab navigation.",
+      "primary_tasks": "Budget, Providers, Policy and Effective editors reached through Settings > System.",
       "frontend_modules": [
         "static/app.js",
         "static/js/settings.js",
@@ -5406,30 +5406,30 @@
         "/"
       ],
       "disposition": "KEEP",
-      "rationale": "Source indicates host-wide refresh; avoid implying per-session settings.",
+      "rationale": "Retain host-wide publish/rollback/version authority behind the Settings > System launcher; the editor remains a distinct dialog and storage scope.",
       "source_evidence": [
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
           "path": "routes/config_routes.py",
           "line": 1,
-          "sha256": "2faae3e3e511746e00895ab167e65c7752b2fe18ff09f1d379037d114aff6425",
+          "sha256": "e720005ab8698be76bfde4f2434081126c5894afa0e72b72eece8562ac8481f0",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
           "path": "static/js/configPanel.js",
           "line": 1,
-          "sha256": "0580fe17735bf5c3a771bf42a9d25ae42e2e02808d99bac5c5863ee7b8d0a7dc",
+          "sha256": "ece8604c79af6309108bcac65287faaf95d88cfe09f3dbfe52308db6e24151bc",
           "claim": "Owning frontend module; surface-specific behavior is detailed in shell_behavior and responsive_behavior."
         }
       ],
@@ -5438,25 +5438,25 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
           "path": "routes/config_routes.py",
           "line": 1,
-          "sha256": "2faae3e3e511746e00895ab167e65c7752b2fe18ff09f1d379037d114aff6425",
+          "sha256": "e720005ab8698be76bfde4f2434081126c5894afa0e72b72eece8562ac8481f0",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
           "path": "static/js/configPanel.js",
           "line": 1,
-          "sha256": "0580fe17735bf5c3a771bf42a9d25ae42e2e02808d99bac5c5863ee7b8d0a7dc",
+          "sha256": "ece8604c79af6309108bcac65287faaf95d88cfe09f3dbfe52308db6e24151bc",
           "claim": "Owning frontend module state reference."
         }
       ],
@@ -5470,7 +5470,7 @@
           {
             "path": "routes/config_routes.py",
             "line": 1,
-            "sha256": "2faae3e3e511746e00895ab167e65c7752b2fe18ff09f1d379037d114aff6425",
+            "sha256": "e720005ab8698be76bfde4f2434081126c5894afa0e72b72eece8562ac8481f0",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -5483,21 +5483,21 @@
       },
       "shell_behavior": {
         "shared_escape_arbiter": "This surface is presented in the static/index.html SPA, which loads static/app.js and static/js/ui.js; source contains shared Escape handling. This does not establish runtime close success.",
-        "surface_specific_close": "Config overlay opens through configPanel, the close button and visible-overlay Escape call _closeOverlay, and _closeOverlay asks before discarding dirty edits. Tab switching is handled by config-tabs delegation.",
+        "surface_specific_close": "The Settings > System launcher opens Routing & budgets after immediately closing Settings and clearing its appearance state. Close, visible-overlay Escape, Back to settings, and reopening Settings share _closeOverlay and its dirty-discard confirmation. Accepted Back returns to Settings > System; cancelled discard leaves the routing dialog open. Tab switching retains config-tabs delegation. These are source behaviors, not browser observations.",
         "browser_back": "UNKNOWN; no browser history/back behavior was observed or asserted by this source inventory.",
         "swipe": "UNKNOWN unless a surface-specific source handler is cited; no device observation was performed.",
         "evidence": [
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape stack."
           },
           {
             "path": "static/js/configPanel.js",
-            "line": 1046,
-            "sha256": "0580fe17735bf5c3a771bf42a9d25ae42e2e02808d99bac5c5863ee7b8d0a7dc",
-            "claim": "Config overlay close confirmation, button, tab delegation, and visible-overlay Escape handler."
+            "line": 1049,
+            "sha256": "ece8604c79af6309108bcac65287faaf95d88cfe09f3dbfe52308db6e24151bc",
+            "claim": "Routing editor close returns success/refusal after the existing dirty guard; Close, Escape and Back reuse it."
           },
           {
             "path": "static/js/ui.js",
@@ -5507,20 +5507,38 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
+          },
+          {
+            "path": "static/js/configPanel.js",
+            "line": 1040,
+            "sha256": "ece8604c79af6309108bcac65287faaf95d88cfe09f3dbfe52308db6e24151bc",
+            "claim": "Opening Routing & budgets immediately closes Settings through its existing cleanup before showing this dialog."
+          },
+          {
+            "path": "static/js/configPanel.js",
+            "line": 1072,
+            "sha256": "ece8604c79af6309108bcac65287faaf95d88cfe09f3dbfe52308db6e24151bc",
+            "claim": "Back to settings uses guarded close and returns to Settings > System only after accepted discard."
+          },
+          {
+            "path": "static/js/settings.js",
+            "line": 5216,
+            "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
+            "claim": "Every normal Settings entry refuses opening when the routing editor close guard is cancelled."
           }
         ],
         "navigation_evidence": [
           {
             "candidate_id": "tool-config-btn",
-            "reason": "Tool overlay entry.",
+            "reason": "Routing & budgets launcher within Settings > System.",
             "evidence": {
               "path": "static/index.html",
-              "line": 934,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
-              "claim": "Navigation candidate tool-config-btn is mapped to this surface in the sealed source inventory."
+              "line": 2270,
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
+              "claim": "Existing launcher is a button inside the admin-only Routing & budgets card in Settings > System; removed from the top-level Tools list."
             }
           }
         ],
@@ -5539,8 +5557,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 2795,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2797,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Configuration root #config-overlay; nested .config-modal owns its layout."
           },
           {
@@ -5591,7 +5609,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5603,7 +5621,7 @@
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5618,7 +5636,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5630,7 +5648,7 @@
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5670,20 +5688,20 @@
       },
       "shell_behavior": {
         "shared_escape_arbiter": "This surface is presented in the static/index.html SPA, which loads static/app.js and static/js/ui.js; source contains shared Escape handling. This does not establish runtime close success.",
-        "surface_specific_close": "See the surface-specific handler citations below where present; an unlisted browser-back or swipe gesture is UNKNOWN, not presumed supported.",
+        "surface_specific_close": "Settings close keeps the existing appearance cleanup and optional immediate dismissal used by Routing & budgets. Every Settings.open entry first honors a cancelled dirty-routing-editor close; a permitted open restores minimized Settings through the existing modalManager before applying the requested tab, preserving its suspended dock state. These are source behaviors, not observed browser success.",
         "browser_back": "UNKNOWN; no browser history/back behavior was observed or asserted by this source inventory.",
         "swipe": "UNKNOWN unless a surface-specific source handler is cited; no device observation was performed.",
         "evidence": [
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -5700,20 +5718,38 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
+          },
+          {
+            "path": "static/app.js",
+            "line": 3586,
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
+            "claim": "Rail Settings opens the same ordinary Settings module as the user-bar cog; it no longer expands or scrolls the sidebar."
+          },
+          {
+            "path": "static/js/settings.js",
+            "line": 5216,
+            "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
+            "claim": "Settings.open first honors the routing editor dirty-discard guard, then restores minimized Settings through modalManager before applying the requested tab; existing dock state is retained."
+          },
+          {
+            "path": "static/js/settings.js",
+            "line": 5242,
+            "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
+            "claim": "Immediate close clears the appearance state and hides Settings before the routing dialog opens."
           }
         ],
         "navigation_evidence": [
           {
             "candidate_id": "rail-settings",
-            "reason": "Settings entry.",
+            "reason": "Direct Settings entry shared with the user-bar cog.",
             "evidence": {
               "path": "static/index.html",
               "line": 678,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
-              "claim": "Navigation candidate rail-settings is mapped to this surface in the sealed source inventory."
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
+              "claim": "Rail Settings control; its app.js handler opens the ordinary Settings module directly."
             }
           },
           {
@@ -5721,8 +5757,8 @@
             "reason": "Settings alias from user bar.",
             "evidence": {
               "path": "static/index.html",
-              "line": 967,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "line": 963,
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate user-bar-settings is mapped to this surface in the sealed source inventory."
             }
           },
@@ -5772,8 +5808,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 1389,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 1385,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "User Settings root #settings-modal; admin-specific controls are separate dynamic owners."
           },
           {
@@ -5811,7 +5847,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5826,7 +5862,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5866,13 +5902,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -5889,8 +5925,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -5901,7 +5937,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 657,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-search-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -5911,7 +5947,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 694,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate sidebar-search-btn is mapped to this surface in the sealed source inventory."
             }
           }
@@ -5930,8 +5966,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/index.html",
-            "line": 2358,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2360,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Conversation search root #search-overlay; not Research or Gallery search."
           },
           {
@@ -6198,7 +6234,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -6225,7 +6261,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -6263,13 +6299,13 @@
           {
             "path": "static/app.js",
             "line": 486,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Shared shell Escape close stack and modal dismissal paths."
           },
           {
             "path": "static/app.js",
             "line": 1,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -6286,8 +6322,8 @@
           },
           {
             "path": "static/index.html",
-            "line": 2949,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "line": 2952,
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
           }
         ],
@@ -6298,7 +6334,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 655,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate rail-resize-handle is mapped to this surface in the sealed source inventory."
             }
           },
@@ -6307,8 +6343,8 @@
             "reason": "Profile display region; not independently routed surface.",
             "evidence": {
               "path": "static/index.html",
-              "line": 962,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "line": 958,
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate user-bar-profile is mapped to this surface in the sealed source inventory."
             }
           },
@@ -6317,8 +6353,8 @@
             "reason": "Avatar element within profile region.",
             "evidence": {
               "path": "static/index.html",
-              "line": 963,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "line": 959,
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate user-bar-avatar is mapped to this surface in the sealed source inventory."
             }
           },
@@ -6327,8 +6363,8 @@
             "reason": "Name display element within profile region.",
             "evidence": {
               "path": "static/index.html",
-              "line": 964,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "line": 960,
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate user-bar-name is mapped to this surface in the sealed source inventory."
             }
           },
@@ -6338,7 +6374,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 650,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate mobile-menu-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -6348,7 +6384,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 652,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate hamburger-btn is mapped to this surface in the sealed source inventory."
             }
           },
@@ -6358,7 +6394,7 @@
             "evidence": {
               "path": "static/index.html",
               "line": 684,
-              "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+              "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
               "claim": "Navigation candidate sidebar-toggle-btn is mapped to this surface in the sealed source inventory."
             }
           }
@@ -6380,7 +6416,7 @@
           {
             "path": "static/index.html",
             "line": 650,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Shared navigation shell root contains responsive menu/sidebar controls; this is a shell surface, not plan-window ownership."
           }
         ],
@@ -6431,7 +6467,7 @@
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Integration settings entry context."
         }
       ],
@@ -6717,7 +6753,7 @@
         "source": {
           "path": "static/index.html",
           "line": 1,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "SPA static entry plus direct static mount alias."
         }
       },
@@ -6746,7 +6782,7 @@
         "source": {
           "path": "static/index.html",
           "line": 655,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -6759,7 +6795,7 @@
         "source": {
           "path": "static/index.html",
           "line": 657,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6772,7 +6808,7 @@
         "source": {
           "path": "static/index.html",
           "line": 658,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6785,7 +6821,7 @@
         "source": {
           "path": "static/index.html",
           "line": 659,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6798,7 +6834,7 @@
         "source": {
           "path": "static/index.html",
           "line": 662,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6811,7 +6847,7 @@
         "source": {
           "path": "static/index.html",
           "line": 663,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6824,7 +6860,7 @@
         "source": {
           "path": "static/index.html",
           "line": 665,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6837,7 +6873,7 @@
         "source": {
           "path": "static/index.html",
           "line": 666,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6850,7 +6886,7 @@
         "source": {
           "path": "static/index.html",
           "line": 667,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6863,7 +6899,7 @@
         "source": {
           "path": "static/index.html",
           "line": 668,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6876,7 +6912,7 @@
         "source": {
           "path": "static/index.html",
           "line": 669,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6889,7 +6925,7 @@
         "source": {
           "path": "static/index.html",
           "line": 670,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6902,7 +6938,7 @@
         "source": {
           "path": "static/index.html",
           "line": 671,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6915,7 +6951,7 @@
         "source": {
           "path": "static/index.html",
           "line": 672,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6928,7 +6964,7 @@
         "source": {
           "path": "static/index.html",
           "line": 673,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6941,7 +6977,7 @@
         "source": {
           "path": "static/index.html",
           "line": 674,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6954,7 +6990,7 @@
         "source": {
           "path": "static/index.html",
           "line": 675,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6963,11 +6999,11 @@
         "candidate_id": "rail-settings",
         "surface_id": "settings-admin",
         "resolution": "grouped_surface_or_shell_control",
-        "reason": "Settings entry.",
+        "reason": "Direct Settings entry; the rail calls the same settingsModule.open() as the user-bar cog.",
         "source": {
           "path": "static/index.html",
           "line": 678,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -6980,7 +7016,7 @@
         "source": {
           "path": "static/index.html",
           "line": 822,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -6993,7 +7029,7 @@
         "source": {
           "path": "static/index.html",
           "line": 832,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7006,7 +7042,7 @@
         "source": {
           "path": "static/index.html",
           "line": 843,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7019,7 +7055,7 @@
         "source": {
           "path": "static/index.html",
           "line": 847,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7032,7 +7068,7 @@
         "source": {
           "path": "static/index.html",
           "line": 858,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7045,7 +7081,7 @@
         "source": {
           "path": "static/index.html",
           "line": 862,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7058,7 +7094,7 @@
         "source": {
           "path": "static/index.html",
           "line": 872,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7071,7 +7107,7 @@
         "source": {
           "path": "static/index.html",
           "line": 882,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7084,7 +7120,7 @@
         "source": {
           "path": "static/index.html",
           "line": 892,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7097,7 +7133,7 @@
         "source": {
           "path": "static/index.html",
           "line": 906,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7110,7 +7146,7 @@
         "source": {
           "path": "static/index.html",
           "line": 918,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7123,7 +7159,7 @@
         "source": {
           "path": "static/index.html",
           "line": 922,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7136,7 +7172,7 @@
         "source": {
           "path": "static/index.html",
           "line": 926,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7149,7 +7185,7 @@
         "source": {
           "path": "static/index.html",
           "line": 930,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7158,14 +7194,14 @@
         "candidate_id": "tool-config-btn",
         "surface_id": "configuration",
         "resolution": "grouped_surface_or_shell_control",
-        "reason": "Tool overlay entry.",
+        "reason": "Routing & budgets launcher within Settings > System; not a top-level Tools entry.",
         "source": {
           "path": "static/index.html",
-          "line": 934,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
-          "claim": "Census candidate from index navigation/button/profile markup."
+          "line": 2270,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
+          "claim": "Existing configuration launcher moved into the admin-only card in Settings > System."
         },
-        "tag": "div"
+        "tag": "button"
       },
       {
         "candidate_id": "user-bar-profile",
@@ -7174,8 +7210,8 @@
         "reason": "Profile display region; not independently routed surface.",
         "source": {
           "path": "static/index.html",
-          "line": 962,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 958,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7187,8 +7223,8 @@
         "reason": "Avatar element within profile region.",
         "source": {
           "path": "static/index.html",
-          "line": 963,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 959,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "div"
@@ -7200,8 +7236,8 @@
         "reason": "Name display element within profile region.",
         "source": {
           "path": "static/index.html",
-          "line": 964,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 960,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "span"
@@ -7213,8 +7249,8 @@
         "reason": "Settings alias from user bar.",
         "source": {
           "path": "static/index.html",
-          "line": 967,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 963,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census candidate from index navigation/button/profile markup."
         },
         "tag": "button"
@@ -7229,7 +7265,7 @@
         "source": {
           "path": "static/index.html",
           "line": 244,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7245,7 +7281,7 @@
         "source": {
           "path": "static/index.html",
           "line": 443,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7260,8 +7296,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 1039,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1035,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7275,8 +7311,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 1205,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1201,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7291,8 +7327,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 1352,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1348,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7307,8 +7343,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 1378,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1374,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7323,8 +7359,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 1389,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1385,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7339,8 +7375,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 2358,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2360,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7355,8 +7391,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 2371,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2373,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7370,8 +7406,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 2402,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2404,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7386,8 +7422,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 2415,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2417,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7402,8 +7438,8 @@
         "reason": "Root HTML container or overlay grouped under its owning product surface.",
         "source": {
           "path": "static/index.html",
-          "line": 2499,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2501,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7415,11 +7451,11 @@
         "candidate_id": "config-overlay",
         "surface_id": "configuration",
         "resolution": "surface_container",
-        "reason": "Root HTML container or overlay grouped under its owning product surface.",
+        "reason": "Routing & budgets dialog reached from Settings > System.",
         "source": {
           "path": "static/index.html",
-          "line": 2795,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2797,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Census container/overlay anchor."
         },
         "classes": [
@@ -7436,7 +7472,7 @@
         "source": {
           "path": "static/index.html",
           "line": 258,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7447,7 +7483,7 @@
         "source": {
           "path": "static/index.html",
           "line": 293,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7458,7 +7494,7 @@
         "source": {
           "path": "static/index.html",
           "line": 348,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7469,7 +7505,7 @@
         "source": {
           "path": "static/index.html",
           "line": 396,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7479,8 +7515,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1403,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1399,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7490,8 +7526,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1407,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1403,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7501,8 +7537,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1411,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1407,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7512,8 +7548,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1419,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1415,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7523,8 +7559,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1423,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1419,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7534,8 +7570,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1427,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1423,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7545,8 +7581,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1433,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1429,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7556,8 +7592,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1437,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1433,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7567,8 +7603,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1443,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1439,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7578,8 +7614,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1449,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1445,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7589,8 +7625,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1453,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1449,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7600,8 +7636,8 @@
         "surface_id": "settings-admin",
         "source": {
           "path": "static/index.html",
-          "line": 1457,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 1453,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7611,8 +7647,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2518,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2520,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7622,8 +7658,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2550,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2552,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7633,8 +7669,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2587,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2589,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7644,8 +7680,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2604,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2606,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7655,8 +7691,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2634,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2636,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7666,8 +7702,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2653,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2655,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7677,8 +7713,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2680,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2682,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7688,8 +7724,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2737,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2739,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7699,8 +7735,8 @@
         "surface_id": "routing-harness",
         "source": {
           "path": "static/index.html",
-          "line": 2764,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2766,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7710,8 +7746,8 @@
         "surface_id": "configuration",
         "source": {
           "path": "static/index.html",
-          "line": 2810,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2813,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7721,8 +7757,8 @@
         "surface_id": "configuration",
         "source": {
           "path": "static/index.html",
-          "line": 2836,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2839,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7732,8 +7768,8 @@
         "surface_id": "configuration",
         "source": {
           "path": "static/index.html",
-          "line": 2868,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2871,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       },
@@ -7743,8 +7779,8 @@
         "surface_id": "configuration",
         "source": {
           "path": "static/index.html",
-          "line": 2889,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2892,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Settings, memory, routing harness, or config panel tab candidate."
         }
       }
@@ -11472,7 +11508,7 @@
         "source": {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Sealed module containing dynamic DOM candidates."
         },
         "candidates": [
@@ -12763,7 +12799,7 @@
         "source": {
           "path": "static/index.html",
           "line": 650,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Responsive sidebar toggle."
         }
       },
@@ -12775,7 +12811,7 @@
         "source": {
           "path": "static/index.html",
           "line": 652,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Alternate sidebar show control."
         }
       },
@@ -12787,7 +12823,7 @@
         "source": {
           "path": "static/index.html",
           "line": 684,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Sidebar visibility control."
         }
       },
@@ -12799,7 +12835,7 @@
         "source": {
           "path": "static/index.html",
           "line": 685,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Sidebar new-chat brand control."
         }
       },
@@ -12811,7 +12847,7 @@
         "source": {
           "path": "static/index.html",
           "line": 690,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "New chat shortcut in the sidebar."
         }
       },
@@ -12823,7 +12859,7 @@
         "source": {
           "path": "static/index.html",
           "line": 694,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Search conversations shortcut in the session sidebar."
         }
       },
@@ -12835,7 +12871,7 @@
         "source": {
           "path": "static/index.html",
           "line": 707,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Manage Chats/Library shortcut; shares Document Library in the normal handler path."
         }
       }
@@ -13044,13 +13080,13 @@
           {
             "path": "static/index.html",
             "line": 657,
-            "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+            "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Search button title and keyboard hint."
           },
           {
             "path": "static/app.js",
             "line": 3530,
-            "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+            "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
             "claim": "Search button event binding."
           }
         ]
@@ -13119,43 +13155,55 @@
         "theme": "Theme quick control plus Settings appearance tab; MODE-OF existing controls pending source-backed storage identity.",
         "brain": "Brain/memory panel has browse/add/skills/settings modes; retain distinct concepts and data operations.",
         "cookbook": "Cookbook recipes are separate from general model/config settings.",
-        "general_settings": "Shared settings dialog has service/AI/search/integrations/email/reminders/appearance/shortcuts/account/tools/users/system tabs.",
-        "settings_accessible_names": "static/index.html:1390 and :2795 both label their dialogs Settings although one is user preferences and the other host/admin configuration. Record as a naming/IA follow-up only; do not infer duplicated authority or measured accessibility/usability impact, which remains UNKNOWN."
+        "general_settings": "Shared settings dialog has service/AI/search/integrations/email/reminders/appearance/shortcuts/account/tools/users/system tabs; System contains the admin-only Routing & budgets launcher.",
+        "settings_accessible_names": "The ordinary preferences dialog is named Settings. The distinct host configuration dialog is named Routing & budgets and opens through Settings > System; measured accessibility and usability impact remain UNKNOWN."
       },
       "evidence": [
         {
           "path": "static/index.html",
-          "line": 1403,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
-          "claim": "Settings tab structure and panel ids; the preferences and host configuration dialogs share the accessible name Settings despite distinct scopes (lines 1390 and 2795)."
+          "line": 2270,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
+          "claim": "The existing configuration launcher is now a button within Settings > System; #config-overlay has the distinct accessible name Routing & budgets."
         },
         {
           "path": "static/js/settings.js",
           "line": 1,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Settings behavior source."
         },
         {
           "path": "routes/config_routes.py",
           "line": 1,
-          "sha256": "2faae3e3e511746e00895ab167e65c7752b2fe18ff09f1d379037d114aff6425",
+          "sha256": "e720005ab8698be76bfde4f2434081126c5894afa0e72b72eece8562ac8481f0",
           "claim": "Configuration routes source."
+        },
+        {
+          "path": "static/index.html",
+          "line": 2797,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
+          "claim": "Routing & budgets dialog retains Budget, Providers, Policy and Effective tabs under a distinct accessible name."
+        },
+        {
+          "path": "static/app.js",
+          "line": 3586,
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
+          "claim": "Rail Settings directly opens the ordinary Settings module."
         }
       ],
       "provider_model_endpoint_management": {
         "current_disposition": "KEEP pending proof of duplicated editing controls",
-        "conceptual_destination": "Configuration > Providers; selectors remain consumers",
+        "conceptual_destination": "Settings > System > Routing & budgets > Providers; selectors remain consumers",
         "evidence": [
           {
             "path": "static/js/configPanel.js",
-            "line": 608,
-            "sha256": "0580fe17735bf5c3a771bf42a9d25ae42e2e02808d99bac5c5863ee7b8d0a7dc",
+            "line": 610,
+            "sha256": "ece8604c79af6309108bcac65287faaf95d88cfe09f3dbfe52308db6e24151bc",
             "claim": "Configuration endpoint management controls."
           },
           {
             "path": "static/js/settings.js",
-            "line": 236,
-            "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+            "line": 237,
+            "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
             "claim": "Settings-side model/endpoint controls."
           }
         ],
@@ -13178,7 +13226,7 @@
         {
           "path": "static/app.js",
           "line": 1,
-          "sha256": "3b2668b029d20ae07eebbdd332b03744b920f51e19d6e5ca2b2c7a8bde61efc2",
+          "sha256": "6052c3f24cdee3f8cd773f90128337a24f7749dd50c5e0ac2cf1901e1f201c8d",
           "claim": "Shell session handoff and route/tool open behavior."
         },
         {
@@ -13228,32 +13276,32 @@
         },
         {
           "path": "static/index.html",
-          "line": 2371,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2373,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Crew overlay."
         },
         {
           "path": "static/index.html",
-          "line": 2402,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2404,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Terminal overlay."
         },
         {
           "path": "static/index.html",
-          "line": 2415,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2417,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Preview overlay."
         },
         {
           "path": "static/index.html",
-          "line": 2499,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2501,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Harness overlay."
         },
         {
           "path": "static/index.html",
-          "line": 2795,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2797,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Config overlay."
         }
       ],
@@ -13282,20 +13330,20 @@
         },
         {
           "path": "static/index.html",
-          "line": 2415,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2417,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Preview overlay structure."
         },
         {
           "path": "static/index.html",
-          "line": 2499,
-          "sha256": "3087387417d6e76e3350f0d509569397d6954448d17d461fea419d56878480df",
+          "line": 2501,
+          "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Harness overlay structure."
         },
         {
           "path": "static/js/settings.js",
-          "line": 110,
-          "sha256": "eae6fba61eb0d8448a3333ac69228fd9495f9cf20eb1730dfc105726909034ba",
+          "line": 111,
+          "sha256": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
           "claim": "Appearance preference and theme-related controls."
         }
       ]
