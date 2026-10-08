@@ -20,23 +20,19 @@ deployed bytes may not match any commit at all — check this first.
 
 ## 2. Source commit actually deployed
 
-Verify what the running image/container was built from, not what your local
-branch says:
+Follow [the native release procedure](RELEASE.md). On the deployment host,
+verify the full intended production `main` commit against both the application's
+baked identity and the actual running image:
 
 ```sh
-# Image-level: the build provenance label recorded at build time
-docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-  "$(docker compose -f docker-compose.yml images -q odysseus | head -1)"
-
-# Container-level: the commit inside the live container's checkout (if retained)
-docker compose exec odysseus git rev-parse HEAD
+./deploy-odysseus.sh verify FULL_40_CHARACTER_MAIN_SHA
 ```
 
-If neither is available, the deployed commit is unknown: the image must be
-rebuilt with the revision label (or the checkout shipped) before identity can
-be proven. `docker compose build --build-arg GIT_SHA="$(git rev-parse HEAD)"`
-with a `LABEL org.opencontainers.image.revision=$GIT_SHA` in the Dockerfile
-establishes this link.
+The command checks readiness, the bound endpoint, application build identity
+and the running image's OCI revision. A checkout's Git HEAD, inside or outside
+the container, does not establish image provenance. Missing or disagreeing
+immutable identity remains unknown or conflicting; shipping a checkout does
+not repair that proof. Build and release through the native procedure.
 
 ## 3. Process / container serving the UI/API
 
@@ -74,25 +70,27 @@ chain and must be inspected too.
 
 ## 5. Exact execution profile per attempt
 
-For each attempt, record which profile actually ran — engine, model, and
-runtime configuration — from the server side, not from what was requested:
+Use [PS-632's native capability receipts](ps632-capability-receipts.md) and the
+attempt's sealed dispatch/execution evidence. Record the exact selected profile
+ID, bound capability receipt hash, runtime/model material identity, measured
+context/capabilities and qualification/health clocks. Resolve the bound receipt
+through the native store and check current active authority and material identity
+when assessing a future dispatch. A requested profile or a model-list response
+does not prove which profile executed an attempt.
 
-```sh
-# Container: the effective environment of the running process (not the .env file)
-docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  "$(docker compose ps -q odysseus)" | sort
+The TMOS maintenance view exposes selected registry metadata without running a
+model or renewing evidence. Its current eligibility result is separate from
+historical execution proof. Examples and default TTLs in the contract are not
+measurements of an installed profile. Read each actual receipt's measured limits
+and clocks; an advertised context is not its measured safe working context.
 
-# systemd: the effective environment of the running unit
-systemctl show odysseus-ui -p Environment -p EnvironmentFiles
-```
-
-Environment variables read at import time may differ from the process's
-current environment; for a strict check read `/proc/<pid>/environ` for the
-exact PID from step 3.
+Do not print or attach process/container environments, environment files or
+`/proc/<pid>/environ`. They can contain credentials and are not qualification
+evidence. Export only the selected non-secret identity/evidence fields above.
 
 ## 6. Host that ran deterministic verification
 
-Record the host identity of the machine running every command above:
+For a live verification command, record the host on which it actually executes:
 
 ```sh
 hostnamectl
@@ -100,8 +98,11 @@ hostnamectl
 uname -a
 ```
 
-Verification run on a different host than the deployment proves nothing about
-that deployment unless each command is explicitly executed against it.
+For GitHub Actions, record the exact source SHA/run and the actual job's runner
+name, group and labels from its job record. A workflow's `runs-on` setting or a
+host's registered verifier role alone does not prove it ran a particular check.
+Keep the deployment host, inference target and CI runner as separate facts.
+Remote verification must identify both its target endpoint and execution host.
 
 ## Caveat — what is NOT identity proof
 
