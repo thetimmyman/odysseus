@@ -1,10 +1,11 @@
-"""Owned Terminal cwd and fork/exec admission, without models or host services."""
+"""Owned Terminal cwd, resource guards and fork/exec admission without models."""
 
 import asyncio
 import errno
 import inspect
 import json
 import os
+import sys
 import time
 from types import SimpleNamespace
 
@@ -273,6 +274,8 @@ def test_exec_failure_is_explicit_and_cleans_child(monkeypatch, tmp_path):
     shell = tmp_path / "nonexecutable-shell"
     shell.write_text("not executable")
     monkeypatch.setenv("SHELL", str(shell))
+    # Isolate exec refusal from unrelated same-UID desktop task consumption.
+    monkeypatch.setattr(module, "_has_scoped_process_limit", lambda: True)
     children = _observe_fork(monkeypatch, module)
 
     async def check():
@@ -283,11 +286,24 @@ def test_exec_failure_is_explicit_and_cleans_child(monkeypatch, tmp_path):
     asyncio.run(check())
 
 
-def test_real_exec_admission_preserves_cwd_argv_environment_and_limits(monkeypatch, tmp_path):
+@pytest.mark.parametrize("scoped", [False, True])
+def test_real_exec_admission_preserves_cwd_argv_environment_and_limits(monkeypatch, tmp_path, scoped):
     import resource
     import routes.terminal_routes as module
 
     monkeypatch.setenv("SHELL", "/bin/sh")
+    monkeypatch.setattr(module, "_has_scoped_process_limit", lambda: scoped)
+    if not scoped:
+        # This case measures real applied limits and exec admission. The
+        # separate capacity controls exercise the probe, independently of
+        # unrelated host workloads sharing this test process's real UID.
+        monkeypatch.setattr(module, "_probe_command_capacity", lambda: None)
+    inherited_nproc = resource.getrlimit(resource.RLIMIT_NPROC)
+    inherited_as = resource.getrlimit(resource.RLIMIT_AS)
+
+    def lowered(bounds, ceiling):
+        return [ceiling if value == resource.RLIM_INFINITY else min(value, ceiling) for value in bounds]
+
     children = _observe_fork(monkeypatch, module)
     read_fd, write_fd = os.pipe()
     original_exec = os.execvpe
@@ -327,7 +343,8 @@ def test_real_exec_admission_preserves_cwd_argv_environment_and_limits(monkeypat
         assert proof == {
             "cwd": str(tmp_path), "shell": "/bin/sh", "argv": ["-sh"],
             "env_keys": ["HOME", "LANG", "LC_ALL", "PATH", "PS1", "TERM", "USER"],
-            "nproc": [512, 512], "as": [32 * 1024 ** 3] * 2, "core": [0, 0], "cloexec": True,
+            "nproc": list(inherited_nproc) if scoped else lowered(inherited_nproc, 512),
+            "as": lowered(inherited_as, 32 * 1024 ** 3), "core": [0, 0], "cloexec": True,
         }
     finally:
         os.close(read_fd)
@@ -565,3 +582,323 @@ def test_pending_starts_reserve_cap_even_when_accept_yields_and_cancel_cleans(te
         assert api.app.state.terminal_ptys == {}
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("ceiling", ["1\n", "512\n"])
+def test_only_bounded_private_readonly_cgroup_v2_root_qualifies(monkeypatch, tmp_path, ceiling):
+    import routes.terminal_routes as module
+
+    observations = {
+        "CGROUP_MEMBERSHIP_PATH": "0::/\n",
+        "CGROUP_MOUNTS_PATH": "11 10 0:1 / /sys/fs/cgroup ro,nosuid,nodev,noexec - cgroup2 cgroup rw\n",
+        "CGROUP_PIDS_PATH": ceiling,
+    }
+    for name, content in observations.items():
+        path = tmp_path / name
+        path.write_text(content)
+        monkeypatch.setattr(module, name, path)
+    assert module._has_scoped_process_limit() is True
+
+
+@pytest.mark.parametrize(
+    "kind,content",
+    [
+        ("CGROUP_MEMBERSHIP_PATH", "0::/user.slice\n"),
+        ("CGROUP_MEMBERSHIP_PATH", "0::/../other\n"),
+        ("CGROUP_MEMBERSHIP_PATH", "5:pids:/\n"),
+        ("CGROUP_MEMBERSHIP_PATH", "0::/\n5:pids:/\n"),
+        ("CGROUP_MEMBERSHIP_PATH", ""),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /sys/fs/cgroup ro,rw - cgroup2 cgroup rw\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 /subtree /sys/fs/cgroup ro - cgroup2 cgroup rw\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /elsewhere ro - cgroup2 cgroup rw\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /sys/fs/cgroup ro - cgroup cgroup rw\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /sys/fs/cgroup ro - tmpfs cgroup rw\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /sys/fs/cgroup ro cgroup2 cgroup rw\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /sys/fs/cgroup ro - cgroup2\n"),
+        ("CGROUP_MOUNTS_PATH", "11 10 0:1 / /sys/fs/cgroup ro - cgroup2 cgroup rw\n" * 2),
+        ("CGROUP_MOUNTS_PATH", ""),
+        ("CGROUP_PIDS_PATH", "max\n"),
+        ("CGROUP_PIDS_PATH", "513\n"),
+        ("CGROUP_PIDS_PATH", "1024\n"),
+        ("CGROUP_PIDS_PATH", "0\n"),
+        ("CGROUP_PIDS_PATH", "-1\n"),
+        ("CGROUP_PIDS_PATH", "5 12\n"),
+        ("CGROUP_PIDS_PATH", "invalid\n"),
+        ("CGROUP_PIDS_PATH", "\u0665\u0661\u0662\n"),
+        ("CGROUP_PIDS_PATH", ""),
+    ],
+)
+def test_unknown_or_weaker_cgroup_observations_never_qualify(monkeypatch, tmp_path, kind, content):
+    import routes.terminal_routes as module
+
+    observations = {
+        "CGROUP_MEMBERSHIP_PATH": "0::/\n",
+        "CGROUP_MOUNTS_PATH": "11 10 0:1 / /sys/fs/cgroup ro - cgroup2 cgroup rw\n",
+        "CGROUP_PIDS_PATH": "512\n",
+    }
+    observations[kind] = content
+    for name, value in observations.items():
+        path = tmp_path / name
+        path.write_text(value)
+        monkeypatch.setattr(module, name, path)
+    assert module._has_scoped_process_limit() is False
+
+
+@pytest.mark.parametrize("kind", ["CGROUP_MEMBERSHIP_PATH", "CGROUP_MOUNTS_PATH", "CGROUP_PIDS_PATH"])
+def test_unreadable_cgroup_observation_never_qualifies(monkeypatch, tmp_path, kind):
+    import routes.terminal_routes as module
+
+    observations = {
+        "CGROUP_MEMBERSHIP_PATH": "0::/\n",
+        "CGROUP_MOUNTS_PATH": "11 10 0:1 / /sys/fs/cgroup ro - cgroup2 cgroup rw\n",
+        "CGROUP_PIDS_PATH": "512\n",
+    }
+    for name, value in observations.items():
+        path = tmp_path / name
+        path.write_text(value)
+        monkeypatch.setattr(module, name, path)
+        if name == kind:
+            path.unlink()
+    assert module._has_scoped_process_limit() is False
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize(
+    "nproc,address,core",
+    [
+        ((-1, -1), (-1, -1), (-1, -1)),
+        ((256, 4096), (16 * 1024 ** 3, 64 * 1024 ** 3), (4096, 8192)),
+        ((128, 256), (8 * 1024 ** 3, 16 * 1024 ** 3), (0, 0)),
+        ((512, 512), (32 * 1024 ** 3, 32 * 1024 ** 3), (0, 0)),
+    ],
+)
+def test_child_limits_preserve_stricter_inherited_bounds(monkeypatch, scoped, nproc, address, core):
+    import routes.terminal_routes as module
+
+    inherited = {"nproc": nproc, "as": address, "core": core}
+    applied = {}
+    fake_resource = SimpleNamespace(
+        RLIMIT_NPROC="nproc", RLIMIT_AS="as", RLIMIT_CORE="core", RLIM_INFINITY=-1,
+        getrlimit=inherited.__getitem__, setrlimit=applied.__setitem__,
+    )
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+    monkeypatch.setattr(module, "_has_scoped_process_limit", lambda: scoped)
+    module._apply_child_resource_limits()
+
+    def lowered(bounds, ceiling):
+        return tuple(ceiling if value == -1 else min(value, ceiling) for value in bounds)
+
+    expected = {"as": lowered(address, 32 * 1024 ** 3), "core": (0, 0)}
+    if not scoped:
+        expected["nproc"] = lowered(nproc, 512)
+    assert applied == expected
+    assert inherited == {"nproc": nproc, "as": address, "core": core}
+
+
+@pytest.mark.parametrize("guard", ["RLIMIT_NPROC", "RLIMIT_AS", "RLIMIT_CORE"])
+@pytest.mark.parametrize("operation", ["getrlimit", "setrlimit"])
+def test_child_guard_failure_refuses_before_exec_and_cleans(monkeypatch, tmp_path, guard, operation):
+    import resource
+    import routes.terminal_routes as module
+
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if hasattr(module, "_has_scoped_process_limit"):
+        monkeypatch.setattr(module, "_has_scoped_process_limit", lambda: False)
+    children = _observe_fork(monkeypatch, module)
+    original_operation = getattr(resource, operation)
+    inherited = {kind: resource.getrlimit(kind) for kind in (resource.RLIMIT_NPROC, resource.RLIMIT_AS, resource.RLIMIT_CORE)}
+    read_fd, write_fd = os.pipe()
+    original_exec = os.execvpe
+    original_pipe = os.pipe
+    startup_descriptors = []
+
+    def observe_pipe():
+        pair = original_pipe()
+        startup_descriptors.extend(pair)
+        return pair
+
+    def broken(kind, *args):
+        if kind == getattr(resource, guard):
+            raise OSError("synthetic resource guard failure")
+        return original_operation(kind, *args)
+
+    def observe_exec(*args):
+        os.write(write_fd, b"executed")
+        original_exec(*args)
+
+    monkeypatch.setattr(module.os, "pipe", observe_pipe)
+    monkeypatch.setattr(resource, operation, broken)
+    monkeypatch.setattr(module.os, "execvpe", observe_exec)
+
+    async def check():
+        try:
+            with pytest.raises(module.TerminalStartupError, match="Terminal resource limits could not be applied"):
+                await module._spawn_pty(str(tmp_path), 80, 24)
+            _assert_child_cleaned(children)
+        finally:
+            for pid, fd in children:
+                await module._reap(pid, fd)
+
+    try:
+        asyncio.run(check())
+        os.close(write_fd)
+        write_fd = None
+        assert os.read(read_fd, 64) == b""
+        assert len(startup_descriptors) == 2
+        for fd in startup_descriptors:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+    finally:
+        os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
+    # Resource changes in the real forked child never alter its parent.
+    if operation == "getrlimit":
+        monkeypatch.setattr(resource, operation, original_operation)
+    assert {kind: resource.getrlimit(kind) for kind in inherited} == inherited
+
+
+@pytest.mark.parametrize("error", [errno.EAGAIN, errno.ENOMEM])
+def test_child_capacity_failure_refuses_before_exec_and_cleans(monkeypatch, tmp_path, error):
+    import routes.terminal_routes as module
+
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if hasattr(module, "_has_scoped_process_limit"):
+        monkeypatch.setattr(module, "_has_scoped_process_limit", lambda: False)
+    children = _observe_fork(monkeypatch, module)
+    read_fd, write_fd = os.pipe()
+    original_exec = os.execvpe
+
+    original_pipe = os.pipe
+    startup_descriptors = []
+
+    def observe_pipe():
+        pair = original_pipe()
+        startup_descriptors.extend(pair)
+        return pair
+
+    def exhausted():
+        raise OSError(error, "synthetic command capacity exhaustion")
+
+    def observe_exec(*args):
+        os.write(write_fd, b"executed")
+        original_exec(*args)
+
+    monkeypatch.setattr(module.os, "fork", exhausted)
+    monkeypatch.setattr(module.os, "pipe", observe_pipe)
+    monkeypatch.setattr(module.os, "execvpe", observe_exec)
+
+    async def check():
+        try:
+            with pytest.raises(module.TerminalStartupError, match="Terminal cannot launch commands within its resource limits"):
+                await module._spawn_pty(str(tmp_path), 80, 24)
+            _assert_child_cleaned(children)
+        finally:
+            for pid, fd in children:
+                await module._reap(pid, fd)
+
+    try:
+        asyncio.run(check())
+        os.close(write_fd)
+        write_fd = None
+        assert os.read(read_fd, 64) == b""
+        assert len(startup_descriptors) == 2
+        for fd in startup_descriptors:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+    finally:
+        os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
+
+
+def test_command_capacity_probe_forks_once_and_reaps(monkeypatch):
+    import routes.terminal_routes as module
+
+    original_fork = os.fork
+    children = []
+
+    def observed_fork():
+        pid = original_fork()
+        if pid:
+            children.append(pid)
+        return pid
+
+    monkeypatch.setattr(module.os, "fork", observed_fork)
+    module._probe_command_capacity()
+    assert len(children) == 1
+    with pytest.raises(ChildProcessError):
+        os.waitpid(children[0], os.WNOHANG)
+
+
+@pytest.mark.parametrize("status", [1 << 8, 9])
+def test_command_capacity_probe_rejects_unsuccessful_child(monkeypatch, status):
+    import routes.terminal_routes as module
+
+    monkeypatch.setattr(module.os, "fork", lambda: 9876543)
+    monkeypatch.setattr(module.os, "waitpid", lambda pid, flags: (pid, status))
+    with pytest.raises(OSError, match="capacity probe failed"):
+        module._probe_command_capacity()
+
+
+def test_command_capacity_probe_retries_interrupted_wait(monkeypatch):
+    import routes.terminal_routes as module
+
+    calls = []
+
+    def wait(pid, flags):
+        calls.append((pid, flags))
+        if len(calls) == 1:
+            raise InterruptedError
+        return pid, 0
+
+    monkeypatch.setattr(module.os, "fork", lambda: 9876543)
+    monkeypatch.setattr(module.os, "waitpid", wait)
+    module._probe_command_capacity()
+    assert calls == [(9876543, 0)] * 2
+
+
+def test_scoped_policy_runs_real_probe_and_external_command(monkeypatch, tmp_path):
+    import routes.terminal_routes as module
+
+    # Detection is qualified separately with observations. This real child
+    # integration test isolates command behavior from the replay host's UID.
+    monkeypatch.setattr(module, "_has_scoped_process_limit", lambda: True)
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    children = _observe_fork(monkeypatch, module)
+
+    async def check():
+        pid, fd = await module._spawn_pty(str(tmp_path), 80, 24)
+        output = bytearray()
+        try:
+            # The input itself does not contain the joined success marker.
+            os.write(fd, b"/bin/echo CAPACITY_''EXTERNAL_OK\n")
+            async with asyncio.timeout(5):
+                while b"CAPACITY_EXTERNAL_OK" not in output:
+                    try:
+                        output.extend(os.read(fd, 4096))
+                    except BlockingIOError:
+                        await asyncio.sleep(0.01)
+            assert b"CAPACITY_EXTERNAL_OK" in output
+        finally:
+            await module._reap(pid, fd)
+        _assert_child_cleaned(children)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("failure", ["RESOURCE_LIMITS_UNAVAILABLE", "COMMAND_CAPACITY_UNAVAILABLE"])
+def test_resource_startup_refusal_reaches_owned_websocket_and_releases_slot(terminal_api, monkeypatch, failure):
+    api = terminal_api
+    message = getattr(api.module, failure)
+
+    async def refuse(cwd, cols, rows):
+        raise api.module.TerminalStartupError(message)
+
+    monkeypatch.setattr(api.module, "_spawn_pty", refuse)
+    assert _refusal(api) == message
+    assert api.app.state.terminal_ptys == {}

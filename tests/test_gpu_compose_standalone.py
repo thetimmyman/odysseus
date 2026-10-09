@@ -66,6 +66,14 @@ def base():
     return _load(BASE)
 
 
+@pytest.mark.parametrize("path", [BASE, NVIDIA_STANDALONE, AMD_STANDALONE])
+def test_application_task_budget_is_admitted_by_terminal(path):
+    from routes.terminal_routes import MAX_CHILD_TASKS
+
+    limit = _load(path)["services"][SERVICE]["pids_limit"]
+    assert type(limit) is int and limit == MAX_CHILD_TASKS == 512
+
+
 # --- Equivalence: standalone == base + overlay -----------------------------
 
 

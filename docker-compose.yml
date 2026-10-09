@@ -2,7 +2,7 @@ services:
   odysseus:
     build: .
     init: true   # tini as PID1 reaps reparented dev-server children (no zombie leak)
-    pids_limit: 1024   # fork-bomb backstop for the terminal PTY (defense-in-depth)
+    pids_limit: 512    # app and Terminal task budget; verified by the PTY route
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
       - "${APP_BIND:-127.0.0.1}:${DEV_PREVIEW_PROXY_PORT:-7100}:${DEV_PREVIEW_PROXY_PORT:-7100}"   # Dev Preview: admin-gated proxy (dev server itself is container-loopback, UNpublished)
