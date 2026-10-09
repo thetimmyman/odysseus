@@ -270,7 +270,10 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
         _guard_no_live_sourcing()
 
     def _fake_which(self, path="/fake/cline-bin"):
-        self._which_backup = ec.shutil.which
+        # Multiple probe variants in one test must restore the original
+        # resolver, rather than leaking the previous variant's fake globally.
+        if self._which_backup is None:
+            self._which_backup = ec.shutil.which
         guard = []
         ec.shutil.which = lambda name: (guard.append(name), path)[1]
         return guard

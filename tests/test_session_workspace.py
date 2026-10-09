@@ -27,6 +27,12 @@ def workspace_api(monkeypatch, tmp_path):
     factory = sessionmaker(bind=engine)
     for module in (database, managers, sessions, chats, histories):
         monkeypatch.setattr(module, "SessionLocal", factory)
+    # Earlier source-helper tests can reimport session_routes after Chat/history
+    # cached its functions. Use the current real helpers with this fixture's DB,
+    # rather than stale module globals or an owner-check substitute.
+    monkeypatch.setattr(chats, "_verify_session_owner", sessions._verify_session_owner)
+    monkeypatch.setattr(chats, "_resolve_session_workspace", sessions._resolve_session_workspace)
+    monkeypatch.setattr(histories, "_verify_session_owner", sessions._verify_session_owner)
     monkeypatch.setenv("AUTH_ENABLED", "true")
     monkeypatch.setattr(sessions, "router", APIRouter(prefix="/api"))
     monkeypatch.setattr(agent_runs, "_RUNS", {})
@@ -65,7 +71,6 @@ def workspace_api(monkeypatch, tmp_path):
     monkeypatch.setattr(chats, "stream_agent_loop", agent)
     monkeypatch.setattr(chats, "_clear_orphaned_session_endpoint", lambda *a, **k: False)
     monkeypatch.setattr(chats, "_recover_empty_session_model", lambda *a, **k: False)
-    monkeypatch.setattr(chats, "_enforce_chat_privileges", lambda *a, **k: None)
     monkeypatch.setattr(chats, "resolve_session_auth", lambda *a, **k: None)
     monkeypatch.setattr(chats, "run_post_response_tasks", lambda *a, **k: None)
     monkeypatch.setattr(chats, "_is_image_generation_session", lambda *a, **k: False)
@@ -152,6 +157,11 @@ def test_workspace_update_and_detail_do_not_cross_owners(workspace_api):
     assert api.client.patch("/api/session/foreign", data={"project_root": str(api.project)}).status_code == 404
     assert api.client.get("/api/session/foreign/workspace").status_code == 404
     assert api.client.get("/api/history/foreign").status_code == 404
+    assert api.client.post("/api/chat_stream", data={
+        "session": "foreign", "message": "Fix the counter", "mode": "agent",
+        "workspace": str(api.project),
+    }).status_code == 404
+    assert api.calls == []
     assert api.manager.get_session("foreign").project_root is None
 
 
