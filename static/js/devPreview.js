@@ -2,6 +2,8 @@
 // The server listens on loopback only. An "unmanaged" orphan still listening
 // gets a Stop button so it can always be reaped.
 
+import { focusWindow } from './ui.js';
+
 let API_BASE = '';
 let _open = false;
 let _apps = [];
@@ -639,6 +641,7 @@ function _openOverlay() {
   const ov = _el('preview-overlay');
   if (!ov) return;
   ov.style.display = '';
+  focusWindow(ov);
   _open = true;
   _loadApps();
   if (_poll) clearInterval(_poll);
@@ -811,10 +814,6 @@ function init(apiBase) {
   _el('preview-unmanaged-stop')?.addEventListener('click', _stopUnmanaged);
   _el('preview-logs-toggle')?.addEventListener('click', () => { _setLogsOpen(!_logsOpen()); _refreshLogs(); });
   _el('preview-logs-kind')?.addEventListener('change', (e) => { _logKind = e.target.value; _refreshLogs(); });
-  document.addEventListener('keydown', (e) => {
-    const ov = _el('preview-overlay');
-    if (e.key === 'Escape' && ov && ov.style.display !== 'none') _closeOverlay();
-  });
 }
 
 const devPreviewModule = { init, refresh };
