@@ -117,6 +117,7 @@ async function harness({ realRenderer = false, realChat = false } = {}) {
   sessionStorage.setItem('ody-session-active', '1');
   const sockets = [];
   class WebSocket {
+    static CONNECTING = 0;
     static OPEN = 1;
     constructor(url) {
       this.url = url;
@@ -610,6 +611,142 @@ async function connectedTerminal(h) {
   assert.equal(h.sockets.length, 1);
   h.sockets[0].open();
   return { socket: h.sockets[0], term: h.terminals[0] };
+}
+
+function terminalMessage(socket, message) {
+  socket.onmessage({ data: JSON.stringify(message) });
+}
+
+function terminalClosed(socket, code = 1011) {
+  socket.readyState = 3;
+  socket.onclose({ code });
+}
+
+test('Terminal retains an actionable server failure through error, refresh and close', async () => {
+  const h = await harness();
+  h.select('session-a', '/projects/gone');
+  const { socket } = await connectedTerminal(h);
+  const message = 'Selected project is unavailable. Choose another folder and reconnect.';
+  terminalMessage(socket, { type: 'error', msg: message });
+  const status = h.elements.get('terminal-status');
+  assert.equal(status.textContent, message);
+  assert.ok(status.classList.contains('err'));
+  assert.ok(h.calls.rendered.some((text) => text.includes(message)));
+  socket.onerror();
+  assert.equal(status.textContent, message);
+  h.terminal.refresh('session-a', '/projects/gone');
+  assert.equal(status.textContent, message);
+  h.select('session-b', '/projects/b');
+  assert.equal(status.textContent, message);
+  assert.equal(h.elements.get('terminal-connect-btn').textContent, 'Reconnect');
+  terminalClosed(socket);
+  h.terminal.refresh('session-b', '/projects/b');
+  assert.equal(status.textContent, message);
+  assert.ok(status.classList.contains('err'));
+  assert.equal(h.elements.get('terminal-connect-btn').style.display, '');
+});
+
+test('Terminal keeps a transport failure visible after generic socket close', async () => {
+  const h = await harness();
+  h.select('session-a', '/projects/a');
+  const { socket } = await connectedTerminal(h);
+  socket.onerror();
+  terminalClosed(socket, 1006);
+  h.terminal.refresh('session-a', '/projects/a');
+  assert.equal(h.elements.get('terminal-status').textContent, 'Connection error');
+  assert.ok(h.elements.get('terminal-status').classList.contains('err'));
+});
+
+test('failed Terminal hide and reopen retain the error until explicit Connect retries', async () => {
+  const h = await harness();
+  h.select('session-a', '/projects/gone');
+  const { socket } = await connectedTerminal(h);
+  const message = 'Selected project is unavailable. Choose another folder and reconnect.';
+  terminalMessage(socket, { type: 'error', msg: message });
+  terminalClosed(socket);
+  await h.elements.get('terminal-close').dispatch('click');
+  await h.elements.get('tool-terminal-btn').dispatch('click');
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.elements.get('terminal-status').textContent, message);
+  assert.equal(h.elements.get('terminal-connect-btn').style.display, '');
+  h.select('session-b', '/projects/restored');
+  await h.elements.get('terminal-connect-btn').dispatch('click');
+  assert.equal(h.sockets.length, 2);
+  assert.equal(h.elements.get('terminal-status').textContent, 'Connecting…');
+  h.sockets[1].open();
+  assert.equal(h.elements.get('terminal-status').textContent, 'Connected');
+});
+
+test('repeated Terminal activation and Connect clicks share the pending socket', async () => {
+  const h = await harness();
+  h.select('session-a', '/projects/a');
+  await h.elements.get('tool-terminal-btn').dispatch('click');
+  const pending = h.sockets[0];
+  await h.elements.get('terminal-close').dispatch('click');
+  await h.elements.get('tool-terminal-btn').dispatch('click');
+  await h.elements.get('terminal-connect-btn').dispatch('click');
+  await h.elements.get('terminal-connect-btn').dispatch('click');
+  assert.equal(h.sockets.length, 1);
+  assert.equal(pending.closeCount, 0);
+  assert.equal(h.elements.get('terminal-status').textContent, 'Connecting…');
+  pending.open();
+  assert.equal(h.elements.get('terminal-status').textContent, 'Connected');
+});
+
+test('Terminal retry clears the old failure and late old callbacks cannot replace recovery', async () => {
+  const h = await harness();
+  h.select('session-a', '/projects/gone');
+  const { socket } = await connectedTerminal(h);
+  terminalMessage(socket, { type: 'error', msg: 'Choose another folder and reconnect.' });
+  terminalClosed(socket);
+  h.select('session-b', '/projects/restored');
+  await h.elements.get('terminal-connect-btn').dispatch('click');
+  assert.equal(h.sockets.length, 2);
+  const status = h.elements.get('terminal-status');
+  assert.equal(status.textContent, 'Connecting…');
+  const retry = h.sockets[1];
+  retry.open();
+  const renderedBefore = h.calls.rendered.length;
+  terminalMessage(socket, { type: 'error', msg: 'Stale old failure' });
+  socket.onerror();
+  socket.onclose({ code: 1008 });
+  h.terminal.refresh('session-b', '/projects/restored');
+  assert.equal(status.textContent, 'Connected');
+  assert.ok(status.classList.contains('ok'));
+  assert.equal(h.calls.rendered.length, renderedBefore);
+  assert.equal(h.elements.get('terminal-connect-btn').style.display, 'none');
+});
+
+test('Terminal explicit Stop clears failure and ignores subsequent old socket events', async () => {
+  const h = await harness();
+  h.select('session-a', '/projects/gone');
+  const { socket } = await connectedTerminal(h);
+  terminalMessage(socket, { type: 'error', msg: 'Choose another folder and reconnect.' });
+  await h.elements.get('terminal-disconnect-btn').dispatch('click');
+  terminalMessage(socket, { type: 'error', msg: 'Late failure after Stop' });
+  socket.onerror();
+  socket.onclose({ code: 1011 });
+  h.terminal.refresh('session-a', '/projects/gone');
+  assert.equal(h.elements.get('terminal-status').textContent, 'Disconnected');
+  assert.ok(!h.elements.get('terminal-status').classList.contains('err'));
+  assert.equal(socket.closeCount, 1);
+});
+
+for (const [code, message] of [[1008, 'Not authorized'], [1013, 'Too many terminals open']]) {
+  test(`Terminal keeps its existing ${code} refusal visible and allows retry`, async () => {
+    const h = await harness();
+    h.select('session-a', '/projects/a');
+    const { socket } = await connectedTerminal(h);
+    socket.onerror();
+    terminalClosed(socket, code);
+    h.terminal.refresh('session-a', '/projects/a');
+    assert.equal(h.elements.get('terminal-status').textContent, message);
+    assert.ok(h.elements.get('terminal-status').classList.contains('err'));
+    assert.equal(h.elements.get('terminal-connect-btn').style.display, '');
+    await h.elements.get('terminal-connect-btn').dispatch('click');
+    h.sockets[1].open();
+    assert.equal(h.elements.get('terminal-status').textContent, 'Connected');
+  });
 }
 
 test('ordinary Terminal hide and reopen preserve the socket and shell input', async () => {
