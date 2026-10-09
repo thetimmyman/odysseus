@@ -2054,7 +2054,7 @@ export function addMessage(role, content, modelName, metadata) {
           for (const ev of roundTools) {
             const ok = (ev.exit_code === 0 || ev.exit_code == null);
             let outHtml = '';
-            if (ev.diff && ev.diff.trim()) {
+            if (typeof ev.diff === 'string' && ev.diff.trim()) {
               const diffHtml = ev.diff.split('\n').map(function(ln){
                 let cls = 'agent-diff-ctx';
                 if (ln.slice(0,3) === '+++' || ln.slice(0,3) === '---') cls = 'agent-diff-file';

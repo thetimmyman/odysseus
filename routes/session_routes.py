@@ -3,6 +3,7 @@ import re
 import html
 import json
 import uuid
+import os
 from datetime import datetime
 from fastapi import APIRouter, Form, HTTPException, Response, Request
 import logging
@@ -10,8 +11,9 @@ import logging
 from core.session_manager import SessionManager
 from core.models import ChatMessage
 from src.request_models import SessionResponse
+from src.constants import MAX_WORKSPACE_PATH_LENGTH
 from core.database import Session as DbSession, SessionLocal, Document, GalleryImage
-from src.auth_helpers import get_current_user, effective_user, _auth_disabled
+from src.auth_helpers import get_current_user, effective_user, _auth_disabled, require_admin_cookie
 
 
 def _sanitize_export_filename(name: str) -> str:
@@ -118,6 +120,46 @@ def _verify_session_owner(request: Request, session_id: str, session_manager=Non
         if ghost is not None and (not user or getattr(ghost, "owner", None) == user):
             return
     raise HTTPException(404, f"Session {session_id} not found")
+
+
+def _resolve_session_workspace(request: Request, session_id: str, session_manager, supplied=None):
+    """Resolve one owned project; explicit updates use the existing session field."""
+    _verify_session_owner(request, session_id, session_manager)
+    try:
+        session = session_manager.get_session(session_id)
+    except KeyError:
+        raise HTTPException(404, f"Session {session_id} not found")
+    if supplied is not None:
+        # Server filesystem access remains an admin browser capability. Honor
+        # intentional single-user mode without admitting API/internal callers.
+        user = get_current_user(request)
+        if getattr(request.state, "api_token", False) or user in ("api", "internal-tool"):
+            raise HTTPException(403, "Workspace changes require an admin browser session")
+        if not _auth_disabled():
+            require_admin_cookie(request)
+        from src import agent_runs
+        if agent_runs.is_active(session_id):
+            raise HTTPException(409, "Session has an active run; change workspace after it finishes")
+        if not isinstance(supplied, str) or len(supplied) > MAX_WORKSPACE_PATH_LENGTH:
+            raise HTTPException(400, "Invalid workspace path")
+        path = supplied.strip()
+    else:
+        path = getattr(session, "project_root", None) or ""
+    resolved = None
+    if path:
+        from src.tool_execution import _is_sensitive_path
+        try:
+            resolved = os.path.realpath(os.path.expanduser(path))
+            is_directory = os.path.isdir(resolved)
+        except (OSError, ValueError):
+            raise HTTPException(400, "Invalid workspace path")
+        if not is_directory:
+            raise HTTPException(400, "Workspace is no longer an existing directory; choose another folder or clear it")
+        if _is_sensitive_path(resolved):
+            raise HTTPException(400, "Sensitive directories cannot be used as a workspace")
+    if supplied is not None:
+        session_manager.set_session_project_root(session_id, resolved)
+    return resolved
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +335,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             db.close()
 
         sessions = [{"id": s.id, "name": s.name, "model": _public_model(s.name, s.model),
+                     "project_root": getattr(s, "project_root", None),
                      "endpoint_url": s.endpoint_url, "rag": s.rag,
                      "archived": s.archived, "folder": folder_map.get(s.id),
                      "total_tokens": token_map.get(s.id, 0),
@@ -443,7 +486,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             archived=False
         )    
     @router.patch("/session/{sid}")
-    def rename_session(
+    async def rename_session(
         request: Request, sid: str,
         name: str = Form(None), folder: str = Form(None),
         model: str = Form(None), endpoint_url: str = Form(None),
@@ -455,6 +498,13 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         except KeyError:
             raise HTTPException(404, f"Session {sid} not found")
         result = {"id": sid}
+        form = await request.form()
+        if "project_root" in form:
+            # Inspect key presence: an empty form value explicitly clears the
+            # project, while an omitted field leaves it unchanged.
+            result["project_root"] = _resolve_session_workspace(
+                request, sid, session_manager, form["project_root"],
+            )
         if name is not None:
             session_manager.update_session_name(sid, name)
             result["name"] = name
@@ -519,6 +569,15 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             result["model"] = model
             result["endpoint_url"] = endpoint_url
         return result
+
+    @router.get("/session/{sid}/workspace")
+    def get_workspace(request: Request, sid: str):
+        _verify_session_owner(request, sid, session_manager)
+        try:
+            session = session_manager.get_session(sid)
+        except KeyError:
+            raise HTTPException(404, f"Session {sid} not found")
+        return {"id": sid, "project_root": getattr(session, "project_root", None)}
     
     @router.post("/session/{sid}/inject_messages")
     async def inject_messages(request: Request, sid: str):
@@ -746,7 +805,8 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             session = session_manager.get_session(sid)
         except KeyError:
             raise HTTPException(404, f"Session {sid} not found")
-        return {"history": [msg.to_dict() for msg in session.history]}
+        return {"history": [msg.to_dict() for msg in session.history],
+                "project_root": getattr(session, "project_root", None)}
     
     @router.get("/session/{sid}/export")
     def export_session(request: Request, sid: str, fmt: str = "md", filename: str = ""):

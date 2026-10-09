@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 import time
 import logging
 from datetime import datetime
@@ -24,7 +23,7 @@ from src.session_search import search_session_messages
 from src.prompt_security import untrusted_context_message
 from core.exceptions import SessionNotFoundError
 from src.auth_helpers import get_current_user
-from routes.session_routes import _verify_session_owner
+from routes.session_routes import _verify_session_owner, _resolve_session_workspace
 from routes.document_helpers import _owner_session_filter
 from core.database import SessionLocal, get_session_mode, set_session_mode
 from core.database import Session as DBSession, ChatMessage as DBChatMessage
@@ -334,6 +333,7 @@ def setup_chat_routes(
             sess = session_manager.get_session(session)
         except KeyError:
             raise HTTPException(404, f"Session '{session}' not found")
+        workspace = _resolve_session_workspace(request, session, session_manager, chat_request.workspace)
         owner = get_current_user(request)
         if _clear_orphaned_session_endpoint(sess, owner=owner):
             raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
@@ -414,7 +414,7 @@ def setup_chat_routes(
             prompt_type=preset_id,
             reasoning_effort=ctx.preset.reasoning_effort,
         )
-        _clean_reply, _clean_md = clean_thinking_for_save(reply, {"model": sess.model})
+        _clean_reply, _clean_md = clean_thinking_for_save(reply, {"model": sess.model, "workspace": workspace})
         sess.add_message(ChatMessage("assistant", _clean_reply, metadata=_clean_md))
 
         from core.database import update_session_last_accessed
@@ -473,12 +473,11 @@ def setup_chat_routes(
         incognito = str(form_data.get("incognito", "")).lower() == "true"
         plan_mode = str(form_data.get("plan_mode", "")).lower() == "true"
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
-        # Workspace: confine the agent's file/shell tools to this folder. Validate
-        # it's a real directory; ignore (no confinement) otherwise.
-        workspace = (form_data.get("workspace") or "").strip()
-        if workspace:
-            _ws_real = os.path.realpath(os.path.expanduser(workspace))
-            workspace = _ws_real if os.path.isdir(_ws_real) else ""
+        # Legacy/draft clients may submit an explicit update. Omission uses the
+        # owned session's project, never a browser-global workspace default.
+        submitted_workspace = form_data.get("workspace") if "workspace" in form_data else (
+            body.get("workspace") if isinstance(body, dict) and "workspace" in body else None
+        )
         # Plan mode is a modifier on agent mode — it only makes sense with tools.
         if plan_mode:
             chat_mode = "agent"
@@ -528,6 +527,7 @@ def setup_chat_routes(
             # but BEFORE loading. Prevents cross-user session hijack.
             _verify_session_owner(request, session)
             sess = session_manager.get_session(session)
+            workspace = _resolve_session_workspace(request, session, session_manager, submitted_workspace)
             owner = get_current_user(request)
             if _clear_orphaned_session_endpoint(sess, owner=owner):
                 raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
@@ -857,7 +857,7 @@ def setup_chat_routes(
                             if not _s:
                                 logger.warning(f"Session {_sid} expired before research completed")
                                 return
-                            _md = {"research": True, "model": _s.model}
+                            _md = {"research": True, "model": _s.model, "workspace": workspace}
                             if _sources:
                                 _md["research_sources"] = _sources
                             if _findings:
@@ -998,7 +998,7 @@ def setup_chat_routes(
                     for _ek in ("image_url", "image_id", "image_prompt", "image_model", "image_size", "image_quality"):
                         if _img_result.get(_ek):
                             _ev[_ek] = _img_result[_ek]
-                    sess.add_message(ChatMessage("assistant", full_response, metadata={"tool_events": [_ev], "model": sess.model}))
+                    sess.add_message(ChatMessage("assistant", full_response, metadata={"tool_events": [_ev], "model": sess.model, "workspace": workspace}))
                     session_manager.save_sessions()
                 yield f'data: {json.dumps({"type": "metrics", "data": {"total_time": 0}})}\n\n'
                 yield "data: [DONE]\n\n"
@@ -1097,7 +1097,7 @@ def setup_chat_routes(
                                 yield f'data: {json.dumps({"type": "metrics", "data": last_metrics})}\n\n'
                             if full_response:
                                 _saved_id = save_assistant_response(
-                                    sess, session_manager, session, full_response, last_metrics,
+                                    sess, session_manager, session, full_response, {**(last_metrics or {}), "workspace": workspace},
                                     character_name=ctx.preset.character_name,
                                     web_sources=web_sources,
                                     rag_sources=ctx.rag_sources,
@@ -1127,6 +1127,7 @@ def setup_chat_routes(
                                 "stopped": True,
                                 "model": _actual_model or _answered_by or _requested_model,
                                 "requested_model": _requested_model,
+                                "workspace": workspace,
                             },
                         )
                         sess.add_message(ChatMessage("assistant", _stopped_content, metadata=_stopped_md))
@@ -1229,7 +1230,7 @@ def setup_chat_routes(
                         elif chunk == "data: [DONE]\n\n":
                             if full_response:
                                 _saved_id = save_assistant_response(
-                                    sess, session_manager, session, full_response, last_metrics,
+                                    sess, session_manager, session, full_response, {**(last_metrics or {}), "workspace": workspace},
                                     character_name=ctx.preset.character_name,
                                     web_sources=web_sources,
                                     rag_sources=ctx.rag_sources,
@@ -1268,6 +1269,7 @@ def setup_chat_routes(
                                     "stopped": True,
                                     "model": _actual_model or _answered_by or _requested_model,
                                     "requested_model": _requested_model,
+                                    "workspace": workspace,
                                 },
                             )
                             sess.add_message(ChatMessage("assistant", _stopped_content2, metadata=_stopped_md2))
