@@ -48,3 +48,22 @@ Preview permissions, process ownership and separate Stop action remain in use.
 This completes a bounded part of PS-617; broader responsive navigation and UX
 acceptance remain open. Unsupported native function-call handling is reviewed
 in a separate fix.
+
+A later Terminal startup check removed silent fallback from an unavailable saved
+project to HOME/default. An owned conversation now either opens its selected
+folder or receives an actionable refusal; missing/foreign conversations also
+refuse. A child-side directory or exec failure is acknowledged before any
+interactive shell is admitted, with bounded cleanup. The existing process,
+memory, owner, admin and Origin controls remain in force.
+
+The failure stays visible after the socket closes and after hiding/reopening
+Terminal. Choose an available folder or clear the saved selection, then press
+**Connect** to retry. A repeated activation while connecting reuses that attempt.
+An authenticated replay reproduced the old wrong-directory behavior, then
+verified the refusal and recovery to the selected folder using actual shell
+builtins at desktop and phone-sized viewports. This check made no model calls
+and does not extend the external-command/build-capacity qualification above.
+
+![Unavailable selected folder on desktop](assets/ps617-terminal-folder-desktop.png)
+
+![Retained folder error at phone size](assets/ps617-terminal-folder-mobile.png)

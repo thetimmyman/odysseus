@@ -61,7 +61,7 @@
       "routes/skills_routes.py": "362400b8c316cd2585422ccadcdaaddd23b4882eb43cce0cc636dffd964cfbce",
       "routes/stt_routes.py": "f01ad705f311e90c70049412ab2cc9702083d526823197fd186fb97eb759abc8",
       "routes/task_routes.py": "a2dcd29970ea13f72b667d993a50703ab9a0d09a310c994cf02ee160a69212f2",
-      "routes/terminal_routes.py": "c0d0765da88fbea20c2b6916aa75b7af7e02ba9c97798de03d6ee0c6a8f7a1d8",
+      "routes/terminal_routes.py": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
       "routes/tts_routes.py": "8524446f454808be65a082271d20c76957378d1b3d3f3a38d69d66006e6e63a6",
       "routes/upload_routes.py": "e503b82c213c4f3ec14a4d21fcc043a74e55045fb1561f4fc13daf28c0bd0bf1",
       "routes/vault_routes.py": "3f96217fc1704d4f27f6b5d2124380f331741837d7360b2950933c0e43c02ee2",
@@ -215,7 +215,7 @@
       "static/js/streamingRenderer.js": "f784abf40f0af86eaacf0e2e1a673b35a1ef16145bbb28d09d81b6682dc44871",
       "static/js/streamingSegmenter.js": "2d0d37779dad685d466cd64cf8a22282bf238dd8426a0d3ac46820f58bbd4b82",
       "static/js/tasks.js": "8f09c779104cf3e92252c90a08ac662e75f4b4bc368a6460d7bcfd514e07d6d0",
-      "static/js/terminal.js": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+      "static/js/terminal.js": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
       "static/js/theme.js": "8fc9b9b629bce352a6216152683a7ec6cd31f0e6ed803aeda7bb250c910fe433",
       "static/js/tileManager.js": "dd89ffa0b2ba8636ab40382809768f75b7843c97e1125dd55d40331fed5f326d",
       "static/js/tourAutoplay.js": "8e1a238233034600b5a0bd9972c0510ad40507553cf5bd48ed2ef71086c3b458",
@@ -4629,13 +4629,13 @@
         {
           "path": "static/js/terminal.js",
           "line": 1,
-          "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+          "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
           "path": "routes/terminal_routes.py",
           "line": 1,
-          "sha256": "c0d0765da88fbea20c2b6916aa75b7af7e02ba9c97798de03d6ee0c6a8f7a1d8",
+          "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -4650,13 +4650,13 @@
         {
           "path": "static/js/terminal.js",
           "line": 1,
-          "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+          "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
           "path": "routes/terminal_routes.py",
           "line": 1,
-          "sha256": "c0d0765da88fbea20c2b6916aa75b7af7e02ba9c97798de03d6ee0c6a8f7a1d8",
+          "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -4664,13 +4664,13 @@
         "apis": [
           "routes/terminal_routes.py"
         ],
-        "session_state": "The owned session project_root supplies initial shell cwd; PTY registry and process lifecycle remain scoped by owner/session/connection.",
+        "session_state": "An existing owned session supplies the selected project. Missing/foreign sessions and invalid saved roots refuse startup; only a genuinely unset project may use the existing default. PTY lifecycle remains scoped by owner/session/connection.",
         "scope": "owner/session/connection",
         "evidence": [
           {
             "path": "routes/terminal_routes.py",
             "line": 1,
-            "sha256": "c0d0765da88fbea20c2b6916aa75b7af7e02ba9c97798de03d6ee0c6a8f7a1d8",
+            "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -4695,14 +4695,14 @@
           },
           {
             "path": "static/js/terminal.js",
-            "line": 244,
-            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "line": 262,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
             "claim": "Terminal open/close handlers and PTY-preserving close behavior."
           },
           {
             "path": "static/js/terminal.js",
-            "line": 253,
-            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "line": 268,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
             "claim": "Terminal open, close, Connect and explicit Stop bindings; no independent document Escape listener remains."
           },
           {
@@ -4743,27 +4743,51 @@
           },
           {
             "path": "static/js/terminal.js",
-            "line": 235,
-            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "line": 253,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
             "claim": "Every Terminal open shows the overlay and explicitly calls shared focusWindow before activation; existing PTY connection behavior remains with Terminal."
           },
           {
             "path": "static/js/terminal.js",
-            "line": 21,
-            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "line": 22,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
             "claim": "Terminal compares the selected session/root to the live connection binding and marks a changed target for explicit reconnect."
           },
           {
             "path": "static/js/terminal.js",
-            "line": 101,
-            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "line": 106,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
             "claim": "Shell input is sent only to an open socket whose bound session/root still matches the selected target."
           },
           {
             "path": "static/js/terminal.js",
-            "line": 211,
-            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "line": 229,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
             "claim": "Canonical workspace restoration refreshes terminal target context; ordinary hide/reopen preserves the PTY, while the Connect control performs explicit reconnect for a changed target."
+          },
+          {
+            "path": "routes/terminal_routes.py",
+            "line": 140,
+            "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+            "claim": "Missing/foreign conversations and unavailable/sensitive saved roots refuse instead of falling back."
+          },
+          {
+            "path": "routes/terminal_routes.py",
+            "line": 208,
+            "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+            "claim": "Bounded startup acknowledgement refuses child chdir/exec failure, cleans its child/descriptors, and preserves resource limits."
+          },
+          {
+            "path": "static/js/terminal.js",
+            "line": 142,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
+            "claim": "Current-socket errors persist across close; explicit retry clears them and stale callbacks cannot overwrite a new attempt."
+          },
+          {
+            "path": "static/js/terminal.js",
+            "line": 239,
+            "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
+            "claim": "Hiding/reopening a failed Terminal retains its actionable status until explicit Connect."
           }
         ],
         "navigation_evidence": [
@@ -4782,7 +4806,8 @@
           "static/app.js",
           "static/js/terminal.js"
         ],
-        "state_owner_summary": "owner/session/connection"
+        "state_owner_summary": "owner/session/connection",
+        "startup_context": "Saved project resolution and child chdir must succeed before shell admission. Startup error survives socket close and overlay reopen; the existing Connect control explicitly retries. A pending socket is reused rather than duplicated. Successful exec acknowledgement does not prove login-profile or build readiness."
       },
       "responsive_behavior": {
         "desktop_source": "Terminal overlay uses bounded viewport height with a flex body and full-height xterm surface.",
@@ -13412,7 +13437,7 @@
         {
           "path": "routes/terminal_routes.py",
           "line": 1,
-          "sha256": "c0d0765da88fbea20c2b6916aa75b7af7e02ba9c97798de03d6ee0c6a8f7a1d8",
+          "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
           "claim": "Terminal backend/PTY ownership source."
         },
         {
@@ -13435,8 +13460,8 @@
         },
         {
           "path": "static/js/terminal.js",
-          "line": 21,
-          "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+          "line": 22,
+          "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
           "claim": "Live Terminal session/root binding is compared with the selected context before allowing input or explicit reconnect."
         }
       ],
