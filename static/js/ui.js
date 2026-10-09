@@ -21,6 +21,32 @@ let _lastPointerClientY = null;
 let _scrollRafId = null;
 let _scrollBox = null;
 
+// Terminal and Preview use crew chrome, but share ordinary window stacking
+// and Escape ownership. Keep their own close buttons responsible for cleanup.
+const WINDOW_SELECTOR = '.modal, #terminal-overlay, #preview-overlay';
+const _windowVisible = (m) => !m.classList.contains('hidden')
+    && !m.classList.contains('modal-minimized') && getComputedStyle(m).display !== 'none';
+let _zCounter = 1000;
+const assignedZ = new WeakMap();
+
+export function focusWindow(windowEl) {
+  if (!windowEl?.matches?.(WINDOW_SELECTOR) || !_windowVisible(windowEl)) return;
+  const next = ++_zCounter;
+  assignedZ.set(windowEl, next);
+  windowEl.style.zIndex = String(next);
+}
+
+export function getTopWindow() {
+  const windows = [...document.querySelectorAll(WINDOW_SELECTOR)].filter(_windowVisible);
+  return windows.reduce((top, m) => !top
+    || (parseInt(getComputedStyle(m).zIndex, 10) || 0) >= (parseInt(getComputedStyle(top).zIndex, 10) || 0)
+    ? m : top, null);
+}
+
+export function isCodingToolWindow(windowEl) {
+  return windowEl?.id === 'terminal-overlay' || windowEl?.id === 'preview-overlay';
+}
+
 function _isTextEditingTarget(target) {
   const el = target && target.nodeType === 1 ? target : target?.parentElement;
   return !!(el && el.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'));
@@ -844,7 +870,10 @@ const uiModule = {
   esc,
   isTouchInsideModal,
   emptyStateIcon,
-  registerMenuDismiss
+  registerMenuDismiss,
+  getTopWindow,
+  isCodingToolWindow,
+  focusWindow
 };
 
 export default uiModule;
@@ -1183,33 +1212,28 @@ if (!window._odyEscExpandGuard) {
   // research get re-appended on each open). Result: opening compare AFTER
   // cookbook can render compare UNDER it. Bumping the z-index on every
   // open guarantees most-recently-opened wins both visually AND for ESC.
-  let _zCounter = 1000;
-  const _isVisible = (m) => !m.classList.contains('hidden') && getComputedStyle(m).display !== 'none';
-  const _promote = (m) => {
-    if (!m?.classList?.contains('modal') || !_isVisible(m)) return;
-    // Re-entry guard: setting style.zIndex itself fires the observer that
-    // calls us back. Skip if this element is already pinned to the top
-    // (matches the current counter) so we don't spin into an infinite loop.
+  const withoutZ = (style) => (style || '').split(';').map(s => s.trim())
+    .filter(s => s && !/^z-index\s*:/i.test(s)).join(';');
+  const _isVisible = _windowVisible;
+  const _promote = (m, mutation) => {
+    if (!m?.matches?.(WINDOW_SELECTOR) || !_isVisible(m)) return;
     const cur = parseInt(m.style.zIndex, 10) || 0;
+    // Ignore our own z-only mutation per window. A global counter guard alone
+    // lets two windows promoted in one batch endlessly promote each other.
+    const currentStyle = m.getAttribute('style');
+    if (mutation?.attributeName === 'style' && assignedZ.get(m) === cur
+        && mutation.oldValue !== currentStyle
+        && withoutZ(mutation.oldValue) === withoutZ(currentStyle)) return;
     if (cur === _zCounter) return;
-    m.style.zIndex = String(++_zCounter);
+    focusWindow(m);
   };
   new MutationObserver((muts) => {
     for (const m of muts) {
       if (m.type === 'childList') m.addedNodes.forEach(n => n.nodeType === 1 && _promote(n));
-      else if (m.type === 'attributes' && m.target?.classList?.contains('modal')) _promote(m.target);
+      else if (m.type === 'attributes' && m.target?.matches?.(WINDOW_SELECTOR)) _promote(m.target, m);
     }
-  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
-  document.querySelectorAll('.modal').forEach(_promote);
-
-  const pickTopModal = () => {
-    const modals = [...document.querySelectorAll('.modal')].filter(_isVisible);
-    if (!modals.length) return null;
-    return modals.reduce((top, m) =>
-      (parseInt(getComputedStyle(m).zIndex, 10) || 0) >= (parseInt(getComputedStyle(top).zIndex, 10) || 0)
-        ? m : top
-    );
-  };
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['class', 'style'] });
+  document.querySelectorAll(WINDOW_SELECTOR).forEach(_promote);
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
@@ -1220,7 +1244,9 @@ if (!window._odyEscExpandGuard) {
     // (the live-stream chat rebuilds thinking DOM mid-stream so the header
     // can briefly be absent). Toggling the `expanded` class directly is the
     // fallback so ESC never bypasses the thinking block to hit a modal.
-    if (_closeHoveredWindow()) {
+    const topWindow = getTopWindow();
+    const codingToolOnTop = isCodingToolWindow(topWindow);
+    if (!codingToolOnTop && _closeHoveredWindow()) {
       e.stopImmediatePropagation(); e.preventDefault();
       return;
     }
@@ -1234,7 +1260,13 @@ if (!window._odyEscExpandGuard) {
       return;
     }
     const t = e.target;
+    if (codingToolOnTop && _isTextEditingTarget(t)) return;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (codingToolOnTop) {
+      e.stopImmediatePropagation(); e.preventDefault();
+      topWindow.querySelector('.crew-close')?.click();
+      return;
+    }
     const expanded = document.querySelector('.doclib-card-expanded');
     const think = document.querySelector('.thinking-content.expanded');
     if (expanded) {
@@ -1277,7 +1309,7 @@ if (!window._odyEscExpandGuard) {
         return;
       }
     }
-    const topModal = pickTopModal();
+    const topModal = getTopWindow();
     if (!topModal) return;
     const closeBtn = topModal.querySelector('.close-btn, .modal-close-btn, [data-action="close"]');
     e.stopImmediatePropagation();
@@ -1285,4 +1317,13 @@ if (!window._odyEscExpandGuard) {
     if (closeBtn) { try { closeBtn.click(); } catch {} }
     else { try { topModal.classList.add('hidden'); } catch {} }
   }, true);
+
+  // Let the focused tool receive Escape before ending its propagation at the
+  // page body. Legacy document listeners must not close a covered window or
+  // cancel Chat after a terminal/editor handled its own key.
+  document.body.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isCodingToolWindow(_targetEl(e.target)?.closest(WINDOW_SELECTOR))) {
+      e.stopPropagation();
+    }
+  });
 }
