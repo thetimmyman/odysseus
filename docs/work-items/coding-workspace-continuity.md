@@ -67,3 +67,32 @@ and does not extend the external-command/build-capacity qualification above.
 ![Unavailable selected folder on desktop](assets/ps617-terminal-folder-desktop.png)
 
 ![Retained folder error at phone size](assets/ps617-terminal-folder-mobile.png)
+
+The normal Docker configurations now give the application and its Terminal
+children a shared budget of 512 tasks. Terminal checks the kernel's actual
+private cgroup-v2 root, read-only mount and finite task ceiling before retaining
+the inherited process limit. This avoids counting unrelated programs using the
+same Linux account against Terminal's budget. Memory and core-file guards remain
+in force, and stricter inherited bounds are preserved.
+
+Unknown or unbounded layouts retain the existing UID-wide 512 fallback. A
+one-child probe now refuses startup if commands cannot launch, and required
+resource-guard failures also refuse. The existing status message keeps the
+reason visible with **Connect** available for retry. A busy bare-host account
+may need the bounded Docker deployment; the fallback does not add a separate
+host resource manager.
+
+Existing native updates preserve the active stack configuration. Applying the
+new repository defaults alone does not change an older deployment's 1024-task
+budget. Update that stack's `pids_limit` to 512 through a separate reversible
+configuration change before deploying this policy, preserving its original
+configuration and pinned image for rollback.
+
+The authenticated bare-host replay verifies this capacity refusal and retained
+retry state at desktop and phone-sized viewports. It does not claim successful
+commands on that saturated account. Native scoped-command and build evidence
+is recorded separately with the deployed source, image and actual cgroup limit.
+
+![Terminal capacity refusal on desktop](assets/ps617-terminal-capacity-desktop.png)
+
+![Terminal capacity refusal at phone size](assets/ps617-terminal-capacity-mobile.png)

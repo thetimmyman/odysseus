@@ -61,7 +61,7 @@
       "routes/skills_routes.py": "362400b8c316cd2585422ccadcdaaddd23b4882eb43cce0cc636dffd964cfbce",
       "routes/stt_routes.py": "f01ad705f311e90c70049412ab2cc9702083d526823197fd186fb97eb759abc8",
       "routes/task_routes.py": "a2dcd29970ea13f72b667d993a50703ab9a0d09a310c994cf02ee160a69212f2",
-      "routes/terminal_routes.py": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+      "routes/terminal_routes.py": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
       "routes/tts_routes.py": "8524446f454808be65a082271d20c76957378d1b3d3f3a38d69d66006e6e63a6",
       "routes/upload_routes.py": "e503b82c213c4f3ec14a4d21fcc043a74e55045fb1561f4fc13daf28c0bd0bf1",
       "routes/vault_routes.py": "3f96217fc1704d4f27f6b5d2124380f331741837d7360b2950933c0e43c02ee2",
@@ -4635,7 +4635,7 @@
         {
           "path": "routes/terminal_routes.py",
           "line": 1,
-          "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+          "sha256": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -4656,7 +4656,7 @@
         {
           "path": "routes/terminal_routes.py",
           "line": 1,
-          "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+          "sha256": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -4670,7 +4670,7 @@
           {
             "path": "routes/terminal_routes.py",
             "line": 1,
-            "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+            "sha256": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -4767,15 +4767,15 @@
           },
           {
             "path": "routes/terminal_routes.py",
-            "line": 140,
-            "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+            "line": 151,
+            "sha256": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
             "claim": "Missing/foreign conversations and unavailable/sensitive saved roots refuse instead of falling back."
           },
           {
             "path": "routes/terminal_routes.py",
-            "line": 208,
-            "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
-            "claim": "Bounded startup acknowledgement refuses child chdir/exec failure, cleans its child/descriptors, and preserves resource limits."
+            "line": 282,
+            "sha256": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
+            "claim": "Bounded startup acknowledges cwd, required resource-guard, initial command-capacity and exec failures before admission, with child/descriptor cleanup."
           },
           {
             "path": "static/js/terminal.js",
@@ -4788,6 +4788,12 @@
             "line": 239,
             "sha256": "a80999e503bf380defce7d6d9d814215745560c619345d49bc190defa1fc85d5",
             "claim": "Hiding/reopening a failed Terminal retains its actionable status until explicit Connect."
+          },
+          {
+            "path": "routes/terminal_routes.py",
+            "line": 193,
+            "sha256": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
+            "claim": "Only an observed read-only private cgroup-v2 root with pids.max at most 512 replaces UID-wide lowering; unknown layouts keep 512. Required guards preserve inherited stricter bounds and fail closed, with one bounded child probe before exec."
           }
         ],
         "navigation_evidence": [
@@ -13437,7 +13443,7 @@
         {
           "path": "routes/terminal_routes.py",
           "line": 1,
-          "sha256": "ba3e0470be87f903838497800b52f28bfaa05cae1f88540ed6afc7a4dbb02aa2",
+          "sha256": "82720b4231e423e73798bbf83333252ac47c65b8e51b7d75f15389e4b9633c18",
           "claim": "Terminal backend/PTY ownership source."
         },
         {

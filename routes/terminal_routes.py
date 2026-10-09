@@ -57,6 +57,17 @@ MAX_CONCURRENT_PTYS = int(os.getenv("TERMINAL_MAX_PTYS", "6"))               # a
 READ_CHUNK = 65536
 STARTUP_TIMEOUT_S = 5
 REAP_TIMEOUT_S = 1
+MAX_CHILD_TASKS = 512
+MAX_CHILD_ADDRESS_SPACE = 32 * 1024 ** 3
+CGROUP_MEMBERSHIP_PATH = Path("/proc/self/cgroup")
+CGROUP_MOUNTS_PATH = Path("/proc/self/mountinfo")
+CGROUP_PIDS_PATH = Path("/sys/fs/cgroup/pids.max")
+CGROUP_ROOT = "/sys/fs/cgroup"
+RESOURCE_LIMITS_UNAVAILABLE = "Terminal resource limits could not be applied. Contact the administrator, then reconnect."
+COMMAND_CAPACITY_UNAVAILABLE = (
+    "Terminal cannot launch commands within its resource limits. "
+    "Close unused terminals or contact the administrator, then reconnect."
+)
 WORKSPACE_UNAVAILABLE = (
     "Selected project folder is unavailable. Choose another folder or clear it, then reconnect."
 )
@@ -179,6 +190,65 @@ def _set_winsize(fd: int, cols: int, rows: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
 
+def _has_scoped_process_limit() -> bool:
+    """Recognise only a bounded, read-only private cgroup-v2 root.
+
+    Unknown host layouts keep the UID-wide fallback. Neither an environment
+    flag nor a container marker establishes a kernel-enforced task ceiling.
+    """
+    try:
+        if CGROUP_MEMBERSHIP_PATH.read_text(encoding="ascii").splitlines() != ["0::/"]:
+            return False
+        mounts = []
+        for line in CGROUP_MOUNTS_PATH.read_text(encoding="ascii").splitlines():
+            before, separator, after = line.partition(" - ")
+            fields = before.split()
+            if len(fields) >= 6 and fields[4] == CGROUP_ROOT:
+                mounts.append((fields, separator, after.split()))
+        # Reject ambiguous overmounts as well as unsupported mount layouts.
+        if len(mounts) != 1:
+            return False
+        fields, separator, filesystem = mounts[0]
+        options = set(fields[5].split(","))
+        if (
+            not separator or len(filesystem) < 3 or filesystem[0] != "cgroup2"
+            or fields[3] != "/" or "ro" not in options or "rw" in options
+        ):
+            return False
+        ceiling = CGROUP_PIDS_PATH.read_text(encoding="ascii").strip()
+        return ceiling.isascii() and ceiling.isdecimal() and 1 <= int(ceiling) <= MAX_CHILD_TASKS
+    except (OSError, UnicodeError, ValueError):
+        return False
+
+
+def _apply_child_resource_limits() -> None:
+    """Lower child limits; preserve stricter inherited bounds and fail closed."""
+    import resource as _res
+
+    limits = [(_res.RLIMIT_AS, MAX_CHILD_ADDRESS_SPACE), (_res.RLIMIT_CORE, 0)]
+    if not _has_scoped_process_limit():
+        limits.insert(0, (_res.RLIMIT_NPROC, MAX_CHILD_TASKS))
+    for kind, ceiling in limits:
+        inherited = _res.getrlimit(kind)
+        lowered = tuple(ceiling if value == _res.RLIM_INFINITY else min(value, ceiling) for value in inherited)
+        _res.setrlimit(kind, lowered)
+
+
+def _probe_command_capacity() -> None:
+    """One immediately reaped child checks initial fork capacity, not readiness."""
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    while True:
+        try:
+            waited, status = os.waitpid(pid, 0)
+            break
+        except InterruptedError:
+            continue
+    if waited != pid or not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+        raise OSError("Terminal capacity probe failed")
+
+
 async def _wait_for_exec(fd: int) -> None:
     """CLOEXEC EOF admits exec; a bounded child error refuses startup."""
     loop = asyncio.get_running_loop()
@@ -198,6 +268,10 @@ async def _wait_for_exec(fd: int) -> None:
                     return
                 if error == b"cwd":
                     raise TerminalStartupError(WORKSPACE_UNAVAILABLE)
+                if error == b"limits":
+                    raise TerminalStartupError(RESOURCE_LIMITS_UNAVAILABLE)
+                if error == b"capacity":
+                    raise TerminalStartupError(COMMAND_CAPACITY_UNAVAILABLE)
                 raise TerminalStartupError("Terminal shell could not start. Try reconnecting.")
     except TimeoutError as exc:
         raise TerminalStartupError("Terminal shell startup timed out. Try reconnecting.") from exc
@@ -230,15 +304,11 @@ async def _spawn_pty(cwd: str, cols: int, rows: int) -> tuple[int, int]:
         stage = b"cwd"
         try:
             os.chdir(cwd)
+            stage = b"limits"
+            _apply_child_resource_limits()
+            stage = b"capacity"
+            _probe_command_capacity()
             stage = b"exec"
-            # Preserve the existing resource guards and fixed login-shell argv.
-            try:
-                import resource as _res
-                _res.setrlimit(_res.RLIMIT_NPROC, (512, 512))
-                _res.setrlimit(_res.RLIMIT_AS, (32 * 1024 ** 3, 32 * 1024 ** 3))
-                _res.setrlimit(_res.RLIMIT_CORE, (0, 0))
-            except Exception:
-                pass
             env = {
                 "TERM": "xterm-256color",
                 "HOME": os.environ.get("HOME", "/app"),
