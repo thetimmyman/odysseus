@@ -15,7 +15,7 @@
       "routes/backup_routes.py": "dbb6ba02af0cec80fd6cbe384c3cbda6612a27da8f87382f57334d59659296bc",
       "routes/calendar_routes.py": "946367c66e26925c7a864b253790d64d15b88fb18b2b9fc68cd71c1267617627",
       "routes/chat_helpers.py": "0864e71f07746bed7513c73d597e8d85b91c5014d470713f9e245b1fe57aa1f3",
-      "routes/chat_routes.py": "52b82241daf449fb5d368cdf91826da1c3b3f86eaf83025eadb4ea52087da54a",
+      "routes/chat_routes.py": "c28a45396c8da8fa02eb811bbc4ba6ed209ebbff8193d611d34a5d01e1c1db72",
       "routes/chatgpt_subscription_routes.py": "21e10a76ac4af4d5010d87f671c339fde98bb32ba3a63dc733611717ce7a3811",
       "routes/cleanup_routes.py": "43a69d8c81eda210089bc80e2384288c19b3606e96c114c7c883797c444bcf1d",
       "routes/codex_routes.py": "b876c8fe5124c25eea6196cd38de4f811bb62a8bfc56706f7db328c504065217",
@@ -41,7 +41,7 @@
       "routes/gallery_helpers.py": "0b521b367a62b460ea370f8e18796e503cfe0977c3f90ebdb83f39487722a9ef",
       "routes/gallery_routes.py": "17a854ecfd6667be54497ec4a5541c7a32e2dd4462e2fcf6259391d2ceee1395",
       "routes/git_routes.py": "212f1d2df40291d2bf31a2212ed7ce0fc3f2ea0c7465294c2dbc0e93357fc25d",
-      "routes/history_routes.py": "bbc0e65db84897a2da27df4d7f7983c1f395feb92a0d4f3faf1339ac025afd79",
+      "routes/history_routes.py": "83123194601ad89b39e3f13b8a117fe498ed7e73f23d810011e455eb86a88075",
       "routes/hwfit_routes.py": "9f015fb899d09d34c05ef56fbb014fcfd26cffd05a9e287b3aae74f8602710fb",
       "routes/mcp_routes.py": "1746f4cf7b31990fcb96b125d837d7beeb779fe9e5589254498c8de6a2ab03bd",
       "routes/memory_routes.py": "32993b63eb624382a44a611718c5cd58b929094cc889906abab61f375324b70c",
@@ -51,11 +51,11 @@
       "routes/pi_runtime_routes.py": "26e0f119c04084df8cca634c28594279365dccb91a2808f73e2ab62e2456353f",
       "routes/prefs_routes.py": "ac4564759253e61490b6968893b3ec257e646adfa8e69fc6b8ce27f7d744c79c",
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
-      "routes/project_files_routes.py": "5dcefbdd3a58e8d1b203ca465c9f79c26faaefe91932bea34cea04e2d4dda600",
+      "routes/project_files_routes.py": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
       "routes/research_routes.py": "8401bb410cfefda7841dcbeb9d2530e082fe7eb62178f366b557f122a45a9b31",
       "routes/routing_harness_routes.py": "73408dc5005fe7532b5430d42579cee999545e95f7e1b0564ab8fa8cb392e86b",
       "routes/search_routes.py": "1510aa0e1bbf5cf537aea90406e29f95407eda507264e3d9eec09ca19fc4fb6a",
-      "routes/session_routes.py": "4c8bdb2e7838ee3bd750a1e824713889bda4aa6dbeaae29a4883f6fe5fbfcad8",
+      "routes/session_routes.py": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
       "routes/shell_routes.py": "7f76cc62bd0cc663212cc31e993893be70c11fcf14b186b1477bf988ad2fec8e",
       "routes/signature_routes.py": "6ad0eeb6e67b71db0af41e24f6b2aa7e4c2eb39d9c69474c5bbc21fa03425740",
       "routes/skills_routes.py": "362400b8c316cd2585422ccadcdaaddd23b4882eb43cce0cc636dffd964cfbce",
@@ -77,8 +77,8 @@
       "static/js/calendar/reminders.js": "fa14afc413d8fbb9d08e33bcc7718541439a11ce3cc57cad090cd3fa9e0f0e62",
       "static/js/calendar/utils.js": "d43f4b97d07687764a11d54c1d2e1718a1ca8f717a9a22d9c38d97cd1af1bae5",
       "static/js/censor.js": "3aac53189c7d54d94483e7b1fc8bfde01ae59f09f5a484bfff4b7c6c1c8620b4",
-      "static/js/chat.js": "5d247b5a959d178ab1f9358bcbf84d782dbf9688ac994faa2d6475b0d8f8ece6",
-      "static/js/chatRenderer.js": "ac2e7e886a6eaa1fda900913299bd9558ad864a0a9382d1626dd3c1311e16f61",
+      "static/js/chat.js": "91ea7efc86808c90ffeaf53da0a696ea1e74af4a2a3aa7d9caaad097af5b6ae8",
+      "static/js/chatRenderer.js": "27fd532e08ac3fde9d0acf8aff356d622f1fab26910ee90bbf314dfff8b5309c",
       "static/js/chatStream.js": "3c072bcd45c3b6667312e4343446d668f327a9f12e6a2d5cb0e0a10ae63d62cf",
       "static/js/codeRunner.js": "7ea9a5c685ee1367535624bdae544f8e3fa67d3cc4387aeb061af6b9470d9aad",
       "static/js/color/hex.js": "aecac275272b5c0df87a46e93e2ac839ecea93b4287382a41309ac1f60073bd5",
@@ -203,19 +203,19 @@
       "static/js/search-chat.js": "fe946f899e1ca968c78e629d0c3dde6a2b473e9d2d462c4aff7a2966cd7dabab",
       "static/js/search.js": "b8ebdc5f016196ffdb63d9aa6844a89c6061d60d8dd97d82f30737fc52e668e9",
       "static/js/section-management.js": "81e1d53073d5ab1de64236996a957a72cc193d82e6c9d94f6e1d7f628ebf5d7a",
-      "static/js/sessions.js": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+      "static/js/sessions.js": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
       "static/js/settings.js": "6c6ce004950b3b8d3746bb78509894f1e066ab47a7955c8cd8bc3ae2e2995c3f",
       "static/js/sidebar-layout.js": "107d50b1f442e6b7d09e30cc16db75f6f0758984993459b7343d2565ef657fe8",
       "static/js/signature.js": "fa7ff76a2fec54097c91b6ef37e0b24d896f371250feef958f53e9a8d874ea37",
       "static/js/skills.js": "c6e103e0e7dc300d9ac1d63d0eb3120d1442a7fa50908107f565b1668bd6b174",
       "static/js/slashAutocomplete.js": "30ad28658388344fba4c7224583513cf88e39a37d1269d66101baf619678fba1",
-      "static/js/slashCommands.js": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+      "static/js/slashCommands.js": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
       "static/js/spinner.js": "f2488ad53378db5f0de4151e090b6aa829321bd6428e03a5a98a8fc474ba6a59",
       "static/js/storage.js": "d625676e071b72edf3ae8e6360529e1774084e984ae18d7e84623ba35e55163f",
       "static/js/streamingRenderer.js": "f784abf40f0af86eaacf0e2e1a673b35a1ef16145bbb28d09d81b6682dc44871",
       "static/js/streamingSegmenter.js": "2d0d37779dad685d466cd64cf8a22282bf238dd8426a0d3ac46820f58bbd4b82",
       "static/js/tasks.js": "8f09c779104cf3e92252c90a08ac662e75f4b4bc368a6460d7bcfd514e07d6d0",
-      "static/js/terminal.js": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+      "static/js/terminal.js": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
       "static/js/theme.js": "8fc9b9b629bce352a6216152683a7ec6cd31f0e6ed803aeda7bb250c910fe433",
       "static/js/tileManager.js": "dd89ffa0b2ba8636ab40382809768f75b7843c97e1125dd55d40331fed5f326d",
       "static/js/tourAutoplay.js": "8e1a238233034600b5a0bd9972c0510ad40507553cf5bd48ed2ef71086c3b458",
@@ -226,7 +226,7 @@
       "static/js/voiceRecorder.js": "b137f89a6e6de7c0427b92504d5140fc79808e0d4a35965d03a909b11fcaa916",
       "static/js/windowDrag.js": "ace5957244371532d94af672e25bf1cd82fd793ec90f51b0449867de7de5eb17",
       "static/js/windowResize.js": "baaec99bfd43d9ac461f928c3d4a0904b98b1404a375b89b52807f1ba16873bf",
-      "static/js/workspace.js": "53791008ad3a97b5ada110b0c6b545c274d70599e1bb3086404e7f4486c9fb7c",
+      "static/js/workspace.js": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
       "static/login.html": "ab86423b69c887f6a7217d8590fa8ba874da0f64e66b6abea1ee8c8f38aea4e0",
       "static/style.css": "59d5b0e0c2ffcea81a3c0ba4f07277c9b16906697c3af3cf764e2dde90233d93"
     },
@@ -1858,19 +1858,19 @@
         {
           "path": "static/js/chat.js",
           "line": 1,
-          "sha256": "5d247b5a959d178ab1f9358bcbf84d782dbf9688ac994faa2d6475b0d8f8ece6",
+          "sha256": "91ea7efc86808c90ffeaf53da0a696ea1e74af4a2a3aa7d9caaad097af5b6ae8",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
           "path": "static/js/sessions.js",
           "line": 1,
-          "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+          "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
           "path": "static/js/chatRenderer.js",
           "line": 1,
-          "sha256": "ac2e7e886a6eaa1fda900913299bd9558ad864a0a9382d1626dd3c1311e16f61",
+          "sha256": "27fd532e08ac3fde9d0acf8aff356d622f1fab26910ee90bbf314dfff8b5309c",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -1888,7 +1888,7 @@
         {
           "path": "static/js/slashCommands.js",
           "line": 1,
-          "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+          "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
           "claim": "Owning frontend module; surface-specific behavior is detailed in shell_behavior and responsive_behavior."
         }
       ],
@@ -1903,19 +1903,19 @@
         {
           "path": "static/js/chat.js",
           "line": 1,
-          "sha256": "5d247b5a959d178ab1f9358bcbf84d782dbf9688ac994faa2d6475b0d8f8ece6",
+          "sha256": "91ea7efc86808c90ffeaf53da0a696ea1e74af4a2a3aa7d9caaad097af5b6ae8",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
           "path": "static/js/sessions.js",
           "line": 1,
-          "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+          "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
           "path": "static/js/chatRenderer.js",
           "line": 1,
-          "sha256": "ac2e7e886a6eaa1fda900913299bd9558ad864a0a9382d1626dd3c1311e16f61",
+          "sha256": "27fd532e08ac3fde9d0acf8aff356d622f1fab26910ee90bbf314dfff8b5309c",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -1933,8 +1933,26 @@
         {
           "path": "static/js/slashCommands.js",
           "line": 1,
-          "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+          "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
           "claim": "Owning frontend module state reference."
+        },
+        {
+          "path": "routes/session_routes.py",
+          "line": 125,
+          "sha256": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
+          "claim": "Existing owned session project_root is the single saved workspace; explicit changes require an admin browser session, validate the directory/sensitive-path policy, and refuse during an active run."
+        },
+        {
+          "path": "routes/chat_routes.py",
+          "line": 530,
+          "sha256": "c28a45396c8da8fa02eb811bbc4ba6ed209ebbff8193d611d34a5d01e1c1db72",
+          "claim": "Native Chat resolves its workspace from the owned saved session or a validated explicit draft/legacy update before starting the turn."
+        },
+        {
+          "path": "routes/chat_routes.py",
+          "line": 1233,
+          "sha256": "c28a45396c8da8fa02eb811bbc4ba6ed209ebbff8193d611d34a5d01e1c1db72",
+          "claim": "Completed native assistant metadata records the workspace captured for this turn alongside tool/execution metadata."
         }
       ],
       "backend_dependencies": {
@@ -1942,19 +1960,19 @@
           "routes/chat_routes.py",
           "routes/session_routes.py"
         ],
-        "session_state": "Authenticated chat/session routes; session identity and message history are distinct from shared shell context.",
+        "session_state": "Owned session identity, message history and canonical project_root are persisted together; each completed turn records the effective workspace used for its tools.",
         "scope": "session",
         "evidence": [
           {
             "path": "routes/chat_routes.py",
             "line": 1,
-            "sha256": "52b82241daf449fb5d368cdf91826da1c3b3f86eaf83025eadb4ea52087da54a",
+            "sha256": "c28a45396c8da8fa02eb811bbc4ba6ed209ebbff8193d611d34a5d01e1c1db72",
             "claim": "Backend route source associated with this surface."
           },
           {
             "path": "routes/session_routes.py",
             "line": 1,
-            "sha256": "4c8bdb2e7838ee3bd750a1e824713889bda4aa6dbeaae29a4883f6fe5fbfcad8",
+            "sha256": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -1986,7 +2004,7 @@
           {
             "path": "static/js/chat.js",
             "line": 1,
-            "sha256": "5d247b5a959d178ab1f9358bcbf84d782dbf9688ac994faa2d6475b0d8f8ece6",
+            "sha256": "91ea7efc86808c90ffeaf53da0a696ea1e74af4a2a3aa7d9caaad097af5b6ae8",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -2006,6 +2024,30 @@
             "line": 247,
             "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
             "claim": "The global chat-cancel shortcut preserves a Chat request behind a topmost Terminal or Preview window, including when the tool input keeps Escape ownership."
+          },
+          {
+            "path": "static/js/chat.js",
+            "line": 506,
+            "sha256": "91ea7efc86808c90ffeaf53da0a696ea1e74af4a2a3aa7d9caaad097af5b6ae8",
+            "claim": "Send waits for a pending folder save before consuming the draft, reports refusal without entering the stream path, and refuses routing if the selected conversation changed while waiting."
+          },
+          {
+            "path": "static/js/sessions.js",
+            "line": 1596,
+            "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
+            "claim": "History restores the saved project only when both the session navigation token and confirmed workspace revision remain current."
+          },
+          {
+            "path": "static/js/sessions.js",
+            "line": 1853,
+            "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
+            "claim": "A failed first-session workspace save retains the created owned session ID and draft folder so the next materialization retries its PATCH without another session POST."
+          },
+          {
+            "path": "static/js/chatRenderer.js",
+            "line": 2057,
+            "sha256": "27fd532e08ac3fde9d0acf8aff356d622f1fab26910ee90bbf314dfff8b5309c",
+            "claim": "Saved legacy string diffs use the string renderer; structured edit diffs continue through the existing object renderer so later rounds and final text can restore."
           }
         ],
         "navigation_evidence": [
@@ -2089,7 +2131,7 @@
           "static/js/markdown.js",
           "static/js/slashCommands.js"
         ],
-        "state_owner_summary": "session"
+        "state_owner_summary": "Owned session and history, with one persisted session project_root and per-turn effective workspace metadata."
       },
       "responsive_behavior": {
         "desktop_source": "Surface root/markup is cited; no desktop CSS rule is attributed unless the selector is proven to apply to that root.",
@@ -2611,8 +2653,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open compare command target mapping."
             }
           }
@@ -2828,8 +2870,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1329,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1330,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open cookbook command target mapping."
             }
           },
@@ -2838,8 +2880,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1329,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1330,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open cook command target mapping."
             }
           }
@@ -3008,8 +3050,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open research command target mapping."
             }
           },
@@ -3472,8 +3514,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open gallery command target mapping."
             }
           }
@@ -3552,7 +3594,7 @@
         {
           "path": "static/js/sessions.js",
           "line": 1,
-          "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+          "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -3573,7 +3615,7 @@
         {
           "path": "static/js/sessions.js",
           "line": 1,
-          "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+          "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -3595,13 +3637,13 @@
           {
             "path": "routes/history_routes.py",
             "line": 1,
-            "sha256": "bbc0e65db84897a2da27df4d7f7983c1f395feb92a0d4f3faf1339ac025afd79",
+            "sha256": "83123194601ad89b39e3f13b8a117fe498ed7e73f23d810011e455eb86a88075",
             "claim": "Backend route source associated with this surface."
           },
           {
             "path": "routes/session_routes.py",
             "line": 1,
-            "sha256": "4c8bdb2e7838ee3bd750a1e824713889bda4aa6dbeaae29a4883f6fe5fbfcad8",
+            "sha256": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
             "claim": "Backend route source associated with this surface."
           },
           {
@@ -3639,7 +3681,7 @@
           {
             "path": "static/js/sessions.js",
             "line": 1,
-            "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+            "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -3701,8 +3743,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open library command target mapping."
             }
           },
@@ -3711,8 +3753,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open documents command target mapping."
             }
           },
@@ -3721,8 +3763,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open docs command target mapping."
             }
           },
@@ -3731,8 +3773,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open archive command target mapping."
             }
           }
@@ -3752,8 +3794,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/js/sessions.js",
-            "line": 2643,
-            "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+            "line": 2662,
+            "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
             "claim": "Chat Library modal root #library-modal."
           },
           {
@@ -3936,8 +3978,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open brain command target mapping."
             }
           },
@@ -3946,8 +3988,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open memory command target mapping."
             }
           },
@@ -3956,8 +3998,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open memories command target mapping."
             }
           }
@@ -4135,8 +4177,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open notes command target mapping."
             }
           }
@@ -4333,8 +4375,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open tasks command target mapping."
             }
           }
@@ -4521,8 +4563,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1353,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1354,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open theme command target mapping."
             }
           }
@@ -4587,7 +4629,7 @@
         {
           "path": "static/js/terminal.js",
           "line": 1,
-          "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+          "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4608,7 +4650,7 @@
         {
           "path": "static/js/terminal.js",
           "line": 1,
-          "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+          "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4622,7 +4664,7 @@
         "apis": [
           "routes/terminal_routes.py"
         ],
-        "session_state": "PTY registry is scoped by owner/session/connection; session project path is context only.",
+        "session_state": "The owned session project_root supplies initial shell cwd; PTY registry and process lifecycle remain scoped by owner/session/connection.",
         "scope": "owner/session/connection",
         "evidence": [
           {
@@ -4641,7 +4683,7 @@
       },
       "shell_behavior": {
         "shared_escape_arbiter": "The static/index.html SPA capture-phase Escape arbiter and visible-window promotion explicitly include #terminal-overlay and #preview-overlay alongside ordinary .modal roots. Each tool open explicitly calls the shared focusWindow after showing, so reopening an already-visible lower tool does not depend on a display mutation. When this tool is the top eligible window, Escape delegates to its own close button after registered-menu dismissal and the existing input/textarea/select/contenteditable guard. Tool-local editable targets receive the key; its bubbling then ends at the body before legacy document handlers can dismiss a covered window. The capture bulk-cancel and global Chat-cancel handlers also defer to a top coding tool. This is source behavior, not a broad runtime or device-usability claim.",
-        "surface_specific_close": "Terminal button opens the overlay; its close button hides the overlay and intentionally keeps the current PTY/WebSocket alive for resume. The former independent document Escape listener is removed; the shared arbiter delegates to that same close button. Explicit Stop still disconnects. Do not infer process termination or session rebinding from close.",
+        "surface_specific_close": "Terminal button opens the overlay; its close button hides the overlay and intentionally keeps the current PTY/WebSocket alive for resume. The former independent document Escape listener is removed; the shared arbiter delegates to that same close button. Explicit Stop still disconnects. Do not infer process termination or session rebinding from close. A changed selected session or saved project displays Reconnect and blocks input to the old bound shell. Explicit Reconnect closes that connection and opens the current target; returning to the still-bound project restores its existing connection.",
         "browser_back": "UNKNOWN; no browser history/back behavior was observed or asserted by this source inventory.",
         "swipe": "UNKNOWN unless a surface-specific source handler is cited; no device observation was performed.",
         "evidence": [
@@ -4653,14 +4695,14 @@
           },
           {
             "path": "static/js/terminal.js",
-            "line": 214,
-            "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+            "line": 244,
+            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
             "claim": "Terminal open/close handlers and PTY-preserving close behavior."
           },
           {
             "path": "static/js/terminal.js",
-            "line": 223,
-            "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+            "line": 253,
+            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
             "claim": "Terminal open, close, Connect and explicit Stop bindings; no independent document Escape listener remains."
           },
           {
@@ -4701,9 +4743,27 @@
           },
           {
             "path": "static/js/terminal.js",
-            "line": 205,
-            "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+            "line": 235,
+            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
             "claim": "Every Terminal open shows the overlay and explicitly calls shared focusWindow before activation; existing PTY connection behavior remains with Terminal."
+          },
+          {
+            "path": "static/js/terminal.js",
+            "line": 21,
+            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "claim": "Terminal compares the selected session/root to the live connection binding and marks a changed target for explicit reconnect."
+          },
+          {
+            "path": "static/js/terminal.js",
+            "line": 101,
+            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "claim": "Shell input is sent only to an open socket whose bound session/root still matches the selected target."
+          },
+          {
+            "path": "static/js/terminal.js",
+            "line": 211,
+            "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+            "claim": "Canonical workspace restoration refreshes terminal target context; ordinary hide/reopen preserves the PTY, while the Connect control performs explicit reconnect for a changed target."
           }
         ],
         "navigation_evidence": [
@@ -4769,7 +4829,7 @@
       "id": "workspace-browser",
       "name": "Workspace browser",
       "purpose": "Project/file path selection tool within the session workspace.",
-      "primary_tasks": "Directory selection and file navigation; distinct from chat/session identity.",
+      "primary_tasks": "Choose or clear an owned session project folder, retain an unmaterialized draft selection, and navigate files within the saved project root.",
       "frontend_modules": [
         "static/js/workspace.js"
       ],
@@ -4782,7 +4842,7 @@
         {
           "path": "static/js/workspace.js",
           "line": 1,
-          "sha256": "53791008ad3a97b5ada110b0c6b545c274d70599e1bb3086404e7f4486c9fb7c",
+          "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4792,12 +4852,12 @@
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
-      "state_scope": "project/workspace context",
+      "state_scope": "owned session project_root; unmaterialized browser draft",
       "state_evidence": [
         {
           "path": "static/js/workspace.js",
           "line": 1,
-          "sha256": "53791008ad3a97b5ada110b0c6b545c274d70599e1bb3086404e7f4486c9fb7c",
+          "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4805,15 +4865,28 @@
           "line": 1,
           "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
+        },
+        {
+          "path": "static/js/workspace.js",
+          "line": 29,
+          "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
+          "claim": "Workspace restoration displays the canonical saved session path, clears the draft storage for saved sessions, and refreshes Terminal target context; stale history revisions are refused."
+        },
+        {
+          "path": "static/js/workspace.js",
+          "line": 64,
+          "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
+          "claim": "Picker and clear choices serialize owner-bound PATCH requests and apply only confirmed canonical results; late saves update their owner metadata without replacing another selected session."
         }
       ],
       "backend_dependencies": {
         "apis": [
           "routes/workspace_routes.py",
-          "routes/project_files_routes.py"
+          "routes/project_files_routes.py",
+          "routes/session_routes.py"
         ],
-        "session_state": "Directory selection is workspace context, not chat identity or permission grant.",
-        "scope": "project/workspace context",
+        "session_state": "Directory selection saves the canonical project_root on the owned session. Browser storage holds only an unmaterialized draft; choosing a directory does not grant additional file permissions.",
+        "scope": "owned session project_root; existing file/terminal authorization boundaries",
         "evidence": [
           {
             "path": "routes/workspace_routes.py",
@@ -4824,8 +4897,26 @@
           {
             "path": "routes/project_files_routes.py",
             "line": 1,
-            "sha256": "5dcefbdd3a58e8d1b203ca465c9f79c26faaefe91932bea34cea04e2d4dda600",
+            "sha256": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
             "claim": "Backend route source associated with this surface."
+          },
+          {
+            "path": "routes/session_routes.py",
+            "line": 502,
+            "sha256": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
+            "claim": "PATCH /api/session/{sid} distinguishes omitted project_root from an explicit empty clear and delegates to the existing owner/admin/active-run validator and SessionManager persistence."
+          },
+          {
+            "path": "routes/session_routes.py",
+            "line": 573,
+            "sha256": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
+            "claim": "GET /api/session/{sid}/workspace returns project_root only after verifying the caller owns the session; it is a JSON metadata endpoint."
+          },
+          {
+            "path": "routes/project_files_routes.py",
+            "line": 41,
+            "sha256": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
+            "claim": "The file explorer resolves relative/absolute paths through the existing workspace-confined helper after privilege, owner and saved-root checks; sensitive and escaping symlink paths remain refused."
           }
         ]
       },
@@ -4850,7 +4941,7 @@
           {
             "path": "static/js/workspace.js",
             "line": 1,
-            "sha256": "53791008ad3a97b5ada110b0c6b545c274d70599e1bb3086404e7f4486c9fb7c",
+            "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -4881,7 +4972,7 @@
         "frontend_owner_modules": [
           "static/js/workspace.js"
         ],
-        "state_owner_summary": "project/workspace context"
+        "state_owner_summary": "owned session project_root; unmaterialized browser draft"
       },
       "responsive_behavior": {
         "desktop_source": "Workspace creates #workspace-modal.modal with a nested .modal-content child; the shared base rule gives that exact dialog sizing and layout. No narrow-screen-specific association was verified, so mobile behavior remains UNKNOWN.",
@@ -4891,8 +4982,8 @@
         "responsive_source_evidence": [
           {
             "path": "static/js/workspace.js",
-            "line": 97,
-            "sha256": "53791008ad3a97b5ada110b0c6b545c274d70599e1bb3086404e7f4486c9fb7c",
+            "line": 148,
+            "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
             "claim": "Workspace browser modal root created as #workspace-modal."
           },
           {
@@ -5833,8 +5924,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1329,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1330,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open settings command target mapping."
             }
           },
@@ -5843,8 +5934,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1329,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1330,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open setting command target mapping."
             }
           },
@@ -5853,8 +5944,8 @@
             "reason": "Composer /open alias from the source-derived command table.",
             "evidence": {
               "path": "static/js/slashCommands.js",
-              "line": 1329,
-              "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+              "line": 1330,
+              "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
               "claim": "/open config command target mapping."
             }
           }
@@ -5919,7 +6010,7 @@
         {
           "path": "static/js/sessions.js",
           "line": 1,
-          "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+          "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -5934,7 +6025,7 @@
         {
           "path": "static/js/sessions.js",
           "line": 1,
-          "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+          "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -5980,7 +6071,7 @@
           {
             "path": "static/js/sessions.js",
             "line": 1,
-            "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+            "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
             "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
           },
           {
@@ -8284,7 +8375,7 @@
         "source": {
           "path": "static/js/chat.js",
           "line": 1,
-          "sha256": "5d247b5a959d178ab1f9358bcbf84d782dbf9688ac994faa2d6475b0d8f8ece6",
+          "sha256": "91ea7efc86808c90ffeaf53da0a696ea1e74af4a2a3aa7d9caaad097af5b6ae8",
           "claim": "Sealed module containing dynamic DOM candidates."
         },
         "candidates": [
@@ -8306,7 +8397,7 @@
         "source": {
           "path": "static/js/chatRenderer.js",
           "line": 1,
-          "sha256": "ac2e7e886a6eaa1fda900913299bd9558ad864a0a9382d1626dd3c1311e16f61",
+          "sha256": "27fd532e08ac3fde9d0acf8aff356d622f1fab26910ee90bbf314dfff8b5309c",
           "claim": "Sealed module containing dynamic DOM candidates."
         },
         "candidates": [
@@ -11417,7 +11508,7 @@
         "source": {
           "path": "static/js/sessions.js",
           "line": 1,
-          "sha256": "75062f6ab295ac84caf6208b1a697853655b7d31d81ead401246f0f17fbede4a",
+          "sha256": "62245d9ea8bbd21d589df7e6dd6f1da81fc829a683279f6282dfce72e9c15548",
           "claim": "Sealed module containing dynamic DOM candidates."
         },
         "candidates": [
@@ -12335,7 +12426,7 @@
         "source": {
           "path": "static/js/slashCommands.js",
           "line": 1,
-          "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+          "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
           "claim": "Sealed module containing dynamic DOM candidates."
         },
         "candidates": [
@@ -12661,7 +12752,7 @@
         "source": {
           "path": "static/js/workspace.js",
           "line": 1,
-          "sha256": "53791008ad3a97b5ada110b0c6b545c274d70599e1bb3086404e7f4486c9fb7c",
+          "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
           "claim": "Sealed module containing dynamic DOM candidates."
         },
         "candidates": [
@@ -12736,6 +12827,17 @@
           "line": 839,
           "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
           "claim": "serve_backgrounds route references missing file."
+        }
+      },
+      {
+        "candidate": "GET /api/session/{sid}/workspace",
+        "type": "owned_session_metadata_api",
+        "reason": "Owner-checked JSON project metadata supports the existing workspace surface; it creates no navigable HTML page or separate UI surface.",
+        "source": {
+          "path": "routes/session_routes.py",
+          "line": 573,
+          "sha256": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
+          "claim": "Workspace metadata route declaration and owner check."
         }
       }
     ],
@@ -12950,8 +13052,8 @@
       ],
       "source": {
         "path": "static/js/slashCommands.js",
-        "line": 5976,
-        "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+        "line": 5977,
+        "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
         "claim": "COMMANDS table defines /open with /show alias; _cmdOpen dispatches these destination terms."
       },
       "target_aliases": [
@@ -12960,8 +13062,8 @@
           "surface_id": "cookbook",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1329,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1330,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -12970,8 +13072,8 @@
           "surface_id": "cookbook",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1329,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1330,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -12980,8 +13082,8 @@
           "surface_id": "settings-admin",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1329,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1330,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -12990,8 +13092,8 @@
           "surface_id": "settings-admin",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1329,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1330,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13000,8 +13102,8 @@
           "surface_id": "settings-admin",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1329,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1330,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13010,8 +13112,8 @@
           "surface_id": "gallery-editor",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13020,8 +13122,8 @@
           "surface_id": "notes",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13030,8 +13132,8 @@
           "surface_id": "tasks-agents",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13040,8 +13142,8 @@
           "surface_id": "library-history",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13050,8 +13152,8 @@
           "surface_id": "library-history",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13060,8 +13162,8 @@
           "surface_id": "library-history",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13070,8 +13172,8 @@
           "surface_id": "library-history",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13080,8 +13182,8 @@
           "surface_id": "brain",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13090,8 +13192,8 @@
           "surface_id": "brain",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13100,8 +13202,8 @@
           "surface_id": "brain",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13110,8 +13212,8 @@
           "surface_id": "deep-research",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13120,8 +13222,8 @@
           "surface_id": "compare",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         },
@@ -13130,8 +13232,8 @@
           "surface_id": "theme",
           "source": {
             "path": "static/js/slashCommands.js",
-            "line": 1353,
-            "sha256": "0f9894653338e51f33069149bc743e83b0039000f34e44c0c3cbceb5dd2b5c1f",
+            "line": 1354,
+            "sha256": "f7fb3025a84ed95b770f6e751443c84eb232bb827a5c286ead6f92bfe5480a1f",
             "claim": "_cmdOpen direct branch or targets map; exact table target handled by the sealed source pin."
           }
         }
@@ -13278,8 +13380,8 @@
     },
     "workspace_map": {
       "surfaces": {
-        "Chat": "active session and session history identifiers are used by chat/sessions modules.",
-        "Terminal": "PTY registry is scoped by owner/session/connection; keep terminal lifecycle distinct.",
+        "Chat": "Chat uses the owned session project_root for native tools and records the effective workspace in completed assistant metadata. Session identity and history remain owned by that session.",
+        "Terminal": "Terminal initial cwd uses the same owned session project_root. Its live PTY remains independently bound by owner/session/connection; a changed selected session/root requires explicit reconnect before more shell input.",
         "Argo/Crew/Voyage": "The current session supplies project_root context, while voyage/run/approval timeline state is independently represented. Crew run/timeline are subviews under the Argo surface, not a phantom second top-level screen.",
         "Deep Research": "job/task state is maintained as a research subsystem; common session context does not prove shared lifecycle.",
         "Compare": "comparison panes and history have their own UI state. static/js/compare/index.js:54-65 sends a bulk-delete beacon for its own paneSessionIds on beforeunload when saveOnClose is false; retain this transient pane cleanup separately from primary Chat history. This is source behavior, not observed user loss or measured friction.",
@@ -13287,7 +13389,7 @@
         "Project Preview": "same preview overlay, not evidence that it shares workspace session state.",
         "Library": "sessions.openLibrary normally delegates to documentModule.openLibrary; /library route and sidebar use the same normal Document Library path. A conditional legacy library-modal fallback remains source-mapped."
       },
-      "shared_session_refs": "The shell passes current session or project_root into several tools; shared identifiers are context references only, not proof of safe state merger.",
+      "shared_session_refs": "Chat, workspace selection and Terminal share the saved owned session project_root; session navigation restores that canonical path. This path handoff does not merge PTY, preview, voyage, research or comparison lifecycles.",
       "evidence": [
         {
           "path": "static/app.js",
@@ -13304,7 +13406,7 @@
         {
           "path": "static/js/workspace.js",
           "line": 1,
-          "sha256": "53791008ad3a97b5ada110b0c6b545c274d70599e1bb3086404e7f4486c9fb7c",
+          "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
           "claim": "Workspace/project path dialog."
         },
         {
@@ -13318,6 +13420,24 @@
           "line": 1,
           "sha256": "5f127e256271f02e9dfd119e6848f2f8dae3cc26a21e1b4762586d835342bc33",
           "claim": "Crew/run state source."
+        },
+        {
+          "path": "routes/session_routes.py",
+          "line": 125,
+          "sha256": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
+          "claim": "Owned/admin-gated project_root validation and persistence is shared by session updates and Chat workspace resolution."
+        },
+        {
+          "path": "static/js/workspace.js",
+          "line": 29,
+          "sha256": "f3c5b135939e62cfb7b8371f03c9697528d8149bb216092d74f8830cc6f861bd",
+          "claim": "Saved workspace restoration and confirmed-choice revisions coordinate session history, the picker and Terminal target context."
+        },
+        {
+          "path": "static/js/terminal.js",
+          "line": 21,
+          "sha256": "443980189bf3264a7b7018ab299cf518e564670ea4f3733a251941afbfb6e531",
+          "claim": "Live Terminal session/root binding is compared with the selected context before allowing input or explicit reconnect."
         }
       ],
       "Deep Research": "The primary research panel is created in the index.html SPA and participates in its shared shell. The HTML research report route is a separate route-rendered subview. Mobile source rules are tied only to #research-overlay/#research-pane; no observed usability is claimed."

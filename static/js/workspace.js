@@ -2,8 +2,7 @@
 //
 // Workspace picker: browse server directories in a draggable modal, choose a
 // folder, and show it as a removable pill in the chat input bar. While set, the
-// chat request sends `workspace` so the agent's file/shell tools are confined
-// to that folder (see routes/chat_routes.py + src/tool_execution.py).
+// chosen folder is saved on the session, shared by Chat and Terminal.
 
 import Storage, { KEYS } from './storage.js';
 import uiModule from './ui.js';
@@ -14,9 +13,30 @@ const API_BASE = window.location.origin;
 const _FOLDER_SVG = '<svg class="workspace-row-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 let _modal = null;
 let _curPath = '';
+let _sessionId = null;
+let _sessionPath = '';
+let _saving = null;
+let _revision = 0;
+
+export function getRevision() { return _revision; }
 
 export function getWorkspace() {
+  const sid = window.sessionModule?.getCurrentSessionId();
+  if (sid) return sid === _sessionId ? _sessionPath : '';
   return Storage.get(KEYS.WORKSPACE, '') || '';
+}
+
+export function restoreWorkspace(sessionId, path, revision) {
+  if (revision !== undefined && revision !== _revision) return;
+  _sessionId = sessionId;
+  _sessionPath = path || '';
+  if (sessionId) Storage.remove(KEYS.WORKSPACE);
+  syncWorkspaceIndicator(getWorkspace());
+  window.terminalModule?.refresh(sessionId, _sessionPath);
+}
+
+export async function waitForWorkspace() {
+  if (_saving) await _saving;
 }
 
 function _basename(p) {
@@ -41,15 +61,46 @@ export function syncWorkspaceIndicator(path) {
   try { document.dispatchEvent(new CustomEvent('overflow-state-change')); } catch (_) {}
 }
 
-export function setWorkspace(path) {
-  if (path) Storage.set(KEYS.WORKSPACE, path);
-  else Storage.remove(KEYS.WORKSPACE);
-  syncWorkspaceIndicator(path || '');
+export async function setWorkspace(path) {
+  const sid = window.sessionModule?.getCurrentSessionId();
+  const save = async () => {
+    if (!sid) {
+      if (window.sessionModule?.getCurrentSessionId()) return;
+      _revision++;
+      if (path) Storage.set(KEYS.WORKSPACE, path);
+      else Storage.remove(KEYS.WORKSPACE);
+      syncWorkspaceIndicator(path || '');
+      return;
+    }
+    const res = await fetch(`${API_BASE}/api/session/${encodeURIComponent(sid)}`, {
+      method: 'PATCH', credentials: 'same-origin',
+      body: new URLSearchParams({ project_root: path || '' }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Could not save workspace');
+    const meta = window.sessionModule?.getSessions().find(s => s.id === sid);
+    if (meta) meta.project_root = data.project_root;
+    if (window.sessionModule?.getCurrentSessionId() === sid) {
+      _revision++;
+      restoreWorkspace(sid, data.project_root);
+    }
+  };
+  // Serialize picker/clear requests so the last confirmed choice wins.
+  const pending = (_saving || Promise.resolve()).catch(() => {}).then(save);
+  _saving = pending;
+  try { await pending; }
+  finally { if (_saving === pending) _saving = null; }
 }
 
-export function clearWorkspace() {
-  setWorkspace('');
-  if (uiModule && uiModule.showToast) uiModule.showToast('Workspace cleared');
+export async function clearWorkspace() {
+  try {
+    await setWorkspace('');
+    uiModule.showToast('Workspace cleared');
+    return true;
+  } catch (error) {
+    uiModule.showError(error.message || 'Could not clear workspace');
+    return false;
+  }
 }
 
 async function _load(path) {
@@ -123,10 +174,15 @@ function _getModal() {
       if (v) _navigate(v);
     }
   });
-  _modal.querySelector('#workspace-use').addEventListener('click', () => {
-    setWorkspace(_curPath);
-    if (uiModule && uiModule.showToast) uiModule.showToast(`Workspace set: ${_basename(_curPath)}`);
-    closeWorkspaceBrowser();
+  _modal.querySelector('#workspace-use').addEventListener('click', async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      await setWorkspace(_curPath);
+      uiModule.showToast(`Workspace set: ${_basename(_curPath)}`);
+      closeWorkspaceBrowser();
+    } catch (error) {
+      uiModule.showError(error.message || 'Could not save workspace');
+    } finally { _modal.querySelector('#workspace-use').disabled = false; }
   });
   const content = _modal.querySelector('.modal-content');
   const header = _modal.querySelector('.modal-header');
@@ -157,4 +213,4 @@ export function initWorkspace() {
   if (pill) pill.addEventListener('click', clearWorkspace);
 }
 
-export default { initWorkspace, openWorkspaceBrowser, getWorkspace, setWorkspace, clearWorkspace, syncWorkspaceIndicator };
+export default { initWorkspace, openWorkspaceBrowser, getWorkspace, setWorkspace, clearWorkspace, syncWorkspaceIndicator, restoreWorkspace, waitForWorkspace, getRevision };

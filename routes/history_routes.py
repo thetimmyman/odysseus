@@ -116,6 +116,7 @@ def setup_history_routes(session_manager) -> APIRouter:
 
         return {
             "history": history_dict,
+            "project_root": getattr(session, "project_root", None),
             "model": session.model,
             "endpoint_url": session.endpoint_url,
             "name": session.name,

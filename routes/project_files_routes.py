@@ -8,7 +8,7 @@ from src.auth_helpers import effective_user, require_privilege
 from routes.session_routes import _verify_session_owner
 from src.tool_execution import (
     _get_session_project_root,
-    _resolve_tool_path,
+    _resolve_tool_path_in_workspace,
     _is_sensitive_path,
 )
 
@@ -38,7 +38,7 @@ def _confined(request: Request, session_id: Optional[str], raw_path=None):
     if raw_path is None:
         return owner, root, root
     try:
-        resolved = _resolve_tool_path(raw_path, session_id, owner)  # raises ValueError
+        resolved = _resolve_tool_path_in_workspace(root, raw_path)  # raises ValueError
     except ValueError as e:
         raise HTTPException(403, str(e))
     return owner, root, resolved
@@ -74,7 +74,7 @@ def setup_project_files_routes():
                         continue
                     # symlink-escape guard: drop children that resolve outside root
                     try:
-                        _resolve_tool_path(abspath, session_id, owner)
+                        _resolve_tool_path_in_workspace(root, abspath)
                     except ValueError:
                         continue
                     is_dir = entry.is_dir(follow_symlinks=False)

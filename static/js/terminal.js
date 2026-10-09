@@ -6,6 +6,9 @@ import { focusWindow } from './ui.js';
 
 let API_BASE = '';
 let _curSession = null;
+let _curRoot = '';
+let _boundSession = null;
+let _boundRoot = '';
 
 let _term = null;       // xterm.js Terminal
 let _fit = null;        // FitAddon instance
@@ -14,6 +17,16 @@ let _libsLoading = null; // promise guard so we load xterm assets once
 let _connected = false;
 let _disposed = false;
 let _resizeObs = null;
+
+function _targetChanged() {
+  return !!_ws && (_boundSession !== _sessionId() || _boundRoot !== _curRoot);
+}
+
+function _showTargetChange() {
+  if (!_targetChanged()) return;
+  _status('Project changed - reconnect to use it', '');
+  _setBtns(true);
+}
 
 function _sessionId() {
   const sm = window.sessionModule;
@@ -85,7 +98,7 @@ function _ensureTerm() {
 
   // The server's shell argv is fixed; keystrokes can't change what runs.
   _term.onData((data) => {
-    if (_ws && _ws.readyState === WebSocket.OPEN) {
+    if (_ws && _ws.readyState === WebSocket.OPEN && !_targetChanged()) {
       _ws.send(JSON.stringify({ type: 'input', data }));
     }
   });
@@ -135,15 +148,20 @@ function _connect() {
     return;
   }
   _ws = ws;
+  _boundSession = _sessionId();
+  _boundRoot = _curRoot;
 
   ws.onopen = () => {
+    if (_ws !== ws) return;
     _connected = true;
     _status('Connected', 'ok');
     _doFit();                  // send the real initial size
     if (_term) _term.focus();
     _setBtns(true);
+    _showTargetChange();
   };
   ws.onmessage = (ev) => {
+    if (_ws !== ws) return;
     let msg;
     try { msg = JSON.parse(ev.data); } catch (_e) { return; }
     if (!msg || typeof msg !== 'object') return;
@@ -156,6 +174,7 @@ function _connect() {
     }
   };
   ws.onclose = (ev) => {
+    if (_ws !== ws) return;
     _connected = false;
     _ws = null;
     _setBtns(false);
@@ -164,7 +183,7 @@ function _connect() {
     else if (ev.code === 1013) _status('Too many terminals open', 'err');
     else _status('Disconnected', '');
   };
-  ws.onerror = () => { _status('Connection error', 'err'); };
+  ws.onerror = () => { if (_ws === ws) _status('Connection error', 'err'); };
 }
 
 function _disconnect() {
@@ -180,13 +199,23 @@ function _disconnect() {
 function _setBtns(isConnected) {
   const conn = document.getElementById('terminal-connect-btn');
   const disc = document.getElementById('terminal-disconnect-btn');
-  if (conn) conn.style.display = isConnected ? 'none' : '';
+  if (conn) {
+    const changed = _targetChanged();
+    conn.style.display = isConnected && !changed ? 'none' : '';
+    conn.textContent = changed ? 'Reconnect' : 'Connect';
+    conn.title = changed ? 'Reconnect to the selected project' : 'Connect';
+  }
   if (disc) disc.style.display = isConnected ? '' : 'none';
 }
 
-function refresh(sessionId) {
+function refresh(sessionId, projectRoot) {
   // Track the active session so the next connect uses its project_root as cwd.
   _curSession = sessionId;
+  if (projectRoot !== undefined) _curRoot = projectRoot || '';
+  if (_connected && !_targetChanged()) {
+    _status('Connected', 'ok');
+    _setBtns(true);
+  } else _showTargetChange();
 }
 
 async function _onActivate() {
@@ -200,6 +229,7 @@ async function _onActivate() {
   _ensureTerm();
   _doFit();
   if (!_connected) _connect();
+  else _showTargetChange();
 }
 
 function _openOverlay() {
@@ -222,7 +252,10 @@ function init(apiBase) {
 
   document.getElementById('tool-terminal-btn')?.addEventListener('click', () => _openOverlay());
   document.getElementById('terminal-close')?.addEventListener('click', () => _closeOverlay());
-  document.getElementById('terminal-connect-btn')?.addEventListener('click', () => _onActivate());
+  document.getElementById('terminal-connect-btn')?.addEventListener('click', () => {
+    if (_targetChanged()) _disconnect();
+    _onActivate();
+  });
   document.getElementById('terminal-disconnect-btn')?.addEventListener('click', () => _disconnect());
 
   // Refit when the window resizes (debounced via rAF).

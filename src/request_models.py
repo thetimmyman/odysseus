@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from src.constants import MAX_WORKSPACE_PATH_LENGTH
 
 
 # Reasoning-effort levels accepted from clients. Thinking models read this to
@@ -22,6 +23,7 @@ class ChatRequest(BaseModel):
         default=None,
         description="Override the preset's reasoning effort (low|medium|high|xhigh)"
     )
+    workspace: Optional[str] = Field(default=None, max_length=MAX_WORKSPACE_PATH_LENGTH, description="Explicit session workspace update; empty clears")
 
     @field_validator('reasoning_effort')
     @classmethod
@@ -145,6 +147,7 @@ class SessionResponse(BaseModel):
     model: str = Field(..., description="Model being used")
     rag: bool = Field(default=False, description="RAG enabled")
     archived: bool = Field(default=False, description="Whether session is archived")
+    project_root: Optional[str] = Field(default=None, description="Session's selected workspace")
 
 
 class MemoryResponse(BaseModel):

@@ -6,6 +6,7 @@
 // ES6 module — IIFE removed
 
 import Storage from './storage.js';
+import workspaceModule from './workspace.js';
 import uiModule from './ui.js';
 import sessionModule from './sessions.js';
 import chatRenderer from './chatRenderer.js';
@@ -501,6 +502,21 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       }
     }
 
+    // Keep the draft intact until the selected folder has been saved.
+    const workspaceSessionId = sessionModule.getCurrentSessionId();
+    try {
+      await workspaceModule.waitForWorkspace();
+    } catch (error) {
+      uiModule.showError(error.message || 'Could not save workspace');
+      _releaseSendFlag();
+      return;
+    }
+    if (sessionModule.getCurrentSessionId() !== workspaceSessionId) {
+      uiModule.showError('Conversation changed. Review your message before sending.');
+      _releaseSendFlag();
+      return;
+    }
+
     // Materialize pending session (deferred from model click) on first message
     if (sessionModule.hasPendingChat && sessionModule.hasPendingChat()) {
       const ok = await sessionModule.materializePendingSession();
@@ -863,10 +879,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       if (incognitoChk && incognitoChk.checked) {
         fd.append('incognito', 'true');
       }
-      const _ws = (Storage.KEYS && Storage.get(Storage.KEYS.WORKSPACE, '')) || '';
-      if (_ws) {
-        fd.append('workspace', _ws);
-      }
+      // Existing sessions use their saved project root; a picker PATCH owns changes.
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
       }

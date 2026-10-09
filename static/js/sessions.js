@@ -9,6 +9,7 @@ import { providerLogo } from './providers.js';
 import { initModelPicker, updateModelPicker } from './modelPicker.js';
 import themeModule from './theme.js';
 import spinnerModule from './spinner.js';
+import workspaceModule from './workspace.js';
 
 const API_BASE = window.location.origin;
 
@@ -61,6 +62,7 @@ let _sessionListFocused = false;
 function _deselectCurrentSession(sid) {
   if (currentSessionId !== sid) return;
   currentSessionId = null;
+  workspaceModule.restoreWorkspace(null, '');
   uiModule.el('chat-history').innerHTML = '';
   uiModule.el('current-meta').textContent = 'Odysseus Chat';
   Storage.remove('lastSessionId');
@@ -1504,6 +1506,7 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
       try { window.documentModule.clearSelection(); } catch {}
     }
     currentSessionId = id;
+    workspaceModule.restoreWorkspace(id, '');
     // Identify Assistant / task-output sessions so we don't "trap" the user
     // there on return. Skipped from both `lastSessionId` persistence and the
     // URL hash — the user complained that coming back to Odysseus kept
@@ -1590,9 +1593,11 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
     const isOC = meta && (meta.is_openclaw || id === 'openclaw');
     let msgHistory = [], modelName = null;
     if (!isOC) {
+      const workspaceRevision = workspaceModule.getRevision();
       const res = await fetch(`${API_BASE}/api/history/${id}`);
       const data = await res.json();
       if (navToken !== _sessionNavToken || currentSessionId !== id) return;
+      workspaceModule.restoreWorkspace(id, data.project_root, workspaceRevision);
       msgHistory = data.history || [];
       modelName = data.model || null;
       // The model returned by /api/history is the authoritative one the
@@ -1782,6 +1787,7 @@ export function createDirectChat(url, modelId, endpointId) {
   _pendingChat = { url, modelId, endpointId };
   _skipAutoSelect = true;
   currentSessionId = null;
+  workspaceModule.restoreWorkspace(null, '');
   Storage.remove('lastSessionId');
   history.replaceState(null, '', window.location.pathname);
   document.querySelectorAll('.list-item.active-session, .session-item.active').forEach(el => {
@@ -1823,6 +1829,7 @@ export function createDirectChat(url, modelId, endpointId) {
 
 /** Actually create the session in the DB. Called on first message send. */
 export async function materializePendingSession() {
+  const draftWorkspace = workspaceModule.getWorkspace();
   const pending = _pendingChat;
   if (!pending) return false;
   _pendingChat = null;
@@ -1843,24 +1850,23 @@ export async function materializePendingSession() {
     fd.append('endpoint_id', pending.endpointId);
   }
 
-  let res;
-  try {
-    res = await fetch(`${API_BASE}/api/session`, { method: 'POST', body: fd });
-  } catch (e) {
-    uiModule.showError('Failed to reach backend: ' + e);
-    return false;
-  }
-
-  let payload;
-  try {
-    payload = await res.json();
-  } catch {
-    payload = { detail: await res.text() };
-  }
-
-  if (!res.ok) {
-    uiModule.showError(`Session create failed (${res.status}) ${payload.detail || JSON.stringify(payload)}`);
-    return false;
+  let payload = pending.createdSessionId ? { id: pending.createdSessionId } : null;
+  if (!payload) {
+    let res;
+    try {
+      res = await fetch(`${API_BASE}/api/session`, { method: 'POST', body: fd });
+    } catch (e) {
+      _pendingChat = pending;
+      uiModule.showError('Failed to reach backend: ' + e);
+      return false;
+    }
+    try { payload = await res.json(); }
+    catch { payload = { detail: await res.text() }; }
+    if (!res.ok) {
+      _pendingChat = pending;
+      uiModule.showError(`Session create failed (${res.status}) ${payload.detail || JSON.stringify(payload)}`);
+      return false;
+    }
   }
 
   if (isIncognito && payload.id) {
@@ -1872,6 +1878,18 @@ export async function materializePendingSession() {
     try { window.documentModule.clearSelection(); } catch {}
   }
   currentSessionId = payload.id;
+  workspaceModule.restoreWorkspace(payload.id, '');
+  if (draftWorkspace) {
+    try { await workspaceModule.setWorkspace(draftWorkspace); }
+    catch (error) {
+      _pendingChat = { ...pending, createdSessionId: payload.id };
+      currentSessionId = null;
+      workspaceModule.restoreWorkspace(null, '');
+      await workspaceModule.setWorkspace(draftWorkspace);
+      uiModule.showError(error.message || 'Could not save workspace');
+      return false;
+    }
+  }
   Storage.set('lastSessionId', payload.id);
   history.replaceState(null, '', '#' + payload.id);
 
@@ -1912,6 +1930,7 @@ export function getCurrentEndpointUrl() {
 export function setCurrentSessionId(id) {
   _sessionNavToken++;
   currentSessionId = id;
+  workspaceModule.restoreWorkspace(id, sessions.find(s => s.id === id)?.project_root);
   if (!id) {
     Storage.remove('lastSessionId');
     history.replaceState(null, '', window.location.pathname);

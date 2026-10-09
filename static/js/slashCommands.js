@@ -1238,13 +1238,14 @@ async function _cmdWorkspace(args, ctx) {
   }
   if (sub === 'set' || sub === 'cd' || sub === 'use') {
     if (!rest) { slashReply('Usage: <code>/workspace set /absolute/path</code>'); return true; }
-    workspaceModule.setWorkspace(rest);
-    slashReply(`Workspace set: <code>${uiModule.esc(rest)}</code>`);
+    try {
+      await workspaceModule.setWorkspace(rest);
+      slashReply(`Workspace set: <code>${uiModule.esc(workspaceModule.getWorkspace())}</code>`);
+    } catch (error) { slashReply(uiModule.esc(error.message || 'Could not save workspace')); }
     return true;
   }
   if (sub === 'clear' || sub === 'off' || sub === 'none' || sub === 'unset') {
-    workspaceModule.clearWorkspace();
-    slashReply('Workspace cleared.');
+    if (await workspaceModule.clearWorkspace()) slashReply('Workspace cleared.');
     return true;
   }
   if (sub === 'pick' || sub === 'browse' || sub === 'open') {
