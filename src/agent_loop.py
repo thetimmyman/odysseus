@@ -1415,9 +1415,14 @@ def _build_base_prompt(
 
 
 
+# A rejected native call keeps its original slot/name but is never executable.
+# This private record is not registered in TOOL_TAGS or the tool dispatcher.
+_RejectedNativeCall = collections.namedtuple("_RejectedNativeCall", ["tool_type", "content"])
+
+
 def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num: int):
     """Choose native function calls or fenced code block parsing. Returns (tool_blocks, used_native)."""
-    used_native = False
+    used_native = bool(native_tool_calls)
     if native_tool_calls:
         tool_blocks = []
         for tc in native_tool_calls:
@@ -1428,9 +1433,9 @@ def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num
                 tool_blocks.append(block)
                 logger.info(f"  -> converted: {tc_name} -> {block.tool_type}")
             else:
-                logger.warning(f"  -> FAILED to convert native call: {tc_name} args={tc_args[:200]}")
-        if tool_blocks:
-            used_native = True
+                content = tc_args if isinstance(tc_args, str) else json.dumps(tc_args)
+                tool_blocks.append(_RejectedNativeCall(tc_name, content))
+                logger.warning("  -> FAILED to convert native call: %s", tc_name)
     if not used_native:
         tool_blocks = parse_tool_blocks(round_response)
         if tool_blocks:
@@ -1829,7 +1834,7 @@ async def stream_agent_loop(
     Yields SSE events:
       - data: {"delta": "text"}                             (text chunks)
       - data: {"type": "execution_target", ...}             (pinned identity, once)
-      - data: {"type": "tool_start", "tool": "...", ...}    (before execution)
+      - data: {"type": "tool_start", "tool": "...", ...}    (attempt, possibly rejected)
       - data: {"type": "tool_output", "tool": "...", ...}   (after execution)
       - data: {"type": "provider_retry", ...}               (same-target retry)
       - data: {"type": "execution_transition", ...}         (explicit new target)
@@ -2683,12 +2688,13 @@ async def stream_agent_loop(
             break
 
         tool_blocks, used_native = _resolve_tool_blocks(round_response, native_tool_calls, round_num)
+        rejected_native = any(isinstance(b, _RejectedNativeCall) for b in tool_blocks)
 
         # Force-answer round: we told the model to STOP calling tools and
         # answer. If it ignored that and emitted a (possibly DSML) tool
         # call anyway, discard it — don't execute, don't re-loop. Keep
         # only the prose; if there's none, emit a graceful fallback.
-        if _force_answer:
+        if _force_answer and not rejected_native:
             if tool_blocks:
                 logger.info(f"[agent] force-answer round {round_num}: discarding {len(tool_blocks)} ignored tool call(s)")
             tool_blocks = []
@@ -2737,7 +2743,7 @@ async def stream_agent_loop(
             tc.get("name") in ("create_document", "update_document")
             for tc in native_tool_calls
         )
-        if not has_doc_tool and session_id and "create_document" not in (disabled_tools or set()):
+        if not rejected_native and not has_doc_tool and session_id and "create_document" not in (disabled_tools or set()):
             _code_block_re = re.compile(r'```(\w*)\n([\s\S]*?)```')
             for m in _code_block_re.finditer(round_response):
                 lang_tag = m.group(1).lower()
@@ -2956,7 +2962,7 @@ async def stream_agent_loop(
         # Distinct calls to one tool (a real batch) are legitimate work, so we
         # count identical call signatures, not raw per-tool-type totals.
         _runaway = _detect_runaway_call(_call_freq)
-        if _stuck_rounds >= 4 or _runaway:
+        if (_stuck_rounds >= 4 or _runaway) and not rejected_native:
             reason = (f"calling {_runaway} with identical arguments over and over" if _runaway
                       else "repeating the same tool calls without new progress")
             logger.warning(f"[agent] loop-breaker tripped on round {round_num} ({reason}); sig={_sig[:80]!r}")
@@ -2989,6 +2995,8 @@ async def stream_agent_loop(
         # For round 1 fenced blocks, frontend fence detection already handled streaming
         if not _doc_opened and round_num == 1:
             for block in tool_blocks:
+                if isinstance(block, _RejectedNativeCall) or _force_answer:
+                    continue
                 if tool_policy and tool_policy.blocks(block.tool_type):
                     continue
                 if block.tool_type == "create_document":
@@ -2997,6 +3005,8 @@ async def stream_agent_loop(
 
         if not _doc_opened:
             for block in tool_blocks:
+                if isinstance(block, _RejectedNativeCall) or _force_answer:
+                    continue
                 if tool_policy and tool_policy.blocks(block.tool_type):
                     continue
                 if block.tool_type == "create_document":
@@ -3024,13 +3034,37 @@ async def stream_agent_loop(
         tool_result_texts = []  # plain text for native tool role messages
         budget_hit = False
         for i, block in enumerate(tool_blocks):
+            pre_execution_error = None
             # --- Tool budget check ---
             if max_tool_calls > 0 and total_tool_calls >= max_tool_calls:
-                yield f'data: {json.dumps({"type": "budget_exceeded", "limit": max_tool_calls, "used": total_tool_calls})}\n\n'
+                if not budget_hit:
+                    yield f'data: {json.dumps({"type": "budget_exceeded", "limit": max_tool_calls, "used": total_tool_calls})}\n\n'
                 budget_hit = True
-                break
+                if not used_native:
+                    break
+                # Resolve every native call ID even when a batch exceeds the
+                # budget. These refusal results never reach the executor.
+                pre_execution_error = {
+                    "error": "Tool call was not executed: tool budget exhausted.",
+                    "exit_code": 1, "error_code": "tool_budget_exhausted",
+                }
+            else:
+                total_tool_calls += 1
 
-            total_tool_calls += 1
+            if isinstance(block, _RejectedNativeCall):
+                pre_execution_error = {
+                    "error": (
+                        f"Unavailable or invalid function call: {block.tool_type}. "
+                        "Nothing was executed for this call. Retry using an available "
+                        "tool with valid arguments."
+                    ),
+                    "exit_code": 1, "error_code": "native_call_conversion_failed",
+                }
+            elif _force_answer:
+                pre_execution_error = {
+                    "error": "Tool call was not executed: this is the final answer round.",
+                    "exit_code": 1, "error_code": "tools_not_allowed_in_final_answer",
+                }
             # Build a short display string for the frontend tool bubble.
             # Document tools show a brief summary instead of dumping full content.
             is_doc_tool = block.tool_type in ("create_document", "update_document", "edit_document", "suggest_document")
@@ -3039,7 +3073,13 @@ async def stream_agent_loop(
             else:
                 cmd_display = block.content.strip()
 
-            if tool_policy and tool_policy.blocks(block.tool_type):
+            if pre_execution_error is not None:
+                desc = f"{block.tool_type}: REJECTED"
+                result = pre_execution_error
+                # Allocate this attempted call's own UI node before its error
+                # output. No dispatcher or subprocess is invoked for it.
+                yield f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "round": round_num, "rejected": True})}\n\n'
+            elif tool_policy and tool_policy.blocks(block.tool_type):
                 desc = f"{block.tool_type}: BLOCKED"
                 result = {
                     "error": tool_policy.reason_for(block.tool_type),
@@ -3203,6 +3243,10 @@ async def stream_agent_loop(
 
             # Emit tool_output (include ui_event data if present)
             tool_output_data = {"type": "tool_output", "tool": block.tool_type, "command": cmd_display, "output": output_text, "exit_code": result.get("exit_code")}
+            if used_native and i < len(native_tool_calls):
+                tool_output_data["tool_call_id"] = native_tool_calls[i].get("id", f"call_{round_num}_{i}")
+            if result.get("error_code"):
+                tool_output_data["error_code"] = result["error_code"]
             if "ui_event" in result:
                 tool_output_data["ui_event"] = result["ui_event"]
                 for k in ("toggle_name", "state", "mode", "model", "endpoint_url", "theme_name", "colors"):
@@ -3267,6 +3311,10 @@ async def stream_agent_loop(
                 "output": output_text,
                 "exit_code": result.get("exit_code"),
             }
+            if "tool_call_id" in tool_output_data:
+                tool_event["tool_call_id"] = tool_output_data["tool_call_id"]
+            if result.get("error_code"):
+                tool_event["error_code"] = result["error_code"]
             if result.get("image_url"):
                 for ik in ("image_url", "image_prompt", "image_model", "image_size", "image_quality"):
                     if result.get(ik):
@@ -3279,7 +3327,7 @@ async def stream_agent_loop(
             if result.get("diff"):
                 tool_event["diff"] = result["diff"]
             tool_events.append(tool_event)
-            if block.tool_type in _VERIFIER_EFFECTFUL_TOOLS:
+            if pre_execution_error is None and block.tool_type in _VERIFIER_EFFECTFUL_TOOLS:
                 _effectful_used = True
 
             formatted = format_tool_result(desc, result)
@@ -3287,7 +3335,7 @@ async def stream_agent_loop(
             tool_result_texts.append(formatted)
 
         # If budget was hit, stop the loop
-        if budget_hit:
+        if budget_hit and not used_native:
             break
 
         # ask_user posed a question — stop here and wait for the user's choice.
@@ -3301,6 +3349,33 @@ async def stream_agent_loop(
         _append_tool_results(messages, round_response, native_tool_calls,
                              tool_results, tool_result_texts, used_native, round_num,
                              round_reasoning=round_reasoning)
+
+        if rejected_native:
+            # Share the existing malformed-call retry allowance. A rejected
+            # function is an attempted action, never evidence of completion.
+            exhausted = (
+                _force_answer or budget_hit or round_num >= max_rounds
+                or (max_tool_calls > 0 and total_tool_calls >= max_tool_calls)
+                or _unparsed_call_retries >= _MAX_UNPARSED_CALL_RETRIES
+            )
+            if exhausted:
+                note = (
+                    "\n\nThe requested action is unfinished: the model called an "
+                    "unavailable or invalid tool, and no further retry is allowed "
+                    "within this turn's limits. That rejected call was not executed."
+                )
+                full_response += note
+                round_texts[-1] += note
+                for event in tool_events:
+                    if event.get("round") == round_num and event.get("error_code") == "native_call_conversion_failed":
+                        event["unfinished"] = True
+                yield f'data: {json.dumps({"delta": note})}\n\n'
+                _exhausted_rounds = round_num >= max_rounds
+                break
+            _unparsed_call_retries += 1
+
+        if budget_hit:
+            break
 
         # Emit agent_step event — carries the execution_id that produced THIS
         # round, so telemetry identifies exactly which target ran which round.
@@ -3366,6 +3441,8 @@ async def stream_agent_loop(
     ]
     metrics["execution_id"] = _execution.execution_id
     metrics["provider_failures"] = _provider_failures
+    if any(event.get("unfinished") for event in tool_events):
+        metrics["unfinished_reason"] = "native_call_conversion_failed"
     yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
 
     # Teacher-escalation: inline takeover visible in the chat stream.
@@ -3373,7 +3450,7 @@ async def stream_agent_loop(
     # gets a turn (with its own tool calls forwarded to the user) and
     # a skill is saved ONLY if the teacher actually succeeds. Skipped
     # when we ARE the teacher to avoid recursion.
-    if not _is_teacher_run and not guide_only:
+    if not _is_teacher_run and not guide_only and not metrics.get("unfinished_reason"):
         try:
             from src.teacher_escalation import run_teacher_inline
             async for evt in run_teacher_inline(
