@@ -104,7 +104,7 @@
       "static/js/cookbookSchedule.js": "b17fa1dc8529eac85c7f856e5df44ea5dafe127fa4e95b483e5278cc8b0213e1",
       "static/js/cookbookServe.js": "7d3d72de079bb613f2f8768509b68c16057144c0a8534548a87486499ce9d9cb",
       "static/js/crewPanel.js": "fb3ad806e37e78331972c554c2d01b4062d0f536fbf9c7d3a554bd59a8629a79",
-      "static/js/devPreview.js": "15bfb641cd592b911ce2a6790f1abb3be72b16214008dccda3d2541775144f82",
+      "static/js/devPreview.js": "8f17224b6b92bef3efb1e0a0b2a6535dde7a714ddefa22a6c8748980d99b2c66",
       "static/js/docGutterSync.js": "20422f5a16a85501230c4bff48ffce604273ccbd75b0838c583dbb3a7edb1ca4",
       "static/js/document.js": "bceb9d7421683120097e4c096ddbcfd335d670ed29cd9491a53145ba70a79e2d",
       "static/js/documentLibrary.js": "2d33798327bc834d9ea4eb9dcb4f559d29809767f5fb58ab095af34edfb519b5",
@@ -177,7 +177,7 @@
       "static/js/gitPanel.js": "f8be122b12cc3984fc09d42eb2672e293f8d924cebd0f0aad4650229369ff616",
       "static/js/group.js": "a710d185a95c4287d72613c9522ff8e760b5e8db3ee8615a0d10636d81bbd906",
       "static/js/init.js": "231d4b53cc19c57a000add675a7b9d926da89deee277aa8f39fea4610ee3463c",
-      "static/js/keyboard-shortcuts.js": "5b118c96a9ce62fb1289e142cda8812d6ee44ae066a85c4b613b2f6387c0a371",
+      "static/js/keyboard-shortcuts.js": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
       "static/js/langIcons.js": "c7583006b46fb28a4aece6eaaac0cf4970fe427348c13960667bc4033fcd8be3",
       "static/js/markdown.js": "f79c37e41a2da1b020bfef29a1410bea6d6295c52bf7a5380075017c5b31f319",
       "static/js/markdown/tableRow.js": "832c1f38586d33d1807f9391d5987de0caf56724f15563a3922d04f3b4a48c0d",
@@ -215,13 +215,13 @@
       "static/js/streamingRenderer.js": "f784abf40f0af86eaacf0e2e1a673b35a1ef16145bbb28d09d81b6682dc44871",
       "static/js/streamingSegmenter.js": "2d0d37779dad685d466cd64cf8a22282bf238dd8426a0d3ac46820f58bbd4b82",
       "static/js/tasks.js": "8f09c779104cf3e92252c90a08ac662e75f4b4bc368a6460d7bcfd514e07d6d0",
-      "static/js/terminal.js": "b7f31b60fa848d67c04c2a89a83032a1b8f2d68e0e48b184690a75817e746da5",
+      "static/js/terminal.js": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
       "static/js/theme.js": "8fc9b9b629bce352a6216152683a7ec6cd31f0e6ed803aeda7bb250c910fe433",
       "static/js/tileManager.js": "dd89ffa0b2ba8636ab40382809768f75b7843c97e1125dd55d40331fed5f326d",
       "static/js/tourAutoplay.js": "8e1a238233034600b5a0bd9972c0510ad40507553cf5bd48ed2ef71086c3b458",
       "static/js/tourHints.js": "230567b43f627f5e12c413767b90b306f828ee48ad8e3dea0555f8dd453dfe27",
       "static/js/tts-ai.js": "8f5d85b337de0eb761811db2f392835224d0449768090ca919bb0e811b3116a1",
-      "static/js/ui.js": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+      "static/js/ui.js": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
       "static/js/util/ordinal.js": "61f24d8116054d5770a4487d5ba71fb089a67761ea5ada6c30e1d964ed7c1857",
       "static/js/voiceRecorder.js": "b137f89a6e6de7c0427b92504d5140fc79808e0d4a35965d03a909b11fcaa916",
       "static/js/windowDrag.js": "ace5957244371532d94af672e25bf1cd82fd793ec90f51b0449867de7de5eb17",
@@ -1991,8 +1991,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -2000,6 +2000,12 @@
             "line": 2952,
             "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
+          },
+          {
+            "path": "static/js/keyboard-shortcuts.js",
+            "line": 247,
+            "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
+            "claim": "The global chat-cancel shortcut preserves a Chat request behind a topmost Terminal or Preview window, including when the tool input keeps Escape ownership."
           }
         ],
         "navigation_evidence": [
@@ -2237,8 +2243,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -2387,8 +2393,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -2568,8 +2574,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -2775,8 +2781,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -2965,8 +2971,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -3162,8 +3168,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -3419,8 +3425,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -3638,8 +3644,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -3883,8 +3889,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -4082,8 +4088,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -4280,8 +4286,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -4478,8 +4484,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -4581,7 +4587,7 @@
         {
           "path": "static/js/terminal.js",
           "line": 1,
-          "sha256": "b7f31b60fa848d67c04c2a89a83032a1b8f2d68e0e48b184690a75817e746da5",
+          "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -4602,7 +4608,7 @@
         {
           "path": "static/js/terminal.js",
           "line": 1,
-          "sha256": "b7f31b60fa848d67c04c2a89a83032a1b8f2d68e0e48b184690a75817e746da5",
+          "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -4634,8 +4640,8 @@
         "reason": "Source-intended availability is listed separately; no live browser/device observation was admitted."
       },
       "shell_behavior": {
-        "shared_escape_arbiter": "This surface is presented in the static/index.html SPA, which loads static/app.js and static/js/ui.js; source contains shared Escape handling. This does not establish runtime close success.",
-        "surface_specific_close": "Terminal button opens the overlay; its close button and visible-overlay Escape handler hide the overlay. The PTY is intentionally kept alive for resume; do not infer process termination from close.",
+        "shared_escape_arbiter": "The static/index.html SPA capture-phase Escape arbiter and visible-window promotion explicitly include #terminal-overlay and #preview-overlay alongside ordinary .modal roots. Each tool open explicitly calls the shared focusWindow after showing, so reopening an already-visible lower tool does not depend on a display mutation. When this tool is the top eligible window, Escape delegates to its own close button after registered-menu dismissal and the existing input/textarea/select/contenteditable guard. Tool-local editable targets receive the key; its bubbling then ends at the body before legacy document handlers can dismiss a covered window. The capture bulk-cancel and global Chat-cancel handlers also defer to a top coding tool. This is source behavior, not a broad runtime or device-usability claim.",
+        "surface_specific_close": "Terminal button opens the overlay; its close button hides the overlay and intentionally keeps the current PTY/WebSocket alive for resume. The former independent document Escape listener is removed; the shared arbiter delegates to that same close button. Explicit Stop still disconnects. Do not infer process termination or session rebinding from close.",
         "browser_back": "UNKNOWN; no browser history/back behavior was observed or asserted by this source inventory.",
         "swipe": "UNKNOWN unless a surface-specific source handler is cited; no device observation was performed.",
         "evidence": [
@@ -4647,20 +4653,20 @@
           },
           {
             "path": "static/js/terminal.js",
-            "line": 211,
-            "sha256": "b7f31b60fa848d67c04c2a89a83032a1b8f2d68e0e48b184690a75817e746da5",
+            "line": 214,
+            "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
             "claim": "Terminal open/close handlers and PTY-preserving close behavior."
           },
           {
             "path": "static/js/terminal.js",
             "line": 223,
-            "sha256": "b7f31b60fa848d67c04c2a89a83032a1b8f2d68e0e48b184690a75817e746da5",
-            "claim": "Terminal close button and visible-overlay Escape handler."
+            "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+            "claim": "Terminal open, close, Connect and explicit Stop bindings; no independent document Escape listener remains."
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -4668,6 +4674,36 @@
             "line": 2952,
             "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
+          },
+          {
+            "path": "static/js/ui.js",
+            "line": 1265,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+            "claim": "When Terminal or Preview is the top eligible window, the shared arbiter invokes its own .crew-close button after menu and text-input handling."
+          },
+          {
+            "path": "static/js/keyboard-shortcuts.js",
+            "line": 247,
+            "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
+            "claim": "The global chat-cancel shortcut does not abort Chat while Terminal or Preview is the top eligible window."
+          },
+          {
+            "path": "static/js/ui.js",
+            "line": 1324,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+            "claim": "Tool-local Escape is allowed to reach its target, then stopped at the page body before legacy document handlers can close covered windows or cancel Chat."
+          },
+          {
+            "path": "static/js/keyboard-shortcuts.js",
+            "line": 75,
+            "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
+            "claim": "The capture-phase bulk-cancel handler defers when Terminal or Preview is the top eligible window, preserving tool-local Escape before it reaches the body boundary."
+          },
+          {
+            "path": "static/js/terminal.js",
+            "line": 205,
+            "sha256": "d5e7a487f302b4446ee828ccd85931ffc3c4ad78298408dbde6a767d28bab7ed",
+            "claim": "Every Terminal open shows the overlay and explicitly calls shared focusWindow before activation; existing PTY connection behavior remains with Terminal."
           }
         ],
         "navigation_evidence": [
@@ -4825,8 +4861,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           }
         ],
@@ -4984,8 +5020,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -5078,7 +5114,7 @@
         {
           "path": "static/js/devPreview.js",
           "line": 1,
-          "sha256": "15bfb641cd592b911ce2a6790f1abb3be72b16214008dccda3d2541775144f82",
+          "sha256": "8f17224b6b92bef3efb1e0a0b2a6535dde7a714ddefa22a6c8748980d99b2c66",
           "claim": "Owning frontend module; surface-specific behavior is detailed in shell_behavior and responsive_behavior."
         }
       ],
@@ -5099,7 +5135,7 @@
         {
           "path": "static/js/devPreview.js",
           "line": 1,
-          "sha256": "15bfb641cd592b911ce2a6790f1abb3be72b16214008dccda3d2541775144f82",
+          "sha256": "8f17224b6b92bef3efb1e0a0b2a6535dde7a714ddefa22a6c8748980d99b2c66",
           "claim": "Owning frontend module state reference."
         }
       ],
@@ -5125,8 +5161,8 @@
         "reason": "Source-intended availability is listed separately; no live browser/device observation was admitted."
       },
       "shell_behavior": {
-        "shared_escape_arbiter": "This surface is presented in the static/index.html SPA, which loads static/app.js and static/js/ui.js; source contains shared Escape handling. This does not establish runtime close success.",
-        "surface_specific_close": "Preview overlay has an explicit open trigger and close button; a document Escape handler closes only when preview overlay is visible. Preview controls own app selection, start/stop, status, logs, and configuration actions.",
+        "shared_escape_arbiter": "The static/index.html SPA capture-phase Escape arbiter and visible-window promotion explicitly include #terminal-overlay and #preview-overlay alongside ordinary .modal roots. Each tool open explicitly calls the shared focusWindow after showing, so reopening an already-visible lower tool does not depend on a display mutation. When this tool is the top eligible window, Escape delegates to its own close button after registered-menu dismissal and the existing input/textarea/select/contenteditable guard. Tool-local editable targets receive the key; its bubbling then ends at the body before legacy document handlers can dismiss a covered window. The capture bulk-cancel and global Chat-cancel handlers also defer to a top coding tool. This is source behavior, not a broad runtime or device-usability claim.",
+        "surface_specific_close": "Preview has an explicit open trigger and close button. Its close cleanup stops polling, clears the iframe source, and leaves the dev server running; Stop is explicit. The former independent document Escape listener is removed; the shared arbiter delegates to that same close button. Preview controls retain app selection, start/stop, status, logs and configuration actions, distinct from Chat session state.",
         "browser_back": "UNKNOWN; no browser history/back behavior was observed or asserted by this source inventory.",
         "swipe": "UNKNOWN unless a surface-specific source handler is cited; no device observation was performed.",
         "evidence": [
@@ -5138,20 +5174,20 @@
           },
           {
             "path": "static/js/devPreview.js",
-            "line": 791,
-            "sha256": "15bfb641cd592b911ce2a6790f1abb3be72b16214008dccda3d2541775144f82",
+            "line": 794,
+            "sha256": "8f17224b6b92bef3efb1e0a0b2a6535dde7a714ddefa22a6c8748980d99b2c66",
             "claim": "Preview open/close and control bindings."
           },
           {
             "path": "static/js/devPreview.js",
-            "line": 816,
-            "sha256": "15bfb641cd592b911ce2a6790f1abb3be72b16214008dccda3d2541775144f82",
-            "claim": "Visible-overlay Escape close handler."
+            "line": 650,
+            "sha256": "8f17224b6b92bef3efb1e0a0b2a6535dde7a714ddefa22a6c8748980d99b2c66",
+            "claim": "Preview close cleanup stops polling and clears the iframe while leaving the dev server running; its own close button remains the lifecycle owner."
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -5159,6 +5195,36 @@
             "line": 2952,
             "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
             "claim": "Static SPA shell loads app.js after surface modules."
+          },
+          {
+            "path": "static/js/ui.js",
+            "line": 1265,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+            "claim": "When Terminal or Preview is the top eligible window, the shared arbiter invokes its own .crew-close button after menu and text-input handling."
+          },
+          {
+            "path": "static/js/keyboard-shortcuts.js",
+            "line": 247,
+            "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
+            "claim": "The global chat-cancel shortcut does not abort Chat while Terminal or Preview is the top eligible window."
+          },
+          {
+            "path": "static/js/ui.js",
+            "line": 1324,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+            "claim": "Tool-local Escape is allowed to reach its target, then stopped at the page body before legacy document handlers can close covered windows or cancel Chat."
+          },
+          {
+            "path": "static/js/keyboard-shortcuts.js",
+            "line": 75,
+            "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
+            "claim": "The capture-phase bulk-cancel handler defers when Terminal or Preview is the top eligible window, preserving tool-local Escape before it reaches the body boundary."
+          },
+          {
+            "path": "static/js/devPreview.js",
+            "line": 640,
+            "sha256": "8f17224b6b92bef3efb1e0a0b2a6535dde7a714ddefa22a6c8748980d99b2c66",
+            "claim": "Every Preview open shows the overlay and explicitly calls shared focusWindow before loading app state and polling."
           }
         ],
         "navigation_evidence": [
@@ -5322,8 +5388,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -5501,8 +5567,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -5712,8 +5778,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -5919,8 +5985,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -6246,7 +6312,7 @@
         {
           "path": "static/js/ui.js",
           "line": 1,
-          "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -6273,7 +6339,7 @@
         {
           "path": "static/js/ui.js",
           "line": 1,
-          "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -6316,8 +6382,8 @@
           },
           {
             "path": "static/js/ui.js",
-            "line": 1214,
-            "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+            "line": 1238,
+            "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
             "claim": "SPA capture-phase Escape arbiter; shared only by index.html surfaces."
           },
           {
@@ -12538,7 +12604,7 @@
         "source": {
           "path": "static/js/ui.js",
           "line": 1,
-          "sha256": "8deecc727d5f52bd4cc94e42ea88d00b74453c096f5ae31cf1e6b60c27d5de3a",
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
           "claim": "Sealed module containing dynamic DOM candidates."
         },
         "candidates": [
@@ -13265,7 +13331,7 @@
         "harness-overlay",
         "config-overlay"
       ],
-      "coverage_gap": "The admitted source census found these custom overlays outside _AUTO_WIRE candidates; they use custom handlers. This is a source integration gap to assess, not proof of failed gestures.",
+      "coverage_gap": "The admitted source census found these custom overlays outside _AUTO_WIRE candidates. Terminal and Preview now participate explicitly in the shared visible-window promotion and Escape arbiter through their exact IDs and existing close buttons; they remain outside automatic minimize/restore wiring. Crew, Harness and Routing & budgets retain their custom handlers. This bounded source integration does not establish common swipe/back behavior or resolve other custom-overlay lifecycle questions.",
       "interaction_observation": "UNKNOWN for unobserved minimize/restore/Escape/back/swipe runtime behavior. Shared Escape source applies only to surfaces loaded in the static/index.html SPA; login, route-rendered MCP OAuth pages, and the missing Backgrounds target are scoped separately.",
       "evidence": [
         {
@@ -13303,6 +13369,48 @@
           "line": 2797,
           "sha256": "dbd09af3aa11289c4b6ee3241efb2bf37f908671d7afc1de54d376893685d0d1",
           "claim": "Config overlay."
+        },
+        {
+          "path": "static/js/ui.js",
+          "line": 26,
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+          "claim": "Shared visible-window membership adds exactly Terminal and Preview alongside ordinary .modal roots; hidden and minimized roots are excluded."
+        },
+        {
+          "path": "static/js/ui.js",
+          "line": 1218,
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+          "claim": "Observer promotion delegates to shared focusWindow; per-window assigned z-index values and old-style comparison ignore its own z-only style changes."
+        },
+        {
+          "path": "static/js/ui.js",
+          "line": 1247,
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+          "claim": "Shared Escape arbitration retains menu and input/textarea/select/contenteditable ownership and delegates the top coding tool to its own close button before unrelated Chat/window handling."
+        },
+        {
+          "path": "static/js/keyboard-shortcuts.js",
+          "line": 247,
+          "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
+          "claim": "Chat cancellation checks the shared top-window selector and does not abort behind Terminal or Preview."
+        },
+        {
+          "path": "static/js/ui.js",
+          "line": 1324,
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+          "claim": "The body bubbling Escape boundary preserves tool-local key handling and stops legacy document listeners from dismissing covered windows."
+        },
+        {
+          "path": "static/js/ui.js",
+          "line": 32,
+          "sha256": "1afeeec5ce02e5de13a3210bca880dfaf56a9851a7453f8a0a5ac419debe4f2d",
+          "claim": "Explicit focusWindow and observer promotion share the same counter and assigned z-index map; both tool open handlers invoke it after showing."
+        },
+        {
+          "path": "static/js/keyboard-shortcuts.js",
+          "line": 75,
+          "sha256": "0b2fd5d9f07db9cfec0210507c48ac44332b42fde5e56e7b7d2d72039331de8c",
+          "claim": "The capture-phase bulk-cancel handler defers to a topmost Terminal or Preview, allowing the local tool input to receive Escape."
         }
       ],
       "cookbook": "Cookbook explicitly participates in the shared modal registration path; no claim that all overlays share the same lifecycle.",
@@ -13310,7 +13418,8 @@
         "ctrl_k": "search-overlay is conversation search, not a universal navigation registry.",
         "slash_commands": "slashCommands.js contains in-composer command/action aliases grouped with Chat; it does not prove a global navigation palette.",
         "unknown": "No complete global palette registry is assumed from search-provider settings."
-      }
+      },
+      "terminal_preview_escape": "Only #terminal-overlay and #preview-overlay are added alongside .modal to the shared visible-window selector. Their open handlers explicitly call shared focusWindow after showing, using the same module-level counter and assigned z-index map as observer promotion; already-visible reopening therefore does not rely on a display mutation. Per-window assigned z-index values and old-style comparison guard the promoter from its own z-only observer mutations. The arbiter gives registered menus and the existing input/textarea/select/contenteditable helper their ownership, then invokes the top coding tool close button and stops further Escape listeners. For tool-local input, Escape reaches the target before a body bubbling boundary stops legacy document handlers. The capture-phase bulk-cancel handler defers to a top coding tool, and the global chat-cancel shortcut does not abort a background Chat request while either coding tool is the top eligible window. The separate Terminal and Preview document Escape listeners are removed. PTY connection and preview-process lifecycles remain with their own modules; broad interaction and mobile observations remain UNKNOWN."
     },
     "reflow_source_audit": {
       "source_facts": [

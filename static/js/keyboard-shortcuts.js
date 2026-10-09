@@ -72,6 +72,7 @@ export function initKeyboardShortcuts(modules) {
   // closing the surrounding modal.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (uiModule.isCodingToolWindow(uiModule.getTopWindow())) return;
     const cancels = document.querySelectorAll('[id$="-bulk-cancel"]');
     for (const btn of cancels) {
       // Do not rely on offsetParent: visible fixed-position or modal-contained
@@ -244,7 +245,9 @@ export function initKeyboardShortcuts(modules) {
       return;
     }
     if (_matchesCombo(e, kb.cancel)) {
-      if (chatModule) chatModule.abortCurrentRequest();
+      // Escape in a tool input belongs to that tool (including the terminal
+      // shell), rather than cancelling a chat running behind its window.
+      if (!uiModule.isCodingToolWindow(uiModule.getTopWindow()) && chatModule) chatModule.abortCurrentRequest();
     }
     if (_matchesCombo(e, kb.incognito)) {
       e.preventDefault();

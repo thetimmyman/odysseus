@@ -2,6 +2,8 @@
 // checks auth, admin and Origin before accepting. xterm is vendored under
 // /static/lib, never loaded from a CDN.
 
+import { focusWindow } from './ui.js';
+
 let API_BASE = '';
 let _curSession = null;
 
@@ -204,6 +206,7 @@ function _openOverlay() {
   const ov = document.getElementById('terminal-overlay');
   if (!ov) return;
   ov.style.display = '';
+  focusWindow(ov);
   _onActivate();                 // lazy-load xterm + connect
   setTimeout(() => _doFit(), 60);   // fit once the overlay has laid out
   setTimeout(() => _doFit(), 300);
@@ -221,10 +224,6 @@ function init(apiBase) {
   document.getElementById('terminal-close')?.addEventListener('click', () => _closeOverlay());
   document.getElementById('terminal-connect-btn')?.addEventListener('click', () => _onActivate());
   document.getElementById('terminal-disconnect-btn')?.addEventListener('click', () => _disconnect());
-  document.addEventListener('keydown', (e) => {
-    const ov = document.getElementById('terminal-overlay');
-    if (e.key === 'Escape' && ov && ov.style.display !== 'none') _closeOverlay();
-  });
 
   // Refit when the window resizes (debounced via rAF).
   let raf = 0;
