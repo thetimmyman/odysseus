@@ -15,6 +15,7 @@ let _fit = null;        // FitAddon instance
 let _ws = null;         // active WebSocket
 let _libsLoading = null; // promise guard so we load xterm assets once
 let _connected = false;
+let _connectionError = ''; // retain the actionable failure until Stop or retry
 let _disposed = false;
 let _resizeObs = null;
 
@@ -23,6 +24,11 @@ function _targetChanged() {
 }
 
 function _showTargetChange() {
+  if (_connectionError) {
+    _status(_connectionError, 'err');
+    _setBtns(_connected);
+    return;
+  }
   if (!_targetChanged()) return;
   _status('Project changed - reconnect to use it', '');
   _setBtns(true);
@@ -134,17 +140,20 @@ function _wsUrl() {
 }
 
 function _connect() {
-  if (_connected || (_ws && _ws.readyState === WebSocket.OPEN)) return;
+  if (_connected || (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING))) return;
   _ensureTerm();
   if (!_term) return;
+  _connectionError = '';
   _status('Connecting…', 'connecting');
 
   let ws;
+  let serverError = false;
   try {
     // The session cookie rides along and is validated before accept().
     ws = new WebSocket(_wsUrl());
   } catch (e) {
-    _status('Connection failed', 'err');
+    _connectionError = 'Connection failed';
+    _status(_connectionError, 'err');
     return;
   }
   _ws = ws;
@@ -170,7 +179,10 @@ function _connect() {
     } else if (msg.type === 'exit') {
       if (_term) _term.write('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
     } else if (msg.type === 'error') {
-      if (_term) _term.write(`\r\n\x1b[31m${msg.msg || 'error'}\x1b[0m\r\n`);
+      serverError = true;
+      _connectionError = typeof msg.msg === 'string' && msg.msg ? msg.msg : 'Terminal failed. Reconnect to try again.';
+      _status(_connectionError, 'err');
+      if (_term) _term.write(`\r\n\x1b[31m${_connectionError}\x1b[0m\r\n`);
     }
   };
   ws.onclose = (ev) => {
@@ -179,15 +191,21 @@ function _connect() {
     _ws = null;
     _setBtns(false);
     // 1008 = policy violation (auth/origin reject); 1013 = try again (cap).
-    if (ev.code === 1008) _status('Not authorized', 'err');
-    else if (ev.code === 1013) _status('Too many terminals open', 'err');
+    if (!serverError && ev.code === 1008) _connectionError = 'Not authorized';
+    else if (!serverError && ev.code === 1013) _connectionError = 'Too many terminals open';
+    if (_connectionError) _status(_connectionError, 'err');
     else _status('Disconnected', '');
   };
-  ws.onerror = () => { if (_ws === ws) _status('Connection error', 'err'); };
+  ws.onerror = () => {
+    if (_ws !== ws) return;
+    _connectionError = _connectionError || 'Connection error';
+    _status(_connectionError, 'err');
+  };
 }
 
 function _disconnect() {
   _connected = false;
+  _connectionError = '';
   if (_ws) {
     try { _ws.close(); } catch (_e) { /* noop */ }
     _ws = null;
@@ -212,13 +230,13 @@ function refresh(sessionId, projectRoot) {
   // Track the active session so the next connect uses its project_root as cwd.
   _curSession = sessionId;
   if (projectRoot !== undefined) _curRoot = projectRoot || '';
-  if (_connected && !_targetChanged()) {
+  if (_connected && !_targetChanged() && !_connectionError) {
     _status('Connected', 'ok');
     _setBtns(true);
   } else _showTargetChange();
 }
 
-async function _onActivate() {
+async function _onActivate(retry = false) {
   // Load the ~290KB xterm bundle only when opened.
   try {
     await _ensureLibs();
@@ -228,7 +246,7 @@ async function _onActivate() {
   }
   _ensureTerm();
   _doFit();
-  if (!_connected) _connect();
+  if (!_connected && (!_connectionError || retry)) _connect();
   else _showTargetChange();
 }
 
@@ -254,7 +272,7 @@ function init(apiBase) {
   document.getElementById('terminal-close')?.addEventListener('click', () => _closeOverlay());
   document.getElementById('terminal-connect-btn')?.addEventListener('click', () => {
     if (_targetChanged()) _disconnect();
-    _onActivate();
+    _onActivate(true);
   });
   document.getElementById('terminal-disconnect-btn')?.addEventListener('click', () => _disconnect());
 

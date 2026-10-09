@@ -55,6 +55,11 @@ IDLE_TIMEOUT_S = int(os.getenv("TERMINAL_IDLE_TIMEOUT_S", str(30 * 60)))      # 
 MAX_LIFETIME_S = int(os.getenv("TERMINAL_MAX_LIFETIME_S", str(8 * 60 * 60)))  # 8 h absolute
 MAX_CONCURRENT_PTYS = int(os.getenv("TERMINAL_MAX_PTYS", "6"))               # across all owners
 READ_CHUNK = 65536
+STARTUP_TIMEOUT_S = 5
+REAP_TIMEOUT_S = 1
+WORKSPACE_UNAVAILABLE = (
+    "Selected project folder is unavailable. Choose another folder or clear it, then reconnect."
+)
 # Bound TIOCSWINSZ dimensions: no huge grids (memory) or 0x0 (div-by-zero).
 MIN_COLS, MAX_COLS = 2, 500
 MIN_ROWS, MAX_ROWS = 1, 300
@@ -65,6 +70,10 @@ WS_INTERNAL_ERROR = 1011
 WS_TRY_AGAIN_LATER = 1013
 
 SESSION_COOKIE = "odysseus_session"
+
+
+class TerminalStartupError(Exception):
+    """An actionable startup refusal, safe to send to the authenticated caller."""
 
 
 def _resolve_ws_user(websocket: WebSocket) -> Optional[str]:
@@ -129,15 +138,29 @@ def _registry(websocket: WebSocket) -> dict:
 
 
 def _resolve_cwd(websocket: WebSocket, owner: Optional[str], session_id: Optional[str]) -> str:
-    """Starting cwd: the caller's own session project_root, else /app/work, else HOME."""
+    """Defaults apply only when an owned session genuinely has no saved root."""
     if session_id:
+        from core.models import _session_manager
+        from src.tool_execution import _is_sensitive_path
+        if _session_manager is None:
+            raise TerminalStartupError("Conversation storage is unavailable. Try again before reconnecting.")
         try:
-            from src.tool_execution import _get_session_project_root
-            root = _get_session_project_root(session_id, owner)
-            if root and os.path.isdir(root):
-                return root
-        except Exception:
-            pass
+            session = _session_manager.get_session(session_id)
+        except KeyError:
+            session = None
+        if session is None or session.owner != owner:
+            raise TerminalStartupError("Conversation is unavailable. Open a conversation you own, then reconnect.")
+        root = getattr(session, "project_root", None)
+        if root is not None and root != "":
+            try:
+                if not isinstance(root, str):
+                    raise ValueError("invalid workspace")
+                root = os.path.realpath(os.path.expanduser(root))
+                if not os.path.isdir(root) or _is_sensitive_path(root):
+                    raise ValueError("unavailable workspace")
+            except (OSError, TypeError, ValueError) as exc:
+                raise TerminalStartupError(WORKSPACE_UNAVAILABLE) from exc
+            return root
     for candidate in ("/app/work", os.path.expanduser("~")):
         try:
             if candidate and os.path.isdir(candidate):
@@ -156,7 +179,33 @@ def _set_winsize(fd: int, cols: int, rows: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
 
-def _spawn_pty(cwd: str, cols: int, rows: int) -> tuple[int, int]:
+async def _wait_for_exec(fd: int) -> None:
+    """CLOEXEC EOF admits exec; a bounded child error refuses startup."""
+    loop = asyncio.get_running_loop()
+    ready = asyncio.Event()
+    os.set_blocking(fd, False)
+    loop.add_reader(fd, ready.set)
+    try:
+        async with asyncio.timeout(STARTUP_TIMEOUT_S):
+            while True:
+                await ready.wait()
+                ready.clear()
+                try:
+                    error = os.read(fd, 64)
+                except BlockingIOError:
+                    continue
+                if not error:
+                    return
+                if error == b"cwd":
+                    raise TerminalStartupError(WORKSPACE_UNAVAILABLE)
+                raise TerminalStartupError("Terminal shell could not start. Try reconnecting.")
+    except TimeoutError as exc:
+        raise TerminalStartupError("Terminal shell startup timed out. Try reconnecting.") from exc
+    finally:
+        loop.remove_reader(fd)
+
+
+async def _spawn_pty(cwd: str, cols: int, rows: int) -> tuple[int, int]:
     """Fork a non-root login shell on a new PTY with a sanitised env; returns
     (pid, master_fd). Fixed argv, no shell interpolation."""
     cols = max(MIN_COLS, min(MAX_COLS, int(cols)))
@@ -166,67 +215,107 @@ def _spawn_pty(cwd: str, cols: int, rows: int) -> tuple[int, int]:
     if not os.path.exists(shell):
         shell = "/bin/bash" if os.path.exists("/bin/bash") else "/bin/sh"
 
-    pid, master_fd = pty.fork()
+    # Python pipe descriptors are non-inheritable: successful exec closes the
+    # writer. Keep fork on this thread; only the parent wait is asynchronous.
+    error_fd, child_error_fd = os.pipe()
+    try:
+        pid, master_fd = pty.fork()
+    except BaseException:
+        os.close(error_fd)
+        os.close(child_error_fd)
+        raise
     if pid == 0:
         # child
+        os.close(error_fd)
+        stage = b"cwd"
         try:
-            if cwd and os.path.isdir(cwd):
-                os.chdir(cwd)
+            os.chdir(cwd)
+            stage = b"exec"
+            # Preserve the existing resource guards and fixed login-shell argv.
+            try:
+                import resource as _res
+                _res.setrlimit(_res.RLIMIT_NPROC, (512, 512))
+                _res.setrlimit(_res.RLIMIT_AS, (32 * 1024 ** 3, 32 * 1024 ** 3))
+                _res.setrlimit(_res.RLIMIT_CORE, (0, 0))
+            except Exception:
+                pass
+            env = {
+                "TERM": "xterm-256color",
+                "HOME": os.environ.get("HOME", "/app"),
+                "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "USER": os.environ.get("USER", "odysseus"),
+                "LANG": os.environ.get("LANG", "C.UTF-8"),
+                "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+                "PS1": r"\u@odysseus:\w\$ ",
+            }
+            argv0 = "-" + os.path.basename(shell)
+            os.execvpe(shell, [argv0], env)
+        except BaseException:
+            try:
+                os.write(child_error_fd, stage)
+            finally:
+                os._exit(127)
+    os.close(child_error_fd)
+    try:
+        await _wait_for_exec(error_fd)
+        wpid, _ = os.waitpid(pid, os.WNOHANG)
+        if wpid == pid:
+            raise TerminalStartupError("Terminal shell exited during startup. Try reconnecting.")
+        # Non-blocking master so the reader never wedges the event loop.
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        try:
+            _set_winsize(master_fd, cols, rows)
         except OSError:
             pass
-        # Contain fork/memory bombs: NPROC stops fork loops, AS caps allocation
-        # (32 GiB so build tools still work); the container also sets pids_limit.
-        try:
-            import resource as _res
-            _res.setrlimit(_res.RLIMIT_NPROC, (512, 512))
-            _res.setrlimit(_res.RLIMIT_AS, (32 * 1024 ** 3, 32 * 1024 ** 3))
-            _res.setrlimit(_res.RLIMIT_CORE, (0, 0))
-        except Exception:
-            pass
-        # Pass HOME/PATH/USER through, pin TERM for xterm.js; no secrets.
-        env = {
-            "TERM": "xterm-256color",
-            "HOME": os.environ.get("HOME", "/app"),
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "USER": os.environ.get("USER", "odysseus"),
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
-            "PS1": r"\u@odysseus:\w\$ ",
-        }
-        # argv[0] "-bash" requests a login shell so the profile/PATH apply.
-        argv0 = "-" + os.path.basename(shell)
-        try:
-            os.execvpe(shell, [argv0], env)
-        except Exception:
-            os._exit(127)
-    # parent: non-blocking master so the reader never wedges the event loop.
-    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-    try:
-        _set_winsize(master_fd, cols, rows)
-    except OSError:
-        pass
-    return pid, master_fd
+        return pid, master_fd
+    except BaseException:
+        await _reap(pid, master_fd)
+        raise
+    finally:
+        os.close(error_fd)
 
 
-def _reap(pid: int, master_fd: int) -> None:
+async def _reap(pid: int, master_fd: int) -> None:
     """Kill the shell's process group and close the master fd. Idempotent."""
-    if signal is not None:
+    try:
+        # Establish that this is still our unreaped child before signals. Keep
+        # the master open until then: closing it first can HUP the group leader.
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+            wpid, _ = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                return
+        except (ChildProcessError, OSError):
+            return
+        if signal is not None:
             try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass
-    try:
-        os.waitpid(pid, os.WNOHANG)
-    except (ChildProcessError, OSError):
-        pass
-    try:
-        os.close(master_fd)
-    except OSError:
-        pass
+                # forkpty's child may not yet own a group on startup failure.
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+    deadline = time.monotonic() + REAP_TIMEOUT_S
+    while True:
+        try:
+            wpid, _ = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                return
+        except (ChildProcessError, OSError):
+            return
+        if time.monotonic() >= deadline:
+            logger.warning("terminal child %s did not reap within cleanup deadline", pid)
+            return
+        await asyncio.sleep(0.01)
 
 
 def setup_terminal_routes() -> APIRouter:
@@ -275,18 +364,29 @@ def setup_terminal_routes() -> APIRouter:
 
         await websocket.accept()
 
+        # accept() yields: recheck then reserve synchronously before the startup
+        # handshake yields again. Pending starts count against the same cap.
+        if len(reg) >= MAX_CONCURRENT_PTYS:
+            await websocket.close(code=WS_TRY_AGAIN_LATER)
+            return
+
         # The connection id keeps multiple terminals per (owner, session)
         # distinct; the owner in every key blocks cross-owner lookup.
         conn_id = secrets.token_hex(8)
         reg_key = (owner, session_id, conn_id)
+        reg[reg_key] = {"owner": owner, "session_id": session_id, "alive": True, "starting": True}
 
-        cwd = _resolve_cwd(websocket, owner, session_id)
         try:
-            pid, master_fd = _spawn_pty(cwd, DEFAULT_COLS, DEFAULT_ROWS)
-        except Exception as e:  # pragma: no cover
+            cwd = _resolve_cwd(websocket, user, session_id)
+            pid, master_fd = await _spawn_pty(cwd, DEFAULT_COLS, DEFAULT_ROWS)
+        except BaseException as e:
+            reg.pop(reg_key, None)
+            if not isinstance(e, Exception):
+                raise
             logger.exception("terminal WS spawn failed")
+            message = str(e) if isinstance(e, TerminalStartupError) else "Terminal could not start. Try reconnecting."
             try:
-                await websocket.send_text(json.dumps({"type": "error", "msg": f"spawn failed: {e}"}))
+                await websocket.send_text(json.dumps({"type": "error", "msg": message}))
             finally:
                 await websocket.close(code=WS_INTERNAL_ERROR)
             return
@@ -420,7 +520,7 @@ def setup_terminal_routes() -> APIRouter:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            _reap(pid, master_fd)        # GATE 5: kill child + close fd on disconnect
+            await _reap(pid, master_fd)  # GATE 5: kill child + close fd on disconnect
             reg.pop(reg_key, None)
             try:
                 if websocket.client_state == WebSocketState.CONNECTED:
