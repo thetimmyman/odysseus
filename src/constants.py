@@ -67,6 +67,7 @@ FASTEMBED_CACHE_DIR = os.getenv("FASTEMBED_CACHE_PATH") or os.path.join(DATA_DIR
 MAX_OUTPUT_CHARS = 10_000       # cap for bash/python/web_search/web_fetch output
 MAX_READ_CHARS = 20_000         # cap for read_file / document preview
 MAX_DIFF_LINES = 400            # cap for edit_file unified-diff display
+MAX_WORKSPACE_PATH_LENGTH = 4096  # session workspace API and request validation
 
 # API Configuration
 MAX_CONTEXT_MESSAGES = 90
