@@ -46,6 +46,26 @@ def test_exact_free_route_accepts_and_returns_evidence(configured):
     assert enforce_free_offer(**kwargs)["offer_ref"] == record.ref
 
 
+def test_richer_v2_zero_cash_terms_do_not_activate_legacy_free_dispatch(configured):
+    from dataclasses import fields
+    from src.offer_terms import EconomicObservation, EconomicSource, LinearTerm, OfferEconomicTerms, UsageBand, UsageRule
+    from src.provider_model_offer import AllowanceEffect, CreditEffect, make_provider_model_offer_receipt
+    kwargs, source, path, record, _, _ = configured
+    rule = UsageRule("linear-usage-v1", "USD", "REQUEST", "default", (
+        UsageBand(0, None, (LinearTerm("requests", "0"),)),))
+    provenance = EconomicSource("SUPPORTED_PROVIDER_API", record.provenance.source_url,
+        "synthetic-v2", hashlib.sha256(source.read_bytes()).hexdigest(),
+        record.provenance.observed_at, 3600)
+    values = {f.name: getattr(record, f.name) for f in fields(record)}
+    values.update(schema_version=2, price=PriceEffect("USD", "unknown"), credit=CreditEffect("credit"),
+        allowance=AllowanceEffect("request"), economic_terms=OfferEconomicTerms(observations=(
+            EconomicObservation("marginal_cash", "OBSERVED", provenance, rule),)))
+    richer = make_provider_model_offer_receipt(**values)
+    path.write_text(json.dumps(richer.to_dict()))
+    with pytest.raises(PromotionUnavailable, match="zero USD tariff is not explicitly evidenced"):
+        enforce_free_offer(**kwargs)
+
+
 @pytest.mark.parametrize("field,value", [("profile_id", "paid-fallback"), ("model", "other"),
                                         ("chat_url", "https://other.test"), ("harness", "other")])
 def test_scope_mismatch_or_paid_fallback_refused(configured, field, value):
