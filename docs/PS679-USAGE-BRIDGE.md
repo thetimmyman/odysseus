@@ -123,6 +123,13 @@ discount optimizer or comparison of nominal provider credits with cash.
 
 ## Bounded cash discounts and quote-only inspection
 
+For source-bound alias mappings, versioned quota-burn rules, independent cash
+and allowance observations, source disagreements and historical outcome handoffs,
+use the [read-only offer registry](PROVIDER-OFFER-REGISTRY.md). Its version-2
+receipts share the immutable historical store. The dispatch gates described here
+consume version-1 scalar tariffs; richer version-2 terms require an explicitly
+qualified consumer.
+
 `ODYSSEUS_OFFER_CONFIG` enables bounded cash quotes instead of free-only mode;
 setting both variables is rejected. The config must contain an explicit
 `maximum_predicted_request_usd`. `prefer_discounted: true` enables stable cash ordering

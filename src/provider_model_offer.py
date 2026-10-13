@@ -2,8 +2,9 @@
 
 An offer binds one model on one exact pool and usage path to a time-bounded
 tariff. It is descriptive only: no persistence, ranking, legality or dispatch.
-Unknown prices are never treated as zero. An offer is usable only when its
-scope matches exactly and every time fact is known and current.
+Unknown prices are never treated as zero. Exact scope and source freshness are
+required. Legacy offers require explicit validity bounds; version 2 uses the
+observation TTL when provider validity dates are unknown.
 """
 from __future__ import annotations
 
@@ -15,7 +16,10 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
+from src.offer_terms import OfferEconomicTerms, terms_from_dict
+
 OFFER_SCHEMA_VERSION = 1
+OFFER_TERMS_SCHEMA_VERSION = 2
 OFFER_REF_PREFIX = "offer:"
 
 
@@ -198,12 +202,25 @@ class ProviderModelOfferReceipt:
     allowance: AllowanceEffect = field(default_factory=lambda: AllowanceEffect("request"))
     schema_version: int = OFFER_SCHEMA_VERSION
     receipt_hash: str = ""
+    economic_terms: OfferEconomicTerms | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.schema_version, int) or isinstance(self.schema_version, bool):
             raise OfferReceiptError("schema_version must be an integer")
-        if self.schema_version != OFFER_SCHEMA_VERSION:
+        if self.schema_version not in {OFFER_SCHEMA_VERSION, OFFER_TERMS_SCHEMA_VERSION}:
             raise OfferReceiptError("unsupported offer receipt schema")
+        if self.schema_version == OFFER_SCHEMA_VERSION and self.economic_terms is not None:
+            raise OfferReceiptError("version 1 cannot carry version 2 economic terms")
+        if self.schema_version == OFFER_TERMS_SCHEMA_VERSION:
+            if not isinstance(self.economic_terms, OfferEconomicTerms):
+                raise OfferReceiptError("version 2 requires typed immutable economic terms")
+            if (self.price != PriceEffect("USD", "unknown")
+                    or self.credit != CreditEffect("credit")
+                    or self.allowance != AllowanceEffect("request")):
+                raise OfferReceiptError("version 2 must not expose legacy scalar economics")
+            identity = self.economic_terms.model_identity
+            if identity.status == "OBSERVED" and identity.native_model != self.native_model:
+                raise OfferReceiptError("model mapping must bind the exact native model")
         for name in ("provider", "pool_id", "capacity_receipt_ref", "harness",
                      "usage_path", "native_model", "tariff_id", "tariff_version"):
             _text(getattr(self, name), name)
@@ -227,7 +244,7 @@ class ProviderModelOfferReceipt:
             raise OfferReceiptError("receipt_hash does not cover offer receipt content")
 
     def core(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "provider": self.provider,
+        result = {"schema_version": self.schema_version, "provider": self.provider,
                 "pool_id": self.pool_id, "capacity_receipt_ref": self.capacity_receipt_ref,
                 "harness": self.harness, "usage_path": self.usage_path,
                 "native_model": self.native_model, "tariff_id": self.tariff_id,
@@ -237,6 +254,9 @@ class ProviderModelOfferReceipt:
                 "valid_until": _canonical(self.valid_until),
                 "price": self.price.to_dict(), "credit": self.credit.to_dict(),
                 "allowance": self.allowance.to_dict()}
+        if self.economic_terms is not None:
+            result["economic_terms"] = self.economic_terms.to_dict()
+        return result
 
     def to_dict(self) -> dict[str, Any]:
         return {**self.core(), "receipt_hash": self.receipt_hash}
@@ -256,9 +276,12 @@ class ProviderModelOfferReceipt:
         observed = _timestamp(self.provenance.observed_at, "observed_at")
         if observed > current or (current - observed).total_seconds() >= self.provenance.ttl_seconds:
             return False
-        if isinstance(self.valid_from, UnknownValue) or isinstance(self.valid_until, UnknownValue):
+        if (self.schema_version == OFFER_SCHEMA_VERSION
+                and (isinstance(self.valid_from, UnknownValue) or isinstance(self.valid_until, UnknownValue))):
             return False
-        if not (_timestamp(self.valid_from, "valid_from") <= current < _timestamp(self.valid_until, "valid_until")):
+        if not isinstance(self.valid_from, UnknownValue) and _timestamp(self.valid_from, "valid_from") > current:
+            return False
+        if not isinstance(self.valid_until, UnknownValue) and current >= _timestamp(self.valid_until, "valid_until"):
             return False
         return (self.provider == provider and self.pool_id == pool_id
                 and self.capacity_receipt_ref == capacity_receipt_ref
@@ -272,8 +295,11 @@ def make_provider_model_offer_receipt(**kwargs: Any) -> ProviderModelOfferReceip
     if unknown:
         raise OfferReceiptError(f"unknown offer receipt fields: {sorted(unknown)}")
     kwargs.setdefault("schema_version", OFFER_SCHEMA_VERSION)
+    if kwargs.get("economic_terms") is None:
+        kwargs.pop("economic_terms", None)
     for name, kind in (("provenance", OfferProvenance), ("price", PriceEffect),
-                       ("credit", CreditEffect), ("allowance", AllowanceEffect)):
+                       ("credit", CreditEffect), ("allowance", AllowanceEffect),
+                       ("economic_terms", OfferEconomicTerms)):
         if name in kwargs and not isinstance(kwargs[name], kind):
             raise OfferReceiptError(f"{name} must be a typed {kind.__name__}")
     # Build the prospective core without admitting an unsealed public record.
@@ -330,6 +356,7 @@ def provider_model_offer_from_dict(payload: Mapping[str, Any]) -> ProviderModelO
                               value(price["offered_rate"])),
             credit=CreditEffect(credit["unit"], value(credit["amount"]), credit["applies_to"]),
             allowance=AllowanceEffect(allowance["unit"], value(allowance["amount"]), allowance["window"]),
-            receipt_hash=p["receipt_hash"])
-    except (KeyError, TypeError) as exc:
+            receipt_hash=p["receipt_hash"],
+            economic_terms=terms_from_dict(p["economic_terms"]) if p["schema_version"] == OFFER_TERMS_SCHEMA_VERSION else None)
+    except (KeyError, TypeError, ValueError) as exc:
         raise OfferReceiptError(f"malformed serialized offer receipt: {exc}") from exc
