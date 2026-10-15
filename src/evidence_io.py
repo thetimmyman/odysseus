@@ -16,6 +16,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from src.attempt_receipt import recompute_outcome
+from src.constants import EVIDENCE_BLOB_DIRNAME
 
 from src.evidence_package import (
     _iter_artifact_refs, default_artifact_loader, evidence_package_hash_is_valid,
@@ -67,7 +68,7 @@ def retain_evidence_bundle(directory, payload, *, artifacts=None):
         entry["consumers"].append(subject)
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    blob_dir = root / "blobs"
+    blob_dir = root / EVIDENCE_BLOB_DIRNAME
     blob_dir.mkdir(exist_ok=True, mode=0o700)
     for digest, data in blobs.items():
         _write_once(blob_dir / digest, data)
@@ -91,7 +92,7 @@ def read_evidence_bundle(path):
         digest = ref["sha256"]
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise ValueError("invalid content-addressed blob identity")
-        content = (path.parent / "blobs" / digest).read_bytes()
+        content = (path.parent / EVIDENCE_BLOB_DIRNAME / digest).read_bytes()
         if hashlib.sha256(content).hexdigest() != digest or len(content) != ref["size"]:
             raise ValueError("retained artifact hash/size mismatch")
         artifacts[uri] = content
@@ -150,7 +151,7 @@ def _retained_metadata(info):
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _retained_bytes(directory_fd, name, max_bytes, deadline):
+def _retained_bytes(directory_fd, name, max_bytes, deadline, *, expected_size=None):
     _retained_deadline(deadline)
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
@@ -164,6 +165,8 @@ def _retained_bytes(directory_fd, name, max_bytes, deadline):
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
                 or before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600):
             raise EvidenceBundleReadError("retained object must be an owned single-link mode 0600 file")
+        if expected_size is not None and before.st_size != expected_size:
+            raise EvidenceBundleReadError("retained artifact size does not match manifest")
         if before.st_size < 0 or before.st_size > max_bytes:
             raise EvidenceBundleLimitError("retained object exceeds caller byte ceiling")
         chunks, total = [], 0
@@ -174,6 +177,8 @@ def _retained_bytes(directory_fd, name, max_bytes, deadline):
                 break
             total += len(block)
             if total > max_bytes:
+                if expected_size is not None:
+                    raise EvidenceBundleReadError("retained artifact grew beyond manifest size")
                 raise EvidenceBundleLimitError("retained object exceeds caller byte ceiling")
             chunks.append(block)
         after = os.fstat(fd)
@@ -287,9 +292,9 @@ def read_retained_evidence_bundle(directory, bundle_hash, *, max_bundle_bytes,
                                        max_artifacts, deadline)
             blobs = {}
             if sizes:
-                with _retained_directory("blobs", deadline, parent_fd=root_fd) as blobs_fd:
+                with _retained_directory(EVIDENCE_BLOB_DIRNAME, deadline, parent_fd=root_fd) as blobs_fd:
                     for digest, size in sizes.items():
-                        content = _retained_bytes(blobs_fd, digest, size, deadline)
+                        content = _retained_bytes(blobs_fd, digest, size, deadline, expected_size=size)
                         if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
                             raise EvidenceBundleReadError("retained artifact hash or size mismatch")
                         blobs[digest] = content

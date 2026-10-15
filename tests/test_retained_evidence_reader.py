@@ -275,6 +275,37 @@ def test_blob_and_outer_hash_tampering_is_refused(retained):
         read(root, path.stem)
 
 
+def test_blob_larger_than_manifest_is_corruption_even_below_caller_ceiling(retained):
+    root, path, _, _ = retained
+    blob = next((root / "blobs").iterdir())
+    blob.write_bytes(blob.read_bytes() + b"x")
+    for ceiling in (LIMITS["max_blob_bytes"], LIMITS["max_blob_bytes"] * 2):
+        with pytest.raises(store.EvidenceBundleReadError) as refused:
+            read(root, path.stem, max_blob_bytes=ceiling)
+        assert not isinstance(refused.value, store.EvidenceBundleLimitError)
+
+
+def test_blob_growing_during_read_is_corruption_not_a_caller_limit(retained, monkeypatch):
+    root, path, _, _ = retained
+    blob = next((root / "blobs").iterdir())
+    inode = blob.stat().st_ino
+    original = os.read
+    changed = False
+    def grow(fd, size):
+        nonlocal changed
+        raw = original(fd, size)
+        if os.fstat(fd).st_ino == inode and not changed:
+            changed = True
+            with blob.open("ab") as stream:
+                stream.write(b"x")
+        return raw
+    monkeypatch.setattr(os, "read", grow)
+    with pytest.raises(store.EvidenceBundleReadError) as refused:
+        read(root, path.stem)
+    assert changed
+    assert not isinstance(refused.value, store.EvidenceBundleLimitError)
+
+
 def test_metadata_change_during_read_is_refused(retained, monkeypatch):
     root, path, _, _ = retained
     original = os.read
