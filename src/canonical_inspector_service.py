@@ -199,7 +199,7 @@ def _minimized_projection(projection, publication):
                 "profile_id": row["profile_id"],
                 "eligible": row.get("eligible") if type(row.get("eligible")) is bool else None,
                 "selected": row.get("selected") if type(row.get("selected")) is bool else None,
-                "rule": row.get("rule") if row.get("rule") in KNOWN_REFUSALS else "UNKNOWN",
+                "rule": row.get("rule") if row.get("rule") in KNOWN_REFUSALS | {"eligible"} else "UNKNOWN",
             })
     def observation_status(key):
         value = projection.get(key, {}).get("status")

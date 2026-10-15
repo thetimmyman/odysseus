@@ -382,3 +382,60 @@ def test_unconfirmed_cleanup_holds_slot_and_never_releases_lease(native_store, t
     with engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM canonical_inspector_event")).scalar() == 0
         assert connection.execute(text("SELECT reserved_slot FROM canonical_inspector_admission")).scalar() == 1
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_composed_public_retained_projector_owned_read_and_revocation(native_store, tmp_path, monkeypatch, failed):
+    from dataclasses import replace
+    from src.attempt_receipt import make_verification_receipt
+    from src.routing_inspector import project_retained_routing_inspection
+    from tests.test_canonical_pilot_adapter import synthetic_pilot
+
+    store, _ = native_store
+    pilot, state = synthetic_pilot(tmp_path)
+    if failed:
+        original_verifier = pilot._owners.verifier
+
+        def failed_verifier(*args):
+            result = original_verifier(*args)
+            receipt = make_verification_receipt(**{**result.receipt.__dict__, "exit_code": 1,
+                                                   "tests_passed": 1, "tests_failed": 1})
+            return replace(result, receipt=receipt)
+
+        pilot._owners = replace(pilot._owners, verifier=failed_verifier)
+    service = InspectorService(store, retained_root=tmp_path / "retained",
+                               projector=project_retained_routing_inspection,
+                               pilot_adapter=pilot, retention_parents=(tmp_path,))
+    _, _, client = client_for(tmp_path, monkeypatch, service)
+    admitted = client.post("/api/harness/inspector/pilots/synthetic-uppercase",
+                           headers={"x-test-user": "admin"}, json={"idempotency_key": "actual-public-projector"})
+    assert admitted.status_code == 200, admitted.text
+    handle = admitted.json()["handle"]
+    path = "/api/harness/inspector/attempts/" + handle
+    loaded = client.get(path, headers={"x-test-user": "admin"})
+    assert loaded.status_code == 200, loaded.text
+    body = loaded.json()
+    assert body["authoritative"] is False and body["semantic_acceptance"] == "UNKNOWN"
+    assert body["verification_state"] in {"UNKNOWN", "UNVERIFIED", "VERIFIED", "FAILED"}
+    if failed:
+        assert body["verification_state"] != "VERIFIED"
+    assert body["routing"]["capability_state"] == "OBSERVED"
+    assert body["routing"]["capacity_state"] == "UNKNOWN"
+    assert body["routing"]["candidates"][0]["profile_id"] == pilot._owners.estate.profiles[0].profile_id
+    original_read = service._read
+    reader_calls = []
+
+    def watched_read(*args, **kwargs):
+        reader_calls.append(True)
+        return original_read(*args, **kwargs)
+
+    service._read = watched_read
+    foreign = client.get(path, headers={"x-test-user": "other"})
+    missing = client.get("/api/harness/inspector/attempts/absent", headers={"x-test-user": "admin"})
+    assert foreign.status_code == missing.status_code == 404
+    assert foreign.json() == missing.json()
+    assert reader_calls == []
+    assert client.post(path + "/revoke", headers={"x-test-user": "admin"}).status_code == 200
+    revoked = client.get(path, headers={"x-test-user": "admin"})
+    assert revoked.status_code == 404 and revoked.json() == missing.json()
+    assert reader_calls == [] and state["workers"] == 1
