@@ -252,16 +252,24 @@ _BASELINE = b"def transform(value): return value\n"
 _ORACLE = b'''import ast, json, pathlib
 def discriminates(source):
     tree = ast.parse(source)
-    assert len(tree.body) == 1 and isinstance(tree.body[0], ast.FunctionDef)
+    if not (len(tree.body) == 1 and isinstance(tree.body[0], ast.FunctionDef)):
+        raise ValueError("unsupported source shape")
     node = tree.body[0]
-    assert node.name == "transform" and len(node.args.args) == 1 and node.args.args[0].arg == "value"
-    assert not node.decorator_list and not node.args.defaults and not node.args.kw_defaults
-    assert not node.args.vararg and not node.args.kwarg and not node.args.kwonlyargs
-    assert len(node.body) == 1 and isinstance(node.body[0], ast.Return)
+    if not (node.name == "transform" and len(node.args.args) == 1 and node.args.args[0].arg == "value"):
+        raise ValueError("unsupported source shape")
+    if not (not node.decorator_list and not node.args.defaults and not node.args.kw_defaults):
+        raise ValueError("unsupported source shape")
+    if not (not node.args.vararg and not node.args.kwarg and not node.args.kwonlyargs):
+        raise ValueError("unsupported source shape")
+    if not (len(node.body) == 1 and isinstance(node.body[0], ast.Return)):
+        raise ValueError("unsupported source shape")
     call = node.body[0].value
-    assert isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
-    assert isinstance(call.func.value, ast.Name) and call.func.value.id == "value"
-    assert call.func.attr in {"upper", "lower"} and not call.args and not call.keywords
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)):
+        raise ValueError("unsupported source shape")
+    if not (isinstance(call.func.value, ast.Name) and call.func.value.id == "value"):
+        raise ValueError("unsupported source shape")
+    if not (call.func.attr in {"upper", "lower"} and not call.args and not call.keywords):
+        raise ValueError("unsupported source shape")
     # Worker text is inert; execute only this fixed reconstruction.
     namespace = {}
     exec("def transform(value): return value." + call.func.attr + "()", namespace)

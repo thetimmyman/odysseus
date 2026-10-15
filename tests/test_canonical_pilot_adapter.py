@@ -458,3 +458,23 @@ async def test_missing_returned_artifact_bytes_never_invoke_uri_loader(tmp_path,
         validation = evidence.validate_evidence_package(payload, artifact_extensions=artifacts)
         assert validation.state != "VERIFIED"
     assert calls == []
+
+
+@pytest.mark.parametrize("optimize", [0, 2])
+@pytest.mark.parametrize("candidate,expected", [
+    ("def transform(value): return value.upper()", 0),
+    ("def transform(value): return value.lower()", 1),
+    ("def transform(value):\n return value.upper()\n print('unsupported')\n", 1),
+    ("def transform(value): return value.upper()\ndef extra(): return 1\n", 1),
+    ("@unknown_decorator\ndef transform(value): return value.upper()", 1),
+])
+def test_fixed_oracle_shape_gate_survives_python_optimization(monkeypatch, capsys, optimize, candidate, expected):
+    from pathlib import Path
+    from src.canonical_pilot_adapter import fixed_pilot_files
+
+    monkeypatch.setattr(Path, "read_text", lambda _path: candidate)
+    oracle = compile(fixed_pilot_files()["oracle.py"], "synthetic-oracle.py", "exec", optimize=optimize)
+    with pytest.raises(SystemExit) as result:
+        exec(oracle, {})
+    assert result.value.code == expected
+    capsys.readouterr()
