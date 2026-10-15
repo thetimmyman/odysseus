@@ -467,6 +467,10 @@ async def test_missing_returned_artifact_bytes_never_invoke_uri_loader(tmp_path,
     ("def transform(value):\n return value.upper()\n print('unsupported')\n", 1),
     ("def transform(value): return value.upper()\ndef extra(): return 1\n", 1),
     ("@unknown_decorator\ndef transform(value): return value.upper()", 1),
+    ("def transform(extra, /, value): return value.upper()", 1),
+    ("def transform(value, extra): return value.upper()", 1),
+    ("async def transform(value): return value.upper()", 1),
+    ("def transform(value: str) -> str: return value.upper()", 0),
 ])
 def test_fixed_oracle_shape_gate_survives_python_optimization(monkeypatch, capsys, optimize, candidate, expected):
     from pathlib import Path

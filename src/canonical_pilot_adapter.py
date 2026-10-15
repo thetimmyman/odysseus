@@ -255,7 +255,8 @@ def discriminates(source):
     if not (len(tree.body) == 1 and isinstance(tree.body[0], ast.FunctionDef)):
         raise ValueError("unsupported source shape")
     node = tree.body[0]
-    if not (node.name == "transform" and len(node.args.args) == 1 and node.args.args[0].arg == "value"):
+    if not (node.name == "transform" and not node.args.posonlyargs
+            and len(node.args.args) == 1 and node.args.args[0].arg == "value"):
         raise ValueError("unsupported source shape")
     if not (not node.decorator_list and not node.args.defaults and not node.args.kw_defaults):
         raise ValueError("unsupported source shape")
