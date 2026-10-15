@@ -98,6 +98,51 @@ async def test_process_success_drains_both_streams_and_confirms_exit():
 
 
 @pytest.mark.asyncio
+async def test_observed_lease_loss_wins_over_simultaneous_capture_completion():
+    events = []
+
+    class CompletionLossBoundary(Boundary):
+        def __init__(self):
+            super().__init__([b"ab"], [b"cd"])
+            self.process_complete = False
+            self.loss_observed = False
+
+        async def wait(self):
+            self.process_complete = True
+            events.append("process_complete")
+            return 0
+
+        def lease_valid(self):
+            if self.process_complete and not self.loss_observed:
+                self.loss_observed = True
+                events.append("loss_observed")
+                return False
+            if self.process_complete:
+                events.append("lease_recovered")
+            return True
+
+        async def terminate_all(self):
+            await super().terminate_all()
+            events.append("cleanup")
+
+    boundary = CompletionLossBoundary()
+    budget = CaptureBudget(4, 4, 6, 1)
+    refused = False
+    try:
+        await collect_process(boundary, budget)
+    except PilotLimit:
+        refused = True
+    assert boundary.loss_observed is True
+    assert refused is True, events
+    assert boundary.terminated == 1
+    # Observed loss is irreversible for this budget, even if a later sample
+    # recovers. There is no second capture using the same execution authority.
+    with pytest.raises(PilotLimit):
+        await collect_process(Boundary([], []), budget)
+    assert events == ["process_complete", "loss_observed", "cleanup"]
+
+
+@pytest.mark.asyncio
 async def test_every_provider_response_obeys_shared_call_and_byte_budget():
     budget = ProviderBudget(observation_calls=1, generation_calls=1, total_bytes=5,
                             observation_bytes=4, generation_bytes=4,

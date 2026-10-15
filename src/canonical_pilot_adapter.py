@@ -176,7 +176,7 @@ async def collect_process(boundary, budget: CaptureBudget):
         tasks.extend([collected, watcher])
         done, _ = await asyncio.wait({collected, watcher}, timeout=remaining,
                                      return_when=asyncio.FIRST_COMPLETED)
-        if collected not in done or collected.exception() is not None:
+        if watcher in done or collected not in done or collected.exception() is not None:
             raise PilotLimit("pilot unavailable")
         stdout, stderr, exit_code = collected.result()
         watcher.cancel()
