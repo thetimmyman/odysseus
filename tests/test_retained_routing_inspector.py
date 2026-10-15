@@ -58,6 +58,18 @@ def _inspect(payload, artifacts, *, attempt=None, **kwargs):
         now=NOW + timedelta(seconds=2), **kwargs)
 
 
+def _reachable_artifacts(payload, artifacts):
+    refs = []
+    for row in payload["attempt_receipts"]:
+        refs.extend(row.get(name) for name in ("rendered_context_ref", "output_ref"))
+        refs.extend(row["artifact_refs"])
+    for row in [*payload["verification_receipts"],
+                *payload["acceptance_context"].get("baseline_receipts", [])]:
+        refs.extend(row.get(name) for name in ("stdout_ref", "stderr_ref"))
+    uris = {ref["storage_uri"] for ref in refs if ref is not None}
+    return {uri: artifacts[uri] for uri in uris}
+
+
 def test_serialized_normalized_package_matches_typed_projection(retained, monkeypatch):
     result, payload, artifacts, _ = retained
     assert all(isinstance(line, str) for line in payload["execution_package"]["interface"])
@@ -86,7 +98,7 @@ def test_failed_and_unverified_attempts_do_not_become_storage_corruption(retaine
         verification_receipts=result.verifications[:1] if verified else (),
         acceptance_context=result.evidence_package["acceptance_context"],
         sealed_at=NOW.isoformat()).to_dict()
-    view = _inspect(evidence, artifacts)
+    view = _inspect(evidence, _reachable_artifacts(evidence, artifacts))
     assert view["retained_evidence"]["validation"]["ok"] is False
     assert view["retained_evidence"]["validation"]["state"] == "INCOMPLETE"
     outcomes = view["retained_evidence"]["attempt_verifications"]
@@ -342,13 +354,139 @@ def test_unused_retained_baseline_receipt_still_requires_original_integrity(reta
         _inspect(_reseal(payload), artifacts)
 
 
-def test_original_v1_evidence_keeps_absent_historical_supplements_unknown():
+def test_v1_evidence_without_historical_seal_is_outside_first_slice():
     result, _, _ = _chain()
     payload = seal_evidence_package(
         evidence_package_id="synthetic-v1-evidence", execution_package=_package(),
         dispatch_receipts=result.dispatches, attempt_receipts=result.attempts,
         verification_receipts=result.verifications, sealed_at=NOW.isoformat()).to_dict()
     assert payload["schema_version"] == 1 and "acceptance_context" not in payload
-    view = _inspect(payload, dict(result.artifacts))
-    assert view["capabilities"]["status"] == "UNKNOWN"
-    assert view["capacity"]["status"] == "UNKNOWN"
+    with pytest.raises(RoutingInspectionError, match="schema"):
+        _inspect(payload, dict(result.artifacts))
+
+
+@pytest.mark.parametrize("kind,field,value", [
+    ("attempt", "receipt_id", None),
+    ("attempt", "receipt_id", 17),
+    ("attempt", "unsupported_field", "unsupported"),
+    ("attempt", "elapsed_s", "not-a-number"),
+    ("attempt", "elapsed_s", True),
+    ("attempt", "elapsed_s", -1),
+    ("attempt", "elapsed_s", float("inf")),
+    ("attempt", "elapsed_s", float("nan")),
+    ("attempt", "prompt_tokens", True),
+    ("attempt", "completion_tokens", "7"),
+    ("attempt", "requested_context", 1.5),
+    ("attempt", "served_context", -1),
+    ("attempt", "failure_class", "unknown-class"),
+    ("attempt", "generation_token", 17),
+    ("attempt", "tool_invocations", ["not-a-mapping"]),
+    ("attempt", "actual_write_set", [17]),
+    ("verification", "receipt_id", None),
+    ("verification", "receipt_id", 17),
+    ("verification", "unsupported_field", "unsupported"),
+    ("verification", "elapsed_s", "not-a-number"),
+    ("verification", "elapsed_s", True),
+    ("verification", "elapsed_s", -1),
+    ("verification", "elapsed_s", float("inf")),
+    ("verification", "elapsed_s", float("nan")),
+    ("verification", "exit_code", False),
+    ("verification", "stdout_bytes", True),
+    ("verification", "timeout_s", "30"),
+    ("verification", "tests_executed", True),
+    ("verification", "stdout_complete", 1),
+    ("verification", "control_passed", 1),
+    ("verification", "claimed_preexisting", 0),
+    ("verification", "outcome", True),
+    ("verification", "proof_class", "unknown-class"),
+    ("verification", "tool_versions", [["only-one-entry"]]),
+    ("baseline", "receipt_id", None),
+    ("baseline", "elapsed_s", "not-a-number"),
+    ("baseline", "tests_passed", True),
+    ("baseline", "outcome", "invented"),
+    ("baseline", "unsupported_field", "unsupported"),
+])
+def test_resealed_inner_receipt_shape_is_refused(retained, kind, field, value):
+    _, payload, artifacts, _ = retained
+    if kind == "attempt":
+        row = payload["attempt_receipts"][0]
+    elif kind == "verification":
+        row = payload["verification_receipts"][0]
+    else:
+        row = deepcopy(payload["verification_receipts"][0])
+        payload["acceptance_context"]["baseline_receipts"] = [row]
+    if value is None:
+        row.pop(field)
+    else:
+        row[field] = value
+    _rehash(row, exclude=("outcome",) if kind != "attempt" else ())
+    with pytest.raises(RoutingInspectionError):
+        _inspect(_reseal(payload), artifacts)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("artifact_id", None), ("artifact_id", 17), ("media_type", 17),
+    ("unsupported_field", "unsupported"), ("size", True), ("storage_uri", 17),
+])
+def test_resealed_artifact_reference_requires_full_original_shape(retained, field, value):
+    _, payload, artifacts, _ = retained
+    row = payload["attempt_receipts"][0]
+    ref = row["rendered_context_ref"]
+    if value is None:
+        ref.pop(field)
+    else:
+        ref[field] = value
+    _rehash(row)
+    with pytest.raises(RoutingInspectionError):
+        _inspect(_reseal(payload), artifacts)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("receipt_id", 17), ("decided_by", "invented"),
+    ("decided_by", "explicit_pin"), ("requested_role", 17),
+    ("granted_tools", [17]), ("unsupported_field", "unsupported"),
+])
+def test_resealed_dispatch_preserves_typed_semantic_contract(retained, field, value):
+    _, payload, artifacts, _ = retained
+    row = payload["dispatch_receipts"][0]
+    original = row["receipt_hash"]
+    row[field] = value
+    _rehash(row)
+    new = row["receipt_hash"]
+    for attempt in payload["attempt_receipts"]:
+        attempt["dispatch_receipt_hash"] = new
+        _rehash(attempt)
+    histories = payload["acceptance_context"]["dispatch_evidence"]
+    history = histories.pop(original)
+    history["decision_receipt"] = {key: item for key, item in row.items() if key != "receipt_hash"}
+    history["decision"]["receipt_hash"] = new
+    history["seal"]["dispatch_receipt_hash"] = new
+    core = {key: item for key, item in history.items() if key != "seal"}
+    history["seal"]["evidence_hash"] = hashlib.sha256(json.dumps(
+        core, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    histories[new] = history
+    with pytest.raises(RoutingInspectionError):
+        _inspect(_reseal(payload), artifacts)
+
+
+def test_unreachable_supplied_artifact_is_refused(retained):
+    _, payload, artifacts, _ = retained
+    artifacts["file:///synthetic/unrelated"] = b"unrelated"
+    with pytest.raises(RoutingInspectionError):
+        _inspect(payload, artifacts)
+
+
+@pytest.mark.parametrize("shared_uri", [True, False])
+def test_exact_artifact_mapping_preserves_shared_uri_and_digest_aliases(retained, shared_uri):
+    _, payload, artifacts, _ = retained
+    row = payload["attempt_receipts"][0]
+    ref = deepcopy(row["output_ref"])
+    ref["artifact_id"] = "synthetic-second-reference"
+    if not shared_uri:
+        original = ref["storage_uri"]
+        ref["storage_uri"] = "opaque:synthetic-second-locator"
+        artifacts[ref["storage_uri"]] = artifacts[original]
+    row["artifact_refs"].append(ref)
+    _rehash(row)
+    view = _inspect(_reseal(payload), artifacts)
+    assert view["retained_evidence"]["validation"]["state"] == "VERIFIED"

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
+import math
 from typing import Any, Iterable, Mapping
 
 from src.execution_package import (
@@ -24,6 +25,7 @@ from src.provider_capacity import (
 from src.execution_outcomes import ExecutionOutcomeRecord, validate_outcome_record
 from src.outcome_scorecard import aggregate_outcomes
 from src.attempt_receipt import (
+    ArtifactRef, AttemptReceipt, VerificationReceipt,
     attempt_receipt_hash_is_valid, recompute_outcome,
     verification_receipt_hash_is_valid,
 )
@@ -414,6 +416,92 @@ def _full_hash(value: Any) -> bool:
             and all(char in "0123456789abcdef" for char in value))
 
 
+def _retained_receipt_shape(row: Mapping[str, Any], kind: type) -> Any:
+    """Validate the existing receipt types without changing any recorded field/hash.
+
+    Dataclass annotations alone do not enforce numeric or boolean types. Keep
+    those checks here, including the finite/nonnegative duration rule already
+    used by execution_outcomes. This helper accepts only these four known record
+    types and their existing serialized collection shapes.
+    """
+    if kind not in (ArtifactRef, AttemptReceipt, VerificationReceipt, DispatchDecisionReceipt):
+        raise RoutingInspectionError("unsupported retained receipt type")
+    if not isinstance(row, Mapping):
+        raise RoutingInspectionError("retained receipt must be a mapping")
+    declared = {item.name: item.type for item in fields(kind)}
+    expected = set(declared)
+    if kind is VerificationReceipt:
+        expected.add("outcome")
+        if "proof_vantage" not in row:
+            expected.remove("proof_vantage")
+    if kind is DispatchDecisionReceipt:
+        expected.difference_update(name for name in (
+            "authority", "capacity_receipt_refs", "offer_receipt_refs", "offer_quote_digests")
+            if name not in row)
+    if set(row) != expected:
+        raise RoutingInspectionError("retained receipt has missing or unsupported fields")
+    for name, annotation in declared.items():
+        if name not in row:
+            continue
+        value = row[name]
+        if annotation in (str, "str") and not isinstance(value, str):
+            raise RoutingInspectionError("retained receipt string field is malformed")
+        if annotation in (bool, "bool") and type(value) is not bool:
+            raise RoutingInspectionError("retained receipt boolean field is malformed")
+        if annotation in (int, "int") and (
+                type(value) is not int or (name != "exit_code" and value < 0)):
+            raise RoutingInspectionError("retained receipt integer field is malformed")
+        if annotation in (float, "float") and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0):
+            raise RoutingInspectionError("retained receipt duration must be finite and nonnegative")
+    if kind is not ArtifactRef and row["schema_version"] != 1:
+        raise RoutingInspectionError("retained receipt schema is unsupported")
+    data = dict(row)
+    for name in ("declared_write_set", "actual_write_set", "verifier_paths",
+                 "write_set_reconciliation", "requirement_ids", "requested_capabilities",
+                 "capability_receipt_refs", "capacity_receipt_refs", "offer_receipt_refs",
+                 "offer_quote_digests", "granted_tools", "granted_write_scope", "granted_read_scope"):
+        if name in row and (not isinstance(row[name], list)
+                            or any(not isinstance(value, str) for value in row[name])):
+            raise RoutingInspectionError("retained receipt string collection is malformed")
+    for name in ("tool_invocations", "candidates_considered"):
+        if name in row and (not isinstance(row[name], list)
+                            or any(not isinstance(value, Mapping) for value in row[name])):
+            raise RoutingInspectionError("retained receipt record collection is malformed")
+    if kind is VerificationReceipt:
+        for name in ("tests_collected", "tests_executed", "tests_passed", "tests_failed", "tests_skipped"):
+            value = row[name]
+            if value is not None and (type(value) is not int or value < 0):
+                raise RoutingInspectionError("retained verification counter is malformed")
+        if row["control_passed"] is not None and type(row["control_passed"]) is not bool:
+            raise RoutingInspectionError("retained verification control is malformed")
+        versions = row["tool_versions"]
+        if (not isinstance(versions, list) or any(
+                not isinstance(pair, list) or len(pair) != 2
+                or any(not isinstance(value, str) for value in pair) for pair in versions)):
+            raise RoutingInspectionError("retained verification tool versions are malformed")
+        if not isinstance(row["outcome"], str) or row["outcome"] != recompute_outcome(row):
+            raise RoutingInspectionError("retained verification outcome is not its derived value")
+        data.pop("outcome")
+    for name in ("rendered_context_ref", "output_ref", "stdout_ref", "stderr_ref"):
+        if name in row and row[name] is not None:
+            data[name] = _retained_receipt_shape(row[name], ArtifactRef)
+    if kind is AttemptReceipt:
+        if not isinstance(row["artifact_refs"], list):
+            raise RoutingInspectionError("retained attempt artifact collection is malformed")
+        data["artifact_refs"] = tuple(_retained_receipt_shape(ref, ArtifactRef)
+                                      for ref in row["artifact_refs"])
+    if kind is DispatchDecisionReceipt and "authority" in row and not isinstance(row["authority"], Mapping):
+        raise RoutingInspectionError("retained dispatch authority attribution is malformed")
+    # Direct construction retains receipt_hash; it does not call a sealing factory.
+    # Constructors retain semantic invariants such as decided_by/policy consistency.
+    original = kind(**data)
+    if _canonical(original.to_dict()) != _canonical(row):
+        raise RoutingInspectionError("retained receipt does not preserve its original serialization")
+    return original
+
+
 def _retained_artifacts(payload: Mapping[str, Any], artifacts: Mapping[str, bytes]) -> dict[str, bytes]:
     """Preflight every canonical locator before the validator can use its loader."""
     if not isinstance(artifacts, Mapping) or any(
@@ -435,6 +523,7 @@ def _retained_artifacts(payload: Mapping[str, Any], artifacts: Mapping[str, byte
         raise RoutingInspectionError("retained baseline receipts are malformed")
     baseline_hashes = set()
     for receipt in baselines:
+        _retained_receipt_shape(receipt, VerificationReceipt)
         digest = receipt.get("receipt_hash")
         if (not _full_hash(digest) or digest in baseline_hashes
                 or type(receipt.get("schema_version")) is not int
@@ -447,8 +536,7 @@ def _retained_artifacts(payload: Mapping[str, Any], artifacts: Mapping[str, byte
                     if receipt.get(key) is not None)
     identities = {}
     for ref in refs:
-        if not isinstance(ref, Mapping):
-            raise RoutingInspectionError("retained artifact reference is malformed")
+        _retained_receipt_shape(ref, ArtifactRef)
         uri, digest, size = ref.get("storage_uri"), ref.get("sha256"), ref.get("size")
         if (not isinstance(uri, str) or not uri or not _full_hash(digest)
                 or type(size) is not int or size < 0):
@@ -459,6 +547,8 @@ def _retained_artifacts(payload: Mapping[str, Any], artifacts: Mapping[str, byte
         data = supplied.get(uri)
         if data is None or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
             raise RoutingInspectionError("caller must provide matching bytes for every retained artifact")
+    if set(supplied) != set(identities):
+        raise RoutingInspectionError("artifact bytes must exactly match the reachable retained locators")
     return supplied
 
 
@@ -474,6 +564,10 @@ def _retained_receipts(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             raise RoutingInspectionError("retained receipt collections are malformed")
         seen = set()
         for row in rows:
+            kind = {"dispatch_receipts": DispatchDecisionReceipt,
+                    "attempt_receipts": AttemptReceipt,
+                    "verification_receipts": VerificationReceipt}[field]
+            _retained_receipt_shape(row, kind)
             digest = row.get("receipt_hash")
             if not _full_hash(digest) or digest in seen or type(row.get("schema_version")) is not int or row["schema_version"] != 1:
                 raise RoutingInspectionError("retained receipt identity is malformed or duplicated")
@@ -528,8 +622,6 @@ def _historical_supplements(payload: Mapping[str, Any], dispatches: Mapping[str,
                             selected_hash: str) -> tuple[tuple, tuple]:
     """Only original embedded dispatch evidence can supplement this projection."""
     context = payload.get("acceptance_context")
-    if context is None and payload["schema_version"] == 1:
-        return (), ()
     if not isinstance(context, Mapping) or not isinstance(context.get("dispatch_evidence"), Mapping):
         raise RoutingInspectionError("historical dispatch evidence is missing")
     histories = context["dispatch_evidence"]
@@ -584,13 +676,13 @@ def _historical_supplements(payload: Mapping[str, Any], dispatches: Mapping[str,
                     if not target_capability_receipt_hash_is_valid(row):
                         raise RoutingInspectionError("historical capability receipt hash is invalid")
                     receipt = make_target_capability_receipt(**row)
-                    if receipt.to_dict() != row:
+                    if _canonical(receipt.to_dict()) != _canonical(row):
                         raise RoutingInspectionError("historical capability receipt is not canonical")
                     if receipt.receipt_hash in dispatch["capability_receipt_refs"]:
                         caps.append(receipt)
                 else:
                     receipt = capacity_receipt_from_dict(row)
-                    if receipt.to_dict() != row:
+                    if _canonical(receipt.to_dict()) != _canonical(row):
                         raise RoutingInspectionError("historical capacity receipt is not canonical")
                     if receipt.ref in dispatch.get("capacity_receipt_refs", []):
                         capacity.append(receipt)
@@ -608,14 +700,15 @@ def project_retained_routing_inspection(
     outcomes: Iterable[ExecutionOutcomeRecord] = (),
     scoring_version: str = "",
 ) -> dict[str, Any]:
-    """Inspect one exact attempt from explicit retained canonical inputs, without I/O.
+    """Inspect one exact attempt from explicit retained v2 canonical inputs, without I/O.
 
     The caller owns authentication, owner association and bounded storage reads.
     This descriptive library result is not a UI disclosure allowlist. No current
     source, profile, grant or capacity lookup is performed. Validation metadata
     reports the existing validator over retained inputs only, not live acceptance.
-    Missing legacy supplements stay UNKNOWN; failed/unverified attempts remain
-    inspectable when their original hashes and joins are intact.
+    Missing canonical supplements in a valid historical seal stay UNKNOWN;
+    failed/unverified attempts remain inspectable when their original hashes,
+    field types and joins are intact.
     """
     moment = _require_time(now)
     if not _full_hash(attempt_receipt_hash):
@@ -625,7 +718,7 @@ def project_retained_routing_inspection(
             raise RoutingInspectionError("retained evidence must be a mapping")
         # Do not accept custom object serializers or coerce normalized interfaces.
         data = json.loads(json.dumps(dict(payload), allow_nan=False, ensure_ascii=False))
-        if type(data.get("schema_version")) is not int or data["schema_version"] not in (1, 2):
+        if type(data.get("schema_version")) is not int or data["schema_version"] != 2:
             raise RoutingInspectionError("retained evidence schema is unsupported")
         package = data["execution_package"]
         if (not isinstance(package, Mapping) or not evidence_package_hash_is_valid(data)
