@@ -20,7 +20,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.local_measurement_owner import BrokerLease, MeasurementUnresolved, measure_once
-from src.local_measurement_config import ReadOnlyConfigProjection
+from src.local_measurement_config import ReadOnlyConfigProjection, ConfigProjectionRefused
 from src.local_measurement_process import SystemdProcesses, decode_json
 from src.local_target_qualification import _http_transport, read_bounded_http_json
 from src.local_targets import (LocalTargetSpec, make_target_capability_receipt,
@@ -160,6 +160,11 @@ def main(argv=None):
     except Exception as exc:
         # Provider/collector/broker exceptions may contain private data.
         print('measurement refused: '+type(exc).__name__+'; no receipt applied', file=sys.stderr)
+        if isinstance(exc, ConfigProjectionRefused):
+            # Same private owned-resource channel as unit reconciliation keys.
+            # No original configuration path/body or exception text is emitted.
+            print(json.dumps({'configuration_projection_refusal':exc.private_evidence()},
+                             sort_keys=True), file=sys.stderr)
         return 2
     finally:
         if projection is not None:

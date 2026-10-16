@@ -60,6 +60,31 @@ except Exception:
 '''
 
 
+class ConfigProjectionRefused(MeasurementUnresolved):
+    """Sanitized refusal plus a private owned-resource reconciliation key.
+
+    primary_error is retained for the in-process caller, never serialized.
+    private_evidence is for the controller's private stderr, not renderer,
+    tracker or public diagnostic output. It contains no original config path.
+    """
+
+    def __init__(self, primary_error, *, cleanup_state, retained_directory):
+        super().__init__('SSH configuration projection preparation refused')
+        self.primary_error = primary_error
+        name = type(primary_error).__name__
+        self.primary_failure_class = name if name in {'OSError', 'ValueError',
+            'TypeError', 'PermissionError', 'FileNotFoundError',
+            'UnicodeDecodeError', 'MeasurementUnresolved'} else 'OTHER'
+        self.cleanup_state = cleanup_state
+        self.retained_directory = retained_directory
+
+    def private_evidence(self):
+        return {'kind': 'CONFIG_PROJECTION_PREPARATION_REFUSED',
+                'primary_failure_class': self.primary_failure_class,
+                'cleanup_state': self.cleanup_state,
+                'retained_directory': self.retained_directory}
+
+
 def _path(value):
     if (type(value) is not str or len(value) > 2048 or not _PATH.fullmatch(value)
             or '..' in Path(value).parts or str(Path(value)) != value):
@@ -170,10 +195,15 @@ class ReadOnlyConfigProjection:
                     os.chmod(copy, 0o600)
                     stream.write(raw)
                 self._copies.append((copy, entry['resolved_path'], raw))
-            self.verify()
-        except Exception:
-            self.close()
-            raise MeasurementUnresolved('SSH configuration projection refused') from None
+            self._verify()
+        except Exception as primary:
+            directory = self._temporary.name if self._temporary is not None else None
+            try:
+                removed = self.close() is True
+            except Exception:
+                removed = False
+            raise ConfigProjectionRefused(primary, cleanup_state='REMOVED' if removed else 'UNKNOWN',
+                retained_directory=None if removed else directory) from None
 
     def _check_closure(self):
         # Conservative Include discovery only. Host/Match selection, option
@@ -201,8 +231,6 @@ class ReadOnlyConfigProjection:
                     parts.pop(1)
                 if not re.fullmatch('[A-Za-z][A-Za-z0-9]*', parts[0]):
                     raise ValueError('not an SSH configuration directive')
-                if len(parts) > 1 and re.match(r'(?:ssh-|ecdsa-|sk-)', parts[1]):
-                    raise ValueError('key/store records are not configuration inputs')
                 if parts[0].lower() != 'include':
                     continue
                 if len(parts) < 2:
@@ -227,24 +255,27 @@ class ReadOnlyConfigProjection:
         if set(found) != set(expected):
             raise ValueError('configuration closure has extra files')
 
+    def _verify(self):
+        if self._temporary is None:
+            raise ValueError('configuration projection closed')
+        for entry, original, stamp in self._sources:
+            raw, current = _read_original(entry)
+            if raw != original or current != stamp:
+                raise ValueError('configuration source changed')
+        self._check_closure()
+        directory = Path(self._temporary.name).stat()
+        if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
+            raise ValueError('private projection directory changed')
+        for copy, _, original in self._copies:
+            raw, _ = _read_original({'path': str(copy), 'resolved_path': str(copy),
+                'link': None, 'uid': os.getuid(), 'mode': 0o600,
+                'sha256': hashlib.sha256(original).hexdigest()})
+            if raw != original:
+                raise ValueError('private projection changed')
+
     def verify(self):
         try:
-            if self._temporary is None:
-                raise ValueError('configuration projection closed')
-            for entry, original, stamp in self._sources:
-                raw, current = _read_original(entry)
-                if raw != original or current != stamp:
-                    raise ValueError('configuration source changed')
-            self._check_closure()
-            directory = Path(self._temporary.name).stat()
-            if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
-                raise ValueError('private projection directory changed')
-            for copy, _, original in self._copies:
-                raw, _ = _read_original({'path': str(copy), 'resolved_path': str(copy),
-                    'link': None, 'uid': os.getuid(), 'mode': 0o600,
-                    'sha256': hashlib.sha256(original).hexdigest()})
-                if raw != original:
-                    raise ValueError('private projection changed')
+            self._verify()
         except Exception:
             raise MeasurementUnresolved('SSH configuration projection changed or unavailable') from None
 

@@ -56,8 +56,9 @@ across all sections, using the root's Include base through nested includes.
 Included logical and resolved sources must use `.conf` names.
 Root symlinks may resolve only to a native config basename or `.conf` file.
 This prevents a config alias from laundering a named key/store before reading it.
-Private-key headers, key/store records and non-directive content are refused before copies
+Private-key headers and non-directive content are refused before copies
 are created. Named keys and stores cannot be admitted as roots or Include inputs.
+Native Host patterns and option values are never classified as key/store data.
 It does not interpret Host/Match selection or option precedence. Dynamic
 Include tokens, named-home expansion, directory globs, ambiguous bases,
 unlisted sources, extra sources and unsupported paths are refused. The
@@ -86,6 +87,12 @@ and its fixed status is retained separately from the primary failure.
 Failure-path cleanup cannot emit arbitrary exception text, mask the primary
 refusal or silently retry a failed removal. No new copy cleanup runs after a
 receipt is published. Temporary-copy removal does not prove unit or remote termination.
+If construction fails after creating copies and removal is unconfirmed, a
+sanitized preparation refusal retains the primary error privately. The
+controller's existing private stderr channel receives a fixed failure class,
+cleanup UNKNOWN and the exact owned temporary directory for reconciliation.
+Original config paths, bodies and arbitrary exception messages are excluded;
+only enums may be forwarded to public diagnostics or tracker summaries.
 Source tests, a successful projection proof or a local metadata parser run
 cannot qualify a provider or renew historical freshness: fresh native identity,
 the two bounded requests and stable post-identity remain required.

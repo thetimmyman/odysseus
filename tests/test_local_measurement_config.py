@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.local_measurement_config import ReadOnlyConfigProjection
+from src.local_measurement_config import ReadOnlyConfigProjection, ConfigProjectionRefused
 import src.local_measurement_config as config_module
 from src.local_measurement_owner import MeasurementUnresolved
 
@@ -269,3 +269,52 @@ def test_config_symlink_cannot_launder_a_credential_target_name(tmp_path, monkey
     with pytest.raises(MeasurementUnresolved):
         ReadOnlyConfigProjection(manifest)
     assert target not in opened
+
+
+def test_constructor_failure_retains_primary_and_private_recovery_key_when_cleanup_fails(tmp_path, monkeypatch):
+    config = tmp_path / '.ssh' / 'config'
+    config.write_text('Host synthetic\n')
+    manifest = manifest_for(tmp_path, [config], [config])
+    original_open = os.open
+    primary = OSError('SYNTHETIC_PRIVATE_PREPARATION_VALUE')
+    reads = []
+
+    def refuse_post_copy_read(path, *args, **kwargs):
+        if Path(path) == config:
+            reads.append(True)
+            if len(reads) == 2:
+                raise primary
+        return original_open(path, *args, **kwargs)
+
+    def refuse_removal(*args, **kwargs):
+        raise OSError('SYNTHETIC_PRIVATE_REMOVAL_VALUE')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'open', refuse_post_copy_read)
+        patch.setattr(shutil, 'rmtree', refuse_removal)
+        with pytest.raises(ConfigProjectionRefused) as caught:
+            ReadOnlyConfigProjection(manifest)
+    failure = caught.value
+    assert failure.primary_error is primary
+    assert failure.primary_failure_class == 'OSError'
+    assert failure.cleanup_state == 'UNKNOWN'
+    directory = Path(failure.retained_directory)
+    assert directory.parent == Path('/tmp')
+    assert directory.name.startswith('odysseus-measure-config-')
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert (directory / '0').read_bytes() == config.read_bytes()
+    assert 'SYNTHETIC_PRIVATE_' not in str(failure)
+    shutil.rmtree(directory)  # Explicit synthetic-fixture recovery after UNKNOWN.
+
+
+@pytest.mark.parametrize('line', [
+    'Host ssh-synthetic secondary',
+    'HostKeyAlgorithms ssh-ed25519',
+    'PubkeyAcceptedAlgorithms ssh-ed25519',
+])
+def test_native_host_and_option_values_are_not_reclassified_as_key_records(tmp_path, line):
+    config = tmp_path / '.ssh' / 'config'
+    config.write_text(line + '\n')
+    with ReadOnlyConfigProjection(manifest_for(tmp_path, [config], [config])) as projection:
+        projected = next(Path(source) for source, dest in projection.bindings() if dest == str(config))
+        assert projected.read_text() == line + '\n'

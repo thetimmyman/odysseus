@@ -2,10 +2,13 @@
 import hashlib
 import importlib.machinery
 import importlib.util
+import os
+import shutil
 import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -191,3 +194,58 @@ def test_cli_cleanup_failure_retains_primary_refusal_and_never_exposes_exception
     captured = capsys.readouterr()
     assert 'SYNTHETIC_PRIVATE_CLEANUP_VALUE' not in captured.err + captured.out
     assert 'configuration cleanup UNKNOWN' in captured.err
+
+
+def test_cli_constructor_refusal_records_private_owned_copy_key_without_primary_text(tmp_path, monkeypatch, capsys):
+    path = Path('scripts/odysseus-measure-once').resolve()
+    loader = importlib.machinery.SourceFileLoader('projection_constructor_cli', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    config = tmp_path / '.ssh' / 'config'
+    config.parent.mkdir(mode=0o700)
+    config.write_text('Host synthetic\n')
+    config.chmod(0o600)
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text(json.dumps({'schema': 'PINNED_SSH_CONFIG_V1', 'home': str(tmp_path),
+        'roots': ['user'], 'files': [{'path': str(config), 'resolved_path': str(config),
+            'link': None, 'uid': os.getuid(), 'mode': 0o600,
+            'sha256': hashlib.sha256(config.read_bytes()).hexdigest()}]}))
+    manifest.chmod(0o600)
+    original_open = os.open
+    reads = []
+
+    def unavailable_after_copy(file, *args, **kwargs):
+        if Path(file) == config:
+            reads.append(True)
+            if len(reads) == 2:
+                raise OSError('SYNTHETIC_PRIVATE_PREPARATION_VALUE')
+        return original_open(file, *args, **kwargs)
+
+    def removal_unavailable(*args, **kwargs):
+        raise OSError('SYNTHETIC_PRIVATE_REMOVAL_VALUE')
+
+    def never_start(**kwargs):
+        raise AssertionError('constructor failure must not reach process admission')
+
+    monkeypatch.setattr(module, 'SystemdProcesses', never_start)
+    with monkeypatch.context() as patch:
+        patch.setattr('src.local_measurement_config.pwd.getpwuid',
+                      lambda uid: SimpleNamespace(pw_dir=str(tmp_path)))
+        patch.setattr(os, 'open', unavailable_after_copy)
+        patch.setattr(shutil, 'rmtree', removal_unavailable)
+        result = module.main(['--qualify-boundary', '--ssh-config-manifest', str(manifest),
+            '--ssh-config-manifest-sha256', hashlib.sha256(manifest.read_bytes()).hexdigest()])
+    assert result == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert 'SYNTHETIC_PRIVATE_' not in captured.err
+    assert str(config) not in captured.err
+    rows = [json.loads(line) for line in captured.err.splitlines() if line.startswith('{')]
+    evidence = rows[0]['configuration_projection_refusal']
+    assert evidence['cleanup_state'] == 'UNKNOWN'
+    assert evidence['primary_failure_class'] == 'OSError'
+    directory = Path(evidence['retained_directory'])
+    assert directory.parent == Path('/tmp')
+    assert (directory / '0').read_bytes() == config.read_bytes()
+    shutil.rmtree(directory)  # Explicit synthetic-fixture recovery only.
