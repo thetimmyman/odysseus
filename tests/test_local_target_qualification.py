@@ -1,5 +1,6 @@
 """Synthetic provider controls; no live model requests."""
 import copy
+import dataclasses
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -85,6 +86,28 @@ def test_measured_renewal_keeps_profile_anchor_and_bounded_scope(tmp_path,provid
     assert json.loads(raw)==report and len(report['producer_sha256'])==64
 
 
+@pytest.mark.parametrize('provider',['ollama','halogen-flash'])
+def test_larger_approximate_profile_renews_only_the_measured_4k_floor(tmp_path,provider):
+    spec,old=profile(context=ContextProfile(configured_context=262144,
+        safe_working_context=32768, semantic_verified_context=32768,
+        safe_context_source='previous-32k-measurement', options=profile(provider)[1].context.options),
+        provider=provider)
+    calls=[]
+    def transport(url,request):
+        calls.append(request)
+        return good_response(provider,request)
+    renewed,report=qualify_existing_profile(spec,old,identity(old),lambda:identity(old),tmp_path,
+                                           transport=transport,now=NOW)
+    assert len(calls)==2 and report['status']=='PASS' and report['safe_context']==4096
+    assert renewed.context.safe_working_context==renewed.context.semantic_verified_context==4096
+    assert renewed.material_identity()==old.material_identity() and renewed.profile_id==old.profile_id
+    assert renewed.routing_exactness()=='approximate'
+    assert renewed.supersedes==old.receipt_hash and renewed.qualification_ref==old.qualification_ref
+    assert renewed.qualification_state(now=NOW)=='valid'
+    assert old.context.safe_working_context==32768
+    assert old.qualification_state(now=NOW)=='qualification_expired'
+
+
 @pytest.mark.parametrize('failure',['wrong_arguments','multiple_calls','incomplete','short_context',
                                    'missing_tokens','wrong_model','prose','network'])
 def test_failed_trial_never_issues_renewal(tmp_path,failure):
@@ -152,9 +175,12 @@ def test_existing_evidence_never_overwritten(tmp_path):
     assert path.read_text()=='retained evidence'
 
 
-def test_expired_heartbeat_can_only_be_revived_by_new_measurement(tmp_path):
+@pytest.mark.parametrize('previous_floor',[4096,32768])
+def test_expired_heartbeat_can_only_be_revived_by_new_measurement(tmp_path,previous_floor):
     from src.target_capability_store import TargetCapabilityStore
     spec,old=profile()
+    old=make_target_capability_receipt(**{**old.to_dict(), 'context':dataclasses.replace(
+        old.context, safe_working_context=previous_floor, semantic_verified_context=previous_floor)})
     store=TargetCapabilityStore(str(tmp_path/'store'))
     store.append(old)
     refreshed=store.refresh_observation(old.profile_id,current_identity_digest=old.identity_digest(),
@@ -171,6 +197,19 @@ def test_expired_heartbeat_can_only_be_revived_by_new_measurement(tmp_path):
         expected_receipt_hash=refreshed.receipt_hash,current_identity_digest=renewed.identity_digest(),
         identity_checked_at=real_now.isoformat())
     assert applied.receipt_hash==renewed.receipt_hash
+    assert store.current_for_host(old.host_id).profile_id==old.profile_id
+    assert applied.context.safe_working_context==4096
+    assert next(r for r in store.entries() if r.receipt_hash==old.receipt_hash).to_dict()==old.to_dict()
+
+
+@pytest.mark.parametrize('safe,semantic',[(2048,32768),(32768,2048)])
+def test_unmeasured_4k_floor_cannot_be_created_by_renewal(tmp_path,safe,semantic):
+    _,previous=profile()
+    spec,old=profile(context=dataclasses.replace(previous.context,
+        safe_working_context=safe, semantic_verified_context=semantic))
+    with pytest.raises(QualificationError):
+        qualify_existing_profile(spec,old,identity(old),lambda:pytest.fail('postcheck'),tmp_path,
+            transport=lambda *a:pytest.fail('inference'),now=NOW)
 
 
 def test_material_drift_invalidation_cannot_be_cleared_by_short_probe(tmp_path):

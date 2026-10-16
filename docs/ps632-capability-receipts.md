@@ -174,7 +174,8 @@ and roles, and gives the next action. `READY_FOR_IDENTITY_CHECK` means the store
 clocks pass; dispatch still needs current identity and the task's normal checks.
 
 An expired qualification needs new measurements. A heartbeat cannot renew it.
-For an unchanged, previously measured approximate 4K profile, obtain its normal
+For an unchanged, previously measured approximate profile with at least a 4K
+safe and semantic-verified floor, obtain its normal
 background capacity lease, then run:
 
 ```sh
@@ -212,6 +213,9 @@ The registration therefore stays bound while each renewal remains traceable.
 It preserves the execution profile, limits qualification to approximate 4096
 tokens and one tested tool call, and makes no reference, 32K, maximum-context,
 streaming, cancellation or parallel-tool claim.
+An existing larger-context approximate receipt can use this operation, but its
+replacement qualifies only 4096 tokens. The previous larger-context observation
+remains historical and expired; its time and receipt bytes are never refreshed.
 
 Review the measured bundle and collect identity again immediately before apply:
 
