@@ -1,5 +1,7 @@
 """Source controls only: no broker, systemd unit, SSH or provider calls."""
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -144,3 +146,48 @@ def test_projection_cli_requires_pinned_pair_and_controller_context(args):
                              *args], capture_output=True, timeout=5)
     assert result.returncode == 2 and result.stdout == b''
     assert b'config projection' in result.stderr
+
+
+def test_primary_identity_refusal_survives_a_secondary_configuration_postcheck():
+    class Projection:
+        def verify(self):
+            raise MeasurementUnresolved('secondary postcheck')
+
+    processes = SystemdProcesses(worker_command=[], broker_worker=[], config_projection=Projection())
+    with pytest.raises(MeasurementUnresolved, match='not qualified'):
+        processes.identity(['never-started'], lease_valid=lambda: True)
+    assert processes.configuration_evidence() == 'POSTCHECK_REFUSED'
+
+
+def test_cli_cleanup_failure_retains_primary_refusal_and_never_exposes_exception_text(tmp_path, monkeypatch, capsys):
+    path = Path('scripts/odysseus-measure-once').resolve()
+    loader = importlib.machinery.SourceFileLoader('projection_failure_cli', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+
+    class Projection:
+        def __init__(self, unused):
+            pass
+
+        def close(self):
+            raise OSError('SYNTHETIC_PRIVATE_CLEANUP_VALUE')
+
+    class Processes:
+        def __init__(self, **unused):
+            pass
+
+        def qualify_no_provider(self):
+            raise MeasurementUnresolved('primary refusal')
+
+    monkeypatch.setattr(module, 'ReadOnlyConfigProjection', Projection)
+    monkeypatch.setattr(module, 'SystemdProcesses', Processes)
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text('{}')
+    manifest.chmod(0o600)
+    result = module.main(['--qualify-boundary', '--ssh-config-manifest', str(manifest),
+                         '--ssh-config-manifest-sha256', hashlib.sha256(manifest.read_bytes()).hexdigest()])
+    assert result == 2
+    captured = capsys.readouterr()
+    assert 'SYNTHETIC_PRIVATE_CLEANUP_VALUE' not in captured.err + captured.out
+    assert 'configuration cleanup UNKNOWN' in captured.err

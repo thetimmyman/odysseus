@@ -139,6 +139,7 @@ class SystemdProcesses:
     def __init__(self, *, worker_command, broker_worker, config_projection=None):
         self._worker, self._broker_worker = worker_command, broker_worker
         self._config_projection = config_projection
+        self._configuration_state = 'NOT_CONFIGURED' if config_projection is None else 'READY'
         self._qualified = False
         self._deadline = 0
         self._captures = []
@@ -156,6 +157,27 @@ class SystemdProcesses:
     def evidence(self):
         with self._evidence_lock:
             return [dict(row) for row in self._captures]
+
+    def configuration_evidence(self):
+        return self._configuration_state
+
+    def finish_capture(self):
+        """Complete private-copy cleanup before release/receipt publication."""
+        if self._config_projection is not None:
+            try:
+                self._config_projection.verify()
+            except Exception:
+                self._configuration_state = 'POSTCHECK_REFUSED'
+                raise
+            try:
+                complete = self._config_projection.close()
+            except Exception:
+                complete = False
+            if complete is not True:
+                self._configuration_state = 'CLEANUP_UNRESOLVED'
+                raise MeasurementUnresolved('configuration cleanup unresolved') from None
+            self._configuration_state = 'REMOVED'
+        return True
 
     @property
     def qualified(self):
@@ -269,11 +291,22 @@ class SystemdProcesses:
 
     def identity(self, command, *, lease_valid):
         try:
-            return self._json(command, None, seconds=180, limit=524288, lease_valid=lease_valid,
-                              kind='identity')
-        finally:
+            result = self._json(command, None, seconds=180, limit=524288, lease_valid=lease_valid,
+                                kind='identity')
+        except BaseException:
             if self._config_projection is not None:
+                try:
+                    self._config_projection.verify()
+                except Exception:
+                    self._configuration_state = 'POSTCHECK_REFUSED'
+            raise
+        if self._config_projection is not None:
+            try:
                 self._config_projection.verify()
+            except Exception:
+                self._configuration_state = 'POSTCHECK_REFUSED'
+                raise
+        return result
 
     def request(self, url, payload, *, lease_valid):
         return self._json(self._worker, {'url':url, 'payload':payload}, seconds=140,

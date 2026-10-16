@@ -43,13 +43,19 @@ refused in HTTP/broker workers. The manifest must be caller-owned mode0600,
 regular, not a symlink, at most64KiB, and match the supplied source pin.
 
 The `PINNED_SSH_CONFIG_V1` manifest contains `home`, at most two `roots`
-(`path`, `include_base`) and at most four `files`. Each file records `path`,
+(`user` and/or `system`) and at most four `files`. The home must match the
+caller account used by native SSH. Root paths and Include bases are fixed:
+the account's `.ssh/config` and `/etc/ssh/ssh_config`, respectively. They
+cannot be replaced with arbitrary manifest paths. Each file records `path`,
 `resolved_path`, `link` (literal symlink target or null), `uid`, `mode` and
 `sha256`. All actual configuration paths, owners, bodies and pins stay in
 private operator evidence outside the repository. The controller checks
 root-or-caller ownership, no group/world write, exact original mode, bytes,
 link and resolved target. It conservatively verifies static Include membership
 across all sections, using the root's Include base through nested includes.
+Included logical and resolved sources must use `.conf` names. Private-key
+headers, key/store records and non-directive content are refused before copies
+are created. Named keys and stores cannot be admitted as roots or Include inputs.
 It does not interpret Host/Match selection or option precedence. Dynamic
 Include tokens, named-home expansion, directory globs, ambiguous bases,
 unlisted sources, extra sources and unsupported paths are refused. The
@@ -71,7 +77,13 @@ still terminates a detached descendant with the same projection applied.
 The controller rechecks original files, Include membership and private copies
 before each projected unit and after qualification and every identity capture,
 including failure. Changed or unavailable sources refuse instead of refreshing
-pins. Temporary-copy removal does not prove unit or remote termination.
+pins. A secondary postcheck failure does not replace the primary capture
+failure. The owner finalizes private-copy verification and cleanup before
+release and atomic receipt publication. A failed cleanup prevents either,
+and its fixed status is retained separately from the primary failure.
+Failure-path cleanup cannot emit arbitrary exception text, mask the primary
+refusal or silently retry a failed removal. No new copy cleanup runs after a
+receipt is published. Temporary-copy removal does not prove unit or remote termination.
 Source tests, a successful projection proof or a local metadata parser run
 cannot qualify a provider or renew historical freshness: fresh native identity,
 the two bounded requests and stable post-identity remain required.

@@ -119,7 +119,11 @@ def main(argv=None):
         if args.qualify_boundary:
             if args.changed_route or args.current_spec is not None:
                 parser.error('route mode cannot be combined with boundary-only proof')
-            print(json.dumps(processes.qualify_no_provider(), sort_keys=True))
+            proof = processes.qualify_no_provider()
+            processes.finish_capture()
+            projection = None
+            proof['configuration_cleanup'] = processes.configuration_evidence()
+            print(json.dumps(proof, sort_keys=True))
             return 0
         if args.changed_route != (args.current_spec is not None):
             parser.error('route mode requires --changed-route and --current-spec together')
@@ -147,6 +151,9 @@ def main(argv=None):
         lease = BrokerLease(processes.post, endpoint=execution_spec.endpoint, holder=args.holder)
         candidate = measure_once(spec, previous, identity_command, args.output_dir,
                                  current_spec=current_spec, lease=lease, processes=processes)
+        # measure_once finalized copies before release/publication. No new
+        # filesystem cleanup may fail after the accepted receipt exists.
+        projection = None
         print(json.dumps({'receipt_hash':candidate.receipt_hash, 'profile_id':candidate.profile_id,
                           'safe_context':4096, 'applied':False}, sort_keys=True))
         return 0
@@ -156,7 +163,12 @@ def main(argv=None):
         return 2
     finally:
         if projection is not None:
-            projection.close()
+            try:
+                complete = projection.close() is True
+            except Exception:
+                complete = False
+            if not complete:
+                print('configuration cleanup UNKNOWN; owner reconciliation required', file=sys.stderr)
 
 
 if __name__ == '__main__':

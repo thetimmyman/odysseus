@@ -11,6 +11,7 @@ import hashlib
 import glob
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shlex
@@ -19,7 +20,7 @@ import sys
 import tempfile
 
 from src.local_measurement_owner import MeasurementUnresolved
-from src.constants import LOCAL_MEASUREMENT_CONFIG_TEMP_ROOT
+from src.constants import LOCAL_MEASUREMENT_CONFIG_TEMP_ROOT, SSH_SYSTEM_CONFIG_FILE
 
 _FILE_BYTES = 65536
 _TOTAL_BYTES = 262144
@@ -109,6 +110,8 @@ class ReadOnlyConfigProjection:
         self._sources = []
         self._copies = []
         self._roots = []
+        self._cleanup_attempted = False
+        self._cleanup_complete = False
         try:
             if (type(manifest) is not dict
                     or set(manifest) != {'schema', 'home', 'roots', 'files'}
@@ -116,11 +119,15 @@ class ReadOnlyConfigProjection:
                     or type(manifest['files']) is not list or not 1 <= len(manifest['files']) <= 4
                     or type(manifest['roots']) is not list or not 1 <= len(manifest['roots']) <= 2):
                 raise ValueError('configuration manifest refused')
-            self._home = str(_path(manifest['home']))
-            for root in manifest['roots']:
-                if type(root) is not dict or set(root) != {'path', 'include_base'}:
+            self._home = str(_path(pwd.getpwuid(os.getuid()).pw_dir))
+            if manifest['home'] != self._home:
+                raise ValueError('configuration home is not the native SSH home')
+            for role in manifest['roots']:
+                if type(role) is not str or role not in ('user', 'system'):
                     raise ValueError('configuration root refused')
-                self._roots.append((str(_path(root['path'])), str(_path(root['include_base']))))
+                root = (Path(self._home) / '.ssh' / 'config' if role == 'user'
+                        else _path(SSH_SYSTEM_CONFIG_FILE))
+                self._roots.append((str(root), str(root.parent)))
             if len(set(name for name, _ in self._roots)) != len(self._roots):
                 raise ValueError('duplicate configuration root')
             seen = set()
@@ -134,6 +141,11 @@ class ReadOnlyConfigProjection:
                         or not re.fullmatch('[0-9a-f]{64}', value['sha256'])):
                     raise ValueError('configuration entry refused')
                 entry = dict(value)
+                roots = {path for path, _ in self._roots}
+                if (entry['path'] not in roots
+                        and (Path(entry['path']).suffix != '.conf'
+                             or Path(entry['resolved_path']).suffix != '.conf')):
+                    raise ValueError('only declared SSH config roots and conf Includes are supported')
                 if entry['path'] in seen:
                     raise ValueError('duplicate configuration path')
                 seen.add(entry['path'])
@@ -184,6 +196,10 @@ class ReadOnlyConfigProjection:
                     parts = parts[0].split('=', 1) + parts[1:]
                 if len(parts) > 1 and parts[1] == '=':
                     parts.pop(1)
+                if not re.fullmatch('[A-Za-z][A-Za-z0-9]*', parts[0]):
+                    raise ValueError('not an SSH configuration directive')
+                if len(parts) > 1 and re.match(r'(?:ssh-|ecdsa-|sk-)', parts[1]):
+                    raise ValueError('key/store records are not configuration inputs')
                 if parts[0].lower() != 'include':
                     continue
                 if len(parts) < 2:
@@ -246,12 +262,21 @@ class ReadOnlyConfigProjection:
         return [sys.executable, '-I', '-c', _PROJECTION_PROOF, json.dumps(value)]
 
     def close(self):
-        if self._temporary is not None:
-            self._temporary.cleanup()
-            self._temporary = None
+        if self._cleanup_attempted:
+            return self._cleanup_complete
+        self._cleanup_attempted = True
+        try:
+            if self._temporary is not None:
+                self._temporary.cleanup()
+                self._temporary = None
+            self._cleanup_complete = True
+        except Exception:
+            self._cleanup_complete = False
+        return self._cleanup_complete
 
     def __enter__(self):
         return self
 
     def __exit__(self, *unused):
-        self.close()
+        if not self.close() and unused[0] is None:
+            raise MeasurementUnresolved('configuration cleanup unresolved')

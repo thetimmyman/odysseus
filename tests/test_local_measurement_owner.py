@@ -107,6 +107,32 @@ def test_candidate_published_only_after_two_completions_post_identity_and_releas
     assert [e['action'] for e in ownership['events']] == ['acquire_ack']+['heartbeat_ack']*5+['release_ack']
 
 
+def test_failed_private_capture_cleanup_prevents_release_and_receipt_publication(tmp_path):
+    from src.local_measurement_owner import measure_once
+    spec, old, before = inputs()
+
+    class CleanupFailure(Processes):
+        def finish_capture(self):
+            raise OSError('SYNTHETIC_PRIVATE_CLEANUP_VALUE')
+
+        def configuration_evidence(self):
+            return 'CLEANUP_UNRESOLVED'
+
+    processes, broker = CleanupFailure(before), Broker()
+    broker.responses['/acquire'] = 200, {'lease': 'a' * 12, 'pool': 'rtx4500',
+                                       'url': spec.endpoint, 'ttl': 600}
+    lease = BrokerLease(broker, endpoint=spec.endpoint, holder='synthetic')
+    output = tmp_path / 'run'
+    with pytest.raises(MeasurementUnresolved):
+        measure_once(spec, old, ['collector'], output, lease=lease, processes=processes, now=NOW)
+    assert not (output / 'receipt.json').exists()
+    assert '/release' not in [path for path, _ in broker.calls]
+    failure = json.loads((output / 'failure.json').read_text())
+    assert failure['failed_stage'] == 'capture_cleanup'
+    assert failure['configuration_cleanup'] == 'CLEANUP_UNRESOLVED'
+    assert 'SYNTHETIC_PRIVATE_CLEANUP_VALUE' not in json.dumps(failure)
+
+
 @pytest.mark.parametrize('failure', ['request', 'post', 'release', 'heartbeat', 'unqualified'])
 def test_uncertain_run_preserves_evidence_without_receipt_or_automatic_release(tmp_path, failure):
     from src.local_measurement_owner import measure_once
