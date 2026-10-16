@@ -236,3 +236,34 @@ and invocation guard, pin the selected local profile, grant no tools or writes,
 and seal its actual result and dispatch evidence. Local targets retain the native
 subscription-capacity exemption; the runtime's background lease still applies.
 Successful synthetic qualification alone is not evidence that a real task ran.
+
+## Measuring only a changed kernel/boot identity
+
+`odysseus-qualify --changed-host` is a separate, explicit measurement mode for
+an existing approximate role whose **only** material changes are kernel and/or
+boot-command-line digest. The same receipt/spec/collector/output arguments are
+required. The default renewal command still refuses changed material.
+
+The collector observes against the previous receipt's unchanged runtime/artifact
+catalog. Ollama `seed` and `top_p`, when supplied in the actual request config,
+are preserved in that identity; changing or omitting them is drift. A different
+runtime, model, endpoint, GPU, request option or unknown material field refuses
+before measurement. Fresh pre/post observations must agree on the exact new
+identity and serving-process binding.
+
+The working descriptor is UNQUALIFIED with no measured capability or safe
+context. Only two successful existing trials plus the stable postcheck issue a
+**new** profile receipt, limited to approximate 4096 tokens and one tool call.
+Its new report hash is the qualification anchor; the old receipt is linked only
+as history, never superseded or refreshed across profiles. Failure issues no
+qualification. Measurement creates private evidence files only and does not
+import, register, activate, route or change the existing store.
+
+Applying a new profile is separate: independently review the measurement bundle,
+qualify backup/recovery and the normal capacity lease/termination bounds, collect
+fresh identity, and explicitly register the new anchor and activate through the
+existing store compare-and-swap controls. Rollback may deactivate the new profile
+while retaining both histories; an expired old profile cannot become a fallback.
+The two-call transport retains its 120-second socket timeout and 1 MiB response
+cap. These are not a hard total deadline or proof of server-side cancellation.
+Synthetic/source tests do not qualify a live invocation or grant application.

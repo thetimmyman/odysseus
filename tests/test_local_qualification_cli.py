@@ -7,14 +7,16 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import pytest
 
 from test_local_target_qualification import profile, good_response
-from src.local_targets import make_target_capability_receipt
+from src.local_targets import HostBaseline, make_target_capability_receipt
 
 CLI=Path(__file__).resolve().parents[1]/'scripts/odysseus-qualify'
 
 
-def test_cli_collects_bracketed_identity_and_never_applies(tmp_path,monkeypatch):
+@pytest.mark.parametrize('changed_host',[False,True])
+def test_cli_collects_bracketed_identity_and_never_applies(tmp_path,monkeypatch,changed_host):
     monkeypatch.setenv("http_proxy","http://127.0.0.1:1")
     monkeypatch.setenv("HTTP_PROXY","http://127.0.0.1:1")
     monkeypatch.setenv("no_proxy","")
@@ -30,7 +32,8 @@ def test_cli_collects_bracketed_identity_and_never_applies(tmp_path,monkeypatch)
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try:
-        spec,old=profile()
+        spec,old=profile(host=HostBaseline(host_id='synthetic-worker',
+            kernel='old-kernel',boot_cmdline_digest='b'*64))
         url=f'http://127.0.0.1:{server.server_port}'
         old=make_target_capability_receipt(**{**old.to_dict(),
             'runtime':dataclasses.replace(old.runtime,endpoint_url=url)})
@@ -43,20 +46,30 @@ def test_cli_collects_bracketed_identity_and_never_applies(tmp_path,monkeypatch)
             'v=json.load(open(sys.argv[1]))\n'
             "print(json.dumps({'checked_at':datetime.now(timezone.utc).isoformat(),"
             "'profile_id':v['profile_id'],'current_material_identity':v['material'],"
-            "'binding':{'container_id':'synthetic'}}))\n")
+            "'binding':{'container_id':'synthetic','endpoint_bound':True}}))\n")
         inputs=tmp_path/'material.json'
-        inputs.write_text(json.dumps({'profile_id':old.profile_id,'material':old.material_identity()}))
+        material=old.material_identity()
+        if changed_host:
+            material['host'].update(kernel='new-kernel',boot_cmdline_digest='c'*64)
+        inputs.write_text(json.dumps({'profile_id':old.profile_id,'material':material}))
         command=tmp_path/'argv.json'
         command.write_text(json.dumps([sys.executable,str(collector),str(inputs)]))
         output=tmp_path/'measurement'
         args=[sys.executable,str(CLI),'--receipt',str(tmp_path/'receipt.json'),
             '--spec',str(tmp_path/'spec.json'),'--identity-command',str(command),'--output-dir',str(output)]
+        if changed_host:
+            args.append('--changed-host')
         result=subprocess.run(args,text=True,capture_output=True)
         assert result.returncode==0,result.stderr
         assert json.loads(result.stdout)['applied'] is False
         assert len(calls)==2
         assert (output/'identity-before.json').is_file() and (output/'identity-after.json').is_file()
         assert (output/'receipt.json').is_file() and not (tmp_path/'active.json').exists()
+        candidate=json.loads((output/'receipt.json').read_text())
+        assert (candidate['profile_id']!=old.profile_id) is changed_host
+        if changed_host:
+            assert candidate['qualification_ref']!=old.qualification_ref
+            assert candidate['supersedes']=='' and candidate['context']['safe_working_context']==4096
         before={p.name:p.read_bytes() for p in output.iterdir()}
         again=subprocess.run(args,text=True,capture_output=True)
         assert again.returncode==2 and len(calls)==2

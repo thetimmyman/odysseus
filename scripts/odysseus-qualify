@@ -21,7 +21,7 @@ from src.constants import (LOCAL_QUALIFICATION_AFTER_FILENAME,
                            LOCAL_QUALIFICATION_RECEIPT_FILENAME)
 from src.local_targets import (LocalTargetSpec, make_target_capability_receipt,
                               target_capability_receipt_hash_is_valid)
-from src.local_target_qualification import qualify_existing_profile
+from src.local_target_qualification import qualify_existing_profile, measure_changed_host_profile
 
 
 def main():
@@ -30,6 +30,8 @@ def main():
     parser.add_argument('--spec', required=True, type=Path)
     parser.add_argument('--identity-command', required=True, type=Path)
     parser.add_argument('--output-dir', required=True, type=Path)
+    parser.add_argument('--changed-host', action='store_true',
+                        help='Measure only changed kernel/boot identity as a new 4K approximate profile; never apply it.')
     args = parser.parse_args()
     created = False
     try:
@@ -55,7 +57,8 @@ def main():
             return observation
 
         before = capture(LOCAL_QUALIFICATION_BEFORE_FILENAME)
-        candidate, report = qualify_existing_profile(
+        measure = measure_changed_host_profile if args.changed_host else qualify_existing_profile
+        candidate, report = measure(
             spec, receipt, before,
             lambda: capture(LOCAL_QUALIFICATION_AFTER_FILENAME), args.output_dir)
         (args.output_dir / LOCAL_QUALIFICATION_RECEIPT_FILENAME).write_text(

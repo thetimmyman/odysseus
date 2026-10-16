@@ -110,6 +110,16 @@ def test_request_and_transport_are_actual_inputs_not_old_receipt_values():
     assert set(compared["changed_paths"]) == {"runtime.endpoint_url", "context.configured_context", "context.options.num_ctx"}
 
 
+def test_ollama_seed_and_top_p_bind_the_actual_request_configuration():
+    raw, receipt, request = fixture()
+    receipt["context"]["options"].update(seed=17, top_p=0.8)
+    request.update(seed=17, top_p=0.8)
+    assert identity.compare_material(raw, receipt, request_options=request)["equal"]
+    request.update(seed=18, top_p=0.9)
+    compared = identity.compare_material(raw, receipt, request_options=request)
+    assert set(compared["changed_paths"]) == {"context.options.seed", "context.options.top_p"}
+
+
 def test_full_hash_rejects_concurrent_artifact_change(monkeypatch):
     outputs = iter(["10:1:2:3", "digest  path", "10:1:2:4"])
     monkeypatch.setattr(identity, "_run", lambda *args, **kwargs: next(outputs))
