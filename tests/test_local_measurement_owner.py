@@ -2,6 +2,7 @@
 import copy
 import json
 from datetime import timedelta
+from dataclasses import replace
 
 import pytest
 
@@ -198,3 +199,47 @@ def test_cleanup_failure_does_not_hide_first_failure_or_lose_reconciliation(tmp_
     assert evidence['processes'][0]['unit'] == 'owned-synthetic.service'
     assert not (output/'receipt.json').exists()
     assert '/release' not in [p for p, _ in broker.calls]
+
+
+def test_explicit_current_spec_binds_the_normal_lease_and_both_requests(tmp_path):
+    from src.local_measurement_owner import measure_once
+    old_spec, old, before = inputs()
+    current_spec = replace(old_spec, endpoint='http://route.invalid')
+    before['current_material_identity']['runtime']['endpoint_url'] = current_spec.endpoint
+    processes, broker = Processes(before), Broker()
+    broker.responses['/acquire'] = 200, {'lease':'a'*12, 'pool':'rtx4500',
+                                       'url':current_spec.endpoint, 'ttl':600}
+    lease = BrokerLease(broker, endpoint=current_spec.endpoint, holder='synthetic')
+    candidate = measure_once(old_spec, old, ['collector'], tmp_path/'run',
+        current_spec=current_spec, lease=lease, processes=processes, now=NOW)
+    assert candidate.runtime.endpoint_url == 'http://route.invalid'
+    assert processes.calls == ['identity','request','request','identity']
+    assert [p for p,_ in broker.calls][-1] == '/release'
+    report = json.loads((tmp_path/'run'/'qualification.json').read_text())
+    assert report['mode'] == 'CHANGED_ROUTE_NEW_PROFILE'
+
+
+@pytest.mark.parametrize('failure', ['old_lease_target', 'post', 'request', 'release', 'changed_role'])
+def test_route_owner_preserves_closed_failure_and_never_accepts_a_candidate(tmp_path, failure):
+    from src.local_measurement_owner import measure_once
+    old_spec, old, before = inputs()
+    current_spec = replace(old_spec, endpoint='http://route.invalid')
+    before['current_material_identity']['runtime']['endpoint_url'] = current_spec.endpoint
+    processes, broker = Processes(before), Broker()
+    processes.failure = failure
+    broker.responses['/acquire'] = 200, {'lease':'a'*12, 'pool':'rtx4500',
+                                       'url':current_spec.endpoint, 'ttl':600}
+    if failure == 'release': broker.responses['/release'] = OSError('ack lost')
+    if failure == 'changed_role': current_spec = replace(current_spec, roles=('inference','other'))
+    endpoint = old_spec.endpoint if failure == 'old_lease_target' else current_spec.endpoint
+    lease = BrokerLease(broker, endpoint=endpoint, holder='synthetic')
+    folder = tmp_path/'run'
+    with pytest.raises(MeasurementUnresolved):
+        measure_once(old_spec, old, ['collector'], folder, current_spec=current_spec,
+                     lease=lease, processes=processes, now=NOW)
+    assert not (folder/'receipt.json').exists()
+    assert json.loads((folder/'failure.json').read_text())['status'] == 'UNRESOLVED'
+    if failure != 'release':
+        assert '/release' not in [p for p,_ in broker.calls]
+    if failure in ('old_lease_target','changed_role'):
+        assert processes.calls.count('request') == 0

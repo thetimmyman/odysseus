@@ -81,3 +81,12 @@ def test_unit_reconciliation_key_is_flushed_before_start_even_when_start_is_unkn
         processes.qualify_no_provider()
     assert processes.evidence() == observed
     assert processes.qualified is False
+
+
+@pytest.mark.parametrize('args', [['--changed-route'], ['--current-spec','unused'],
+                                 ['--qualify-boundary','--changed-route','--current-spec','unused']])
+def test_route_cli_requires_explicit_paired_mode_before_any_execution(args):
+    result = subprocess.run([sys.executable, '-I', str(Path('scripts/odysseus-measure-once').resolve()),
+                             *args], capture_output=True, timeout=5)
+    assert result.returncode == 2 and result.stdout == b''
+    assert b'route mode' in result.stderr

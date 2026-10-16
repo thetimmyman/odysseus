@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import stat
 import time
 from typing import Callable, Mapping
 import urllib.request
+from urllib.parse import urlsplit
 
 from src.constants import (LOCAL_QUALIFICATION_REQUEST_FILENAME,
                            LOCAL_QUALIFICATION_RESPONSE_FILENAME,
@@ -324,7 +326,7 @@ def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityRec
     return renewed, report
 
 
-def _changed_host_observation(envelope, previous, now):
+def _changed_host_observation(envelope, previous, now, *, endpoint_url=None):
     at = _observation_time(envelope, previous.profile_id, now)
     try:
         material = json.loads(json.dumps(envelope['current_material_identity'], allow_nan=False))
@@ -339,6 +341,8 @@ def _changed_host_observation(envelope, previous, now):
             raise ValueError('previous host baseline was not collected')
         unchanged = json.loads(json.dumps(expected))
         unchanged['host'].update(kernel=kernel, boot_cmdline_digest=boot)
+        if endpoint_url is not None:
+            unchanged['runtime']['endpoint_url'] = endpoint_url
         binding = envelope['binding']
         if (_digest_of(material) == previous.identity_digest()
                 or _digest_of(material) != _digest_of(unchanged)
@@ -346,7 +350,8 @@ def _changed_host_observation(envelope, previous, now):
                 or type(binding.get('container_id')) is not str or not binding['container_id']):
             raise ValueError('only changed kernel/boot identity is supported')
     except (KeyError, TypeError, ValueError):
-        raise QualificationError('unsupported changed-host observation') from None
+        label = 'changed-host' if endpoint_url is None else 'changed-route'
+        raise QualificationError('unsupported '+label+' observation') from None
     return at, material
 
 
@@ -365,16 +370,72 @@ def measure_changed_host_profile(spec: LocalTargetSpec, previous: TargetCapabili
     pre_at, material = _changed_host_observation(pre_identity, previous, started)
     if transport is None and spec.transport != 'http':
         raise QualificationError('SSH profiles require an explicit injected transport')
+    return _measure_changed_profile(spec, previous, pre_identity, capture_post, evidence_dir,
+        started=started, pre_at=pre_at, material=material, mode='CHANGED_HOST_NEW_PROFILE',
+        endpoint_url=None, transport=transport, now=now)
+
+
+def _route_specs(previous_spec, current_spec):
+    try:
+        old, current = asdict(previous_spec), asdict(current_spec)
+        old_url, current_url = old.pop('endpoint'), current.pop('endpoint')
+        # Strict JSON admits neither opaque string-coercion nor nonfinite values.
+        old = json.loads(json.dumps(old, allow_nan=False))
+        current = json.loads(json.dumps(current, allow_nan=False))
+        if (_digest_of(old) != _digest_of(current)
+                or previous_spec.transport != 'http' or current_spec.transport != 'http'):
+            raise ValueError('only the HTTP endpoint may change')
+        parts = []
+        for url in (old_url, current_url):
+            if type(url) is not str or any(ord(char) <= 32 or ord(char) == 127 for char in url):
+                raise ValueError('invalid endpoint')
+            parsed = urlsplit(url)
+            canonical_endpoint_identity(url, 'http')
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError('embedded endpoint credentials are unsupported')
+            parts.append((parsed.scheme.lower(), parsed.port, parsed.path.rstrip('/') or '/',
+                          parsed.query, parsed.fragment))
+        if (parts[0] != parts[1] or urlsplit(old_url).hostname.lower()
+                == urlsplit(current_url).hostname.lower()):
+            raise ValueError('a distinct hostname with unchanged URL components is required')
+    except (AttributeError, TypeError, ValueError):
+        raise QualificationError('unsupported changed-route specification') from None
+
+
+def measure_changed_route_profile(previous_spec: LocalTargetSpec, current_spec: LocalTargetSpec,
+        previous: TargetCapabilityReceipt, pre_identity: Mapping,
+        capture_post: Callable[[], Mapping], evidence_dir: Path, *, transport, now=None):
+    """Explicit NEW profile for a natively bound hostname and kernel/boot delta.
+
+    Never assert alias equivalence or move historical authority. The observation
+    must independently bind the actual current URL to the serving container;
+    catalog facts are carried only across unchanged runtime/artifact identity.
+    """
+    started = _clock(now)
+    _binding(previous_spec, previous, started)
+    _route_specs(previous_spec, current_spec)
+    if not callable(transport):
+        raise QualificationError('changed-route measurement requires an explicit owned transport')
+    pre_at, material = _changed_host_observation(pre_identity, previous, started,
+                                                endpoint_url=current_spec.endpoint)
+    return _measure_changed_profile(current_spec, previous, pre_identity, capture_post, evidence_dir,
+        started=started, pre_at=pre_at, material=material, mode='CHANGED_ROUTE_NEW_PROFILE',
+        endpoint_url=current_spec.endpoint, transport=transport, now=now)
+
+
+def _measure_changed_profile(spec, previous, pre_identity, capture_post, evidence_dir, *,
+        started, pre_at, material, mode, endpoint_url, transport, now):
     context = previous.context.to_dict()
     context.update(safe_working_context=0, semantic_verified_context=0,
                    engine_demonstrated_context=0, safe_context_source='')
     descriptor = make_target_capability_receipt(**{**previous.to_dict(),
-        'host': material['host'], 'context': context, 'capabilities': CapabilityEvidence(),
+        'host': material['host'], 'runtime':material['runtime'],
+        'context': context, 'capabilities': CapabilityEvidence(),
         'roles': (ROLE_INFERENCE,), 'qualification_disposition': 'UNQUALIFIED',
         'qualification_ref': '', 'supersedes': '', 'invalidation_reason': '',
         'health': HEALTH_UNKNOWN, 'health_checked_at': '', 'notes': ''})
     folder = _measurement_folder(evidence_dir)
-    report = {'format': 1, 'mode': 'CHANGED_HOST_NEW_PROFILE', 'status': 'MEASURING',
+    report = {'format': 1, 'mode': mode, 'status': 'MEASURING',
         'producer': PROBE_VERSION, 'producer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'started_at': started.isoformat(), 'profile_id': descriptor.profile_id,
         'previous_profile_id': previous.profile_id, 'previous_receipt_hash': previous.receipt_hash,
@@ -384,9 +445,11 @@ def measure_changed_host_profile(spec: LocalTargetSpec, previous: TargetCapabili
         'unmeasured': ['exact_reference_semantics', 'maximum_safe_context', 'streaming',
                       'cancellation', 'parallel_tools', 'concurrency', 'load']}
     try:
-        _measure_trials(spec, descriptor, folder, report, transport or _http_transport)
+        _measure_trials(spec, descriptor, folder, report,
+                        _http_transport if transport is None else transport)
         post = capture_post()
-        post_at, post_material = _changed_host_observation(post, previous, _clock(now))
+        post_at, post_material = _changed_host_observation(post, previous, _clock(now),
+                                                         endpoint_url=endpoint_url)
         if (post_at < pre_at or _digest_of(post_material) != descriptor.identity_digest()
                 or _digest_of(pre_identity['binding']) != _digest_of(post['binding'])):
             raise QualificationError('changed profile was not stable during measurement')
@@ -400,6 +463,7 @@ def measure_changed_host_profile(spec: LocalTargetSpec, previous: TargetCapabili
     except Exception as exc:
         report.update(status='FAILED', failure_class=type(exc).__name__)
         _write(folder / LOCAL_QUALIFICATION_REPORT_FILENAME, report)
-        raise QualificationError('changed-host measurement failed; no qualification issued') from exc
+        label = 'changed-host' if endpoint_url is None else 'changed-route'
+        raise QualificationError(label+' measurement failed; no qualification issued') from exc
     _write(folder / LOCAL_QUALIFICATION_REPORT_FILENAME, report)
     return candidate, report

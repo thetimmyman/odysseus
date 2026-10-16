@@ -1,10 +1,25 @@
-# One-shot changed-host measurement
+# One-shot local profile measurement
 
 `scripts/odysseus-measure-once` owns one normal P1 RTX lease and calls the
 existing changed-host qualifier. It does not register, import, activate,
 dispatch, renew an old profile, or change routing policy. Its only successful
 output is a private new approximate 4K candidate. The earlier receipt remains
 historical evidence.
+
+`--changed-route --current-spec <separate-file>` explicitly measures a newly
+observed hostname instead. The old receipt/specification stays immutable. The
+proposed specification may change only the credential-free hostname, with all
+other URL components and all remaining specification fields canonically equal.
+The normal lease binds the proposed endpoint. The existing native collector
+must independently bind that actual route to the published serving container,
+unchanged runtime/artifact, GPU and request options. Only the observed kernel,
+boot identity and endpoint URL may differ from historical material. This mode
+derives an UNQUALIFIED new profile and requires the same two complete trials
+and stable fresh post-identity before a new 4K receipt with its own anchor.
+It requires an explicit owned transport, with no unbounded default fallback.
+The default changed-host mode and same-profile renewal still refuse endpoint
+changes. No alias equivalence, broker configuration change or activation is
+implied by proposing a current specification.
 
 The operator supplies the sealed previous receipt, registered specification,
 trusted identity collector argv JSON, a new private output directory, a unique

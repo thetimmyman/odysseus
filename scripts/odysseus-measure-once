@@ -81,6 +81,10 @@ def main(argv=None):
     parser.add_argument('--identity-command', type=Path)
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--holder')
+    parser.add_argument('--changed-route', action='store_true',
+                        help='Explicit new profile for a natively bound hostname change; old spec stays immutable.')
+    parser.add_argument('--current-spec', type=Path,
+                        help='Separately pinned proposed specification; only hostname may change.')
     args = parser.parse_args(argv)
     try:
         if args.worker_http or args.worker_broker:
@@ -89,8 +93,12 @@ def main(argv=None):
         command = [sys.executable, '-I', str(Path(__file__).resolve())]
         processes = SystemdProcesses(worker_command=command+['--worker-http'], broker_worker=[])
         if args.qualify_boundary:
+            if args.changed_route or args.current_spec is not None:
+                parser.error('route mode cannot be combined with boundary-only proof')
             print(json.dumps(processes.qualify_no_provider(), sort_keys=True))
             return 0
+        if args.changed_route != (args.current_spec is not None):
+            parser.error('route mode requires --changed-route and --current-spec together')
         if any(value is None for value in (args.lease_client, args.lease_client_sha256,
                 args.receipt, args.spec, args.identity_command, args.output_dir, args.holder)):
             parser.error('live mode requires all retained inputs, holder and pinned lease client')
@@ -100,6 +108,8 @@ def main(argv=None):
             raise MeasurementUnresolved('previous receipt is not sealed')
         previous = make_target_capability_receipt(**raw)
         spec = LocalTargetSpec(**decode_json(args.spec.read_bytes()))
+        current_spec = (LocalTargetSpec(**decode_json(args.current_spec.read_bytes()))
+                        if args.changed_route else None)
         identity_command = decode_json(args.identity_command.read_bytes())
         # Existence is checked BEFORE starting even synthetic qualification.
         if args.output_dir.exists():
@@ -108,9 +118,10 @@ def main(argv=None):
             broker_worker=command+['--worker-broker', '--lease-client', str(args.lease_client.resolve()),
                                    '--lease-client-sha256', args.lease_client_sha256])
         processes.qualify_no_provider()
-        lease = BrokerLease(processes.post, endpoint=spec.endpoint, holder=args.holder)
+        execution_spec = current_spec if current_spec is not None else spec
+        lease = BrokerLease(processes.post, endpoint=execution_spec.endpoint, holder=args.holder)
         candidate = measure_once(spec, previous, identity_command, args.output_dir,
-                                 lease=lease, processes=processes)
+                                 current_spec=current_spec, lease=lease, processes=processes)
         print(json.dumps({'receipt_hash':candidate.receipt_hash, 'profile_id':candidate.profile_id,
                           'safe_context':4096, 'applied':False}, sort_keys=True))
         return 0
