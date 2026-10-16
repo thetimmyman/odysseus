@@ -17,7 +17,7 @@ from src.endpoint_identity import canonical_endpoint_identity
 from src.constants import (LOCAL_QUALIFICATION_BEFORE_FILENAME, LOCAL_QUALIFICATION_AFTER_FILENAME,
                            LOCAL_QUALIFICATION_FAILURE_FILENAME, LOCAL_QUALIFICATION_RECEIPT_FILENAME,
                            LOCAL_MEASUREMENT_OWNERSHIP_FILENAME)
-from src.local_target_qualification import measure_changed_host_profile
+from src.local_target_qualification import measure_changed_host_profile, measure_changed_route_profile
 
 
 class MeasurementUnresolved(ValueError):
@@ -171,7 +171,8 @@ def _process_evidence(processes):
         return None
 
 
-def measure_once(spec, previous, identity_command, output_dir, *, lease, processes, now=None):
+def measure_once(spec, previous, identity_command, output_dir, *, lease, processes,
+                 current_spec=None, now=None):
     """Run the existing two trials once; publish only after explicit release ACK.
 
     processes supplies bounded, qualified owned-client captures. Successful
@@ -181,12 +182,13 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
     """
     folder = Path(output_dir)
     folder.mkdir(mode=0o700, parents=True, exist_ok=False)
+    execution_spec = current_spec if current_spec is not None else spec
     stage = 'binding'
     try:
         if (getattr(processes, 'qualified', False) is not True
-                or spec.runtime_kind != 'ollama' or spec.transport != 'http'
-                or spec.max_concurrency != 1
-                or lease.endpoint_identity != canonical_endpoint_identity(spec.endpoint, 'http')
+                or execution_spec.runtime_kind != 'ollama' or execution_spec.transport != 'http'
+                or execution_spec.max_concurrency != 1
+                or lease.endpoint_identity != canonical_endpoint_identity(execution_spec.endpoint, 'http')
                 or type(identity_command) is not list or not identity_command
                 or any(type(arg) is not str or not arg for arg in identity_command)):
             raise MeasurementUnresolved('measurement binding unavailable')
@@ -204,14 +206,19 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
         def send(url, payload):
             nonlocal stage
             stage = 'provider_request'
-            if url != spec.endpoint.rstrip('/') + '/api/chat':
+            if url != execution_spec.endpoint.rstrip('/') + '/api/chat':
                 raise MeasurementUnresolved('measurement endpoint mismatch')
             lease.check()  # Fresh authoritative ACK immediately before EACH request.
             return processes.request(url, payload, lease_valid=lease.valid)
 
         before = capture(LOCAL_QUALIFICATION_BEFORE_FILENAME)
-        candidate, _ = measure_changed_host_profile(spec, previous, before,
-            lambda: capture(LOCAL_QUALIFICATION_AFTER_FILENAME), folder, transport=send, now=now)
+        after = lambda: capture(LOCAL_QUALIFICATION_AFTER_FILENAME)
+        if current_spec is None:
+            candidate, _ = measure_changed_host_profile(spec, previous, before, after,
+                                                        folder, transport=send, now=now)
+        else:
+            candidate, _ = measure_changed_route_profile(spec, current_spec, previous, before,
+                                                         after, folder, transport=send, now=now)
         # No finally-release: all native completion and post-identity checks
         # above must return successfully before the explicit acknowledged end.
         stage = 'release_acknowledgement'
