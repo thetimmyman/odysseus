@@ -59,3 +59,25 @@ def test_invalid_worker_source_refuses_before_any_unit(tmp_path):
     result = subprocess.run(command, input=b'{"path":"/heartbeat","body":{}}',
                             capture_output=True, timeout=5)
     assert result.returncode == 2 and result.stdout == b''
+
+
+def test_unit_reconciliation_key_is_flushed_before_start_even_when_start_is_unknown(monkeypatch, capsys):
+    processes = SystemdProcesses(worker_command=['unused'], broker_worker=['unused'])
+    observed = []
+
+    async def unavailable(*args, **kwargs):
+        diagnostic = json.loads(capsys.readouterr().err)['measurement_process']
+        assert diagnostic['kind'] == 'proof-normal'
+        assert diagnostic['local_stop_proven'] is False
+        assert diagnostic['remote_stop_proven'] is False
+        assert set(diagnostic) == {'unit', 'kind', 'local_stop_proven',
+                                   'remote_stop_proven', 'launcher_exit_code'}
+        assert diagnostic['unit'].startswith('odysseus-measure-')
+        observed.append(diagnostic)
+        raise OSError('manager outcome unavailable')
+
+    monkeypatch.setattr('asyncio.create_subprocess_exec', unavailable)
+    with pytest.raises(MeasurementUnresolved):
+        processes.qualify_no_provider()
+    assert processes.evidence() == observed
+    assert processes.qualified is False

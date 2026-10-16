@@ -10,6 +10,7 @@ import asyncio
 import json
 from pathlib import Path
 import sys
+import threading
 import time
 import uuid
 
@@ -62,11 +63,12 @@ async def _stream(reader):
 
 
 class _Boundary:
-    def __init__(self, owner, process, unit, lease_valid):
+    def __init__(self, owner, process, unit, lease_valid, evidence):
         self.owner, self.process, self.unit = owner, process, unit
         self.lease_valid = lease_valid
         self.stdout, self.stderr = _stream(process.stdout), _stream(process.stderr)
         self.cgroup = None
+        self.evidence = evidence
 
     @property
     def qualified(self):
@@ -94,6 +96,7 @@ class _Boundary:
         return rows
 
     async def terminate_all(self):
+        self.owner._record(self.evidence, termination_requested=True)
         # First stop this launcher so no further start request can be submitted.
         if self.process.returncode is None:
             self.process.kill()
@@ -119,6 +122,8 @@ class _Boundary:
                     return False
             except FileNotFoundError:
                 pass  # Manager confirmation plus removed cgroup, not PID exit alone.
+        self.owner._record(self.evidence, local_stop_proven=True,
+                           launcher_exit_code=self.process.returncode)
         return True
 
 
@@ -135,13 +140,33 @@ class SystemdProcesses:
         self._worker, self._broker_worker = worker_command, broker_worker
         self._qualified = False
         self._deadline = 0
+        self._captures = []
+        self._evidence_lock = threading.Lock()
+
+    def _record(self, row, **changes):
+        with self._evidence_lock:
+            row.update(changes)
+            # The operational controller redirects stderr to a private bounded
+            # file. Flush the unit ID BEFORE launch, so even controller death
+            # leaves an exact reconciliation key. Never include argv/payloads.
+            print(json.dumps({'measurement_process':dict(row)}, sort_keys=True),
+                  file=sys.stderr, flush=True)
+
+    def evidence(self):
+        with self._evidence_lock:
+            return [dict(row) for row in self._captures]
 
     @property
     def qualified(self):
         return self._qualified
 
-    async def _start(self, command, seconds, lease_valid, input_bytes=b''):
+    async def _start(self, command, seconds, lease_valid, input_bytes=b'', *, kind):
         unit = 'odysseus-measure-' + uuid.uuid4().hex + '.service'
+        row = {'unit':unit, 'kind':kind, 'local_stop_proven':False,
+               'remote_stop_proven':False, 'launcher_exit_code':None}
+        with self._evidence_lock:
+            self._captures.append(row)
+        self._record(row)  # Durable diagnostic precedes ANY start request.
         properties = ['ExitType=cgroup', 'KillMode=control-group', 'SendSIGKILL=yes',
             'TimeoutStopSec=1', f'RuntimeMaxSec={seconds}', 'MemoryMax=1G', 'MemorySwapMax=0',
             'TasksMax=32', 'CPUQuota=100%', 'UMask=0077', 'LimitFSIZE=2097152',
@@ -151,7 +176,7 @@ class SystemdProcesses:
         argv.extend('--property='+value for value in properties)
         process = await asyncio.create_subprocess_exec(*argv, '--', *command,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        boundary = _Boundary(self, process, unit, lease_valid)
+        boundary = _Boundary(self, process, unit, lease_valid, row)
         try:
             process.stdin.write(input_bytes)
             await asyncio.wait_for(process.stdin.drain(), 3)
@@ -168,7 +193,8 @@ class SystemdProcesses:
 
         async def prove():
             normal = await self._start([sys.executable, '-I', '-c',
-                'import sys; print("owned-output"); print("owned-error",file=sys.stderr)'], 5, lambda: True)
+                'import sys; print("owned-output"); print("owned-error",file=sys.stderr)'],
+                5, lambda: True, kind='proof-normal')
             try:
                 stdout, stderr, code = await asyncio.wait_for(asyncio.gather(
                     collect_bytes(normal.stdout, limit=4096, seconds=5),
@@ -183,7 +209,7 @@ class SystemdProcesses:
                 'import subprocess,sys; p=subprocess.Popen([sys.executable,"-I","-c",'
                 '"import time; time.sleep(60)"],start_new_session=True,stdin=subprocess.DEVNULL,'
                 'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); print(p.pid,flush=True)'],
-                10, lambda: True)
+                10, lambda: True, kind='proof-descendant')
             try:
                 pid_raw = await asyncio.wait_for(descendant.process.stdout.readline(), 3)
                 if not pid_raw.strip().isdigit():
@@ -209,9 +235,9 @@ class SystemdProcesses:
         self._qualified = True
         self._deadline = time.monotonic() + 900
         return {'local_capture': True, 'local_descendant_termination': True,
-                'remote_cancellation': False, 'provider_calls': 0}
+                'remote_cancellation': False, 'provider_calls': 0, 'processes':self.evidence()}
 
-    def _json(self, command, value, *, seconds, limit, lease_valid):
+    def _json(self, command, value, *, seconds, limit, lease_valid, kind):
         if not self.qualified or lease_valid() is not True:
             raise MeasurementUnresolved('owned capture not qualified or lease unavailable')
         raw = json.dumps(value, allow_nan=False).encode() if value is not None else b''
@@ -220,7 +246,7 @@ class SystemdProcesses:
             raise MeasurementUnresolved('owned capture budget exhausted')
 
         async def capture():
-            boundary = await self._start(command, remaining, lease_valid, raw)
+            boundary = await self._start(command, remaining, lease_valid, raw, kind=kind)
             stdout, _, code = await collect_process(boundary, CaptureBudget(
                 stdout_bytes=limit, stderr_bytes=_STDERR_BYTES, total_bytes=limit+_STDERR_BYTES,
                 seconds=remaining))
@@ -234,15 +260,16 @@ class SystemdProcesses:
             raise MeasurementUnresolved('owned capture unresolved') from None
 
     def identity(self, command, *, lease_valid):
-        return self._json(command, None, seconds=180, limit=524288, lease_valid=lease_valid)
+        return self._json(command, None, seconds=180, limit=524288, lease_valid=lease_valid,
+                          kind='identity')
 
     def request(self, url, payload, *, lease_valid):
         return self._json(self._worker, {'url':url, 'payload':payload}, seconds=140,
-                          limit=_JSON_BYTES, lease_valid=lease_valid)
+                          limit=_JSON_BYTES, lease_valid=lease_valid, kind='provider')
 
     def post(self, path, body):
         response = self._json(self._broker_worker, {'path':path, 'body':body}, seconds=8,
-                              limit=16384, lease_valid=lambda: True)
+                              limit=16384, lease_valid=lambda: True, kind='broker')
         if type(response) is not dict or set(response) != {'status', 'body'}:
             raise MeasurementUnresolved('broker envelope unavailable')
         return response['status'], response['body']

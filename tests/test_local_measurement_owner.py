@@ -79,6 +79,9 @@ class Processes:
             raise OSError('native outcome unknown')
         return good_response('ollama', payload)
 
+    def evidence(self):
+        return [{'unit':'owned-synthetic.service', 'kind':'provider', 'local_stop_proven':False}]
+
 
 def test_candidate_published_only_after_two_completions_post_identity_and_release(tmp_path):
     from src.local_measurement_owner import measure_once
@@ -126,6 +129,8 @@ def test_uncertain_run_preserves_evidence_without_receipt_or_automatic_release(t
     assert failure_record['status'] == 'UNRESOLVED'
     assert failure_record['lease']['capacity_available_proven'] is False
     assert failure_record['lease']['remote_stop_proven'] is False
+    assert failure_record['processes'] == [{'unit':'owned-synthetic.service',
+                                          'kind':'provider', 'local_stop_proven':False}]
     if failure != 'release':
         assert '/release' not in [p for p, _ in broker.calls]
     if failure in ('request', 'heartbeat', 'unqualified'):
@@ -167,3 +172,29 @@ def test_expiry_cannot_be_refreshed_and_ambiguous_acquisition_is_not_replayed():
     with pytest.raises(MeasurementUnresolved):
         lease.acquire()
     assert [p for p, _ in broker.calls] == ['/acquire']
+
+
+def test_cleanup_failure_does_not_hide_first_failure_or_lose_reconciliation(tmp_path):
+    from src.local_measurement_owner import measure_once
+    spec, old, before = inputs()
+    processes, broker = Processes(before), Broker()
+    processes.failure = 'request'
+    broker.responses['/acquire'] = (200, {'lease':'a'*12, 'pool':'rtx4500',
+                                        'url':spec.endpoint, 'ttl':600})
+
+    class CleanupFailure(BrokerLease):
+        def abandon(self):
+            super().abandon()
+            raise OSError('cleanup unavailable')
+
+    lease = CleanupFailure(broker, endpoint=spec.endpoint, holder='synthetic')
+    output = tmp_path/'run'
+    with pytest.raises(MeasurementUnresolved):
+        measure_once(spec, old, ['collector'], output, lease=lease, processes=processes, now=NOW)
+    evidence = json.loads((output/'failure.json').read_text())
+    assert evidence['failure_class'] == 'QualificationError'
+    assert evidence['failed_stage'] == 'provider_request'
+    assert evidence['cleanup'] == {'state':'UNKNOWN', 'failure_class':'OSError'}
+    assert evidence['processes'][0]['unit'] == 'owned-synthetic.service'
+    assert not (output/'receipt.json').exists()
+    assert '/release' not in [p for p, _ in broker.calls]

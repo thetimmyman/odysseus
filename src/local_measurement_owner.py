@@ -163,6 +163,14 @@ def _write(path, value):
         handle.write((json.dumps(value, allow_nan=False, sort_keys=True, indent=2)+'\n').encode())
 
 
+def _process_evidence(processes):
+    # A missing diagnostic source is unavailable, never invented stop proof.
+    try:
+        return processes.evidence()
+    except Exception:
+        return None
+
+
 def measure_once(spec, previous, identity_command, output_dir, *, lease, processes, now=None):
     """Run the existing two trials once; publish only after explicit release ACK.
 
@@ -208,19 +216,24 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
         # above must return successfully before the explicit acknowledged end.
         stage = 'release_acknowledgement'
         lease.release_completed()
-        _write(folder / LOCAL_MEASUREMENT_OWNERSHIP_FILENAME, lease.evidence())
+        _write(folder / LOCAL_MEASUREMENT_OWNERSHIP_FILENAME,
+               {**lease.evidence(), 'processes':_process_evidence(processes)})
         stage = 'receipt_publication'
         pending = folder / ('.' + LOCAL_QUALIFICATION_RECEIPT_FILENAME + '.pending')
         _write(pending, candidate.to_dict())
         os.link(pending, folder / LOCAL_QUALIFICATION_RECEIPT_FILENAME)
-        pending.unlink()
         return candidate
     except BaseException as exc:
-        lease.abandon()
+        cleanup = {'state':'KEEPER_STOPPED'}
+        try:
+            lease.abandon()
+        except BaseException as cleanup_error:
+            cleanup = {'state':'UNKNOWN', 'failure_class':type(cleanup_error).__name__}
         _write(folder / LOCAL_QUALIFICATION_FAILURE_FILENAME, {
             'status': 'UNRESOLVED', 'failure_class': type(exc).__name__,
             'failed_stage': stage,
             'lease': lease.evidence(), 'receipt_accepted': False,
+            'cleanup':cleanup, 'processes':_process_evidence(processes),
             'action': 'owner reconciliation required; no retry, import or activation'})
         if not isinstance(exc, Exception):
             raise

@@ -40,6 +40,11 @@ Only its successful return permits a fresh heartbeat and explicit release.
 Only an acknowledged release permits atomic publication of `receipt.json`.
 `ownership.json` retains the exact lease ID, holder, acquisition, heartbeat
 and release acknowledgements separately from native provider evidence.
+Exact owned unit IDs and operation kinds are flushed to the controller's
+private stderr before launch, and retained with local stop results in final
+ownership/failure evidence. No payload, endpoint or credential is logged.
+If keeper cleanup itself fails, the original failure and UNKNOWN cleanup
+remain recorded. Unit identity is a reconciliation key, not remote stop proof.
 Failed runs preserve existing trial/identity/report evidence and `failure.json`;
 an existing output directory is never reused. A qualification report can say
 PASS while final release fails: the missing accepted receipt and UNRESOLVED
