@@ -85,7 +85,7 @@ def main(argv=None):
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--holder')
     parser.add_argument('--ssh-config-manifest', type=Path,
-                        help='Explicit bounded pinned SSH configuration closure; no keys or target rewriting.')
+                        help='Pinned native config roots and static Includes; native SSH remains the target parser.')
     parser.add_argument('--ssh-config-manifest-sha256')
     parser.add_argument('--changed-route', action='store_true',
                         help='Explicit new profile for a natively bound hostname change; old spec stays immutable.')
