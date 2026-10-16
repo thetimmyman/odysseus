@@ -205,13 +205,44 @@ def _minimized_projection(projection, publication):
         value = projection.get(key, {}).get("status")
         return value if value in {"OBSERVED", "UNKNOWN"} else "UNKNOWN"
 
+    def fields(row, keys):
+        return {key: row[key] for key in keys if key in row} if type(row) is dict else {}
+
+    # This owner-authorized disclosure includes recorded reasons and the exact
+    # execution envelope, but never raw account/provenance, prompts or artifacts.
+    decision = fields(projection.get("dispatch"), (
+        "reason", "policy_ref", "decided_by", "decided_at", "fallback"))
+    decision["selected"] = fields(projection.get("dispatch", {}).get("selected"), (
+        "target_id", "host", "model", "runtime_kind", "runtime_version", "model_digest", "backend"))
+    for row in safe_candidates:
+        if row["selected"] is True:
+            decision["selected"]["profile_id"] = row["profile_id"]
+    decision["envelope"] = fields(projection.get("dispatch", {}).get("envelope"), (
+        "tools", "read_scope", "write_scope", "network_policy"))
+    capabilities = {"status": observation_status("capabilities"), "supplements": []}
+    for row in projection.get("capabilities", {}).get("supplements", []):
+        capabilities["supplements"].append(fields(row, (
+            "receipt_hash", "profile_id", "identity_digest", "observed_at", "qualification_state")))
+    capacity = {"status": observation_status("capacity"), "billing_authority": False, "supplements": []}
+    for row in projection.get("capacity", {}).get("supplements", []):
+        safe = fields(row, ("receipt_hash", "provider", "pool_id", "entitlement", "state",
+                            "observed_at", "ttl_seconds", "facts_current", "concurrency_remaining"))
+        safe["quotas"] = [fields(q, ("name", "unit", "limit", "remaining", "reset_at"))
+                          for q in row.get("quotas", [])]
+        safe["price"] = fields(row.get("price"), ("cost_class", "published_list_rate",
+                              "estimated_marginal_cost", "actual_billed_cost", "unit", "pricing_version")) or None
+        capacity["supplements"].append(safe)
+
     result = {"authoritative": False,
               "attempt_receipt_hash": publication.attempt_hash,
               "dispatch_receipt_hash": publication.dispatch_hash,
               "execution_package_hash": publication.package_hash,
               "evidence_package_hash": publication.evidence_hash,
               "verification_state": state,
-              "routing": {"capability_state": observation_status("capabilities"),
+              "inspection_time": projection.get("inspection_time"),
+              "routing": {"decision": decision, "capabilities": capabilities, "capacity": capacity,
+                          "outcomes": {"status": "UNKNOWN", "sample_size": None},
+                          "capability_state": observation_status("capabilities"),
                           "capacity_state": observation_status("capacity"),
                           "candidates": safe_candidates if candidates != "UNKNOWN" else "UNKNOWN"},
               "semantic_acceptance": "UNKNOWN"}
@@ -259,10 +290,24 @@ class InspectorService:
             # the original long-lived SQLite snapshot after a slow file read.
             if self._store.resolve(owner, handle, self._generation) != publication:
                 raise UnknownInspection("inspection unavailable")
+            result["interventions"] = self._store.interventions(owner, handle, self._generation)
+            if len(json.dumps(result, allow_nan=False).encode()) > CANONICAL_INSPECTOR_RESPONSE_BYTES:
+                raise UnknownInspection("inspection unavailable")
             _reauthorize(owner, reauthorize)
             return result
         except (ValueError, OSError, TypeError, KeyError):
             raise UnknownInspection("inspection unavailable") from None
+
+    def request_escalation(self, owner, handle, dispatch_hash, reason, key, reauthorize):
+        # Re-read exact authorized evidence before accepting a source-bound request.
+        current = self.inspect(owner, handle, reauthorize)
+        if current["dispatch_receipt_hash"] != dispatch_hash:
+            raise UnknownInspection("inspection unavailable")
+        _reauthorize(owner, reauthorize)
+        receipt = self._store.request_escalation(owner, handle, self._generation,
+                                                dispatch_hash, reason, key)
+        _reauthorize(owner, reauthorize)
+        return {"status": "REQUESTED", "receipt": receipt}
 
     async def admit(self, owner, pilot_id, key, reauthorize):
         from src.canonical_pilot_adapter import FixedSyntheticPilot

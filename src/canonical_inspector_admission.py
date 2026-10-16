@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import json
 import math
 import threading
 import uuid
@@ -158,6 +159,16 @@ events = Table(
 )
 
 
+interventions = Table(
+    "canonical_inspector_intervention", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("publication_id", String(36), ForeignKey("canonical_inspector_event.id", ondelete="RESTRICT"), nullable=False),
+    Column("idempotency_key", String(128), nullable=False),
+    Column("receipt", String, nullable=False),
+    UniqueConstraint("publication_id", "idempotency_key"),
+)
+
+
 def _sqlite_trigger(table, name, action, condition, message):
     ddl = (f"CREATE TRIGGER {name} BEFORE {action} ON {table.name} "
            f"WHEN {condition} BEGIN SELECT RAISE(ABORT, '{message}'); END")
@@ -203,6 +214,13 @@ _sqlite_trigger(events, "canonical_event_correction_origin", "INSERT",
                 "WHERE p.id=NEW.supersedes_publication_id AND p.kind='published' "
                 "AND p.admission_id=NEW.admission_id AND p.attempt_hash=NEW.attempt_hash "
                 "AND p.dispatch_hash=NEW.dispatch_hash)", "immutable correction origin")
+
+_sqlite_trigger(interventions, "canonical_intervention_no_update", "UPDATE", "1", "append-only intervention")
+_sqlite_trigger(interventions, "canonical_intervention_no_delete", "DELETE", "1", "append-only intervention")
+_sqlite_trigger(interventions, "canonical_intervention_no_replace", "INSERT",
+                "EXISTS (SELECT 1 FROM canonical_inspector_intervention i WHERE i.id=NEW.id "
+                "OR (i.publication_id=NEW.publication_id AND i.idempotency_key=NEW.idempotency_key))",
+                "append-only intervention conflict")
 
 
 class _DispatchClaim:
@@ -366,6 +384,58 @@ class AdmissionStore:
                                         row["dispatch_hash"], row["disclosure_generation"],
                                         row["run_id"], row["packet_id"], row["package_hash"])
         except (SQLAlchemyError, OSError, InspectorUnavailable):
+            raise UnknownInspection("inspection unavailable") from None
+
+    def interventions(self, owner, handle, generation):
+        try:
+            with self._sessions() as session:
+                self._qualified_connection(session)
+                row = session.execute(self._owned_query(owner, handle, generation)).mappings().one_or_none()
+                if row is None:
+                    raise UnknownInspection("inspection unavailable")
+                rows = session.execute(select(interventions.c.receipt).where(
+                    interventions.c.publication_id == row["id"]).order_by(interventions.c.id).limit(65)).scalars().all()
+                if len(rows) > 64:
+                    raise UnknownInspection("inspection unavailable")
+                return [json.loads(raw) for raw in rows]
+        except (SQLAlchemyError, OSError, ValueError):
+            raise UnknownInspection("inspection unavailable") from None
+
+    def request_escalation(self, owner, handle, generation, dispatch_hash, reason, key):
+        if (type(reason) is not str or not reason.strip() or len(reason.encode()) > 1024
+                or type(key) is not str or not 0 < len(key.encode()) <= 128):
+            raise UnknownInspection("inspection unavailable")
+        try:
+            with self._sessions() as session:
+                self._qualified_connection(session)
+                row = session.execute(self._owned_query(owner, handle, generation)).mappings().one_or_none()
+                if row is None or row["dispatch_hash"] != dispatch_hash:
+                    raise UnknownInspection("inspection unavailable")
+                existing = session.execute(select(interventions.c.receipt).where(
+                    interventions.c.publication_id == row["id"], interventions.c.idempotency_key == key)).scalar_one_or_none()
+                if existing is not None:
+                    receipt = json.loads(existing)
+                    if receipt["reason"] != reason:
+                        raise UnknownInspection("inspection unavailable")
+                    return receipt
+                count = session.execute(select(interventions.c.id).where(
+                    interventions.c.publication_id == row["id"]).limit(64)).all()
+                if len(count) >= 64:
+                    raise UnknownInspection("inspection unavailable")
+                receipt = {"schema": "operator-intervention-request-v1", "action": "require_escalation",
+                           "actor": owner.auth_key, "account_epoch": owner.account_epoch,
+                           "recorded_at": _now(), "reason": reason, "status": "REQUESTED",
+                           "execution_package_hash": row["package_hash"], "run_id": row["run_id"],
+                           "packet_id": row["packet_id"], "attempt_receipt_hash": row["attempt_hash"],
+                           "original_dispatch_receipt_hash": row["dispatch_hash"],
+                           "resulting_dispatch_receipt_hash": None}
+                receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+                session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=row["id"],
+                                idempotency_key=key, receipt=json.dumps(receipt)))
+                session.commit()
+                return receipt
+        except (SQLAlchemyError, OSError, ValueError):
             raise UnknownInspection("inspection unavailable") from None
 
     def revoke(self, owner, handle):
