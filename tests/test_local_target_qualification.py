@@ -212,6 +212,16 @@ def test_unmeasured_4k_floor_cannot_be_created_by_renewal(tmp_path,safe,semantic
             transport=lambda *a:pytest.fail('inference'),now=NOW)
 
 
+@pytest.mark.parametrize('floor',[float('nan'),float('inf'),32768.5])
+def test_noninteger_historical_floor_refuses_before_measurement(tmp_path,floor):
+    _,previous=profile()
+    spec,old=profile(context=dataclasses.replace(previous.context,
+        safe_working_context=floor, semantic_verified_context=floor))
+    with pytest.raises(QualificationError):
+        qualify_existing_profile(spec,old,identity(old),lambda:pytest.fail('postcheck'),tmp_path,
+            transport=lambda *a:pytest.fail('inference'),now=NOW)
+
+
 def test_material_drift_invalidation_cannot_be_cleared_by_short_probe(tmp_path):
     spec,old=profile(invalidation_reason='material_identity_drift')
     with pytest.raises(QualificationError):

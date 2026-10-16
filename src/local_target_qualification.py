@@ -76,6 +76,8 @@ def _binding(spec, receipt, now):
     if (receipt.schema_version != 2
             or receipt.qualification_disposition != 'ADOPT_ROLE_SPECIFIC'
             or receipt.invalidation_reason not in ('', 'qualification_expired')
+            or type(receipt.context.safe_working_context) is not int
+            or type(receipt.context.semantic_verified_context) is not int
             or receipt.context.safe_working_context < SAFE_CONTEXT
             or receipt.context.semantic_verified_context < SAFE_CONTEXT
             or receipt.ttl_s != QUALIFICATION_TTL_S
