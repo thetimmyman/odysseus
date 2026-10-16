@@ -171,6 +171,15 @@ def _process_evidence(processes):
         return None
 
 
+def _configuration_evidence(processes):
+    try:
+        value = processes.configuration_evidence()
+        return value if value in {'NOT_CONFIGURED', 'READY', 'REMOVED',
+            'POSTCHECK_REFUSED', 'CLEANUP_UNRESOLVED'} else 'UNAVAILABLE'
+    except Exception:
+        return 'UNAVAILABLE'
+
+
 def measure_once(spec, previous, identity_command, output_dir, *, lease, processes,
                  current_spec=None, now=None):
     """Run the existing two trials once; publish only after explicit release ACK.
@@ -219,12 +228,19 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
         else:
             candidate, _ = measure_changed_route_profile(spec, current_spec, previous, before,
                                                          after, folder, transport=send, now=now)
+        # Private capture resources must be finalized BEFORE release and the
+        # last atomic publication. Cleanup cannot invalidate a published receipt.
+        stage = 'capture_cleanup'
+        finish = getattr(processes, 'finish_capture', None)
+        if finish is not None and finish() is not True:
+            raise MeasurementUnresolved('capture cleanup unresolved')
         # No finally-release: all native completion and post-identity checks
         # above must return successfully before the explicit acknowledged end.
         stage = 'release_acknowledgement'
         lease.release_completed()
         _write(folder / LOCAL_MEASUREMENT_OWNERSHIP_FILENAME,
-               {**lease.evidence(), 'processes':_process_evidence(processes)})
+               {**lease.evidence(), 'processes':_process_evidence(processes),
+                'configuration_cleanup':_configuration_evidence(processes)})
         stage = 'receipt_publication'
         pending = folder / ('.' + LOCAL_QUALIFICATION_RECEIPT_FILENAME + '.pending')
         _write(pending, candidate.to_dict())
@@ -241,6 +257,7 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
             'failed_stage': stage,
             'lease': lease.evidence(), 'receipt_accepted': False,
             'cleanup':cleanup, 'processes':_process_evidence(processes),
+            'configuration_cleanup':_configuration_evidence(processes),
             'action': 'owner reconciliation required; no retry, import or activation'})
         if not isinstance(exc, Exception):
             raise
