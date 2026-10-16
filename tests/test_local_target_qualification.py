@@ -4,8 +4,45 @@ import dataclasses
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import io
+from email.message import Message
 import re
 import pytest
+
+
+@pytest.mark.parametrize('failure', ['short_body', 'long_body', 'duplicate_length', 'ambiguous_framing',
+                                   'oversize', 'duplicate_json', 'nonfinite'])
+def test_provider_transport_refuses_incomplete_or_ambiguous_response(tmp_path, monkeypatch, failure):
+    spec, old = profile()
+    calls = []
+
+    class Reply(io.BytesIO):
+        def __init__(self, body, headers):
+            super().__init__(body)
+            self.headers = headers
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request)
+            body = json.dumps(good_response('ollama', json.loads(request.data))).encode()
+            headers = Message()
+            declared = len(body)
+            if failure == 'short_body': declared += 1
+            if failure == 'long_body': declared -= 1
+            if failure == 'oversize': declared = 1048577
+            if failure == 'duplicate_json': body = b'{"done":false,"done":true}'
+            if failure == 'nonfinite': body = b'{"value":NaN}'
+            if failure in ('duplicate_json', 'nonfinite'): declared = len(body)
+            headers['Content-Length'] = str(declared)
+            if failure == 'duplicate_length': headers['Content-Length'] = str(declared)
+            if failure == 'ambiguous_framing': headers['Transfer-Encoding'] = 'chunked'
+            return Reply(body, headers)
+
+    monkeypatch.setattr('urllib.request.build_opener', lambda *args: Opener())
+    with pytest.raises(QualificationError):
+        qualify_existing_profile(spec, old, identity(old), lambda:identity(old), tmp_path, now=NOW)
+    assert len(calls) == 1
+    assert json.loads((tmp_path/'qualification.json').read_text())['status'] == 'FAILED'
 
 from src.local_target_qualification import QualificationError, qualify_existing_profile
 from src.local_targets import (CapabilityEvidence, CapabilityLimits, ContextProfile,
