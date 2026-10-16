@@ -165,6 +165,7 @@ LOCAL_QUALIFICATION_RECEIPT_FILENAME = "receipt.json"
 LOCAL_QUALIFICATION_BEFORE_FILENAME = "identity-before.json"
 LOCAL_QUALIFICATION_AFTER_FILENAME = "identity-after.json"
 LOCAL_QUALIFICATION_FAILURE_FILENAME = "failure.json"
+LOCAL_MEASUREMENT_OWNERSHIP_FILENAME = "ownership.json"
 
 # Content-addressed artifacts inside a caller-selected retained evidence root.
 EVIDENCE_BLOB_DIRNAME = "blobs"

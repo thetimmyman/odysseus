@@ -189,10 +189,38 @@ def _http_transport(url, payload):
                                      headers={'Content-Type': 'application/json'})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     with opener.open(request, timeout=120) as response:
-        raw = response.read(1048577)
-    if len(raw) > 1048576:
+        return read_bounded_http_json(response, limit=1048576)
+
+
+def read_bounded_http_json(response, *, limit):
+    """Bound before decoding; reject ambiguous or incomplete HTTP framing.
+
+    A caller must separately enforce a TOTAL deadline around the owned client.
+    A socket timeout is not a deadline or remote cancellation evidence.
+    """
+    lengths = response.headers.get_all('Content-Length', [])
+    if (len(lengths) > 1 or (lengths and (not lengths[0].isascii()
+            or not lengths[0].isdecimal() or len(lengths[0]) > 16
+            or int(lengths[0]) > limit or response.headers.get('Transfer-Encoding')))):
+        raise QualificationError('qualification response framing is ambiguous or oversized')
+    raw = response.read(limit + 1)
+    if len(raw) > limit:
         raise QualificationError('qualification response exceeds size limit')
-    return json.loads(raw)
+    if lengths and len(raw) != int(lengths[0]):
+        raise QualificationError('qualification response is incomplete')
+
+    def pairs(rows):
+        result = {}
+        for key, value in rows:
+            if key in result:
+                raise QualificationError('qualification response has duplicate JSON keys')
+            result[key] = value
+        return result
+
+    def nonfinite(_):
+        raise QualificationError('qualification response has nonfinite JSON')
+
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
 
 
 def _bytes(value):
