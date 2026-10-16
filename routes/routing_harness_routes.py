@@ -303,6 +303,24 @@ def inspector_attempt(handle: str, request: Request):
     except (UnknownInspection, InspectorUnavailable):
         raise HTTPException(404, "Inspection unavailable") from None
 
+@router.post("/inspector/attempts/{handle}/escalation")
+async def inspector_escalation(handle: str, request: Request):
+    owner = request_principal(request)
+    service = getattr(request.app.state, "canonical_inspector_service", None)
+    if service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+    try:
+        raw = await collect_bytes(request.stream(), limit=4096, seconds=5)
+        body = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+        if type(body) is not dict or set(body) != {"dispatch_receipt_hash", "reason", "idempotency_key"}:
+            raise ValueError("invalid request")
+        return service.request_escalation(owner, handle, body["dispatch_receipt_hash"],
+            body["reason"], body["idempotency_key"], lambda: request_principal(request))
+    except (PilotLimit, UnknownInspection, InspectorUnavailable, ValueError, TypeError, RecursionError):
+        raise HTTPException(404, "Inspection unavailable") from None
+
+
 @router.post("/inspector/attempts/{handle}/revoke")
 def inspector_revoke(handle: str, request: Request):
     owner = request_principal(request)
