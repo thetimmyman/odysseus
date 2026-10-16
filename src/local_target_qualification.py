@@ -14,7 +14,7 @@ from src.constants import (LOCAL_QUALIFICATION_REQUEST_FILENAME,
                            LOCAL_QUALIFICATION_RESPONSE_FILENAME,
                            LOCAL_QUALIFICATION_REPORT_FILENAME)
 from src.endpoint_identity import canonical_endpoint_identity
-from src.local_targets import (CapabilityEvidence, CapabilityLimits, HEALTH_HEALTHY,
+from src.local_targets import (CapabilityEvidence, CapabilityLimits, HEALTH_HEALTHY, HEALTH_UNKNOWN,
     ROLE_INFERENCE, TOOLS_PROVEN, LocalTargetSpec, TargetCapabilityReceipt,
     _digest_of, make_target_capability_receipt, target_capability_receipt_hash_is_valid)
 
@@ -55,16 +55,22 @@ def _clock(now):
     return value
 
 
-def _identity(envelope, receipt, now):
+def _observation_time(envelope, profile_id, now):
     if not isinstance(envelope, Mapping):
         raise QualificationError('fresh material identity envelope is required')
     at = _instant(envelope.get('checked_at'))
     age = (now - at).total_seconds()
     if age < 0 or age > HEALTH_TTL_S:
         raise QualificationError('material identity is future-dated or expired')
+    if envelope.get('profile_id') != profile_id:
+        raise QualificationError('observation belongs to another profile')
+    return at
+
+
+def _identity(envelope, receipt, now):
+    at = _observation_time(envelope, receipt.profile_id, now)
     material = envelope.get('current_material_identity')
-    if (envelope.get('profile_id') != receipt.profile_id
-            or not isinstance(material, Mapping)
+    if (not isinstance(material, Mapping)
             or _digest_of(material) != receipt.identity_digest()):
         raise QualificationError('observed material identity does not match profile')
     return at
@@ -198,15 +204,7 @@ def _write(path, value):
         handle.write(_bytes(value))
 
 
-def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityReceipt,
-        pre_identity: Mapping, capture_post: Callable[[], Mapping], evidence_dir: Path,
-        *, transport=None, now=None):
-    """Produce evidence, never modify the store or active authority."""
-    started = _clock(now)
-    _binding(spec, receipt, started)
-    pre_at = _identity(pre_identity, receipt, started)
-    if transport is None and spec.transport != 'http':
-        raise QualificationError('SSH profiles require an explicit injected transport')
+def _measurement_folder(evidence_dir):
     folder = Path(evidence_dir)
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     if stat.S_IMODE(folder.stat().st_mode) & 0o077:
@@ -216,6 +214,54 @@ def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityRec
             LOCAL_QUALIFICATION_REQUEST_FILENAME, LOCAL_QUALIFICATION_RESPONSE_FILENAME)]
     if any((folder / name).exists() for name in names):
         raise QualificationError('qualification evidence files already exist')
+    return folder
+
+
+def _measure_trials(spec, receipt, folder, report, send):
+    for trial in range(TRIALS):
+        prompt, expected = _probe(trial)
+        url, request = _request(spec, receipt, prompt)
+        _write(folder / LOCAL_QUALIFICATION_REQUEST_FILENAME.format(trial=trial), request)
+        start = time.monotonic()
+        response = send(url, request)
+        _write(folder / LOCAL_QUALIFICATION_RESPONSE_FILENAME.format(trial=trial), response)
+        prompt_tokens, output_tokens = _response(spec, response, expected)
+        report['trials'].append({'trial': trial, 'semantic_pass': True,
+            'prompt_tokens': prompt_tokens, 'output_tokens': output_tokens,
+            'request_sha256': hashlib.sha256(_bytes(request)).hexdigest(),
+            'response_sha256': hashlib.sha256(_bytes(response)).hexdigest(),
+            'elapsed_s': time.monotonic() - start, 'calls': 1})
+
+
+def _measured_receipt(receipt, report, *, supersedes, qualification_ref):
+    address = 'sha256:' + hashlib.sha256(_bytes(report)).hexdigest()
+    context = receipt.context.to_dict()
+    context.update(safe_working_context=SAFE_CONTEXT, semantic_verified_context=SAFE_CONTEXT,
+        engine_demonstrated_context=min(row['prompt_tokens'] + row['output_tokens'] for row in report['trials']),
+        safe_context_source=address)
+    return make_target_capability_receipt(**{**receipt.to_dict(),
+        'observed_at': report['observed_at'], 'health': HEALTH_HEALTHY,
+        'invalidation_reason': '', 'qualification_disposition': 'ADOPT_ROLE_SPECIFIC',
+        'qualification_ref': qualification_ref or address,
+        'health_checked_at': report['observed_at'], 'context': context,
+        'capabilities': CapabilityEvidence(measured=('native_tools', 'readonly_analysis'),
+            declared=receipt.capabilities.declared, tool_semantics=TOOLS_PROVEN, tool_calls_observed=TRIALS),
+        'limits': CapabilityLimits(max_concurrency=1), 'ttl_s': QUALIFICATION_TTL_S,
+        'health_ttl_s': HEALTH_TTL_S, 'supersedes': supersedes,
+        'notes': f'Fresh {PROBE_VERSION} measurement {address}; approximate 4K text and one native tool call only. '
+            'No reference, streaming, cancellation, larger-context, concurrency or fresh load qualification.'})
+
+
+def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityReceipt,
+        pre_identity: Mapping, capture_post: Callable[[], Mapping], evidence_dir: Path,
+        *, transport=None, now=None):
+    """Produce evidence, never modify the store or active authority."""
+    started = _clock(now)
+    _binding(spec, receipt, started)
+    pre_at = _identity(pre_identity, receipt, started)
+    if transport is None and spec.transport != 'http':
+        raise QualificationError('SSH profiles require an explicit injected transport')
+    folder = _measurement_folder(evidence_dir)
     send = transport or _http_transport
     report = {'format': 1, 'status': 'MEASURING', 'producer': PROBE_VERSION,
         'producer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -227,19 +273,7 @@ def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityRec
         'unmeasured': ['exact_reference_semantics', 'maximum_safe_context', 'streaming',
                       'cancellation', 'parallel_tools', 'concurrency', 'load']}
     try:
-        for trial in range(TRIALS):
-            prompt, expected = _probe(trial)
-            url, request = _request(spec, receipt, prompt)
-            _write(folder / LOCAL_QUALIFICATION_REQUEST_FILENAME.format(trial=trial), request)
-            start = time.monotonic()
-            response = send(url, request)
-            _write(folder / LOCAL_QUALIFICATION_RESPONSE_FILENAME.format(trial=trial), response)
-            prompt_tokens, output_tokens = _response(spec, response, expected)
-            report['trials'].append({'trial': trial, 'semantic_pass': True,
-                'prompt_tokens': prompt_tokens, 'output_tokens': output_tokens,
-                'request_sha256': hashlib.sha256(_bytes(request)).hexdigest(),
-                'response_sha256': hashlib.sha256(_bytes(response)).hexdigest(),
-                'elapsed_s': time.monotonic() - start, 'calls': 1})
+        _measure_trials(spec, receipt, folder, report, send)
         post = capture_post()
         post_at = _identity(post, receipt, _clock(now))
         if post_at < pre_at:
@@ -249,21 +283,8 @@ def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityRec
         report.update(status='PASS', observed_at=post_at.isoformat(),
             post_checked_at=post_at.isoformat(),
             post_identity_sha256=hashlib.sha256(_bytes(post)).hexdigest())
-        address = 'sha256:' + hashlib.sha256(_bytes(report)).hexdigest()
-        context = receipt.context.to_dict()
-        context.update(safe_working_context=SAFE_CONTEXT, semantic_verified_context=SAFE_CONTEXT,
-            engine_demonstrated_context=min(row['prompt_tokens'] + row['output_tokens'] for row in report['trials']),
-            safe_context_source=address)
-        renewed = make_target_capability_receipt(**{**receipt.to_dict(),
-            'observed_at': post_at.isoformat(), 'health': HEALTH_HEALTHY,
-            'invalidation_reason': '',
-            'health_checked_at': post_at.isoformat(), 'context': context,
-            'capabilities': CapabilityEvidence(measured=('native_tools', 'readonly_analysis'),
-                declared=receipt.capabilities.declared, tool_semantics=TOOLS_PROVEN, tool_calls_observed=TRIALS),
-            'limits': CapabilityLimits(max_concurrency=1), 'ttl_s': QUALIFICATION_TTL_S,
-            'health_ttl_s': HEALTH_TTL_S, 'supersedes': receipt.receipt_hash,
-            'notes': f'Fresh {PROBE_VERSION} measurement {address}; approximate 4K text and one native tool call only. '
-                'No reference, streaming, cancellation, larger-context, concurrency or fresh load qualification.'})
+        renewed = _measured_receipt(receipt, report, supersedes=receipt.receipt_hash,
+                                    qualification_ref=receipt.qualification_ref)
         if (renewed.profile_id != receipt.profile_id or renewed.identity_digest() != receipt.identity_digest()
                 or renewed.qualification_state(now=_clock(now)) != 'valid'):
             raise QualificationError('renewal changed profile identity or is invalid')
@@ -273,3 +294,84 @@ def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityRec
         raise QualificationError('bounded qualification failed; no renewed receipt issued') from exc
     _write(folder / LOCAL_QUALIFICATION_REPORT_FILENAME, report)
     return renewed, report
+
+
+def _changed_host_observation(envelope, previous, now):
+    at = _observation_time(envelope, previous.profile_id, now)
+    try:
+        material = json.loads(json.dumps(envelope['current_material_identity'], allow_nan=False))
+        host = material['host']
+        kernel, boot = host['kernel'], host['boot_cmdline_digest']
+        if (type(kernel) is not str or not 0 < len(kernel.encode()) <= 1024
+                or type(boot) is not str or len(boot) != 64
+                or any(ch not in '0123456789abcdef' for ch in boot)):
+            raise ValueError('invalid observed host baseline')
+        expected = previous.material_identity()
+        if not expected['host']['kernel'] or not expected['host']['boot_cmdline_digest']:
+            raise ValueError('previous host baseline was not collected')
+        unchanged = json.loads(json.dumps(expected))
+        unchanged['host'].update(kernel=kernel, boot_cmdline_digest=boot)
+        binding = envelope['binding']
+        if (_digest_of(material) == previous.identity_digest()
+                or _digest_of(material) != _digest_of(unchanged)
+                or not isinstance(binding, Mapping) or binding.get('endpoint_bound') is not True
+                or type(binding.get('container_id')) is not str or not binding['container_id']):
+            raise ValueError('only changed kernel/boot identity is supported')
+    except (KeyError, TypeError, ValueError):
+        raise QualificationError('unsupported changed-host observation') from None
+    return at, material
+
+
+def measure_changed_host_profile(spec: LocalTargetSpec, previous: TargetCapabilityReceipt,
+        pre_identity: Mapping, capture_post: Callable[[], Mapping], evidence_dir: Path,
+        *, transport=None, now=None):
+    """Measure kernel/boot drift as a NEW profile; never renew, import or activate.
+
+    Observations are collected against the old receipt's unchanged artifact and
+    runtime catalog. Only kernel/boot fields may differ. The working descriptor
+    is UNQUALIFIED; only completed new trials plus matching post-identity can
+    issue a new 4K approximate receipt with its own measurement anchor.
+    """
+    started = _clock(now)
+    _binding(spec, previous, started)
+    pre_at, material = _changed_host_observation(pre_identity, previous, started)
+    if transport is None and spec.transport != 'http':
+        raise QualificationError('SSH profiles require an explicit injected transport')
+    context = previous.context.to_dict()
+    context.update(safe_working_context=0, semantic_verified_context=0,
+                   engine_demonstrated_context=0, safe_context_source='')
+    descriptor = make_target_capability_receipt(**{**previous.to_dict(),
+        'host': material['host'], 'context': context, 'capabilities': CapabilityEvidence(),
+        'roles': (ROLE_INFERENCE,), 'qualification_disposition': 'UNQUALIFIED',
+        'qualification_ref': '', 'supersedes': '', 'invalidation_reason': '',
+        'health': HEALTH_UNKNOWN, 'health_checked_at': '', 'notes': ''})
+    folder = _measurement_folder(evidence_dir)
+    report = {'format': 1, 'mode': 'CHANGED_HOST_NEW_PROFILE', 'status': 'MEASURING',
+        'producer': PROBE_VERSION, 'producer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'started_at': started.isoformat(), 'profile_id': descriptor.profile_id,
+        'previous_profile_id': previous.profile_id, 'previous_receipt_hash': previous.receipt_hash,
+        'identity_digest': descriptor.identity_digest(), 'pre_checked_at': pre_at.isoformat(),
+        'pre_identity_sha256': hashlib.sha256(_bytes(pre_identity)).hexdigest(),
+        'safe_context': SAFE_CONTEXT, 'trials': [],
+        'unmeasured': ['exact_reference_semantics', 'maximum_safe_context', 'streaming',
+                      'cancellation', 'parallel_tools', 'concurrency', 'load']}
+    try:
+        _measure_trials(spec, descriptor, folder, report, transport or _http_transport)
+        post = capture_post()
+        post_at, post_material = _changed_host_observation(post, previous, _clock(now))
+        if (post_at < pre_at or _digest_of(post_material) != descriptor.identity_digest()
+                or _digest_of(pre_identity['binding']) != _digest_of(post['binding'])):
+            raise QualificationError('changed profile was not stable during measurement')
+        report.update(status='PASS', observed_at=post_at.isoformat(),
+            post_checked_at=post_at.isoformat(),
+            post_identity_sha256=hashlib.sha256(_bytes(post)).hexdigest())
+        candidate = _measured_receipt(descriptor, report, supersedes='', qualification_ref='')
+        if (candidate.profile_id == previous.profile_id or candidate.identity_digest() != _digest_of(material)
+                or candidate.qualification_state(now=_clock(now)) != 'valid'):
+            raise QualificationError('new profile measurement is invalid')
+    except Exception as exc:
+        report.update(status='FAILED', failure_class=type(exc).__name__)
+        _write(folder / LOCAL_QUALIFICATION_REPORT_FILENAME, report)
+        raise QualificationError('changed-host measurement failed; no qualification issued') from exc
+    _write(folder / LOCAL_QUALIFICATION_REPORT_FILENAME, report)
+    return candidate, report

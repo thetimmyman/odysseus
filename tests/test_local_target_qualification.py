@@ -222,6 +222,106 @@ def test_noninteger_historical_floor_refuses_before_measurement(tmp_path,floor):
             transport=lambda *a:pytest.fail('inference'),now=NOW)
 
 
+def changed_host_observation(receipt, **changes):
+    value=identity(receipt)
+    value['current_material_identity']['host'].update(kernel='new-kernel',
+        boot_cmdline_digest='c'*64)
+    value['binding']['endpoint_bound']=True
+    value.update(changes)
+    return value
+
+
+@pytest.mark.parametrize('provider',['ollama','halogen-flash'])
+def test_changed_host_is_measured_as_a_new_4k_profile_with_its_own_anchor(tmp_path,provider):
+    from src.local_target_qualification import measure_changed_host_profile
+    spec,previous=profile(provider,host=HostBaseline(host_id='synthetic-worker',
+        kernel='old-kernel',boot_cmdline_digest='b'*64))
+    original=previous.to_dict()
+    observation=changed_host_observation(previous)
+    candidate,report=measure_changed_host_profile(spec,previous,observation,
+        lambda:copy.deepcopy(observation),tmp_path,
+        transport=lambda url,request:good_response(provider,request),now=NOW)
+    assert candidate.profile_id!=previous.profile_id
+    assert candidate.host.kernel=='new-kernel' and candidate.host.boot_cmdline_digest=='c'*64
+    assert candidate.context.safe_working_context==candidate.context.semantic_verified_context==4096
+    assert candidate.routing_exactness()=='approximate' and candidate.qualification_state(now=NOW)=='valid'
+    assert candidate.supersedes==''
+    assert candidate.qualification_ref=='sha256:'+hashlib.sha256((tmp_path/'qualification.json').read_bytes()).hexdigest()
+    assert candidate.context.safe_context_source==candidate.qualification_ref
+    assert report['mode']=='CHANGED_HOST_NEW_PROFILE' and len(report['trials'])==2
+    assert report['previous_receipt_hash']==previous.receipt_hash
+    assert report['profile_id']==candidate.profile_id
+    assert previous.to_dict()==original and previous.qualification_state(now=NOW)=='qualification_expired'
+
+
+def test_changed_host_cannot_hide_boolean_request_options_as_equal_numbers(tmp_path):
+    from src.local_target_qualification import measure_changed_host_profile
+    _,base=profile()
+    spec,previous=profile(host=HostBaseline(host_id='synthetic-worker',
+        kernel='old-kernel',boot_cmdline_digest='b'*64),context=dataclasses.replace(
+            base.context,options={**base.context.options,'seed':1}))
+    observation=changed_host_observation(previous)
+    observation['current_material_identity']['context']['options']['seed']=True
+    with pytest.raises(QualificationError):
+        measure_changed_host_profile(spec,previous,observation,lambda:pytest.fail('postcheck'),
+            tmp_path,transport=lambda *a:pytest.fail('inference'),now=NOW)
+
+
+@pytest.mark.parametrize('failure',['unchanged','model','runtime','endpoint','gpu','request_options',
+    'foreign_profile','future','stale','unbound','invalid_boot','extra_material','unqualified_prior'])
+def test_changed_host_refuses_other_drift_before_measurement(tmp_path,failure):
+    from src.local_target_qualification import measure_changed_host_profile
+    spec,previous=profile(host=HostBaseline(host_id='synthetic-worker',
+        kernel='old-kernel',boot_cmdline_digest='b'*64))
+    if failure=='unqualified_prior':
+        previous=make_target_capability_receipt(**{**previous.to_dict(),
+            'qualification_disposition':'UNQUALIFIED'})
+    observation=changed_host_observation(previous)
+    material=observation['current_material_identity']
+    if failure=='unchanged': observation['current_material_identity']=previous.material_identity()
+    elif failure=='model': material['model']['digest']='f'*64
+    elif failure=='runtime': material['runtime']['version']='new-version'
+    elif failure=='endpoint': material['runtime']['endpoint_url']='http://other.invalid'
+    elif failure=='gpu': material['host']['gpu']='new-gpu'
+    elif failure=='request_options': material['context']['options']['temperature']=1
+    elif failure=='foreign_profile': observation['profile_id']='foreign'
+    elif failure=='future': observation['checked_at']=(NOW+timedelta(seconds=1)).isoformat()
+    elif failure=='stale': observation['checked_at']=(NOW-timedelta(seconds=301)).isoformat()
+    elif failure=='unbound': observation['binding']['endpoint_bound']=False
+    elif failure=='invalid_boot': material['host']['boot_cmdline_digest']='unknown'
+    elif failure=='extra_material': material['unobserved']='not-a-host-change'
+    with pytest.raises(QualificationError):
+        measure_changed_host_profile(spec,previous,observation,lambda:pytest.fail('postcheck'),
+            tmp_path,transport=lambda *a:pytest.fail('inference'),now=NOW)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('failure',['trial','changed_kernel','changed_container','stale','older','model'])
+def test_failed_changed_host_measurement_never_issues_qualification(tmp_path,failure):
+    from src.local_target_qualification import measure_changed_host_profile
+    spec,previous=profile(host=HostBaseline(host_id='synthetic-worker',
+        kernel='old-kernel',boot_cmdline_digest='b'*64))
+    pre=changed_host_observation(previous)
+    post=copy.deepcopy(pre)
+    if failure=='changed_kernel': post['current_material_identity']['host']['kernel']='third-kernel'
+    elif failure=='changed_container': post['binding']['container_id']='other-process'
+    elif failure=='stale': post['checked_at']=(NOW-timedelta(seconds=301)).isoformat()
+    elif failure=='older': post['checked_at']=(NOW-timedelta(seconds=1)).isoformat()
+    elif failure=='model': post['current_material_identity']['model']['digest']='f'*64
+    calls=[]
+    def transport(url,request):
+        calls.append(request)
+        result=good_response('ollama',request)
+        if failure=='trial': result['done']=False
+        return result
+    with pytest.raises(QualificationError):
+        measure_changed_host_profile(spec,previous,pre,lambda:post,tmp_path,
+            transport=transport,now=NOW)
+    report=json.loads((tmp_path/'qualification.json').read_text())
+    assert report['status']=='FAILED' and len(calls)==(1 if failure=='trial' else 2)
+    assert previous.qualification_state(now=NOW)=='qualification_expired'
+
+
 def test_material_drift_invalidation_cannot_be_cleared_by_short_probe(tmp_path):
     spec,old=profile(invalidation_reason='material_identity_drift')
     with pytest.raises(QualificationError):
