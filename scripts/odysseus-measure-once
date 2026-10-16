@@ -10,7 +10,9 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 from types import SimpleNamespace
 import urllib.request
@@ -18,6 +20,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.local_measurement_owner import BrokerLease, MeasurementUnresolved, measure_once
+from src.local_measurement_config import ReadOnlyConfigProjection
 from src.local_measurement_process import SystemdProcesses, decode_json
 from src.local_target_qualification import _http_transport, read_bounded_http_json
 from src.local_targets import (LocalTargetSpec, make_target_capability_receipt,
@@ -81,17 +84,38 @@ def main(argv=None):
     parser.add_argument('--identity-command', type=Path)
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--holder')
+    parser.add_argument('--ssh-config-manifest', type=Path,
+                        help='Explicit bounded pinned SSH configuration closure; no keys or target rewriting.')
+    parser.add_argument('--ssh-config-manifest-sha256')
     parser.add_argument('--changed-route', action='store_true',
                         help='Explicit new profile for a natively bound hostname change; old spec stays immutable.')
     parser.add_argument('--current-spec', type=Path,
                         help='Separately pinned proposed specification; only hostname may change.')
     args = parser.parse_args(argv)
+    projection = None
     try:
+        if (args.ssh_config_manifest is None) != (args.ssh_config_manifest_sha256 is None):
+            parser.error('config projection requires manifest and source pin together')
+        if args.ssh_config_manifest is not None:
+            if args.worker_http or args.worker_broker:
+                parser.error('config projection belongs to the controller only')
+            fd = os.open(args.ssh_config_manifest, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                meta = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid()
+                        or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_size > 65536):
+                    raise MeasurementUnresolved('config projection manifest is not private and bounded')
+                raw_manifest = stream.read(65537)
+            if (len(raw_manifest) > 65536
+                    or hashlib.sha256(raw_manifest).hexdigest() != args.ssh_config_manifest_sha256):
+                raise MeasurementUnresolved('config projection manifest source mismatch')
+            projection = ReadOnlyConfigProjection(decode_json(raw_manifest))
         if args.worker_http or args.worker_broker:
             worker(args)
             return 0
         command = [sys.executable, '-I', str(Path(__file__).resolve())]
-        processes = SystemdProcesses(worker_command=command+['--worker-http'], broker_worker=[])
+        processes = SystemdProcesses(worker_command=command+['--worker-http'], broker_worker=[],
+                                    config_projection=projection)
         if args.qualify_boundary:
             if args.changed_route or args.current_spec is not None:
                 parser.error('route mode cannot be combined with boundary-only proof')
@@ -116,7 +140,8 @@ def main(argv=None):
             raise MeasurementUnresolved('measurement output already exists')
         processes = SystemdProcesses(worker_command=command+['--worker-http'],
             broker_worker=command+['--worker-broker', '--lease-client', str(args.lease_client.resolve()),
-                                   '--lease-client-sha256', args.lease_client_sha256])
+                                   '--lease-client-sha256', args.lease_client_sha256],
+            config_projection=projection)
         processes.qualify_no_provider()
         execution_spec = current_spec if current_spec is not None else spec
         lease = BrokerLease(processes.post, endpoint=execution_spec.endpoint, holder=args.holder)
@@ -129,6 +154,9 @@ def main(argv=None):
         # Provider/collector/broker exceptions may contain private data.
         print('measurement refused: '+type(exc).__name__+'; no receipt applied', file=sys.stderr)
         return 2
+    finally:
+        if projection is not None:
+            projection.close()
 
 
 if __name__ == '__main__':

@@ -136,8 +136,9 @@ class SystemdProcesses:
     supplying a stale proof file or an environment flag.
     """
 
-    def __init__(self, *, worker_command, broker_worker):
+    def __init__(self, *, worker_command, broker_worker, config_projection=None):
         self._worker, self._broker_worker = worker_command, broker_worker
+        self._config_projection = config_projection
         self._qualified = False
         self._deadline = 0
         self._captures = []
@@ -171,6 +172,9 @@ class SystemdProcesses:
             'TimeoutStopSec=1', f'RuntimeMaxSec={seconds}', 'MemoryMax=1G', 'MemorySwapMax=0',
             'TasksMax=32', 'CPUQuota=100%', 'UMask=0077', 'LimitFSIZE=2097152',
             'NoNewPrivileges=yes', 'ProtectControlGroups=yes', 'RestrictSUIDSGID=yes']
+        if self._config_projection is not None and kind in ('identity', 'proof-normal', 'proof-descendant'):
+            properties.extend('BindReadOnlyPaths='+source+':'+destination+':norbind'
+                              for source, destination in self._config_projection.bindings())
         argv = ['systemd-run', '--user', '--pipe', '--wait', '--quiet', '--service-type=exec',
                 '--expand-environment=no', '--unit='+unit]
         argv.extend('--property='+value for value in properties)
@@ -192,8 +196,10 @@ class SystemdProcesses:
             raise MeasurementUnresolved('one-shot boundary proof already used')
 
         async def prove():
-            normal = await self._start([sys.executable, '-I', '-c',
-                'import sys; print("owned-output"); print("owned-error",file=sys.stderr)'],
+            normal_command = ([sys.executable, '-I', '-c',
+                'import sys; print("owned-output"); print("owned-error",file=sys.stderr)']
+                if self._config_projection is None else self._config_projection.proof_command())
+            normal = await self._start(normal_command,
                 5, lambda: True, kind='proof-normal')
             try:
                 stdout, stderr, code = await asyncio.wait_for(asyncio.gather(
@@ -230,6 +236,8 @@ class SystemdProcesses:
 
         try:
             asyncio.run(prove())
+            if self._config_projection is not None:
+                self._config_projection.verify()
         except Exception:
             raise MeasurementUnresolved('local boundary qualification failed') from None
         self._qualified = True
@@ -260,8 +268,12 @@ class SystemdProcesses:
             raise MeasurementUnresolved('owned capture unresolved') from None
 
     def identity(self, command, *, lease_valid):
-        return self._json(command, None, seconds=180, limit=524288, lease_valid=lease_valid,
-                          kind='identity')
+        try:
+            return self._json(command, None, seconds=180, limit=524288, lease_valid=lease_valid,
+                              kind='identity')
+        finally:
+            if self._config_projection is not None:
+                self._config_projection.verify()
 
     def request(self, url, payload, *, lease_valid):
         return self._json(self._worker, {'url':url, 'payload':payload}, seconds=140,

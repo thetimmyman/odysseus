@@ -32,6 +32,50 @@ output capture and termination of a detached descendant in two synthetic
 systemd user units. `--qualify-boundary` runs only those proofs. There is no
 proof-file, environment or command-line override for qualification.
 
+An unprivileged systemd user unit can map only the caller into its user
+namespace while retaining `ProtectControlGroups=yes`. A host-root-owned SSH
+configuration can consequently fail SSH's owner check inside that unit.
+`--ssh-config-manifest <private-file> --ssh-config-manifest-sha256 <pin>`
+supports an explicit read-only projection without changing host files,
+authentication material, the collector argv or SSH's native target parser.
+The flags belong to the controller, including boundary-only mode; they are
+refused in HTTP/broker workers. The manifest must be caller-owned mode0600,
+regular, not a symlink, at most64KiB, and match the supplied source pin.
+
+The `PINNED_SSH_CONFIG_V1` manifest contains `home`, at most two `roots`
+(`path`, `include_base`) and at most four `files`. Each file records `path`,
+`resolved_path`, `link` (literal symlink target or null), `uid`, `mode` and
+`sha256`. All actual configuration paths, owners, bodies and pins stay in
+private operator evidence outside the repository. The controller checks
+root-or-caller ownership, no group/world write, exact original mode, bytes,
+link and resolved target. It conservatively verifies static Include membership
+across all sections, using the root's Include base through nested includes.
+It does not interpret Host/Match selection or option precedence. Dynamic
+Include tokens, named-home expansion, directory globs, ambiguous bases,
+unlisted sources, extra sources and unsupported paths are refused. The
+native parser remains authoritative. This bounded mode does not discover
+or project keys, known-host stores, credentials or another target.
+
+Exact configuration copies use a private0700 temporary directory outside
+checkouts, with caller-owned0600 files. Identity captures and both local
+proof units add unit-specific `BindReadOnlyPaths` at the same resolved
+configuration targets; existing logical symlinks remain intact. The backing
+copy directory is itself read-only inside the unit, closing an alternate
+writable path. No `ProtectControlGroups`, descendant, resource, runtime or
+privilege restriction is removed. Broker and provider units are unchanged.
+The first local proof must directly verify projected owner/mode/bytes/link,
+read-only mounts and EROFS on a non-writing write-open attempt. Copies on
+the caller's writable filesystem cannot pass that proof. The second proof
+still terminates a detached descendant with the same projection applied.
+
+The controller rechecks original files, Include membership and private copies
+before each projected unit and after qualification and every identity capture,
+including failure. Changed or unavailable sources refuse instead of refreshing
+pins. Temporary-copy removal does not prove unit or remote termination.
+Source tests, a successful projection proof or a local metadata parser run
+cannot qualify a provider or renew historical freshness: fresh native identity,
+the two bounded requests and stable post-identity remain required.
+
 Every worker uses `ExitType=cgroup`, `KillMode=control-group`, a runtime limit,
 1 GiB memory, 32 tasks, one CPU, no swap and bounded output. The existing
 `collect_process` drains both streams concurrently, checks the lease and

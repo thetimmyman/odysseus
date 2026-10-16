@@ -22,6 +22,48 @@ def test_no_process_or_request_is_admitted_before_operational_boundary_proof():
         processes.post('/acquire', {})
 
 
+def test_identity_preserves_containment_and_adds_only_checked_readonly_projection(monkeypatch):
+    """The actual command interface, intercepted before any process can start."""
+    class Projection:
+        checks = 0
+
+        def bindings(self):
+            self.checks += 1
+            return (('/synthetic/private', '/synthetic/private'),
+                    ('/synthetic/private/0', '/synthetic/config'))
+
+        def verify(self):
+            self.checks += 1
+
+        def proof_command(self):
+            return ['synthetic-proof']
+
+    projection = Projection()
+    processes = SystemdProcesses(worker_command=['unused'], broker_worker=['unused'],
+                                  config_projection=projection)
+    observed = []
+
+    async def refuse_start(*args, **kwargs):
+        observed.append(args)
+        raise OSError('synthetic unavailable manager')
+
+    monkeypatch.setattr('asyncio.create_subprocess_exec', refuse_start)
+    # A refused local proof must include the same projection as an identity
+    # capture, and must not grant a qualified adapter.
+    with pytest.raises(MeasurementUnresolved):
+        processes.qualify_no_provider()
+    assert len(observed) == 1
+    argv = observed[0]
+    for required in ('ProtectControlGroups=yes', 'NoNewPrivileges=yes',
+                     'KillMode=control-group', 'ExitType=cgroup', 'MemoryMax=1G',
+                     'MemorySwapMax=0', 'TasksMax=32', 'CPUQuota=100%'):
+        assert '--property=' + required in argv
+    assert '--property=BindReadOnlyPaths=/synthetic/private:/synthetic/private:norbind' in argv
+    assert '--property=BindReadOnlyPaths=/synthetic/private/0:/synthetic/config:norbind' in argv
+    assert projection.checks > 0
+    assert processes.qualified is False
+
+
 @pytest.mark.parametrize('body,declared,accepted', [
     (b'{"ok":true}', 11, True),
     (b'{"ok":true}', 12, False),
@@ -90,3 +132,15 @@ def test_route_cli_requires_explicit_paired_mode_before_any_execution(args):
                              *args], capture_output=True, timeout=5)
     assert result.returncode == 2 and result.stdout == b''
     assert b'route mode' in result.stderr
+
+
+@pytest.mark.parametrize('args', [
+    ['--qualify-boundary', '--ssh-config-manifest', 'unused'],
+    ['--qualify-boundary', '--ssh-config-manifest-sha256', 'a' * 64],
+    ['--worker-http', '--ssh-config-manifest', 'unused', '--ssh-config-manifest-sha256', 'a' * 64],
+])
+def test_projection_cli_requires_pinned_pair_and_controller_context(args):
+    result = subprocess.run([sys.executable, '-I', str(Path('scripts/odysseus-measure-once').resolve()),
+                             *args], capture_output=True, timeout=5)
+    assert result.returncode == 2 and result.stdout == b''
+    assert b'config projection' in result.stderr

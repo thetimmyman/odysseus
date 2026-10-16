@@ -39,6 +39,8 @@ APP_DB = os.path.join(DATA_DIR, "app.db")
 CANONICAL_INSPECTOR_ROOT = os.path.join(DATA_DIR, "canonical_inspector")
 CANONICAL_INSPECTOR_WORK_ROOT = os.path.join(CANONICAL_INSPECTOR_ROOT, "work")
 CANONICAL_INSPECTOR_RETAINED_ROOT = os.path.join(CANONICAL_INSPECTOR_ROOT, "retained")
+# Ephemeral private SSH config copies must stay outside checkouts and ignore TMPDIR.
+LOCAL_MEASUREMENT_CONFIG_TEMP_ROOT = "/tmp"
 
 # Source-only pilot. No environment variable enables a live adapter or schema.
 CANONICAL_INSPECTOR_ENABLED = False
