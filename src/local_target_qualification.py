@@ -445,7 +445,8 @@ def _measure_changed_profile(spec, previous, pre_identity, capture_post, evidenc
         'unmeasured': ['exact_reference_semantics', 'maximum_safe_context', 'streaming',
                       'cancellation', 'parallel_tools', 'concurrency', 'load']}
     try:
-        _measure_trials(spec, descriptor, folder, report, transport or _http_transport)
+        _measure_trials(spec, descriptor, folder, report,
+                        _http_transport if transport is None else transport)
         post = capture_post()
         post_at, post_material = _changed_host_observation(post, previous, _clock(now),
                                                          endpoint_url=endpoint_url)

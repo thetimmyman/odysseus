@@ -137,6 +137,23 @@ def test_new_route_requires_an_explicit_owned_transport_before_native_calls(tmp_
     assert calls == []
 
 
+def test_falsey_owned_transport_is_used_without_any_default_http_fallback(tmp_path, monkeypatch):
+    old_spec, current_spec, old, observation = inputs()
+    calls = []
+    class OwnedTransport:
+        def __bool__(self): return False
+        def __call__(self, url, payload):
+            calls.append(url)
+            return good_response('ollama', payload)
+    def unexpected(*args):
+        raise AssertionError('default HTTP must never be selected')
+    monkeypatch.setattr('urllib.request.build_opener', unexpected)
+    candidate, _ = measure_changed_route_profile(old_spec, current_spec, old, observation,
+        lambda:observation, tmp_path, transport=OwnedTransport(), now=NOW)
+    assert calls == ['http://route.invalid/api/chat']*2
+    assert candidate.context.safe_working_context == 4096
+
+
 @pytest.mark.parametrize('failure', ['incomplete', 'model', 'tools', 'tokens'])
 def test_failed_first_route_trial_stops_before_second_trial_and_post_capture(tmp_path, failure):
     old_spec, current_spec, old, observation = inputs()
