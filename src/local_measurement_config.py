@@ -127,7 +127,11 @@ class ReadOnlyConfigProjection:
 
     Use as a context manager. bindings() and verify() recheck original sources
     outside the unit and private copies. Returned pairs are for systemd's
-    BindReadOnlyPaths only. No key, known-host or credential file is copied.
+    BindReadOnlyPaths only. Only the fixed config roots and pinned static
+    Includes are copied. Recognized standalone key/store paths and formats
+    refuse; this is not a general credential or content classifier. Config
+    bytes remain private and can contain authentication references. No path
+    discovery follows key, known-host or other authentication directives.
     """
 
     def __init__(self, manifest):

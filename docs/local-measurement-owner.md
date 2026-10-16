@@ -62,8 +62,12 @@ Native Host patterns and option values are never classified as key/store data.
 It does not interpret Host/Match selection or option precedence. Dynamic
 Include tokens, named-home expansion, directory globs, ambiguous bases,
 unlisted sources, extra sources and unsupported paths are refused. The
-native parser remains authoritative. This bounded mode does not discover
-or project keys, known-host stores, credentials or another target.
+native parser remains authoritative. Only explicit fixed config roots and
+their pinned static Includes are copied; recognized standalone key/store
+paths and non-config formats are refused. This is not a general credential
+or content classifier. Config bytes stay private and may contain authentication
+references. No additional path discovery follows IdentityFile, known-host or
+other authentication directives, and the target is never reconstructed here.
 
 Exact configuration copies use a private0700 temporary directory outside
 checkouts, with caller-owned0600 files. Identity captures and both local

@@ -191,7 +191,7 @@ def test_nonconfig_root_or_include_is_refused_before_reading_that_source(tmp_pat
     '-----BEGIN OPENSSH PRIVATE KEY-----\nSYNTHETIC_PRIVATE_VALUE\n',
     'synthetic.invalid ssh-ed25519 SYNTHETIC_PUBLIC_KEY\n',
 ])
-def test_key_or_store_content_is_not_copied_even_with_conf_extension(tmp_path, body):
+def test_recognized_nonconfig_formats_refuse_before_copies(tmp_path, body):
     config = tmp_path / '.ssh' / 'config'
     config.write_text('Include extra.conf\n')
     extra = config.parent / 'extra.conf'
