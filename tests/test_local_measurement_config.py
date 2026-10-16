@@ -248,3 +248,24 @@ def test_failed_copy_cleanup_is_explicit_one_shot_and_preserves_primary_failure(
     # Explicit recovery of this synthetic test fixture, after observing failure;
     # production close() does not silently retry an uncertain removal.
     shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize('name', ['id_ed25519', 'known_hosts'])
+def test_config_symlink_cannot_launder_a_credential_target_name(tmp_path, monkeypatch, name):
+    config = tmp_path / '.ssh' / 'config'
+    target = config.parent / name
+    target.write_text('SYNTHETIC_PRIVATE_VALUE\n')
+    target.chmod(0o600)
+    config.symlink_to(target.name)
+    manifest = manifest_for(tmp_path, [config], [config])
+    opened = []
+    original_open = os.open
+
+    def tracked_open(path, *args, **kwargs):
+        opened.append(Path(path))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', tracked_open)
+    with pytest.raises(MeasurementUnresolved):
+        ReadOnlyConfigProjection(manifest)
+    assert target not in opened

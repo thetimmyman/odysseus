@@ -53,8 +53,10 @@ private operator evidence outside the repository. The controller checks
 root-or-caller ownership, no group/world write, exact original mode, bytes,
 link and resolved target. It conservatively verifies static Include membership
 across all sections, using the root's Include base through nested includes.
-Included logical and resolved sources must use `.conf` names. Private-key
-headers, key/store records and non-directive content are refused before copies
+Included logical and resolved sources must use `.conf` names.
+Root symlinks may resolve only to a native config basename or `.conf` file.
+This prevents a config alias from laundering a named key/store before reading it.
+Private-key headers, key/store records and non-directive content are refused before copies
 are created. Named keys and stores cannot be admitted as roots or Include inputs.
 It does not interpret Host/Match selection or option precedence. Dynamic
 Include tokens, named-home expansion, directory globs, ambiguous bases,

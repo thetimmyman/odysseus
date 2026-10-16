@@ -142,6 +142,9 @@ class ReadOnlyConfigProjection:
                     raise ValueError('configuration entry refused')
                 entry = dict(value)
                 roots = {path for path, _ in self._roots}
+                if (entry['path'] in roots and Path(entry['resolved_path']).name not in ('config', 'ssh_config')
+                        and Path(entry['resolved_path']).suffix != '.conf'):
+                    raise ValueError('native configuration symlink target is not a config source')
                 if (entry['path'] not in roots
                         and (Path(entry['path']).suffix != '.conf'
                              or Path(entry['resolved_path']).suffix != '.conf')):
