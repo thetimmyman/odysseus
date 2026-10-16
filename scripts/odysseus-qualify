@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Measure an existing approximate 4K profile; never import or activate it.
+"""Measure a 4K floor for an existing approximate profile; never apply it.
 
 The operator supplies a trusted identity-collector argv in a JSON file. It must
 emit a fresh checked_at/current_material_identity observation on stdout and
 exit nonzero if endpoint, artifact, runtime or host binding cannot be verified.
 Obtain the runtime's normal capacity lease before running this command.
+An existing larger-context claim is narrowed to 4K, never renewed by these probes.
 """
 import argparse
 import json

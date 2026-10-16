@@ -1,4 +1,4 @@
-"""Renew an existing approximate 4K profile with bounded measurements."""
+"""Renew an existing approximate profile at a measured 4K floor."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -76,14 +76,16 @@ def _binding(spec, receipt, now):
     if (receipt.schema_version != 2
             or receipt.qualification_disposition != 'ADOPT_ROLE_SPECIFIC'
             or receipt.invalidation_reason not in ('', 'qualification_expired')
-            or receipt.context.safe_working_context != SAFE_CONTEXT
-            or receipt.context.semantic_verified_context != SAFE_CONTEXT
+            or type(receipt.context.safe_working_context) is not int
+            or type(receipt.context.semantic_verified_context) is not int
+            or receipt.context.safe_working_context < SAFE_CONTEXT
+            or receipt.context.semantic_verified_context < SAFE_CONTEXT
             or receipt.ttl_s != QUALIFICATION_TTL_S
             or receipt.health_ttl_s != HEALTH_TTL_S
             or set(receipt.capabilities.measured) != _ALLOWED_MEASURED
             or receipt.capabilities.streaming_observed is True
             or receipt.capabilities.cancellation_observed is True):
-        raise QualificationError('renewal requires the existing bounded 4K role')
+        raise QualificationError('renewal requires an existing approximate role with at least a 4K floor')
     if receipt.qualification_state(now=now) not in ('valid', 'qualification_expired'):
         raise QualificationError('existing profile has invalid qualification identity')
     if (spec.target_id != receipt.host_id or ROLE_INFERENCE not in spec.roles
