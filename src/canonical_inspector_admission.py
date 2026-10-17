@@ -349,6 +349,24 @@ class AdmissionStore:
             claim._execution_started = True
             return claim._prepared
 
+    def begin_tmos_work(self, claim, owner):
+        """Start only the existing owner's consumed real-work claim once.
+
+        This records invocation custody; normal dispatch still owns every
+        policy, capability, capacity and permission check before provider use.
+        """
+        self._consumed_origin(claim, owner)
+        if type(claim._prepared) is not PreparedTmosWork:
+            raise InspectorUnavailable("inspector unavailable")
+        return self._begin_execution(claim)
+
+    def tmos_origin(self, claim, owner):
+        """Read a started real-work origin without reconstructing authority."""
+        self._consumed_origin(claim, owner)
+        if type(claim._prepared) is not PreparedTmosWork or claim._execution_started is not True:
+            raise InspectorUnavailable("inspector unavailable")
+        return claim._prepared
+
     def release_terminal(self, claim, *, cleanup_confirmed):
         identity = self._consumed_origin(claim, claim._owner)
         if cleanup_confirmed is not True:

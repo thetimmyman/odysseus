@@ -29,8 +29,8 @@ def _candidate(package, revision):
     return _finalize(core).to_dict()
 
 
-def _chain(*, retry=False):
-    package = _package()
+def _chain(*, retry=False, package=None):
+    package = _package() if package is None else package
     bound = _bound(package)
     state = {"source": package.source.to_dict()}
 
