@@ -99,6 +99,208 @@ def good_response(provider, request):
             'usage':{'prompt_tokens':5000,'completion_tokens':60}}
 
 
+def new_profile_inputs():
+    spec, baseline = profile(host=HostBaseline(host_id='synthetic-worker',
+        kernel='current-kernel', boot_cmdline_digest='b'*64))
+    descriptor = make_target_capability_receipt(**{**baseline.to_dict(),
+        'qualification_disposition':'UNQUALIFIED', 'qualification_ref':'',
+        'health':'unknown', 'health_checked_at':'', 'supersedes':'',
+        'context':ContextProfile(configured_context=262144, options={
+            **baseline.context.options, 'temperature':0.0, 'seed':7, 'top_p':0.9}),
+        'capabilities':CapabilityEvidence(declared=('tools',))})
+    before = identity(descriptor)
+    before['binding']['endpoint_bound'] = True
+    return dataclasses.replace(spec, qualification_ref=''), descriptor, before
+
+
+def test_new_unqualified_profile_gets_only_its_own_measured_4k_anchor(tmp_path):
+    from src.local_target_qualification import measure_new_profile
+    spec, descriptor, before = new_profile_inputs()
+    original = copy.deepcopy(descriptor.to_dict())
+    calls = []
+
+    def transport(url, request):
+        calls.append(copy.deepcopy(request))
+        assert url == 'http://synthetic.invalid/api/chat'
+        assert request['think'] is False
+        assert request['options'] == {'num_ctx':262144, 'num_predict':512,
+                                     'temperature':0.0, 'seed':7, 'top_p':0.9}
+        assert type(request['options']['temperature']) is float
+        return good_response('ollama', request)
+
+    candidate, report = measure_new_profile(spec, descriptor, before,
+        lambda:copy.deepcopy(before), tmp_path, transport=transport, now=NOW)
+    assert len(calls) == 2 and report['status'] == 'PASS'
+    assert report['mode'] == 'NEW_PROFILE'
+    assert candidate.material_identity() == descriptor.material_identity()
+    assert candidate.profile_id == descriptor.profile_id
+    assert candidate.supersedes == ''
+    assert candidate.qualification_ref == candidate.context.safe_context_source
+    assert candidate.qualification_ref.startswith('sha256:')
+    assert candidate.context.safe_working_context == 4096
+    assert candidate.context.semantic_verified_context == 4096
+    assert candidate.qualification_state(now=NOW) == 'valid'
+    assert candidate.capabilities.declared == ('tools',)
+    assert descriptor.to_dict() == original
+    assert descriptor.qualification_state(now=NOW) == 'disposition_unqualified'
+
+
+@pytest.mark.parametrize('claim', ['safe_floor', 'semantic_floor', 'engine_floor', 'source',
+    'measured', 'detected', 'tool_calls', 'streaming', 'health', 'health_at', 'load'])
+def test_new_descriptor_cannot_carry_inherited_measurement_claims(tmp_path, claim):
+    from src.local_target_qualification import measure_new_profile
+    spec, descriptor, _ = new_profile_inputs()
+    changes = {}
+    if claim in ('safe_floor', 'semantic_floor', 'engine_floor', 'source'):
+        field = {'safe_floor':'safe_working_context', 'semantic_floor':'semantic_verified_context',
+                 'engine_floor':'engine_demonstrated_context', 'source':'safe_context_source'}[claim]
+        changes['context'] = dataclasses.replace(descriptor.context,
+            **{field:'historical-source' if claim == 'source' else 32768})
+    elif claim in ('measured', 'detected', 'tool_calls', 'streaming'):
+        field, value = {'measured':('measured', ('native_tools',)),
+            'detected':('detected', ('native_tools',)), 'tool_calls':('tool_calls_observed', 2),
+            'streaming':('streaming_observed', True)}[claim]
+        changes['capabilities'] = dataclasses.replace(descriptor.capabilities, **{field:value})
+    elif claim == 'load': changes['limits'] = dataclasses.replace(descriptor.limits, ttft_s=1.0)
+    elif claim == 'health': changes['health'] = 'healthy'
+    else: changes['health_checked_at'] = NOW.isoformat()
+    descriptor = make_target_capability_receipt(**{**descriptor.to_dict(), **changes})
+    before = identity(descriptor)
+    before['binding']['endpoint_bound'] = True
+    with pytest.raises(QualificationError):
+        measure_new_profile(spec, descriptor, before, lambda:pytest.fail('postcheck'),
+            tmp_path, transport=lambda *a:pytest.fail('transport'), now=NOW)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('field,value', [
+    ('temperature', False), ('temperature', 0.1), ('temperature', '0'),
+    ('temperature', float('nan')), ('temperature', float('inf')),
+    ('num_ctx', 262144.0), ('num_predict', 512.0), ('num_predict', True),
+    ('think', 'off'), ('think', 0), ('think', True), ('seed', True),
+    ('top_p', True), ('top_p', -0.1), ('top_p', 1.1), ('top_p', float('inf')),
+    ('template_sha256', 'not-a-digest'), ('unknown_sha256', 'f'*64),
+    ('unknown_option', 1),
+])
+def test_new_request_contract_refuses_unsupported_options_before_transport(tmp_path, field, value):
+    from src.local_target_qualification import measure_new_profile
+    spec, descriptor, _ = new_profile_inputs()
+    # Deliberately unsealed nonfinite input must also refuse through the public
+    # interface rather than leaking a serialization error or reaching transport.
+    context = dataclasses.replace(descriptor.context, options={**descriptor.context.options, field:value})
+    descriptor = dataclasses.replace(descriptor, context=context)
+    if not isinstance(value, float) or value == value and abs(value) != float('inf'):
+        descriptor = make_target_capability_receipt(**descriptor.to_dict())
+    before = identity(descriptor)
+    before['binding']['endpoint_bound'] = True
+    with pytest.raises(QualificationError):
+        measure_new_profile(spec, descriptor, before, lambda:pytest.fail('postcheck'),
+            tmp_path, transport=lambda *a:pytest.fail('transport'), now=NOW)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('missing', ['runtime_build', 'model_digest', 'quantization',
+    'kernel', 'boot', 'host_id', 'typed_spec_concurrency', 'typed_descriptor_concurrency'])
+def test_new_profile_requires_identified_material_and_exact_resource_types(tmp_path, missing):
+    from src.local_target_qualification import measure_new_profile
+    spec, descriptor, _ = new_profile_inputs()
+    changes = {}
+    if missing == 'runtime_build':
+        changes['runtime'] = dataclasses.replace(descriptor.runtime, image_digest='', commit='')
+    elif missing == 'model_digest': changes['model'] = dataclasses.replace(descriptor.model, digest='')
+    elif missing == 'quantization':
+        changes['model'] = dataclasses.replace(descriptor.model, quantization='unknown')
+    elif missing in ('kernel', 'boot', 'host_id'):
+        field = {'kernel':'kernel', 'boot':'boot_cmdline_digest', 'host_id':'host_id'}[missing]
+        changes['host'] = dataclasses.replace(descriptor.host, **{field:''})
+    elif missing == 'typed_spec_concurrency': spec = dataclasses.replace(spec, max_concurrency=True)
+    else: changes['limits'] = dataclasses.replace(descriptor.limits, max_concurrency=True)
+    descriptor = make_target_capability_receipt(**{**descriptor.to_dict(), **changes})
+    before = identity(descriptor)
+    before['binding']['endpoint_bound'] = True
+    with pytest.raises(QualificationError):
+        measure_new_profile(spec, descriptor, before, lambda:pytest.fail('postcheck'),
+            tmp_path, transport=lambda *a:pytest.fail('transport'), now=NOW)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('failure', ['qualified', 'anchor', 'supersedes', 'invalidated',
+    'future_descriptor', 'spec_anchor', 'role', 'stale', 'future', 'unbound',
+    'foreign_profile', 'material_drift', 'boolean_option_drift'])
+def test_new_profile_refuses_authority_or_identity_mismatch_before_transport(tmp_path, failure):
+    from src.local_target_qualification import measure_new_profile
+    spec, descriptor, before = new_profile_inputs()
+    changes = {}
+    if failure == 'qualified': changes['qualification_disposition'] = 'ADOPT_ROLE_SPECIFIC'
+    elif failure == 'anchor': changes['qualification_ref'] = 'historical-anchor'
+    elif failure == 'supersedes': changes['supersedes'] = 'a'*64
+    elif failure == 'invalidated': changes['invalidation_reason'] = 'material_identity_drift'
+    elif failure == 'future_descriptor': changes['observed_at'] = (NOW+timedelta(seconds=1)).isoformat()
+    elif failure == 'spec_anchor': spec = dataclasses.replace(spec, qualification_ref='historical-anchor')
+    elif failure == 'role': spec = dataclasses.replace(spec, roles=('inference', 'other'))
+    if changes: descriptor = make_target_capability_receipt(**{**descriptor.to_dict(), **changes})
+    if failure == 'stale': before['checked_at'] = (NOW-timedelta(seconds=301)).isoformat()
+    elif failure == 'future': before['checked_at'] = (NOW+timedelta(seconds=1)).isoformat()
+    elif failure == 'unbound': before['binding']['endpoint_bound'] = False
+    elif failure == 'foreign_profile': before['profile_id'] = 'other-profile'
+    elif failure == 'material_drift': before['current_material_identity']['model']['digest'] = 'f'*64
+    elif failure == 'boolean_option_drift':
+        before['current_material_identity']['context']['options']['temperature'] = False
+    with pytest.raises(QualificationError):
+        measure_new_profile(spec, descriptor, before, lambda:pytest.fail('postcheck'),
+            tmp_path, transport=lambda *a:pytest.fail('transport'), now=NOW)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('failure', ['request', 'trial', 'post_unavailable', 'drift',
+    'stale', 'future', 'older', 'serving_process'])
+def test_new_profile_failed_trial_or_postcheck_never_returns_a_candidate(tmp_path, failure):
+    from src.local_target_qualification import measure_new_profile
+    spec, descriptor, before = new_profile_inputs()
+    post = copy.deepcopy(before)
+    if failure == 'drift': post['current_material_identity']['runtime']['version'] = 'other'
+    elif failure == 'stale': post['checked_at'] = (NOW-timedelta(seconds=301)).isoformat()
+    elif failure == 'future': post['checked_at'] = (NOW+timedelta(seconds=1)).isoformat()
+    elif failure == 'older': post['checked_at'] = (NOW-timedelta(seconds=1)).isoformat()
+    elif failure == 'serving_process': post['binding']['container_id'] = 'other-process'
+    calls = []
+
+    def transport(url, request):
+        calls.append(request)
+        if failure == 'request': raise OSError('outcome unknown')
+        response = good_response('ollama', request)
+        if failure == 'trial': response['done'] = False
+        return response
+
+    def capture_post():
+        if failure == 'post_unavailable': raise OSError('source unavailable')
+        return post
+
+    with pytest.raises(QualificationError):
+        measure_new_profile(spec, descriptor, before, capture_post, tmp_path,
+            transport=transport, now=NOW)
+    assert len(calls) == (1 if failure in ('request', 'trial') else 2)
+    assert json.loads((tmp_path/'qualification.json').read_text())['status'] == 'FAILED'
+    assert not (tmp_path/'receipt.json').exists()
+    assert descriptor.qualification_state(now=NOW) == 'disposition_unqualified'
+
+
+@pytest.mark.parametrize('endpoint', ['http://user:synthetic@synthetic.invalid',
+                                    'ftp://synthetic.invalid', ' http://synthetic.invalid'])
+def test_new_profile_refuses_credential_or_unsupported_endpoint_shapes(tmp_path, endpoint):
+    from src.local_target_qualification import measure_new_profile
+    spec, descriptor, _ = new_profile_inputs()
+    spec = dataclasses.replace(spec, endpoint=endpoint)
+    descriptor = make_target_capability_receipt(**{**descriptor.to_dict(),
+        'runtime':dataclasses.replace(descriptor.runtime, endpoint_url=endpoint)})
+    before = identity(descriptor)
+    before['binding']['endpoint_bound'] = True
+    with pytest.raises(QualificationError):
+        measure_new_profile(spec, descriptor, before, lambda:pytest.fail('postcheck'),
+            tmp_path, transport=lambda *a:pytest.fail('transport'), now=NOW)
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize('provider',['ollama','halogen-flash'])
 def test_measured_renewal_keeps_profile_anchor_and_bounded_scope(tmp_path,provider):
     spec,old=profile(provider)

@@ -6,6 +6,38 @@ dispatch, renew an old profile, or change routing policy. Its only successful
 output is a private new approximate 4K candidate. The earlier receipt remains
 historical evidence.
 
+`--new-profile <separate-descriptor.json>` instead measures a genuinely new
+request contract. It is mutually exclusive with `--receipt`, changed-route,
+boundary-only and worker modes. Supply a separate proposed specification and
+native collector config/argv; never edit the historical receipt, specification
+or collector config to make them pass a different contract. The descriptor is
+sealed schema2 `UNQUALIFIED`, with inference role only, an empty qualification
+reference and supersedes, unknown health, and no measured capabilities,
+safe/semantic/engine context, served-context observation or load measurements.
+Its specification has an empty qualification reference. A descriptor is a
+proposed exact identity, not evidence that the profile is usable.
+
+This mode supports only the existing deterministic native Ollama contract:
+numeric zero temperature (preserving integer/float representation), native
+boolean `think=false`, integer512 output limit, and the exact integer configured
+context. Boolean numbers, nonfinite values, string thinking labels and unknown
+options are refused. Optional seed and top_p retain their typed values and are
+part of the exact observed material; template and runtime-environment hashes
+remain evidence metadata, not wire options. The native collector must observe
+every material field of this new descriptor exactly before and after the
+same two trials, with fresh timestamps and an unchanged serving-process binding.
+It does not use the old changed-route exception to hide other drift.
+
+Fresh-profile measurement uses the same local process proofs, projection,
+normal owned lease, bounded native capture, postcheck and cleanup-before-release
+flow described below. Only successful trials, stable post-identity and the
+acknowledged release permit atomic publication of a new approximate4K candidate
+with its own report anchor and empty supersedes. The descriptor remains
+unqualified and unchanged. No import, registration, activation, routing or
+pilot admission follows. A configured or advertised larger context does not
+turn this4K measurement into32K evidence. Existing renewal, changed-host and
+changed-route inputs and guards remain unchanged.
+
 `--changed-route --current-spec <separate-file>` explicitly measures a newly
 observed hostname instead. The old receipt/specification stays immutable. The
 proposed specification may change only the credential-free hostname, with all

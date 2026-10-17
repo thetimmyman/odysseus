@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from dataclasses import asdict
 import hashlib
 import json
+import math
 from pathlib import Path
 import stat
 import time
@@ -421,6 +422,125 @@ def measure_changed_route_profile(previous_spec: LocalTargetSpec, current_spec: 
     return _measure_changed_profile(current_spec, previous, pre_identity, capture_post, evidence_dir,
         started=started, pre_at=pre_at, material=material, mode='CHANGED_ROUTE_NEW_PROFILE',
         endpoint_url=current_spec.endpoint, transport=transport, now=now)
+
+
+def measure_new_profile(spec: LocalTargetSpec, descriptor: TargetCapabilityReceipt,
+        pre_identity: Mapping, capture_post: Callable[[], Mapping], evidence_dir: Path,
+        *, transport, now=None):
+    """Measure a separate UNQUALIFIED descriptor without historical authority.
+
+    The descriptor's exact material, including deterministic request options,
+    must be independently observed before and after the existing two trials.
+    This never renews, supersedes, registers or activates a previous profile.
+    """
+    started = _clock(now)
+    context = descriptor.context
+    if (any(type(value) is not int or value != 0 for value in (
+                context.safe_working_context, context.semantic_verified_context,
+                context.engine_demonstrated_context, context.served_context))
+            or context.safe_context_source
+            or _digest_of(descriptor.capabilities.to_dict()) != _digest_of(
+                CapabilityEvidence(declared=descriptor.capabilities.declared).to_dict())
+            or _digest_of(descriptor.limits.to_dict()) != _digest_of(
+                CapabilityLimits(max_concurrency=1).to_dict())
+            or descriptor.health != HEALTH_UNKNOWN or descriptor.health_checked_at):
+        raise QualificationError('new descriptor must contain no measured evidence')
+    options = context.options
+    metadata = {'template_sha256', 'runtime_environment_sha256'}
+    required = {'num_ctx', 'num_predict', 'temperature', 'think'} | metadata
+    if (not isinstance(options, Mapping) or not required <= options.keys()
+            or options.keys() - required - {'seed', 'top_p'}
+            or type(context.configured_context) is not int or context.configured_context < SAFE_CONTEXT
+            or type(context.configured_served_context) is not int
+            or not 0 <= context.configured_served_context <= context.configured_context
+            or any(type(options[key]) is not int for key in ('num_ctx', 'num_predict'))
+            or type(options['temperature']) not in (int, float)
+            or options['temperature'] != 0
+            or not math.isfinite(options['temperature'])
+            or 'seed' in options and type(options['seed']) is not int
+            or 'top_p' in options and (type(options['top_p']) not in (int, float)
+                or not 0 <= options['top_p'] <= 1 or not math.isfinite(options['top_p']))
+            or any(type(options[key]) is not str or len(options[key]) != 64
+                or any(ch not in '0123456789abcdef' for ch in options[key]) for key in metadata)):
+        raise QualificationError('unsupported new-profile request options')
+    # Use the existing deterministic zero/native-False/512 wire contract.
+    # The typed checks above do not coerce legacy labels or boolean numbers.
+    _request(spec, descriptor, '')
+    try:
+        for endpoint in (spec.endpoint, descriptor.runtime.endpoint_url):
+            if type(endpoint) is not str or any(ord(ch) <= 32 or ord(ch) == 127 for ch in endpoint):
+                raise ValueError('unsupported endpoint')
+            parsed = urlsplit(endpoint)
+            if (parsed.scheme not in ('http', 'https')
+                    or parsed.username is not None or parsed.password is not None):
+                raise ValueError('unsupported endpoint')
+            canonical_endpoint_identity(endpoint, 'http')
+    except (AttributeError, TypeError, ValueError):
+        raise QualificationError('unsupported new-profile endpoint') from None
+    if (not target_capability_receipt_hash_is_valid(descriptor.to_dict())
+            or descriptor.schema_version != 2
+            or descriptor.qualification_disposition != 'UNQUALIFIED'
+            or descriptor.qualification_ref or descriptor.supersedes
+            or descriptor.invalidation_reason
+            or _instant(descriptor.observed_at) > started
+            or spec.target_id != descriptor.host_id
+            or spec.runtime_kind != 'ollama' or spec.transport != 'http'
+            or descriptor.runtime.runtime_kind != spec.runtime_kind
+            or descriptor.runtime.endpoint_type != spec.transport
+            or spec.model != descriptor.model.model_id
+            or spec.qualification_ref
+            or tuple(spec.roles) != (ROLE_INFERENCE,)
+            or tuple(descriptor.roles) != (ROLE_INFERENCE,)
+            or type(spec.max_concurrency) is not int or spec.max_concurrency != 1
+            or type(descriptor.limits.max_concurrency) is not int
+            or descriptor.limits.max_concurrency != 1
+            or descriptor.host.host_id != descriptor.host_id
+            or not (descriptor.runtime.image_digest or descriptor.runtime.commit)
+            or not descriptor.model.digest or not descriptor.model.quantization
+            or descriptor.model.quantization.lower() == 'unknown'
+            or type(descriptor.host.kernel) is not str
+            or not 0 < len(descriptor.host.kernel.encode()) <= 1024
+            or type(descriptor.host.boot_cmdline_digest) is not str
+            or len(descriptor.host.boot_cmdline_digest) != 64
+            or any(ch not in '0123456789abcdef' for ch in descriptor.host.boot_cmdline_digest)
+            or canonical_endpoint_identity(spec.endpoint, spec.transport)
+            != canonical_endpoint_identity(descriptor.runtime.endpoint_url, spec.transport)
+            or not callable(transport)):
+        raise QualificationError('unsupported new-profile descriptor or specification')
+    pre_at = _identity(pre_identity, descriptor, started)
+    binding = pre_identity.get('binding')
+    if (not isinstance(binding, Mapping) or binding.get('endpoint_bound') is not True
+            or type(binding.get('container_id')) is not str or not binding['container_id']):
+        raise QualificationError('new profile requires native endpoint binding')
+    folder = _measurement_folder(evidence_dir)
+    report = {'format':1, 'mode':'NEW_PROFILE', 'status':'MEASURING',
+        'producer':PROBE_VERSION, 'producer_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'started_at':started.isoformat(), 'profile_id':descriptor.profile_id,
+        'descriptor_receipt_hash':descriptor.receipt_hash,
+        'identity_digest':descriptor.identity_digest(), 'pre_checked_at':pre_at.isoformat(),
+        'pre_identity_sha256':hashlib.sha256(_bytes(pre_identity)).hexdigest(),
+        'safe_context':SAFE_CONTEXT, 'trials':[],
+        'unmeasured':['exact_reference_semantics', 'maximum_safe_context', 'streaming',
+                      'cancellation', 'parallel_tools', 'concurrency', 'load']}
+    try:
+        _measure_trials(spec, descriptor, folder, report, transport)
+        post = capture_post()
+        post_at = _identity(post, descriptor, _clock(now))
+        if post_at < pre_at or _digest_of(binding) != _digest_of(post.get('binding')):
+            raise QualificationError('new profile was not stable during measurement')
+        report.update(status='PASS', observed_at=post_at.isoformat(),
+            post_checked_at=post_at.isoformat(),
+            post_identity_sha256=hashlib.sha256(_bytes(post)).hexdigest())
+        candidate = _measured_receipt(descriptor, report, supersedes='', qualification_ref='')
+        if (candidate.identity_digest() != descriptor.identity_digest()
+                or candidate.qualification_state(now=_clock(now)) != 'valid'):
+            raise QualificationError('new profile measurement is invalid')
+    except Exception as exc:
+        report.update(status='FAILED', failure_class=type(exc).__name__)
+        _write(folder / LOCAL_QUALIFICATION_REPORT_FILENAME, report)
+        raise QualificationError('new-profile measurement failed; no qualification issued') from exc
+    _write(folder / LOCAL_QUALIFICATION_REPORT_FILENAME, report)
+    return candidate, report
 
 
 def _measure_changed_profile(spec, previous, pre_identity, capture_post, evidence_dir, *,

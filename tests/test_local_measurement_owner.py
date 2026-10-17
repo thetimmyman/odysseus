@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 
 from src.local_measurement_owner import BrokerLease, MeasurementUnresolved
-from tests.test_local_target_qualification import NOW, profile, identity, good_response
+from tests.test_local_target_qualification import NOW, profile, identity, good_response, new_profile_inputs
 from src.local_targets import HostBaseline
 
 
@@ -82,6 +82,85 @@ class Processes:
 
     def evidence(self):
         return [{'unit':'owned-synthetic.service', 'kind':'provider', 'local_stop_proven':False}]
+
+
+def test_fresh_descriptor_publishes_only_after_post_identity_cleanup_and_normal_release(tmp_path):
+    from src.local_measurement_owner import measure_once
+    spec, descriptor, before = new_profile_inputs()
+
+    class Captures(Processes):
+        cleanup_done = False
+
+        def finish_capture(self):
+            self.cleanup_done = True
+            self.calls.append('finish')
+            return True
+
+        def configuration_evidence(self):
+            return 'REMOVED' if self.cleanup_done else 'READY'
+
+    processes = Captures(before)
+
+    class ReleaseAfterCleanup(Broker):
+        def __call__(self, path, body):
+            if path == '/release':
+                assert processes.calls == ['identity', 'request', 'request', 'identity', 'finish']
+                assert processes.cleanup_done
+                assert not (tmp_path/'run'/'receipt.json').exists()
+            return super().__call__(path, body)
+
+    broker = ReleaseAfterCleanup()
+    broker.responses['/acquire'] = 200, {'lease':'a'*12, 'pool':'rtx4500',
+                                       'url':spec.endpoint, 'ttl':600}
+    lease = BrokerLease(broker, endpoint=spec.endpoint, holder='synthetic')
+    candidate = measure_once(spec, descriptor, ['collector'], tmp_path/'run',
+        new_profile=True, lease=lease, processes=processes, now=NOW)
+    receipt = json.loads((tmp_path/'run'/'receipt.json').read_text())
+    ownership = json.loads((tmp_path/'run'/'ownership.json').read_text())
+    assert receipt == candidate.to_dict()
+    assert ownership['configuration_cleanup'] == 'REMOVED'
+    assert ownership['release_acknowledged'] is True
+    assert candidate.qualification_ref == candidate.context.safe_context_source
+    assert candidate.supersedes == ''
+    assert candidate.context.safe_working_context == 4096
+    assert descriptor.qualification_state(now=NOW) == 'disposition_unqualified'
+
+
+@pytest.mark.parametrize('failure', ['cleanup_absent', 'cleanup_false', 'cleanup_raise',
+    'request', 'post', 'release', 'heartbeat', 'unqualified', 'combined_route', 'nonboolean_mode'])
+def test_fresh_profile_uncertainty_never_publishes_or_releases_in_finally(tmp_path, failure):
+    from src.local_measurement_owner import measure_once
+    spec, descriptor, before = new_profile_inputs()
+
+    class Captures(Processes):
+        def finish_capture(self):
+            if failure == 'cleanup_raise': raise OSError('private-cleanup-value')
+            return failure != 'cleanup_false'
+
+    processes, broker = Captures(before), Broker()
+    processes.failure = failure
+    if failure == 'cleanup_absent': processes.finish_capture = None
+    if failure == 'unqualified': processes.qualified = False
+    broker.responses['/acquire'] = 200, {'lease':'a'*12, 'pool':'rtx4500',
+                                       'url':spec.endpoint, 'ttl':600}
+    if failure == 'release': broker.responses['/release'] = OSError('lost ACK')
+    if failure == 'heartbeat': broker.responses['/heartbeat'] = 404, {'error':'expired'}
+    lease = BrokerLease(broker, endpoint=spec.endpoint, holder='synthetic')
+    with pytest.raises(MeasurementUnresolved):
+        measure_once(spec, descriptor, ['collector'], tmp_path/'run',
+            new_profile=1 if failure == 'nonboolean_mode' else True,
+            current_spec=spec if failure == 'combined_route' else None,
+            lease=lease, processes=processes, now=NOW)
+    assert not (tmp_path/'run'/'receipt.json').exists()
+    record = json.loads((tmp_path/'run'/'failure.json').read_text())
+    assert record['status'] == 'UNRESOLVED'
+    assert record['receipt_accepted'] is False
+    assert record['lease']['release_acknowledged'] is False
+    assert 'private-cleanup-value' not in json.dumps(record)
+    if failure != 'release': assert '/release' not in [path for path,_ in broker.calls]
+    if failure == 'request': assert processes.calls.count('request') == 1
+    if failure in ('cleanup_absent', 'unqualified', 'combined_route', 'nonboolean_mode'):
+        assert broker.calls == [] and processes.calls == []
 
 
 def test_candidate_published_only_after_two_completions_post_identity_and_release(tmp_path):
