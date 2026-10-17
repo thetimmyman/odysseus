@@ -46,6 +46,9 @@ SSH_SYSTEM_CONFIG_FILE = "/etc/ssh/ssh_config"
 # Source-only pilot. No environment variable enables a live adapter or schema.
 CANONICAL_INSPECTOR_ENABLED = False
 CANONICAL_PILOT_ID = "synthetic-uppercase"
+CANONICAL_TMOS_WORK_ID = "tmos-routing-inspector"
+CANONICAL_TMOS_PACKET_IDS = ("routing-inspector-command", "routing-inspector-control")
+CANONICAL_TMOS_DISCLOSURE_GENERATION = "tmos-routing-inspector-v1"
 CANONICAL_PILOT_DISCLOSURE_GENERATION = "public-uppercase-v1"
 CANONICAL_PILOT_BODY_BYTES = 512
 CANONICAL_PILOT_BODY_SECONDS = 5

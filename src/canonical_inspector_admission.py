@@ -23,7 +23,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.constants import CANONICAL_PILOT_ID, CANONICAL_PILOT_KEY_BYTES
+from src.constants import (
+    CANONICAL_PILOT_ID, CANONICAL_PILOT_KEY_BYTES,
+    CANONICAL_TMOS_DISCLOSURE_GENERATION, CANONICAL_TMOS_PACKET_IDS, CANONICAL_TMOS_WORK_ID,
+)
 
 
 class InspectorUnavailable(ValueError):
@@ -75,6 +78,26 @@ class PreparedPilot:
 
 
 @dataclass(frozen=True)
+class PreparedTmosWork:
+    """Trusted execution owner's prepared intent for the two Inspector packets.
+
+    Hashes identify intent, not execution or routing permission. The service
+    must validate the canonical package before admission and retained evidence
+    before publication. No HTTP caller may construct this object.
+    """
+    run_id: str
+    packet_id: str
+    package_hash: str
+    config_digest: str
+
+    def __post_init__(self):
+        if (type(self.run_id) is not str or not 0 < len(self.run_id) <= 128
+                or self.packet_id not in CANONICAL_TMOS_PACKET_IDS
+                or not _digest(self.package_hash) or not _digest(self.config_digest)):
+            raise InspectorUnavailable("inspector unavailable")
+
+
+@dataclass(frozen=True)
 class Publication:
     bundle_hash: str
     evidence_hash: str
@@ -120,7 +143,10 @@ admissions = Table(
     CheckConstraint("(reserved_slot IS NOT NULL AND reserved_slot=1 AND slot_released_at IS NULL) OR "
                     "(reserved_slot IS NULL AND slot_released_at IS NOT NULL)"),
     CheckConstraint("auth_origin = 'admin_cookie'"),
-    CheckConstraint("pilot_id = 'synthetic-uppercase' AND packet_id = 'synthetic-uppercase'"),
+    CheckConstraint(
+        f"(pilot_id = '{CANONICAL_PILOT_ID}' AND packet_id = '{CANONICAL_PILOT_ID}') OR "
+        f"(pilot_id = '{CANONICAL_TMOS_WORK_ID}' AND packet_id IN "
+        f"({', '.join(repr(packet) for packet in CANONICAL_TMOS_PACKET_IDS)}))"),
 )
 events = Table(
     "canonical_inspector_event", metadata,
@@ -258,18 +284,33 @@ class AdmissionStore:
         return connection
 
     def admit(self, owner: Principal, idempotency_key: str, prepared: PreparedPilot):
-        if (not isinstance(owner, Principal) or not isinstance(prepared, PreparedPilot)
+        if not isinstance(prepared, PreparedPilot):
+            raise InspectorUnavailable("inspector unavailable")
+        return self._admit(owner, idempotency_key, prepared, CANONICAL_PILOT_ID)
+
+    def admit_tmos_work(self, owner: Principal, idempotency_key: str, prepared: PreparedTmosWork):
+        """Commit an actual cookie principal's real-work origin exactly once.
+
+        This persistence primitive neither selects a target nor starts work.
+        Normal service setup still has no live executor or schema initializer.
+        """
+        if type(prepared) is not PreparedTmosWork:
+            raise InspectorUnavailable("inspector unavailable")
+        return self._admit(owner, idempotency_key, prepared, CANONICAL_TMOS_WORK_ID)
+
+    def _admit(self, owner, idempotency_key, prepared, pilot_id):
+        if (not isinstance(owner, Principal)
                 or type(idempotency_key) is not str or not idempotency_key
                 or len(idempotency_key.encode("utf-8")) > CANONICAL_PILOT_KEY_BYTES):
             raise InspectorUnavailable("inspector unavailable")
         identity = str(uuid.uuid4())
-        intent = hashlib.sha256((CANONICAL_PILOT_ID + ":" + prepared.config_digest).encode()).hexdigest()
+        intent = hashlib.sha256((pilot_id + ":" + prepared.config_digest).encode()).hexdigest()
         try:
             with self._sessions() as session:
                 self._qualified_connection(session)
                 session.execute(insert(admissions).values(
                     id=identity, principal_key=owner.auth_key, account_epoch=owner.account_epoch,
-                    idempotency_key=idempotency_key, intent_digest=intent, pilot_id=CANONICAL_PILOT_ID,
+                    idempotency_key=idempotency_key, intent_digest=intent, pilot_id=pilot_id,
                     run_id=prepared.run_id, packet_id=prepared.packet_id, package_hash=prepared.package_hash,
                     config_digest=prepared.config_digest, auth_origin="admin_cookie", admitted_at=_now(),
                     reserved_slot=1, slot_released_at=None))
@@ -347,7 +388,9 @@ class AdmissionStore:
         service orchestration must verify the exact retained bytes first.
         """
         identity = self._consumed_origin(claim, owner)
-        if not isinstance(publication, Publication):
+        if (not isinstance(publication, Publication)
+                or (type(claim._prepared) is PreparedTmosWork
+                    and publication.disclosure_generation != CANONICAL_TMOS_DISCLOSURE_GENERATION)):
             raise InspectorUnavailable("inspector unavailable")
         handle = str(uuid.uuid4())
         try:
@@ -456,7 +499,9 @@ class AdmissionStore:
                                   row["dispatch_hash"], row["disclosure_generation"])
                 if replacement is not None and (not isinstance(replacement, Publication)
                         or replacement.attempt_hash != old.attempt_hash
-                        or replacement.dispatch_hash != old.dispatch_hash):
+                        or replacement.dispatch_hash != old.dispatch_hash
+                        or (row["packet_id"] in CANONICAL_TMOS_PACKET_IDS
+                            and replacement.disclosure_generation != CANONICAL_TMOS_DISCLOSURE_GENERATION)):
                     raise UnknownInspection("inspection unavailable")
                 origin = {name: row[name] for name in ("run_id", "packet_id", "package_hash")}
                 origin["id"] = row["admission_id"]
