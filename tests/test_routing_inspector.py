@@ -243,6 +243,12 @@ def test_referenced_canonical_capability_and_capacity_are_supplemented(package):
         package, dispatch, capability_receipts=(capability,), capacity_receipts=(capacity,), now=NOW)
     assert view["capabilities"]["status"] == "OBSERVED"
     assert view["capabilities"]["supplements"][0]["qualification_state"] == "valid"
+    assert view["dispatch"]["selected"]["provider"] == "fixture"
+    clock = view["capabilities"]["supplements"][0]
+    assert clock["ttl_s"] == capability.ttl_s
+    assert clock["health_checked_at"] == ""
+    assert clock["health_ttl_s"] == capability.health_ttl_s
+    assert clock["health_state"] == "health_not_healthy"
     assert view["capacity"]["status"] == "OBSERVED"
     assert view["capacity"]["billing_authority"] is False
     assert view["capacity"]["supplements"][0]["facts_current"] is True

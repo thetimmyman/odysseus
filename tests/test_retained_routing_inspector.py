@@ -252,6 +252,8 @@ def test_only_historical_supplements_and_all_same_target_pairs_are_preserved():
     assert any(not row["eligible"] and row["rule"] for row in pairs)
     assert view["capabilities"]["status"] == "OBSERVED"
     assert view["capabilities"]["supplements"][0]["receipt_hash"] == canonical.receipt_hash
+    assert view["capabilities"]["supplements"][0]["health_state"] == "live"
+    assert view["capabilities"]["supplements"][0]["health_ttl_s"] == 300
     assert view["capacity"]["status"] == "OBSERVED"
     assert view["capacity"]["supplements"][0]["receipt_hash"] == capacity.receipt_hash
     assert view["capacity"]["billing_authority"] is False
@@ -263,6 +265,8 @@ def test_only_historical_supplements_and_all_same_target_pairs_are_preserved():
     assert expired["capabilities"]["status"] == "UNKNOWN"
     assert expired["capacity"]["status"] == "UNKNOWN"
     assert expired["capabilities"]["supplements"][0]["observed_at"] == canonical.observed_at
+    assert expired["capabilities"]["supplements"][0]["health_checked_at"] == canonical.health_checked_at
+    assert expired["capabilities"]["supplements"][0]["health_state"] == "liveness_expired"
 
 
 def test_distinct_node_id_ssh_alias_keeps_existing_typed_false_refusal_visible():

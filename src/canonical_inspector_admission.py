@@ -23,6 +23,7 @@ from sqlalchemy import (
     select, update,
 )
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.schema import CreateTable
 
 from src.constants import (
     CANONICAL_PILOT_ID, CANONICAL_PILOT_KEY_BYTES,
@@ -199,6 +200,7 @@ interventions = Table(
 def _sqlite_trigger(table, name, action, condition, message):
     ddl = (f"CREATE TRIGGER {name} BEFORE {action} ON {table.name} "
            f"WHEN {condition} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    metadata.info.setdefault("sqlite_trigger_ddl", {})[name] = ddl
     event.listen(table, "after_create", DDL(ddl).execute_if(dialect="sqlite"))
 
 
@@ -270,6 +272,30 @@ class AdmissionStore:
         self._claims = {}
         self._consumed = {}
         self._claim_lock = threading.Lock()
+
+    def check_schema(self):
+        """Read-only exact compatibility check; never migrate or initialize.
+
+        This checks the current connection and source-owned DDL. It does not
+        establish native crash durability, backups or restored-state acceptance.
+        """
+        try:
+            with self._sessions() as session:
+                connection = self._qualified_connection(session)
+                expected = {table.name: str(CreateTable(table).compile(dialect=connection.dialect))
+                            for table in metadata.sorted_tables}
+                expected.update(metadata.info["sqlite_trigger_ddl"])
+                names = tuple(metadata.tables)
+                parameters = ",".join("?" for _ in names)
+                rows = connection.exec_driver_sql(
+                    "SELECT name,sql FROM sqlite_master WHERE type IN ('table','trigger') "
+                    f"AND tbl_name IN ({parameters})", names).all()
+                normalized = lambda value: " ".join(value.strip().rstrip(";").split())
+                if ({name: normalized(sql) for name, sql in rows}
+                        != {name: normalized(sql) for name, sql in expected.items()}):
+                    raise InspectorUnavailable("inspector unavailable")
+        except (SQLAlchemyError, OSError, ValueError, TypeError):
+            raise InspectorUnavailable("inspector unavailable") from None
 
     @staticmethod
     def _qualified_connection(session):
@@ -421,6 +447,60 @@ class AdmissionStore:
             raise InspectorUnavailable("inspector unavailable")
         return claim._alternate_of
 
+    def fail_tmos_alternate(self, claim, owner, *, stage, refusal_code=None):
+        """Append uncertainty to the consumed request, retaining its global slot.
+
+        This proves neither a provider stop nor cleanup. Missing result hashes
+        stay absent; a failed invocation never becomes an APPLIED preference.
+        """
+        original_handle, request = self.tmos_alternate_origin(claim, owner)
+        from src.dispatch_routing import KNOWN_REFUSALS
+        if refusal_code is not None and refusal_code not in KNOWN_REFUSALS:
+            raise InspectorUnavailable("inspector unavailable")
+        if stage not in {"routing", "lease", "invoke", "verify", "post_identity", "cleanup",
+                         "release", "retention", "publication"}:
+            raise InspectorUnavailable("inspector unavailable")
+        try:
+            with self._sessions() as session:
+                self._qualified_connection(session)
+                original = session.execute(self._owned_query(owner, original_handle,
+                    CANONICAL_TMOS_DISCLOSURE_GENERATION)).mappings().one_or_none()
+                if original is None:
+                    raise InspectorUnavailable("inspector unavailable")
+                rows = session.execute(select(interventions.c.receipt).where(
+                    interventions.c.publication_id == original["id"]).limit(65)).scalars().all()
+                receipts = [json.loads(raw) for raw in rows]
+                terminal = [row for row in receipts if row.get("operator_request_receipt_hash") == request["receipt_hash"]
+                            and row.get("status") in {"APPLIED", "UNRESOLVED"}]
+                if terminal:
+                    if len(terminal) == 1 and terminal[0].get("status") == "UNRESOLVED":
+                        return terminal[0]
+                    raise InspectorUnavailable("inspector unavailable")
+                if (len(receipts) >= 64 or request not in receipts
+                        or not any(row.get("receipt_hash") == claim._alternate_claim_hash
+                                   and row.get("status") == "CLAIMED" for row in receipts)):
+                    raise InspectorUnavailable("inspector unavailable")
+                receipt = {"schema": "operator-intervention-result-v1", "action": "prefer_eligible_target",
+                    "status": "UNRESOLVED", "actor": owner.auth_key, "account_epoch": owner.account_epoch,
+                    "recorded_at": _now(), "operator_request_receipt_hash": request["receipt_hash"],
+                    "invocation_receipt_hash": claim._alternate_claim_hash, "mission_key": request["mission_key"],
+                    "original_dispatch_receipt_hash": request["original_dispatch_receipt_hash"],
+                    "attempt_receipt_hash": request["attempt_receipt_hash"], "packet_id": claim._prepared.packet_id,
+                    "resulting_run_id": claim._prepared.run_id, "resulting_execution_package_hash": claim._prepared.package_hash,
+                    "failed_stage": stage, "reason_code": "execution_unresolved", "routing_refusal_code": refusal_code,
+                    "cleanup_confirmed": False,
+                    "resulting_handle": None, "resulting_dispatch_receipt_hash": None,
+                    "resulting_attempt_receipt_hash": None, "resulting_evidence_package_hash": None,
+                    "resulting_bundle_hash": None}
+                receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+                session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=original["id"],
+                    idempotency_key="result:" + request["receipt_hash"], receipt=json.dumps(receipt)))
+                session.commit()
+                return receipt
+        except (SQLAlchemyError, OSError, ValueError, TypeError, KeyError):
+            raise InspectorUnavailable("inspector unavailable") from None
+
     def tmos_origin(self, claim, owner):
         """Read a started real-work origin without reconstructing authority."""
         self._consumed_origin(claim, owner)
@@ -517,7 +597,7 @@ class AdmissionStore:
                 or request.get("attempt_receipt_hash") != original["attempt_hash"]
                 or len(claims) != 1
                 or any(row.get("operator_request_receipt_hash") == request["receipt_hash"]
-                       and row.get("status") == "APPLIED" for row in receipts)):
+                       and row.get("status") in {"APPLIED", "UNRESOLVED"} for row in receipts)):
             raise InspectorUnavailable("inspector unavailable")
         receipt = {
             "schema": "operator-intervention-result-v1", "action": "prefer_eligible_target", "status": "APPLIED",
@@ -620,7 +700,8 @@ class AdmissionStore:
                 rows = session.execute(select(interventions.c.receipt).where(
                     interventions.c.publication_id == row["id"]).limit(64)).all()
                 receipts = [json.loads(item[0]) for item in rows]
-                applied = {item.get("operator_request_receipt_hash") for item in receipts if item.get("status") == "APPLIED"}
+                applied = {item.get("operator_request_receipt_hash") for item in receipts
+                           if item.get("status") in {"APPLIED", "UNRESOLVED"}}
                 claimed = {item.get("operator_request_receipt_hash") for item in receipts if item.get("status") == "CLAIMED"}
                 pending = sum(1 if item.get("receipt_hash") in claimed else 2 for item in receipts
                               if item.get("action") == "prefer_eligible_target" and item.get("status") == "REQUESTED"
