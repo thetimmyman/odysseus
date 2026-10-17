@@ -174,8 +174,10 @@ def _capture_local(config):
         remote_tags = _api(endpoint, "/api/tags")
         remote_model = [m for m in remote_tags["models"] if m["name"] == config["model"]]
         remote_show = _api(endpoint, "/api/show", {"model": config["model"]})
+        remote_version = _api(endpoint, "/api/version")
+        provider_checked_at = datetime.now(timezone.utc).isoformat()
         if (len(remote_model) != 1 or remote_model[0]["digest"] != manifest_sha
-                or _api(endpoint, "/api/version") != raw["api_version"]
+                or remote_version != raw["api_version"]
                 or remote_show != raw["api_show"]):
             raise ValueError("installed endpoint responder differs from inspected local provider")
     elif kind == "halogen-flash":
@@ -206,10 +208,14 @@ def _capture_local(config):
                                      firmware="UNKNOWN", mesa="UNKNOWN", rocm="UNKNOWN", libhsakmt="UNKNOWN")
         raw["host"] = raw["host_baseline"]
         remote_health = _api(endpoint_binding["endpoint_origin"], endpoint_binding["health_path"])
+        provider_checked_at = datetime.now(timezone.utc).isoformat()
         if {k: remote_health[k] for k in fields if k in remote_health} != raw["health"]:
             raise ValueError("installed endpoint responder differs from inspected local provider")
     else:
         raise ValueError("unsupported identity collector kind")
+    # Only successful, matching bound-provider responses establish liveness.
+    # Later artifact/container checks may be slow; never move this clock forward.
+    raw["provider_health"] = {"healthy": True, "checked_at": provider_checked_at}
     artifacts = list(raw.get("model_blob_observations", {}).values()) + list(raw.get("artifacts", {}).values())
     for artifact in artifacts:
         if _run(command + ["stat", "-c", "%s:%i:%Y:%Z", artifact["path"]]) != artifact["stat"]:
@@ -341,6 +347,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--health-observation", action="store_true",
+                        help="Emit a fresh, matching observation for capability liveness refresh.")
     parser.add_argument("--capture-config-b64", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.capture_config_b64:
@@ -357,12 +365,27 @@ def main(argv=None):
     profile_id = receipt.get("profile_id")
     if not profile_id:
         raise ValueError("receipt profile_id is required")
-    print(json.dumps({"profile_id": profile_id, "checked_at": raw["observed_at"], "current_material_identity": material,
-                      "raw": raw, "binding": raw["binding"],
-                      "comparison": compare_material(raw, receipt, request_options=config["request_options"],
-                                                     endpoint_url=config["endpoint_url"]),
-                      "catalog_boundary": "unchanged artifact/image-bound catalog and transport facts; host libraries uncollected"},
-                     indent=2, sort_keys=True))
+    envelope = {"profile_id": profile_id, "checked_at": raw["observed_at"], "current_material_identity": material,
+                "raw": raw, "binding": raw["binding"],
+                "comparison": compare_material(raw, receipt, request_options=config["request_options"],
+                                               endpoint_url=config["endpoint_url"]),
+                "catalog_boundary": "unchanged artifact/image-bound catalog and transport facts; host libraries uncollected"}
+    if args.health_observation:
+        from src.local_targets import DEFAULT_HEALTH_TTL_S, HEALTH_HEALTHY, _parse_utc
+
+        if not envelope["comparison"]["equal"]:
+            raise ValueError("provider material identity differs from the supplied profile")
+        health = raw.get("provider_health", {})
+        if not isinstance(health, dict) or health.get("healthy") is not True:
+            raise ValueError("fresh provider health observation is required")
+        checked, completed = (_parse_utc(health.get("checked_at")), _parse_utc(raw.get("observed_at")))
+        now = datetime.now(timezone.utc)
+        ttl = int(receipt.get("health_ttl_s", DEFAULT_HEALTH_TTL_S))
+        if (checked is None or completed is None or ttl <= 0 or checked > completed or completed > now
+                or (now - checked).total_seconds() > ttl):
+            raise ValueError("provider health observation is stale or has an invalid clock")
+        envelope.update(health=HEALTH_HEALTHY, checked_at=health["checked_at"])
+    print(json.dumps(envelope, indent=2, sort_keys=True))
     return 0
 
 
