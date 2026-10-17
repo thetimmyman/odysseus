@@ -22,14 +22,14 @@ from fastapi import HTTPException
 
 from src.auth_helpers import require_admin_cookie
 from src.canonical_inspector_admission import (
-    InspectorUnavailable, PreparedTmosWork, Principal, Publication, UnknownInspection,
+    InspectorUnavailable, Principal, Publication, UnknownInspection,
 )
 from src.constants import (
     CANONICAL_INSPECTOR_ARTIFACTS, CANONICAL_INSPECTOR_BLOB_BYTES,
     CANONICAL_INSPECTOR_BUNDLE_BYTES, CANONICAL_INSPECTOR_READ_SECONDS,
     CANONICAL_INSPECTOR_RESPONSE_BYTES, CANONICAL_INSPECTOR_TOTAL_BLOB_BYTES,
     CANONICAL_PILOT_DISCLOSURE_GENERATION, CANONICAL_PILOT_ID,
-    CANONICAL_TMOS_DISCLOSURE_GENERATION,
+    CANONICAL_TMOS_DISCLOSURE_GENERATION, CANONICAL_TMOS_PACKET_IDS,
     EVIDENCE_BLOB_DIRNAME,
 )
 from src.evidence_io import read_retained_evidence_bundle
@@ -41,6 +41,19 @@ READ_LIMITS = dict(max_bundle_bytes=CANONICAL_INSPECTOR_BUNDLE_BYTES,
                    max_total_blob_bytes=CANONICAL_INSPECTOR_TOTAL_BLOB_BYTES,
                    max_artifacts=CANONICAL_INSPECTOR_ARTIFACTS,
                    max_read_seconds=CANONICAL_INSPECTOR_READ_SECONDS)
+
+
+def _package_in_disclosure_scope(package, generation):
+    """A stored generation label cannot widen its packet/project namespace."""
+    if type(package) is not dict:
+        return False
+    if generation == CANONICAL_PILOT_DISCLOSURE_GENERATION:
+        return package.get("packet_id") == CANONICAL_PILOT_ID
+    if generation == CANONICAL_TMOS_DISCLOSURE_GENERATION:
+        return (package.get("packet_id") in CANONICAL_TMOS_PACKET_IDS
+                and type(package.get("ticket_key")) is str
+                and re.fullmatch(r"TMOS-[1-9][0-9]*", package["ticket_key"]) is not None)
+    return False
 
 
 def request_principal(request):
@@ -282,6 +295,7 @@ class InspectorService:
                     or package.get("package_hash") != publication.package_hash
                     or package.get("run_id") != publication.run_id
                     or package.get("packet_id") != publication.packet_id
+                    or not _package_in_disclosure_scope(package, self._generation)
                     or len(attempts) != 1
                     or attempts[0].get("dispatch_receipt_hash") != publication.dispatch_hash):
                 raise UnknownInspection("inspection unavailable")
@@ -366,9 +380,7 @@ class InspectorService:
                 or package.get("run_id") != prepared.run_id
                 or package.get("packet_id") != prepared.packet_id):
             raise InspectorUnavailable("inspector unavailable")
-        if type(prepared) is PreparedTmosWork and (
-                type(package.get("ticket_key")) is not str
-                or re.fullmatch(r"TMOS-[1-9][0-9]*", package["ticket_key"]) is None):
+        if not _package_in_disclosure_scope(package, self._generation):
             raise InspectorUnavailable("inspector unavailable")
         # The same canonical projector verifies exact inner receipt joins for
         # both adapters. It grants no ownership or lifecycle authority.
