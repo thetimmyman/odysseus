@@ -200,6 +200,28 @@ served template/options, host baseline, and stable container identity. It makes
 no inference calls. Artifact/image-bound catalog facts and uncollected host
 libraries remain explicitly labelled. Proxies and redirects are refused.
 
+For a liveness-only observation, opt in to the same collector's strict mode:
+
+```sh
+umask 077
+python -m src.local_target_identity --receipt current-receipt.json \
+  --config private-collector.json --health-observation > private-observation.json
+scripts/odysseus-capability --store existing-capability-store refresh private-observation.json
+```
+
+This mode adds the canonical `health` field required by `refresh`. Its
+`checked_at` is the time of the successful, matching bound-provider metadata
+response, before the final artifact/container conservation checks. Slow final
+checks cannot move that clock forward. Missing, unsuccessful, stale,
+future-dated or inconsistent health observations, and material identity drift,
+refuse without an output envelope. The receipt's liveness TTL remains
+authoritative. Default identity inspection remains available to explain drift.
+The collector does not write the capability store, register or activate a
+profile, or perform inference. Refreshing liveness preserves semantic
+observation time and TTL; an expired qualification remains expired. Select the
+existing owning store and registry explicitly, and preserve other consumers'
+active profiles before considering any separate adoption operation.
+
 Collection brackets two sequential context/tool trials. Both trials must recall
 the exact first, middle and last values, return the expected single tool call,
 finish completely, and report at least 4096 prompt tokens. The returned tool is
