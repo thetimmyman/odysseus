@@ -57,7 +57,7 @@ def alternate_context(store, tmp_path, *, hosted_b=False):
     view = work.service.inspect(work.owner, published["handle"], lambda: work.owner)
     estate, capabilities, now, profiles = routing_inputs(tmp_path, hosted_b=hosted_b)
     preference = store.request_alternate(work.owner, published["handle"], "tmos-routing-inspector-v1",
-        view["dispatch_receipt_hash"], profiles[1].profile_id, "operator preference", "one")
+        view["dispatch_receipt_hash"], profiles[1].profile_id, "operator preference", "one", mission_key="TMOS-11")
     package = replace(work.package, run_id="next-owned-run")
     package = replace(package, package_hash=compute_package_hash(package.core()))
     request = routing.RoutingRequest(
@@ -79,7 +79,7 @@ def test_alternate_request_is_durable_owned_intent_without_invented_dispatch(nat
     published = work.service.publish_tmos_work(work.owner, work.claim, work.execution, lambda: work.owner)
     view = work.service.inspect(work.owner, published["handle"], lambda: work.owner)
     request = store.request_alternate(work.owner, published["handle"], "tmos-routing-inspector-v1",
-        view["dispatch_receipt_hash"], "another-profile", "independent eligible target", "request-one")
+        view["dispatch_receipt_hash"], "another-profile", "independent eligible target", "request-one", mission_key="TMOS-11")
     assert request["action"] == "prefer_eligible_target"
     assert request["requested_profile_id"] == "another-profile"
     assert request["status"] == "REQUESTED"
@@ -98,11 +98,13 @@ def test_preference_replay_cannot_change_target_reason_or_action(native_store, t
     published = work.service.publish_tmos_work(work.owner, work.claim, work.execution, lambda: work.owner)
     view = work.service.inspect(work.owner, published["handle"], lambda: work.owner)
     arguments = (work.owner, published["handle"], "tmos-routing-inspector-v1", view["dispatch_receipt_hash"])
-    receipt = store.request_alternate(*arguments, "another-profile", "reason", "one")
-    assert store.request_alternate(*arguments, "another-profile", "reason", "one") == receipt
+    receipt = store.request_alternate(*arguments, "another-profile", "reason", "one", mission_key="TMOS-11")
+    assert store.request_alternate(*arguments, "another-profile", "reason", "one", mission_key="TMOS-11") == receipt
     for profile, reason in (("different-profile", "reason"), ("another-profile", "changed reason")):
         with pytest.raises(UnknownInspection):
-            store.request_alternate(*arguments, profile, reason, "one")
+            store.request_alternate(*arguments, profile, reason, "one", mission_key="TMOS-11")
+    with pytest.raises(UnknownInspection):
+        store.request_alternate(*arguments, "another-profile", "reason", "one", mission_key="TMOS-99")
     with pytest.raises(UnknownInspection):
         store.request_escalation(*arguments, "reason", "one")
 
@@ -121,10 +123,10 @@ def test_foreign_and_mismatched_alternate_requests_do_not_touch_canonical_decisi
             (work.owner, "public-uppercase-v1", view["dispatch_receipt_hash"])):
         with pytest.raises(UnknownInspection):
             store.request_alternate(owner, published["handle"], generation, dispatch_hash,
-                                    "another-profile", "reason", "refused")
+                                    "another-profile", "reason", "refused", mission_key="TMOS-11")
     assert store.interventions(work.owner, published["handle"], "tmos-routing-inspector-v1") == []
     store.request_alternate(work.owner, published["handle"], "tmos-routing-inspector-v1",
-                            view["dispatch_receipt_hash"], "another-profile", "reason", "one")
+                            view["dispatch_receipt_hash"], "another-profile", "reason", "one", mission_key="TMOS-11")
     after = work.service.inspect(work.owner, published["handle"], lambda: work.owner)
     assert after["routing"] == view["routing"]
     assert after["dispatch_receipt_hash"] == view["dispatch_receipt_hash"]
@@ -346,6 +348,7 @@ def execute_alternate_source(store, work, *, wrong_profile=False):
     assert result.attempts[0].dispatch_receipt_hash == bound.decision.receipt_hash
     path = retain_evidence_bundle(work.service._root, result.evidence_package, artifacts=result.artifacts)
     return SimpleNamespace(claim=claim, preference=preference, result=result, bound=bound,
+        pending=store.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1"),
         execution=PilotExecution(path.stem, result.attempts[0].receipt_hash, True))
 
 
@@ -379,6 +382,10 @@ def test_alternate_result_joins_owned_request_new_decision_and_actual_retained_a
     assert applied[0]["resulting_dispatch_receipt_hash"] == new["dispatch_receipt_hash"]
     assert applied[0]["resulting_attempt_receipt_hash"] == new["attempt_receipt_hash"]
     assert applied[0]["resulting_handle"] == published["handle"]
+    claimed = [row for row in original["interventions"] if row["status"] == "CLAIMED"]
+    assert len(claimed) == 1
+    assert claimed[0]["mission_key"] == applied[0]["mission_key"] == new["mission_key"] == "TMOS-11"
+    assert applied[0]["invocation_receipt_hash"] == claimed[0]["receipt_hash"]
     reopened = AdmissionStore(sessionmaker(bind=engine, expire_on_commit=False))
     assert reopened.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1") == original["interventions"]
 
@@ -410,7 +417,7 @@ def test_uncertain_or_mismatched_alternate_never_records_application_or_releases
             work.service.publish_tmos_alternate(owner, work.published["handle"], request_hash,
                 alternate.claim, result, lambda: owner)
     if failure != "revoked":
-        assert store.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1") == [alternate.preference]
+        assert store.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1") == alternate.pending
     with pytest.raises(InspectorUnavailable):
         store.admit_tmos_work(work.owner, "another", PreparedTmosWork(
             "another-run", work.package.packet_id, "a" * 64, "c" * 64))
@@ -433,7 +440,7 @@ def test_result_write_failure_rolls_back_the_new_locator_and_keeps_the_started_c
         work.service.publish_tmos_alternate(work.owner, work.published["handle"],
             alternate.preference["receipt_hash"], alternate.claim, alternate.execution, lambda: work.owner)
     event.remove(engine, "before_cursor_execute", fail_result)
-    assert store.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1") == [alternate.preference]
+    assert store.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1") == alternate.pending
     # Same completed source result, no provider re-execution. An orphaned
     # committed locator would make this exact one-use publication refuse.
     published = work.service.publish_tmos_alternate(work.owner, work.published["handle"],
@@ -468,3 +475,70 @@ def test_default_alternate_endpoint_remains_unavailable_and_real_cookie_gated(tm
     assert client.post(path, json={}).status_code == 403
     assert client.post(path, json={}, headers={"x-test-user": "admin", "x-test-bearer": "yes"}).status_code == 403
     assert client.post(path, json={}, headers={"x-test-user": "admin"}).status_code == 503
+
+
+def test_unpublished_request_stays_spent_after_store_reopen(native_store, tmp_path):
+    from sqlalchemy.orm import sessionmaker
+    from src.canonical_inspector_admission import AdmissionStore, InspectorUnavailable, PreparedTmosWork
+
+    store, engine = native_store
+    work = two_target_work(store, tmp_path)
+    alternate = execute_alternate_source(store, work)
+    store.release_terminal(alternate.claim, cleanup_confirmed=True)
+    reopened = AdmissionStore(sessionmaker(bind=engine, expire_on_commit=False))
+    assert reopened.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1") == alternate.pending
+    claim = reopened.admit_tmos_work(work.owner, "after-restart", PreparedTmosWork(
+        "after-restart-run", work.package.packet_id, "a" * 64, "c" * 64))
+    reopened.consume(claim, work.owner)
+    with pytest.raises(InspectorUnavailable):
+        reopened.begin_tmos_alternate(claim, work.owner, work.published["handle"], alternate.preference["receipt_hash"])
+
+
+def test_pending_alternate_reserves_its_immutable_result_position(native_store, tmp_path):
+    from src.canonical_inspector_admission import UnknownInspection
+
+    store, _ = native_store
+    work = two_target_work(store, tmp_path)
+    alternate = execute_alternate_source(store, work)
+    for number in range(61):
+        store.request_escalation(work.owner, work.published["handle"], "tmos-routing-inspector-v1",
+            alternate.preference["original_dispatch_receipt_hash"], "synthetic review", f"review-{number}")
+    with pytest.raises(UnknownInspection):
+        store.request_escalation(work.owner, work.published["handle"], "tmos-routing-inspector-v1",
+            alternate.preference["original_dispatch_receipt_hash"], "synthetic overflow", "overflow")
+    published = work.service.publish_tmos_alternate(work.owner, work.published["handle"],
+        alternate.preference["receipt_hash"], alternate.claim, alternate.execution, lambda: work.owner)
+    rows = store.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1")
+    assert len(rows) == 64
+    assert next(row for row in rows if row["status"] == "APPLIED")["resulting_handle"] == published["handle"]
+
+
+def test_failed_claim_persistence_keeps_custody_and_never_acknowledges_start(native_store, tmp_path):
+    from sqlalchemy import event
+    from src.canonical_inspector_admission import InspectorUnavailable, PreparedTmosWork
+
+    store, engine = native_store
+    work = two_target_work(store, tmp_path)
+    view = work.service.inspect(work.owner, work.published["handle"], lambda: work.owner)
+    preference = work.service.request_alternate(work.owner, work.published["handle"],
+        view["dispatch_receipt_hash"], work.profiles[1].profile_id, "another eligible target", "one",
+        lambda: work.owner)["receipt"]
+    prepared = PreparedTmosWork("claim-failure-run", work.package.packet_id, "a" * 64, "c" * 64)
+    claim = store.admit_tmos_work(work.owner, "claim-failure", prepared)
+    store.consume(claim, work.owner)
+
+    def fail_claim(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith("INSERT INTO canonical_inspector_intervention"):
+            raise OSError("synthetic claim write failure")
+
+    event.listen(engine, "before_cursor_execute", fail_claim)
+    with pytest.raises(InspectorUnavailable):
+        store.begin_tmos_alternate(claim, work.owner, work.published["handle"], preference["receipt_hash"])
+    event.remove(engine, "before_cursor_execute", fail_claim)
+    with pytest.raises(InspectorUnavailable):
+        store.begin_tmos_alternate(claim, work.owner, work.published["handle"], preference["receipt_hash"])
+    with pytest.raises(InspectorUnavailable):
+        store.tmos_alternate_origin(claim, work.owner)
+    assert store.interventions(work.owner, work.published["handle"], "tmos-routing-inspector-v1") == [preference]
+    with pytest.raises(InspectorUnavailable):
+        store.admit_tmos_work(work.owner, "second-claim", replace(prepared, run_id="second-claim-run"))

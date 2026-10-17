@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import re
 import threading
 import uuid
 
@@ -257,6 +258,7 @@ class _DispatchClaim:
         self._store = store
         self._execution_started = False
         self._alternate_of = None
+        self._alternate_claim_hash = None
 
     def __reduce__(self):
         raise TypeError("dispatch claims cannot be serialized")
@@ -378,11 +380,44 @@ class AdmissionStore:
                 or claim._prepared.packet_id != original.packet_id or claim._prepared.run_id == original.run_id
                 or any(row.get("operator_request_receipt_hash") == request_hash for row in receipts)):
             raise InspectorUnavailable("inspector unavailable")
-        return self._begin_execution(claim, alternate_of=(original_handle, requests[0]))
+        prepared = self._begin_execution(claim, alternate_of=(original_handle, requests[0]))
+        # Mark local custody before COMMIT. Uncertain persistence must never
+        # return a reusable invocation or silently recover it after restart.
+        try:
+            with self._sessions() as session:
+                self._qualified_connection(session)
+                row = session.execute(self._owned_query(owner, original_handle,
+                    CANONICAL_TMOS_DISCLOSURE_GENERATION)).mappings().one_or_none()
+                if row is None:
+                    raise InspectorUnavailable("inspector unavailable")
+                rows = session.execute(select(interventions.c.receipt).where(
+                    interventions.c.publication_id == row["id"]).limit(65)).scalars().all()
+                receipts = [json.loads(value) for value in rows]
+                request = requests[0]
+                if (len(receipts) >= 63 or request not in receipts
+                        or any(value.get("operator_request_receipt_hash") == request_hash for value in receipts)):
+                    raise InspectorUnavailable("inspector unavailable")
+                receipt = {
+                    "schema": "operator-intervention-claim-v1", "action": "prefer_eligible_target", "status": "CLAIMED",
+                    "actor": owner.auth_key, "account_epoch": owner.account_epoch, "recorded_at": _now(),
+                    "operator_request_receipt_hash": request_hash, "mission_key": request["mission_key"],
+                    "original_dispatch_receipt_hash": request["original_dispatch_receipt_hash"],
+                    "attempt_receipt_hash": request["attempt_receipt_hash"], "packet_id": prepared.packet_id,
+                    "run_id": prepared.run_id, "execution_package_hash": prepared.package_hash,
+                }
+                receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+                session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=row["id"],
+                    idempotency_key="claim:" + request_hash, receipt=json.dumps(receipt)))
+                session.commit()
+        except (SQLAlchemyError, OSError, ValueError, TypeError, KeyError):
+            raise InspectorUnavailable("inspector unavailable") from None
+        claim._alternate_claim_hash = receipt["receipt_hash"]
+        return prepared
 
     def tmos_alternate_origin(self, claim, owner):
         self.tmos_origin(claim, owner)
-        if claim._alternate_of is None:
+        if claim._alternate_of is None or not _digest(claim._alternate_claim_hash):
             raise InspectorUnavailable("inspector unavailable")
         return claim._alternate_of
 
@@ -447,13 +482,14 @@ class AdmissionStore:
                 values = self._event_values(origin, owner, publication, handle=handle)
                 session.execute(insert(events).values(**values))
                 if alternate_of is not None:
-                    self._append_alternate_result(session, owner, origin, publication, handle, alternate_of)
+                    self._append_alternate_result(session, owner, origin, publication, handle, alternate_of,
+                                                  claim._alternate_claim_hash)
                 session.commit()
         except (SQLAlchemyError, OSError):
             raise InspectorUnavailable("inspector unavailable") from None
         return handle
 
-    def _append_alternate_result(self, session, owner, origin, publication, handle, alternate_of):
+    def _append_alternate_result(self, session, owner, origin, publication, handle, alternate_of, claim_hash):
         """Commit the application audit and new locator in the same transaction.
 
         Canonical evidence validation belongs to the service before this
@@ -469,17 +505,25 @@ class AdmissionStore:
         rows = session.execute(select(interventions.c.receipt).where(
             interventions.c.publication_id == original["id"]).limit(65)).scalars().all()
         receipts = [json.loads(row) for row in rows]
+        claims = [row for row in receipts if row.get("receipt_hash") == claim_hash
+                  and row.get("schema") == "operator-intervention-claim-v1" and row.get("status") == "CLAIMED"
+                  and row.get("operator_request_receipt_hash") == request["receipt_hash"]
+                  and row.get("run_id") == origin["run_id"]
+                  and row.get("execution_package_hash") == origin["package_hash"]]
         if (len(receipts) >= 64 or request not in receipts
                 or request.get("action") != "prefer_eligible_target" or request.get("status") != "REQUESTED"
                 or request.get("actor") != owner.auth_key or request.get("account_epoch") != owner.account_epoch
                 or request.get("original_dispatch_receipt_hash") != original["dispatch_hash"]
                 or request.get("attempt_receipt_hash") != original["attempt_hash"]
-                or any(row.get("operator_request_receipt_hash") == request["receipt_hash"] for row in receipts)):
+                or len(claims) != 1
+                or any(row.get("operator_request_receipt_hash") == request["receipt_hash"]
+                       and row.get("status") == "APPLIED" for row in receipts)):
             raise InspectorUnavailable("inspector unavailable")
         receipt = {
             "schema": "operator-intervention-result-v1", "action": "prefer_eligible_target", "status": "APPLIED",
             "actor": owner.auth_key, "account_epoch": owner.account_epoch, "recorded_at": _now(),
             "operator_request_receipt_hash": request["receipt_hash"],
+            "invocation_receipt_hash": claim_hash, "mission_key": request["mission_key"],
             "original_dispatch_receipt_hash": original["dispatch_hash"], "attempt_receipt_hash": original["attempt_hash"],
             "requested_profile_id": request["requested_profile_id"], "packet_id": origin["packet_id"],
             "resulting_run_id": origin["run_id"], "resulting_handle": handle,
@@ -537,7 +581,7 @@ class AdmissionStore:
         return self._request_intervention(owner, handle, generation, dispatch_hash, reason, key,
                                           action="require_escalation")
 
-    def request_alternate(self, owner, handle, generation, dispatch_hash, profile_id, reason, key):
+    def request_alternate(self, owner, handle, generation, dispatch_hash, profile_id, reason, key, *, mission_key):
         """Record an owned preference; the fresh canonical selector still decides.
 
         A recorded request neither creates a decision/attempt nor grants
@@ -545,13 +589,15 @@ class AdmissionStore:
         """
         if (generation != CANONICAL_TMOS_DISCLOSURE_GENERATION
                 or type(profile_id) is not str or not profile_id.strip()
-                or len(profile_id.encode("utf-8")) > 1024):
+                or len(profile_id.encode("utf-8")) > 1024
+                or type(mission_key) is not str or re.fullmatch(r"TMOS-[1-9][0-9]*", mission_key) is None):
             raise UnknownInspection("inspection unavailable")
         return self._request_intervention(owner, handle, generation, dispatch_hash, reason, key,
-                                          action="prefer_eligible_target", requested_profile_id=profile_id)
+                                          action="prefer_eligible_target", requested_profile_id=profile_id,
+                                          mission_key=mission_key)
 
     def _request_intervention(self, owner, handle, generation, dispatch_hash, reason, key,
-                              *, action, requested_profile_id=None):
+                              *, action, requested_profile_id=None, mission_key=None):
         if (type(reason) is not str or not reason.strip() or len(reason.encode()) > 1024
                 or type(key) is not str or not 0 < len(key.encode()) <= 128):
             raise UnknownInspection("inspection unavailable")
@@ -566,18 +612,21 @@ class AdmissionStore:
                     interventions.c.publication_id == row["id"], interventions.c.idempotency_key == key)).scalar_one_or_none()
                 if existing is not None:
                     receipt = json.loads(existing)
-                    if (receipt["reason"] != reason or receipt.get("action") != action
-                            or receipt.get("requested_profile_id") != requested_profile_id):
+                    if (receipt.get("reason") != reason or receipt.get("action") != action
+                            or receipt.get("requested_profile_id") != requested_profile_id
+                            or receipt.get("mission_key") != mission_key):
                         raise UnknownInspection("inspection unavailable")
                     return receipt
                 rows = session.execute(select(interventions.c.receipt).where(
                     interventions.c.publication_id == row["id"]).limit(64)).all()
                 receipts = [json.loads(item[0]) for item in rows]
-                applied = {item.get("operator_request_receipt_hash") for item in receipts}
-                pending = sum(item.get("action") == "prefer_eligible_target" and item.get("status") == "REQUESTED"
-                              and item.get("receipt_hash") not in applied for item in receipts)
-                # Keep one append-only result position for each pending run.
-                if len(rows) + pending + (2 if action == "prefer_eligible_target" else 1) > 64:
+                applied = {item.get("operator_request_receipt_hash") for item in receipts if item.get("status") == "APPLIED"}
+                claimed = {item.get("operator_request_receipt_hash") for item in receipts if item.get("status") == "CLAIMED"}
+                pending = sum(1 if item.get("receipt_hash") in claimed else 2 for item in receipts
+                              if item.get("action") == "prefer_eligible_target" and item.get("status") == "REQUESTED"
+                              and item.get("receipt_hash") not in applied)
+                # Reserve immutable claim and result positions for pending work.
+                if len(rows) + pending + (3 if action == "prefer_eligible_target" else 1) > 64:
                     raise UnknownInspection("inspection unavailable")
                 receipt = {"schema": "operator-intervention-request-v1", "action": action,
                            "actor": owner.auth_key, "account_epoch": owner.account_epoch,
@@ -588,6 +637,7 @@ class AdmissionStore:
                            "resulting_dispatch_receipt_hash": None}
                 if requested_profile_id is not None:
                     receipt["requested_profile_id"] = requested_profile_id
+                    receipt["mission_key"] = mission_key
                 receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
                     separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
                 session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=row["id"],

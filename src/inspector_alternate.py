@@ -29,6 +29,8 @@ def _preference(record, actor, request):
                 or copied.get("actor") != actor.auth_key or copied.get("account_epoch") != actor.account_epoch
                 or copied.get("packet_id") not in CANONICAL_TMOS_PACKET_IDS
                 or copied.get("packet_id") != request.packet_id
+                or type(copied.get("mission_key")) is not str
+                or re.fullmatch(r"TMOS-[1-9][0-9]*", copied["mission_key"]) is None
                 or copied.get("resulting_dispatch_receipt_hash") is not None
                 or type(copied.get("requested_profile_id")) is not str
                 or not copied["requested_profile_id"].strip()

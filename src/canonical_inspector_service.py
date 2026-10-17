@@ -308,6 +308,8 @@ class InspectorService:
                                       attempt_receipt_hash=publication.attempt_hash,
                                       now=datetime.now(timezone.utc))
             result = _minimized_projection(projected, publication)
+            if self._generation == CANONICAL_TMOS_DISCLOSURE_GENERATION:
+                result["mission_key"] = package["ticket_key"]
             # New session/transaction inside resolve: never a stale ORM map or
             # the original long-lived SQLite snapshot after a slow file read.
             if self._store.resolve(owner, handle, self._generation) != publication:
@@ -349,7 +351,8 @@ class InspectorService:
             raise UnknownInspection("inspection unavailable")
         _reauthorize(owner, reauthorize)
         receipt = self._store.request_alternate(owner, handle, self._generation,
-                                                dispatch_hash, profile_id, reason, key)
+                                                dispatch_hash, profile_id, reason, key,
+                                                mission_key=current["mission_key"])
         _reauthorize(owner, reauthorize)
         return {"status": "REQUESTED", "receipt": receipt}
 
@@ -451,6 +454,7 @@ class InspectorService:
                     or authority.get("original_dispatch_receipt_hash") != request["original_dispatch_receipt_hash"]
                     or authority.get("original_attempt_receipt_hash") != request["attempt_receipt_hash"]
                     or package["packet_id"] != request["packet_id"] or package["run_id"] == request["run_id"]
+                    or package["ticket_key"] != request["mission_key"]
                     or len(selected) != 1 or selected[0].get("profile_id") != request["requested_profile_id"]
                     or result.attempt_hash == request["attempt_receipt_hash"]
                     or dispatch["receipt_hash"] == request["original_dispatch_receipt_hash"]):
