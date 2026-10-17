@@ -29,9 +29,9 @@ def _candidate(package, revision):
     return _finalize(core).to_dict()
 
 
-def _chain(*, retry=False, package=None):
+def _chain(*, retry=False, package=None, bound=None):
     package = _package() if package is None else package
-    bound = _bound(package)
+    bound = _bound(package) if bound is None else bound
     state = {"source": package.source.to_dict()}
 
     def worker(dispatch, context, number, budget):
