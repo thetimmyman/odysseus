@@ -1960,6 +1960,16 @@ class CalendarEvent(TimestampMixin, Base):
     # vanishes upstream). NULL/local = created locally (agent, email triage, or
     # a UI event whose write-back failed) and must NOT be pruned by the sync.
     origin      = Column(String, nullable=True, index=True)
+    # Recurring-series bookkeeping, written by the CalDAV pull (see
+    # src/recurrence.py). On a series master: `exdate` holds the excluded
+    # occurrence keys (comma-joined) and `tzid` the IANA zone the series repeats
+    # in (so a weekly 15:30 stays 15:30 across DST). On a RECURRENCE-ID override
+    # row: `series_uid` is the master's UID and `recurrence_id` the key of the
+    # occurrence it replaces. All NULL/empty on ordinary events.
+    exdate        = Column(Text, default="")
+    tzid          = Column(String, nullable=True)
+    series_uid    = Column(String, nullable=True, index=True)
+    recurrence_id = Column(String, nullable=True)
 
     calendar = relationship("CalendarCal", back_populates="events")
 
@@ -2098,6 +2108,7 @@ def init_db():
     _migrate_add_calendar_is_utc()
     _migrate_add_calendar_origin()
     _migrate_add_calendar_account_id()
+    _migrate_add_calendar_recurrence()
     _migrate_chat_messages_fts()
     _migrate_encrypt_email_passwords()
     _migrate_encrypt_signatures()
@@ -2377,6 +2388,37 @@ def _migrate_add_calendar_account_id():
         conn.close()
     except Exception as e:
         logging.getLogger(__name__).warning(f"calendars.account_id migration failed: {e}")
+
+
+def _migrate_add_calendar_recurrence():
+    """Add the recurring-series columns to calendar_events (exdate, tzid,
+    series_uid, recurrence_id) so the CalDAV pull can keep a series master with
+    its EXDATEs and store each RECURRENCE-ID override as its own row instead of
+    overwriting the master. Idempotent; existing rows keep NULL/empty values and
+    behave as before until the next sync rewrites them."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(calendar_events)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns:
+            for name, ddl in (
+                ("exdate", "TEXT DEFAULT ''"),
+                ("tzid", "TEXT"),
+                ("series_uid", "TEXT"),
+                ("recurrence_id", "TEXT"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE calendar_events ADD COLUMN {name} {ddl}")
+                    logging.getLogger(__name__).info(f"Migrated: added '{name}' column to calendar_events")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_calendar_events_series_uid ON calendar_events(series_uid)")
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"calendar_events recurrence migration failed: {e}")
 
 
 def _migrate_add_calendar_metadata():
