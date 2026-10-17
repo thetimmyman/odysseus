@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import time
 import uuid
@@ -28,6 +29,7 @@ from src.constants import (
     CANONICAL_INSPECTOR_BUNDLE_BYTES, CANONICAL_INSPECTOR_READ_SECONDS,
     CANONICAL_INSPECTOR_RESPONSE_BYTES, CANONICAL_INSPECTOR_TOTAL_BLOB_BYTES,
     CANONICAL_PILOT_DISCLOSURE_GENERATION, CANONICAL_PILOT_ID,
+    CANONICAL_TMOS_DISCLOSURE_GENERATION, CANONICAL_TMOS_PACKET_IDS,
     EVIDENCE_BLOB_DIRNAME,
 )
 from src.evidence_io import read_retained_evidence_bundle
@@ -39,6 +41,19 @@ READ_LIMITS = dict(max_bundle_bytes=CANONICAL_INSPECTOR_BUNDLE_BYTES,
                    max_total_blob_bytes=CANONICAL_INSPECTOR_TOTAL_BLOB_BYTES,
                    max_artifacts=CANONICAL_INSPECTOR_ARTIFACTS,
                    max_read_seconds=CANONICAL_INSPECTOR_READ_SECONDS)
+
+
+def _package_in_disclosure_scope(package, generation):
+    """A stored generation label cannot widen its packet/project namespace."""
+    if type(package) is not dict:
+        return False
+    if generation == CANONICAL_PILOT_DISCLOSURE_GENERATION:
+        return package.get("packet_id") == CANONICAL_PILOT_ID
+    if generation == CANONICAL_TMOS_DISCLOSURE_GENERATION:
+        return (package.get("packet_id") in CANONICAL_TMOS_PACKET_IDS
+                and type(package.get("ticket_key")) is str
+                and re.fullmatch(r"TMOS-[1-9][0-9]*", package["ticket_key"]) is not None)
+    return False
 
 
 def request_principal(request):
@@ -268,7 +283,8 @@ class InspectorService:
     def inspect(self, owner, handle, reauthorize):
         try:
             _reauthorize(owner, reauthorize)
-            if self._generation != CANONICAL_PILOT_DISCLOSURE_GENERATION:
+            if self._generation not in (CANONICAL_PILOT_DISCLOSURE_GENERATION,
+                                         CANONICAL_TMOS_DISCLOSURE_GENERATION):
                 raise UnknownInspection("inspection unavailable")
             publication = self._store.resolve(owner, handle, self._generation)
             payload, artifacts = self._read(self._root, publication.bundle_hash, **READ_LIMITS)
@@ -279,6 +295,7 @@ class InspectorService:
                     or package.get("package_hash") != publication.package_hash
                     or package.get("run_id") != publication.run_id
                     or package.get("packet_id") != publication.packet_id
+                    or not _package_in_disclosure_scope(package, self._generation)
                     or len(attempts) != 1
                     or attempts[0].get("dispatch_receipt_hash") != publication.dispatch_hash):
                 raise UnknownInspection("inspection unavailable")
@@ -328,33 +345,58 @@ class InspectorService:
             self._store.consume(claim, owner)
             _reauthorize(owner, reauthorize)
             result = await self._adapter.execute(claim)
-            if result.cleanup_confirmed is not True:
-                raise InspectorUnavailable("inspector unavailable")
-            ack = acknowledge_retention(self._root, result.bundle_hash, parent_directories=self._parents)
-            package = ack.payload.get("execution_package", {})
-            if (package.get("package_hash") != prepared.package_hash
-                    or package.get("run_id") != prepared.run_id
-                    or package.get("packet_id") != prepared.packet_id):
-                raise InspectorUnavailable("inspector unavailable")
-            # Read-only canonical projector validates selected inner receipt and
-            # dispatch joins; it grants no ownership or lifecycle authority.
-            self._project(ack.payload, artifacts=ack.artifacts, attempt_receipt_hash=result.attempt_hash,
-                          now=datetime.now(timezone.utc))
-            attempts = [item for item in ack.payload.get("attempt_receipts", ())
-                        if item.get("receipt_hash") == result.attempt_hash]
-            if len(attempts) != 1:
-                raise InspectorUnavailable("inspector unavailable")
-            publication = Publication(ack.bundle_hash, ack.evidence_hash, result.attempt_hash,
-                                      attempts[0]["dispatch_receipt_hash"], self._generation)
-            _reauthorize(owner, reauthorize)
-            handle = self._store.publish(claim, owner, publication)
-            self._store.release_terminal(claim, cleanup_confirmed=True)
-            _reauthorize(owner, reauthorize)
-            return {"handle": handle, "status": "retained"}
+            return self._publish_prepared(owner, claim, prepared, result, reauthorize)
         finally:
             # Replayed/failed preparation cannot accumulate process-local state.
             # A committed uncertain claim remains held in its native store.
             self._adapter.discard(prepared)
+
+    def publish_tmos_work(self, owner, claim, result, reauthorize):
+        """Publish a normal execution owner's exact started real-work result.
+
+        This is a trusted backend interface, never an evidence-upload route.
+        A claim or cleanup field does not qualify its transport. Normal setup
+        supplies no live owner; native execution and restore qualification are
+        still required before integration.
+        """
+        _reauthorize(owner, reauthorize)
+        from src.canonical_pilot_adapter import PilotExecution
+
+        if (self._generation != CANONICAL_TMOS_DISCLOSURE_GENERATION
+                or type(result) is not PilotExecution):
+            raise InspectorUnavailable("inspector unavailable")
+        try:
+            prepared = self._store.tmos_origin(claim, owner)
+            return self._publish_prepared(owner, claim, prepared, result, reauthorize)
+        except (OSError, ValueError, TypeError, KeyError):
+            raise InspectorUnavailable("inspector unavailable") from None
+
+    def _publish_prepared(self, owner, claim, prepared, result, reauthorize):
+        if result.cleanup_confirmed is not True:
+            raise InspectorUnavailable("inspector unavailable")
+        ack = acknowledge_retention(self._root, result.bundle_hash, parent_directories=self._parents)
+        package = ack.payload.get("execution_package", {})
+        if (package.get("package_hash") != prepared.package_hash
+                or package.get("run_id") != prepared.run_id
+                or package.get("packet_id") != prepared.packet_id):
+            raise InspectorUnavailable("inspector unavailable")
+        if not _package_in_disclosure_scope(package, self._generation):
+            raise InspectorUnavailable("inspector unavailable")
+        # The same canonical projector verifies exact inner receipt joins for
+        # both adapters. It grants no ownership or lifecycle authority.
+        self._project(ack.payload, artifacts=ack.artifacts, attempt_receipt_hash=result.attempt_hash,
+                      now=datetime.now(timezone.utc))
+        attempts = [item for item in ack.payload.get("attempt_receipts", ())
+                    if item.get("receipt_hash") == result.attempt_hash]
+        if len(attempts) != 1:
+            raise InspectorUnavailable("inspector unavailable")
+        publication = Publication(ack.bundle_hash, ack.evidence_hash, result.attempt_hash,
+                                  attempts[0]["dispatch_receipt_hash"], self._generation)
+        _reauthorize(owner, reauthorize)
+        handle = self._store.publish(claim, owner, publication)
+        self._store.release_terminal(claim, cleanup_confirmed=True)
+        _reauthorize(owner, reauthorize)
+        return {"handle": handle, "status": "retained"}
 
     def revoke(self, owner, handle, reauthorize):
         _reauthorize(owner, reauthorize)
