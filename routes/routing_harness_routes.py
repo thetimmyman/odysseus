@@ -333,6 +333,24 @@ def inspector_revoke(handle: str, request: Request):
         raise HTTPException(404, "Inspection unavailable") from None
 
 
+@router.post("/inspector/attempts/{handle}/alternate")
+async def inspector_alternate(handle: str, request: Request):
+    owner = request_principal(request)
+    service = getattr(request.app.state, "canonical_inspector_service", None)
+    if service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+    try:
+        raw = await collect_bytes(request.stream(), limit=4096, seconds=5)
+        body = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+        if type(body) is not dict or set(body) != {"dispatch_receipt_hash", "profile_id", "reason", "idempotency_key"}:
+            raise ValueError("invalid request")
+        return service.request_alternate(owner, handle, body["dispatch_receipt_hash"], body["profile_id"],
+            body["reason"], body["idempotency_key"], lambda: request_principal(request))
+    except (PilotLimit, UnknownInspection, InspectorUnavailable, ValueError, TypeError, RecursionError):
+        raise HTTPException(404, "Inspection unavailable") from None
+
+
 
 def setup_routing_harness_routes():
     @router.post("/coordinator/wrap")

@@ -53,7 +53,7 @@
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
       "routes/project_files_routes.py": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
       "routes/research_routes.py": "8401bb410cfefda7841dcbeb9d2530e082fe7eb62178f366b557f122a45a9b31",
-      "routes/routing_harness_routes.py": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+      "routes/routing_harness_routes.py": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
       "routes/search_routes.py": "1510aa0e1bbf5cf537aea90406e29f95407eda507264e3d9eec09ca19fc4fb6a",
       "routes/session_routes.py": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
       "routes/shell_routes.py": "7f76cc62bd0cc663212cc31e993893be70c11fcf14b186b1477bf988ad2fec8e",
@@ -5432,7 +5432,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5453,7 +5453,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5467,13 +5467,13 @@
         "apis": [
           "routes/routing_harness_routes.py"
         ],
-        "session_state": "Diagnostic and policy panels are not inferred to be ordinary user preferences.",
+        "session_state": "Diagnostic and policy panels are not ordinary user preferences. Canonical Inspector attempts and alternate requests require the owning admin cookie session and account epoch; an alternate request records intent without starting dispatch.",
         "scope": "host-wide diagnostic/configuration context",
         "evidence": [
           {
             "path": "routes/routing_harness_routes.py",
             "line": 1,
-            "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+            "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -12878,7 +12878,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 283,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12889,7 +12889,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 295,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12900,7 +12900,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 324,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12911,8 +12911,19 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 306,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
           "claim": "Mounted bounded JSON request; immutable owner/attempt/dispatch-associated request receipt."
+        }
+      },
+      {
+        "candidate": "POST /api/harness/inspector/attempts/{handle}/alternate",
+        "type": "owned_canonical_inspector_json_api",
+        "reason": "Owner-cookie authenticated preference for another recorded eligible target; the bounded request neither starts dispatch nor refreshes evidence. Normal setup supplies no live Inspector service. No navigable HTML, asset response or browser control is added.",
+        "source": {
+          "path": "routes/routing_harness_routes.py",
+          "line": 336,
+          "sha256": "c692ed7c0b94cd5309cb3212af70e3a77de66ee5ef631d2248d8306637631ec4",
+          "claim": "Mounted bounded JSON preference; immutable owner, work-item, attempt and dispatch association."
         }
       }
     ],

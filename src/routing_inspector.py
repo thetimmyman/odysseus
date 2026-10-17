@@ -369,6 +369,7 @@ def _project_routing_mapping(
                          "network_policy": dispatch["network_policy"] or "UNKNOWN"},
             "candidates_considered": _plain(rows) if rows else "UNKNOWN",
             "fallback": _plain(selected_rows[0].get("fallback_used")) if selected_rows else "UNKNOWN",
+            "authority": _plain(dispatch.get("authority")),
         },
         "capabilities": {"status": cap_status, "references": sorted(cap_refs),
                          "supplements": selected_caps},

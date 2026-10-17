@@ -234,6 +234,11 @@ def _minimized_projection(projection, publication):
             decision["selected"]["profile_id"] = row["profile_id"]
     decision["envelope"] = fields(projection.get("dispatch", {}).get("envelope"), (
         "tools", "read_scope", "write_scope", "network_policy"))
+    authority = projection.get("dispatch", {}).get("authority")
+    if type(authority) is dict and authority.get("action") == "prefer_eligible_target":
+        decision["operator_action"] = fields(authority, (
+            "action", "acting_principal", "operator_request_receipt_hash",
+            "original_dispatch_receipt_hash", "original_attempt_receipt_hash"))
     capabilities = {"status": observation_status("capabilities"), "supplements": []}
     for row in projection.get("capabilities", {}).get("supplements", []):
         capabilities["supplements"].append(fields(row, (
@@ -303,6 +308,8 @@ class InspectorService:
                                       attempt_receipt_hash=publication.attempt_hash,
                                       now=datetime.now(timezone.utc))
             result = _minimized_projection(projected, publication)
+            if self._generation == CANONICAL_TMOS_DISCLOSURE_GENERATION:
+                result["mission_key"] = package["ticket_key"]
             # New session/transaction inside resolve: never a stale ORM map or
             # the original long-lived SQLite snapshot after a slow file read.
             if self._store.resolve(owner, handle, self._generation) != publication:
@@ -323,6 +330,29 @@ class InspectorService:
         _reauthorize(owner, reauthorize)
         receipt = self._store.request_escalation(owner, handle, self._generation,
                                                 dispatch_hash, reason, key)
+        _reauthorize(owner, reauthorize)
+        return {"status": "REQUESTED", "receipt": receipt}
+
+    def request_alternate(self, owner, handle, dispatch_hash, profile_id, reason, key, reauthorize):
+        """Record owned intent for another recorded eligible target.
+
+        Recorded eligibility is descriptive. The execution owner must select
+        again with current canonical evidence before invoking any provider.
+        """
+        current = self.inspect(owner, handle, reauthorize)
+        candidates = current["routing"]["candidates"]
+        selected = current["routing"]["decision"]["selected"].get("profile_id")
+        if (self._generation != CANONICAL_TMOS_DISCLOSURE_GENERATION
+                or current["dispatch_receipt_hash"] != dispatch_hash
+                or type(profile_id) is not str or type(candidates) is not list
+                or type(selected) is not str or selected == profile_id
+                or not any(row["profile_id"] == profile_id and row["eligible"] is True
+                           and row["selected"] is not True for row in candidates)):
+            raise UnknownInspection("inspection unavailable")
+        _reauthorize(owner, reauthorize)
+        receipt = self._store.request_alternate(owner, handle, self._generation,
+                                                dispatch_hash, profile_id, reason, key,
+                                                mission_key=current["mission_key"])
         _reauthorize(owner, reauthorize)
         return {"status": "REQUESTED", "receipt": receipt}
 
@@ -371,7 +401,26 @@ class InspectorService:
         except (OSError, ValueError, TypeError, KeyError):
             raise InspectorUnavailable("inspector unavailable") from None
 
-    def _publish_prepared(self, owner, claim, prepared, result, reauthorize):
+    def publish_tmos_alternate(self, owner, original_handle, request_hash, claim, result, reauthorize):
+        """Publish an owner's actual alternate result, never a request-only ack."""
+        from src.canonical_pilot_adapter import PilotExecution
+
+        current = self.inspect(owner, original_handle, reauthorize)
+        requests = [row for row in current["interventions"] if row.get("receipt_hash") == request_hash
+                    and row.get("action") == "prefer_eligible_target" and row.get("status") == "REQUESTED"]
+        if (self._generation != CANONICAL_TMOS_DISCLOSURE_GENERATION or type(result) is not PilotExecution
+                or len(requests) != 1):
+            raise InspectorUnavailable("inspector unavailable")
+        prepared = self._store.tmos_origin(claim, owner)
+        if self._store.tmos_alternate_origin(claim, owner) != (original_handle, requests[0]):
+            raise InspectorUnavailable("inspector unavailable")
+        try:
+            return self._publish_prepared(owner, claim, prepared, result, reauthorize,
+                                          alternate_of=(original_handle, requests[0]))
+        except (OSError, ValueError, TypeError, KeyError):
+            raise InspectorUnavailable("inspector unavailable") from None
+
+    def _publish_prepared(self, owner, claim, prepared, result, reauthorize, *, alternate_of=None):
         if result.cleanup_confirmed is not True:
             raise InspectorUnavailable("inspector unavailable")
         ack = acknowledge_retention(self._root, result.bundle_hash, parent_directories=self._parents)
@@ -390,10 +439,32 @@ class InspectorService:
                     if item.get("receipt_hash") == result.attempt_hash]
         if len(attempts) != 1:
             raise InspectorUnavailable("inspector unavailable")
+        dispatches = [row for row in ack.payload.get("dispatch_receipts", ())
+                      if row.get("receipt_hash") == attempts[0]["dispatch_receipt_hash"]]
+        if len(dispatches) != 1:
+            raise InspectorUnavailable("inspector unavailable")
+        dispatch = dispatches[0]
+        authority = dispatch.get("authority") or {}
+        if alternate_of is not None:
+            request = alternate_of[1]
+            selected = [row for row in dispatch.get("candidates_considered", ()) if row.get("selected") is True]
+            if (authority.get("action") != "prefer_eligible_target"
+                    or authority.get("acting_principal") != owner.auth_key
+                    or authority.get("operator_request_receipt_hash") != request["receipt_hash"]
+                    or authority.get("original_dispatch_receipt_hash") != request["original_dispatch_receipt_hash"]
+                    or authority.get("original_attempt_receipt_hash") != request["attempt_receipt_hash"]
+                    or package["packet_id"] != request["packet_id"] or package["run_id"] == request["run_id"]
+                    or package["ticket_key"] != request["mission_key"]
+                    or len(selected) != 1 or selected[0].get("profile_id") != request["requested_profile_id"]
+                    or result.attempt_hash == request["attempt_receipt_hash"]
+                    or dispatch["receipt_hash"] == request["original_dispatch_receipt_hash"]):
+                raise InspectorUnavailable("inspector unavailable")
+        elif authority.get("action") == "prefer_eligible_target":
+            raise InspectorUnavailable("inspector unavailable")
         publication = Publication(ack.bundle_hash, ack.evidence_hash, result.attempt_hash,
                                   attempts[0]["dispatch_receipt_hash"], self._generation)
         _reauthorize(owner, reauthorize)
-        handle = self._store.publish(claim, owner, publication)
+        handle = self._store.publish(claim, owner, publication, alternate_of=alternate_of)
         self._store.release_terminal(claim, cleanup_confirmed=True)
         _reauthorize(owner, reauthorize)
         return {"handle": handle, "status": "retained"}
