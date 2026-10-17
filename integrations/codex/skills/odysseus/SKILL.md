@@ -89,8 +89,11 @@ python3 integrations/codex/scripts/odysseus_api.py POST /api/codex/memory '{"tex
 
 ## Calendar
 
-- `GET /api/codex/calendar/events?start=ISO&end=ISO` — list events in window.
+- `GET /api/codex/calendar/events?start=ISO&end=ISO` — list events in window. Recurring series are expanded to occurrences (`is_recurrence`, `series_uid`); excluded and replaced occurrences are left out.
+- `GET /api/codex/calendar/calendars` — list your calendars (`href` is the `calendar_href` to create into).
+- `POST /api/codex/calendar/sync` — pull your CalDAV accounts into Odysseus now (also runs on a timer, `CALDAV_SYNC_INTERVAL_SECONDS`). Requires `calendar:write`.
 - `POST /api/codex/calendar/events` — body matches `EventCreate` (`summary`, `dtstart`, `dtend`, `all_day`, `description`, `location`, `calendar_href`, `rrule`, `color`). Requires `calendar:write`.
+- `PUT /api/codex/calendar/events/{uid}` — body matches `EventUpdate` (any of `summary`, `dtstart`, `dtend`, `all_day`, `description`, `location`, `rrule`, `color`). Requires `calendar:write`. Edits to a synced recurring series stay local until the next sync.
 - `DELETE /api/codex/calendar/events/{uid}` — delete event by uid (the value returned in the POST response). Requires `calendar:write`.
 
 ## Documents

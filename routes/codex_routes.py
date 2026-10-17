@@ -113,6 +113,9 @@ def setup_codex_routes(
     memory_add_endpoint = _find_endpoint(memory_router, "POST", "/api/memory/add")
     calendar_list_events = _find_endpoint(calendar_router, "GET", "/api/calendar/events")
     calendar_create_event = _find_endpoint(calendar_router, "POST", "/api/calendar/events")
+    calendar_update_event = _find_endpoint(calendar_router, "PUT", "/api/calendar/events/{uid}")
+    calendar_list_calendars = _find_endpoint(calendar_router, "GET", "/api/calendar/calendars")
+    calendar_sync = _find_endpoint(calendar_router, "POST", "/api/calendar/sync")
     documents_library_endpoint = _find_endpoint(document_router, "GET", "/api/documents/library")
     documents_get_endpoint = _find_endpoint(document_router, "GET", "/api/document/{doc_id}")
     documents_create_endpoint = _find_endpoint(document_router, "POST", "/api/document")
@@ -147,7 +150,7 @@ def setup_codex_routes(
                 "calendar": {
                     "read": scoped(CALENDAR_READ_SCOPES),
                     "write": scoped(CALENDAR_WRITE_SCOPES),
-                    "actions": ["list_events", "create_event", "delete_event"],
+                    "actions": ["list_events", "create_event", "update_event", "delete_event", "list_calendars", "sync"],
                     "available": calendar_list_events is not None,
                 },
                 "documents": {
@@ -336,6 +339,35 @@ def setup_codex_routes(
         except Exception as exc:
             raise HTTPException(400, f"Invalid event payload: {exc}")
         return await _as_owner(request, owner, calendar_create_event, request, data)
+
+    @router.put("/calendar/events/{uid}")
+    async def codex_calendar_update(request: Request, uid: str, body: dict[str, Any] = Body(default_factory=dict)):
+        owner = _scope_owner(request, CALENDAR_WRITE_SCOPES)
+        if calendar_update_event is None:
+            raise HTTPException(503, "Calendar integration is not available")
+        from routes.calendar_routes import EventUpdate
+
+        try:
+            data = EventUpdate(**body)
+        except Exception as exc:
+            raise HTTPException(400, f"Invalid event payload: {exc}")
+        return await _as_owner(request, owner, calendar_update_event, request, uid, data)
+
+    @router.get("/calendar/calendars")
+    async def codex_calendar_calendars(request: Request):
+        """The caller's calendars (``href`` is the ``calendar_href`` to create into)."""
+        owner = _scope_owner(request, CALENDAR_READ_SCOPES)
+        if calendar_list_calendars is None:
+            raise HTTPException(503, "Calendar integration is not available")
+        return await _as_owner(request, owner, calendar_list_calendars, request)
+
+    @router.post("/calendar/sync")
+    async def codex_calendar_sync(request: Request):
+        """Pull the owner's CalDAV accounts into the local calendar now."""
+        owner = _scope_owner(request, CALENDAR_WRITE_SCOPES)
+        if calendar_sync is None:
+            raise HTTPException(503, "Calendar integration is not available")
+        return await _as_owner(request, owner, calendar_sync, request)
 
     # ── Documents ─────────────────────────────────────────────────────────
 

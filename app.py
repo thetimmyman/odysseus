@@ -1136,6 +1136,15 @@ async def _startup_event():
     from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
     _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
 
+    # Periodic CalDAV pull for every owner with a CalDAV account, so the local
+    # read model does not go stale between calendar opens. Interval from
+    # CALDAV_SYNC_INTERVAL_SECONDS (default 600, 0 disables); see
+    # src/caldav_sync_loop.py.
+    from src.caldav_sync_loop import start_caldav_sync_loop
+    app.state._caldav_sync_task = start_caldav_sync_loop()
+    if app.state._caldav_sync_task is not None:
+        _startup_tasks.append(app.state._caldav_sync_task)
+
     logger.info("Application startup complete")
 
 async def _shutdown_event():
@@ -1148,6 +1157,15 @@ async def _shutdown_event():
         try:
             await upload_cleanup_task
         except asyncio.CancelledError:
+            pass
+    # Stop the periodic CalDAV pull first so a pass is not cut off mid-write by
+    # the rest of shutdown.
+    _caldav_task = getattr(app.state, "_caldav_sync_task", None)
+    if _caldav_task is not None:
+        _caldav_task.cancel()
+        try:
+            await _caldav_task
+        except (asyncio.CancelledError, Exception):
             pass
     # Stop task scheduler (no-op if it never started under the gate)
     try:

@@ -13,6 +13,15 @@ from dateutil.rrule import rrulestr
 
 from core.database import SessionLocal, CalendarCal, CalendarEvent
 from src.auth_helpers import require_user
+from src.recurrence import (
+    KEY_SEP,
+    WALL_MARGIN,
+    decode_keys,
+    load_zone,
+    recurrence_key,
+    utc_naive_to_wall,
+    wall_to_utc_naive,
+)
 from src.upload_limits import read_upload_limited
 
 logger = logging.getLogger(__name__)
@@ -83,6 +92,43 @@ def _get_or_404_event(db, uid: str, owner: str) -> CalendarEvent:
     return ev
 
 
+def _get_override_event(db, uid: str, owner: str):
+    """The RECURRENCE-ID override row stored under exactly ``uid``, or None.
+
+    Override rows carry compound uids (``{series}::{key}``) that look like the
+    ids of expanded occurrences, but unlike those they are real rows holding one
+    moved or edited instance, so an edit or delete addresses the row itself and
+    not its series. Owner-gated like every other event lookup.
+    """
+    if KEY_SEP not in uid:
+        return None
+    row = db.query(CalendarEvent).filter(
+        CalendarEvent.uid == uid, CalendarEvent.series_uid.isnot(None)
+    ).first()
+    if row is None:
+        return None
+    return _get_or_404_event(db, uid, owner)
+
+
+def _series_writeback_is_lossy(db, ev: CalendarEvent) -> bool:
+    """True when pushing ``ev`` to the CalDAV server would damage a series.
+
+    Write-back replaces the remote resource with one master VEVENT in UTC. For a
+    recurring series pulled from the server that drops its EXDATEs, its
+    RECURRENCE-ID overrides (moved and cancelled instances) and its time zone,
+    which would resurrect deleted occurrences and shift the series by an hour at
+    the next DST change. Such series are edited at the source and re-pulled;
+    a local edit here stays local until the next sync overwrites it.
+    """
+    # The bookkeeping remains lossy even when an edit just cleared RRULE.
+    if (getattr(ev, "exdate", None) or "") or getattr(ev, "tzid", None):
+        return True
+    return db.query(CalendarEvent.uid).filter(
+        CalendarEvent.series_uid == ev.uid,
+        CalendarEvent.calendar_id == ev.calendar_id,
+    ).first() is not None
+
+
 def _ics_escape(text: str) -> str:
     """Escape a value for an iCalendar TEXT field (RFC 5545 §3.3.11).
 
@@ -99,6 +145,16 @@ def _ics_escape(text: str) -> str:
         .replace("\n", "\\n")
         .replace("\r", "\\n")
     )
+
+
+def _ics_recurrence_value(key: str, is_utc: bool) -> str:
+    """``[;VALUE=DATE]:value`` tail of an EXDATE / RECURRENCE-ID line for a
+    recurrence key (see src/recurrence.py): a date key is a DATE, any other
+    key a DATE-TIME that is UTC when the series is."""
+    compact = key.replace("-", "").replace(":", "")
+    if len(key) == 10:
+        return f";VALUE=DATE:{compact}"
+    return f":{compact}{'Z' if is_utc else ''}"
 
 
 def _safe_ics_filename(name: str) -> str:
@@ -474,8 +530,25 @@ def _event_to_dict(ev: CalendarEvent) -> dict:
 _RRULE_EXPANSION_LIMIT = 1000
 
 
+def _until_to_wall(rrule_str: str, zone) -> str:
+    """Rewrite a UTC ``UNTIL=...Z`` bound as local wall time in ``zone``.
+
+    A series that repeats in a zone is expanded on its wall clock, and RFC 5545
+    requires UNTIL to be UTC when DTSTART carries a TZID, so the bound has to be
+    moved onto the same clock before dateutil compares them.
+    """
+    def _repl(m):
+        try:
+            utc = datetime.strptime(m.group(1), "%Y%m%dT%H%M%S")
+        except ValueError:
+            return m.group(0)
+        return "UNTIL=" + utc_naive_to_wall(utc, zone).strftime("%Y%m%dT%H%M%S")
+
+    return re.sub(r"UNTIL=(\d{8}T\d{6})Z", _repl, rrule_str, flags=re.IGNORECASE)
+
+
 def _expand_rrule(
-    ev: CalendarEvent, start: datetime, end: datetime
+    ev: CalendarEvent, start: datetime, end: datetime, skip=()
 ) -> List[dict]:
     """Expand a single recurring CalendarEvent into occurrence dicts.
 
@@ -483,6 +556,12 @@ def _expand_rrule(
     ``{base_uid}::{date_or_datetime}`` so the frontend can tell
     occurrences apart while the series UID is still recoverable
     for edit/delete targeting.
+
+    Occurrences named by the series' EXDATEs (``ev.exdate``) or by ``skip`` (the
+    recurrence keys of RECURRENCE-ID override rows that replace them, including
+    cancelled ones) are left out; the overrides themselves are listed as their
+    own rows. A series stored with a ``tzid`` repeats on its local wall clock,
+    so a weekly 15:30 stays 15:30 across a DST change.
 
     Non-recurring events (empty rrule) are returned as a single-item
     list — the caller doesn't need to branch.
@@ -494,13 +573,24 @@ def _expand_rrule(
         # already filters non-recurring rows with the overlap check
         # in SQL, so we don't re-check here.
         d = _event_to_dict(ev)
-        d["is_recurrence"] = False
-        d["series_uid"] = ev.uid
+        # A RECURRENCE-ID override row is one instance of a series.
+        series = getattr(ev, "series_uid", None)
+        d["is_recurrence"] = bool(series)
+        d["series_uid"] = series or ev.uid
         d["truncated"] = False
         return [d]
 
+    # Series that repeat in a zone expand on that zone's wall clock.
+    zone = None
+    if not ev.all_day and getattr(ev, "is_utc", False):
+        zone = load_zone(getattr(ev, "tzid", None))
+
     # Parse the rrule, applying it to the base dtstart.
     rrule_str = ev.rrule
+    anchor = ev.dtstart
+    if zone is not None:
+        anchor = utc_naive_to_wall(ev.dtstart, zone)
+        rrule_str = _until_to_wall(rrule_str, zone)
     if ev.dtstart is not None and getattr(ev.dtstart, "tzinfo", None) is None:
         # Events are stored with a naive (UTC) dtstart, but standard .ics
         # exporters (Google/Apple/Outlook/Fastmail) write the bound as an
@@ -514,7 +604,7 @@ def _expand_rrule(
             r"(UNTIL=\d{8}(?:T\d{6})?)Z", r"\1", rrule_str, flags=_re.IGNORECASE
         )
     try:
-        rule = rrulestr(rrule_str, dtstart=ev.dtstart)
+        rule = rrulestr(rrule_str, dtstart=anchor)
     except Exception as ex:
         logger.warning(
             "Failed to parse rrule=%r for event %s: %s", ev.rrule, ev.uid, ex
@@ -530,16 +620,25 @@ def _expand_rrule(
             return [d]
         return []
 
+    # Occurrences to leave out, as recurrence keys. An all-day series matches on
+    # the date alone, whatever form the override's RECURRENCE-ID took.
+    excluded = set(decode_keys(getattr(ev, "exdate", ""))) | set(skip or ())
+    if ev.all_day:
+        excluded = {k[:10] for k in excluded}
+
     # Expand from start - duration so multi-day / overnight occurrences
     # that start before the window but end inside it are captured
     # (matching non-recurring overlap semantics: dtstart < end AND
     # dtend > start).
     expand_start = start - duration
+    if zone is not None:
+        expand_start = utc_naive_to_wall(expand_start, zone) - WALL_MARGIN
     results = []
     truncated = False
     base = _event_to_dict(ev)
 
-    for occ_start in rule.xafter(expand_start, inc=True):
+    for raw_start in rule.xafter(expand_start, inc=True):
+        occ_start = wall_to_utc_naive(raw_start, zone) if zone is not None else raw_start
         if occ_start >= end:
             break
 
@@ -549,6 +648,9 @@ def _expand_rrule(
         # This enforces exclusive-end semantics (occ_start >= end is
         # excluded) and includes multi-day crossings (occ_end > start).
         if occ_end <= start:
+            continue
+
+        if excluded and recurrence_key(occ_start, ev.all_day) in excluded:
             continue
 
         if len(results) >= _RRULE_EXPANSION_LIMIT:
@@ -583,6 +685,29 @@ def _expand_rrule(
             d["truncated"] = True
 
     return results
+
+
+def _override_keys(db, owner: str, events) -> dict:
+    """Map ``(calendar_id, series_uid)`` to the recurrence keys of every
+    RECURRENCE-ID override row (cancelled ones included) for the recurring
+    ``events``, so their expansion can drop the replaced occurrences.
+
+    Scoped to the caller's calendars like every other event query.
+    """
+    series = sorted({e.uid for e in events if e.rrule and e.rrule.strip()})
+    keys: dict = {}
+    for i in range(0, len(series), 500):  # stay under SQLite's variable limit
+        chunk = series[i:i + 500]
+        rows = db.query(
+            CalendarEvent.calendar_id, CalendarEvent.series_uid, CalendarEvent.recurrence_id
+        ).join(CalendarCal).filter(
+            CalendarCal.owner == owner,
+            CalendarEvent.series_uid.in_(chunk),
+            CalendarEvent.recurrence_id.isnot(None),
+        ).all()
+        for cal_id, series_uid, rid in rows:
+            keys.setdefault((cal_id, series_uid), set()).add(rid)
+    return keys
 
 
 # ── Routes ──
@@ -938,10 +1063,17 @@ def setup_calendar_routes() -> APIRouter:
                 )
             events = q.order_by(CalendarEvent.dtstart).all()
 
-            # Expand recurring events into individual occurrences.
+            # Expand recurring events into individual occurrences, leaving out
+            # the ones an EXDATE or a RECURRENCE-ID override takes over (the
+            # overrides are ordinary rows in `events`).
+            overrides = _override_keys(db, owner, events)
             expanded = []
             for e in events:
-                expanded.extend(_expand_rrule(e, start_dt, end_dt))
+                skip = overrides.get((e.calendar_id, e.uid))
+                expanded.extend(
+                    _expand_rrule(e, start_dt, end_dt, skip) if skip
+                    else _expand_rrule(e, start_dt, end_dt)
+                )
 
             # Sort by occurrence start time for consistent frontend ordering.
             truncated = any(e.get("truncated") for e in expanded)
@@ -1035,7 +1167,8 @@ def setup_calendar_routes() -> APIRouter:
             raise HTTPException(400, str(e))
         db = SessionLocal()
         try:
-            ev = _get_or_404_event(db, base_uid, owner)
+            override = _get_override_event(db, uid, owner)
+            ev = override or _get_or_404_event(db, base_uid, owner)
             if data.summary is not None:
                 ev.summary = data.summary
             if data.description is not None:
@@ -1063,6 +1196,13 @@ def setup_calendar_routes() -> APIRouter:
                 ev.color = data.color if data.color else None
             db.commit()
             cal = db.query(CalendarCal).filter(CalendarCal.id == ev.calendar_id).first()
+            if override is not None:
+                # The server has no resource under the override's row uid, so a
+                # push would create a duplicate event there. Local until re-pulled.
+                return {"ok": True, "writeback": "skipped", "note": "edited a single instance of a synced series; the change stays local until the next sync"}
+            if cal and cal.source == "caldav" and _series_writeback_is_lossy(db, ev):
+                logger.info("Skipping CalDAV write-back for series %s: it carries exceptions or a time zone the push cannot keep", ev.uid)
+                return {"ok": True, "writeback": "skipped", "note": "synced recurring series; edit it at the source, the change stays local until the next sync"}
             if cal and cal.source == "caldav":
                 from src.caldav_writeback import writeback_event
                 await writeback_event(owner, cal.source, cal.id, {
@@ -1089,11 +1229,27 @@ def setup_calendar_routes() -> APIRouter:
             raise HTTPException(400, str(e))
         db = SessionLocal()
         try:
+            override = _get_override_event(db, uid, owner)
+            if override is not None:
+                # One moved or edited instance of a synced series. The server has
+                # no resource under this row uid, so there is nothing to delete
+                # remotely and the series must stay intact; the next sync
+                # restores the instance from the server.
+                # Retain its recurrence key so deleting the moved instance does
+                # not resurrect the master's original occurrence.
+                override.status = "cancelled"
+                db.commit()
+                return {"ok": True, "writeback": "skipped", "note": "cancelled a single instance of a synced series locally; the next sync restores it"}
             ev = _get_or_404_event(db, base_uid, owner)
             # Capture what the remote push needs BEFORE the row is gone.
             _cal = db.query(CalendarCal).filter(CalendarCal.id == ev.calendar_id).first()
             _is_caldav = bool(_cal and _cal.source == "caldav")
             _cal_id, _ev_uid = ev.calendar_id, ev.uid
+            # Deleting a series deletes its override rows with it.
+            db.query(CalendarEvent).filter(
+                CalendarEvent.series_uid == _ev_uid,
+                CalendarEvent.calendar_id == _cal_id,
+            ).delete(synchronize_session=False)
             db.delete(ev)
             db.commit()
             if _is_caldav:
@@ -1323,6 +1479,20 @@ def setup_calendar_routes() -> APIRouter:
                 CalendarEvent.status != "cancelled",
             ).all()
 
+            # A cancelled RECURRENCE-ID override is not exported as a VEVENT, so
+            # its occurrence is excluded on the series master instead.
+            cancelled: dict = {}
+            if any(ev.rrule for ev in events):
+                for sid, rid in db.query(
+                    CalendarEvent.series_uid, CalendarEvent.recurrence_id
+                ).filter(
+                    CalendarEvent.calendar_id == cal_id,
+                    CalendarEvent.series_uid.isnot(None),
+                    CalendarEvent.recurrence_id.isnot(None),
+                    CalendarEvent.status == "cancelled",
+                ):
+                    cancelled.setdefault(sid, set()).add(rid)
+
             lines = [
                 "BEGIN:VCALENDAR",
                 "VERSION:2.0",
@@ -1330,8 +1500,13 @@ def setup_calendar_routes() -> APIRouter:
                 f"X-WR-CALNAME:{_ics_escape(cal.name)}",
             ]
             for ev in events:
+                # An override row is exported under its series UID with a
+                # RECURRENCE-ID, not under its internal row uid.
+                series = getattr(ev, "series_uid", None)
                 lines.append("BEGIN:VEVENT")
-                lines.append(f"UID:{ev.uid}")
+                lines.append(f"UID:{series or ev.uid}")
+                if series and getattr(ev, "recurrence_id", None):
+                    lines.append("RECURRENCE-ID" + _ics_recurrence_value(ev.recurrence_id, bool(ev.is_utc)))
                 lines.append(f"SUMMARY:{_ics_escape(ev.summary or '')}")
                 if ev.all_day:
                     lines.append(f"DTSTART;VALUE=DATE:{ev.dtstart.strftime('%Y%m%d')}")
@@ -1346,6 +1521,8 @@ def setup_calendar_routes() -> APIRouter:
                     lines.append(f"LOCATION:{_ics_escape(ev.location)}")
                 if ev.rrule:
                     lines.append(f"RRULE:{ev.rrule}")
+                    for key in sorted(decode_keys(getattr(ev, "exdate", "")) | cancelled.get(ev.uid, set())):
+                        lines.append("EXDATE" + _ics_recurrence_value(key, bool(ev.is_utc)))
                 lines.append("END:VEVENT")
             lines.append("END:VCALENDAR")
 
