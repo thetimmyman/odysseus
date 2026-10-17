@@ -156,31 +156,63 @@ def _coerce_policy(domain: str, entry: dict) -> DomainPolicy:
     )
 
 
-def domain_policy(domain: str) -> DomainPolicy:
+def _policy_provenance(sink, record):
+    if type(sink) is dict:
+        sink.clear()
+        sink.update(record)
+
+
+def domain_policy(domain: str, *, provenance_sink=None) -> DomainPolicy:
     """Resolve the policy for ``domain`` (operator override wins over defaults)."""
+    capture = type(provenance_sink) is dict
+    loaded = {}
+    _policy_provenance(provenance_sink, {"branch": "unknown", "load": loaded})
     dom = (domain or "unknown").strip().lower()
+    selected_entry = False
     try:
         from src.routing_policy import load_policy
 
-        configured = (load_policy() or {}).get("domains") or {}
+        contents = load_policy(provenance_sink=loaded) if capture else load_policy()
+        configured = (contents or {}).get("domains") or {}
         entry = configured.get(dom)
         if entry is None:
             entry = configured.get((domain or "").strip())
         if isinstance(entry, dict):
-            return _coerce_policy(dom, entry)
+            result = _coerce_policy(dom, entry)
+            selected_entry = True
     except Exception:
         pass
-    return _DEFAULT_POLICIES.get(dom, _UNKNOWN_POLICY)
+    if selected_entry:
+        _policy_provenance(provenance_sink, {"branch": "configured_entry", "load": loaded})
+        return result
+    result = _DEFAULT_POLICIES.get(dom, _UNKNOWN_POLICY)
+    symbol = ("src.routing_domain_policy._DEFAULT_POLICIES" if dom in _DEFAULT_POLICIES
+              else "src.routing_domain_policy._UNKNOWN_POLICY")
+    _policy_provenance(provenance_sink, {"branch": "builtin_default", "load": loaded, "symbol": symbol})
+    return result
 
 
-def _ceiling_rank() -> int:
+def _ceiling_rank(*, provenance_sink=None) -> int:
+    capture = type(provenance_sink) is dict
+    loaded = {}
+    _policy_provenance(provenance_sink, {"branch": "unknown", "load": loaded})
+    contents = None
     try:
         from src.routing_policy import load_policy
 
-        ceiling = (load_policy() or {}).get("remoteSensitivityCeiling", _DEFAULT_CEILING)
+        contents = load_policy(provenance_sink=loaded) if capture else load_policy()
+        ceiling = (contents or {}).get("remoteSensitivityCeiling", _DEFAULT_CEILING)
     except Exception:
         ceiling = _DEFAULT_CEILING
-    return _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK[_DEFAULT_CEILING])
+    result = _SENSITIVITY_RANK.get(ceiling, _SENSITIVITY_RANK[_DEFAULT_CEILING])
+    if capture:
+        configured = (type(contents) is dict and "remoteSensitivityCeiling" in contents
+                      and ceiling in _SENSITIVITY_RANK)
+        record = {"branch": "configured_entry" if configured else "builtin_default", "load": loaded}
+        if not configured:
+            record["symbol"] = "src.routing_domain_policy._DEFAULT_CEILING"
+        _policy_provenance(provenance_sink, record)
+    return result
 
 
 def evaluate_route(
@@ -190,14 +222,27 @@ def evaluate_route(
     sensitivity: str = "internal",
     policy: Optional[DomainPolicy] = None,
     endpoint_url: Optional[str] = None,
+    provenance_sink=None,
 ) -> RoutingDecision:
     """Evaluate one (domain, provider) route. Fail-closed; always leaves a record."""
-    pol = policy or domain_policy(domain)
+    capture = type(provenance_sink) is dict
+    _policy_provenance(provenance_sink, {"domain": {"branch": "unknown"},
+                                         "ceiling": {"branch": "not_reached"}})
+    domain_origin = {}
+    ceiling_origin = {"branch": "not_reached"}
+    if capture:
+        if policy:
+            pol = policy
+            domain_origin = {"branch": "caller_supplied"}
+        else:
+            pol = domain_policy(domain, provenance_sink=domain_origin)
+    else:
+        pol = policy or domain_policy(domain)
     p = (provider or "").strip().lower()
     local = provider_is_local(p) or _endpoint_is_local(endpoint_url or "")
 
     def _decide(allowed: bool, rule: str, reason: str) -> RoutingDecision:
-        return RoutingDecision(
+        decision = RoutingDecision(
             domain=pol.domain,
             provider=p,
             sensitivity=sensitivity,
@@ -209,6 +254,8 @@ def evaluate_route(
             run_id=str(uuid.uuid4()),
             decided_at=_utc_iso(),
         )
+        _policy_provenance(provenance_sink, {"domain": domain_origin, "ceiling": ceiling_origin})
+        return decision
 
     if p in pol.denied_providers:
         return _decide(False, "provider-denied", f"{p} is on the domain deny-list")
@@ -219,7 +266,9 @@ def evaluate_route(
         return _decide(False, "sensitivity-unknown",
                        f"unsupported sensitivity classification: {sensitivity!r}")
 
-    if _SENSITIVITY_RANK[sensitivity] > _ceiling_rank() and not local:
+    if _SENSITIVITY_RANK[sensitivity] > (
+        _ceiling_rank(provenance_sink=ceiling_origin) if capture else _ceiling_rank()
+    ) and not local:
         return _decide(False, "sensitivity-ceiling", f"{sensitivity} data requires local execution")
 
     if pol.local_only and not local:

@@ -352,7 +352,8 @@ def sync_receipts_from_records(store, records: Sequence[LocalTargetCapability], 
 
 def persisted_routing_inputs(store, *, now=None,
                              specs: Sequence[Any] = None,
-                             current_identity_digests: Mapping[str, str] = None
+                             current_identity_digests: Mapping[str, str] = None,
+                             provenance_sink=None,
                              ) -> PersistedRoutingInputs:
     """Persisted receipts -> routing inputs (read-only). A host is a candidate only if:
 
@@ -368,8 +369,19 @@ def persisted_routing_inputs(store, *, now=None,
                                    registered_targets)
     from src.target_capability_store import CapabilityStoreError
 
+    observing = type(provenance_sink) is dict
+    if observing:
+        provenance_sink.clear()
+        provenance_sink.update(kind="unknown", path=None, identity=None, targets={})
     moment = now or datetime.datetime.now(datetime.timezone.utc)
-    pool = list(specs) if specs is not None else list(registered_targets())
+    if specs is not None:
+        pool = list(specs)
+        if observing:
+            provenance_sink.update(kind="provided_specs")
+    elif observing:
+        pool = list(registered_targets(provenance_sink=provenance_sink))
+    else:
+        pool = list(registered_targets())
     profiles: List[Any] = []
     receipts: List[Any] = []
     skipped: List[Dict[str, str]] = []

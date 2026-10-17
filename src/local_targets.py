@@ -160,13 +160,40 @@ DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
 )
 
 
-def registered_targets() -> Tuple[LocalTargetSpec, ...]:
-    """The fleet's identity half. Never returns one collapsed ``local_qwen``."""
+def _registry_file_identity(handle) -> Optional[Dict[str, int]]:
+    """Metadata from the existing read descriptor; never affects registry loading."""
+    try:
+        info = os.fstat(handle.fileno())
+        return {name: getattr(info, "st_" + name) for name in (
+            "dev", "ino", "mode", "uid", "gid", "size", "mtime_ns", "ctime_ns")}
+    except Exception:
+        return None
+
+
+def registered_targets(*, provenance_sink=None) -> Tuple[LocalTargetSpec, ...]:
+    """The fleet's identity half, with optional metadata from this normal read.
+
+    A plain, request-owned dictionary receives branch and target origins outside
+    the returned specifications. Descriptor drift leaves its identity unknown.
+    """
+    observing = type(provenance_sink) is dict
+    if observing:
+        provenance_sink.clear()
+        provenance_sink.update(kind="unknown", path=None, identity=None, targets={})
     path = os.environ.get(TARGET_CAPABILITY_PROFILE_REGISTRY_ENV, "")
     if not path:
+        if observing:
+            try:
+                origins = {spec.target_id: {"kind": "builtin", "path": None}
+                           for spec in DEFAULT_TARGETS}
+                provenance_sink.update(kind="builtin", targets=origins)
+            except Exception:
+                pass
         return DEFAULT_TARGETS
     with open(path, encoding="utf-8") as handle:
+        before = _registry_file_identity(handle) if observing else None
         payload = json.load(handle)
+        after = _registry_file_identity(handle) if observing else None
     if not isinstance(payload, list):
         raise ValueError("profile registry must be a list of explicit host specs")
     overrides = {}
@@ -177,7 +204,20 @@ def registered_targets() -> Tuple[LocalTargetSpec, ...]:
         if spec.target_id == TARGET_MSR1 and ROLE_INFERENCE in spec.roles:
             raise ValueError("MS-R1 is not an inference target")
         overrides[spec.target_id] = spec
-    return tuple(overrides.pop(spec.target_id, spec) for spec in DEFAULT_TARGETS) + tuple(overrides.values())
+    origins = None
+    if observing:
+        try:
+            origins = {spec.target_id: {"kind": "builtin", "path": None}
+                       for spec in DEFAULT_TARGETS}
+            origins.update({target_id: {"kind": "explicit_file", "path": path}
+                            for target_id in overrides})
+        except Exception:
+            pass
+    result = tuple(overrides.pop(spec.target_id, spec) for spec in DEFAULT_TARGETS) + tuple(overrides.values())
+    if observing and origins is not None:
+        provenance_sink.update(kind="explicit_file", path=path,
+                               identity=before if before == after else None, targets=origins)
+    return result
 
 
 def target_by_id(target_id: str) -> Optional[LocalTargetSpec]:

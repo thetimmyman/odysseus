@@ -631,24 +631,37 @@ class PolicySnapshot:
                 "policy_ref": self.policy_ref}
 
 
-def policy_snapshot(*, policy: Optional[Mapping[str, Any]] = None) -> PolicySnapshot:
+def policy_snapshot(*, policy: Optional[Mapping[str, Any]] = None,
+                    provenance_sink=None) -> PolicySnapshot:
     """Snapshot the routing policy (supplied, or loaded via load_policy). The hash
     covers the loaded content, so an edited policy gets a new policy_ref."""
     source = "src.routing_policy.load_policy"
+    metadata = provenance_sink if type(provenance_sink) is dict else None
+    if metadata is not None:
+        metadata.clear()
+    load_metadata = {} if metadata is not None else None
+    kind = "loaded"
     loaded: Mapping[str, Any] = {}
     if policy is not None:
         loaded = policy
         source = "caller-supplied"
+        kind = "caller_supplied"
     else:
         try:
             from src.routing_policy import load_policy
 
-            loaded = load_policy() or {}
+            options = {"provenance_sink": load_metadata} if load_metadata is not None else {}
+            loaded = load_policy(**options) or {}
         except Exception:
             # Unreadable is not "no policy": hash the empty mapping; the domain
             # layer still fails closed on unknown domains.
             loaded = {}
             source = "unavailable"
+            kind = "unavailable"
+    if metadata is not None:
+        metadata["kind"] = kind
+        if kind != "caller_supplied":
+            metadata["load"] = load_metadata
     version = str(loaded.get("routingPolicyVersion") or "unversioned")
     digest = _sha256_hex(_canonical(dict(loaded)))
     return PolicySnapshot(version=version, policy_hash=digest, source=source)
@@ -730,8 +743,13 @@ def _assess(profile: ExecutionTargetProfile,
             resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
             capacity_receipts: Sequence[Any] = (),
             now: Optional[datetime] = None,
-            preference_rank: int = 0) -> CandidateAssessment:
+            preference_rank: int = 0,
+            provenance_sink=None) -> CandidateAssessment:
     """Filter ONE candidate. First failing rule wins; the order IS the contract."""
+    metadata = provenance_sink if type(provenance_sink) is dict else None
+    if metadata is not None:
+        metadata.clear()
+    route_metadata = {} if metadata is not None else None
     required = request.required_capabilities()
     state = (resources or {}).get(profile.target_id) or {}
     age = receipt.freshness_s(now) if receipt is not None else None
@@ -753,13 +771,16 @@ def _assess(profile: ExecutionTargetProfile,
     try:
         from src.routing_domain_policy import evaluate_route
 
+        options = {"provenance_sink": route_metadata} if route_metadata is not None else {}
         decision = evaluate_route(
             domain=request.domain, provider=profile.provider,
             sensitivity=request.sensitivity, policy=domain_policy,
-            endpoint_url=profile.endpoint_url)
+            endpoint_url=profile.endpoint_url, **options)
     except Exception as exc:  # a policy that cannot be evaluated DENIES
         return fate(False, REFUSED_POLICY_DENIED,
                     f"domain policy could not be evaluated: {exc}")
+    if metadata is not None:
+        metadata["route"] = route_metadata
     if not decision.allowed:
         return fate(False, REFUSED_POLICY_DENIED,
                     f"domain policy rule {decision.rule}: {decision.reason}")
@@ -1050,17 +1071,27 @@ def _receipt_index(receipts: Any) -> dict:
     return index
 
 
-def _resolve_domain_policy(request: RoutingRequest, provided: Any) -> tuple:
+def _resolve_domain_policy(request: RoutingRequest, provided: Any,
+                           provenance_sink=None) -> tuple:
     """(domain_policy, local_only); fails closed when the policy can't be read."""
+    metadata = provenance_sink if type(provenance_sink) is dict else None
+    if metadata is not None:
+        metadata.clear()
     if provided is not None:
+        if metadata is not None:
+            metadata["branch"] = "caller_supplied"
         return provided, bool(getattr(provided, "local_only", False))
     try:
         from src.routing_domain_policy import domain_policy
 
-        pol = domain_policy(request.domain)
+        options = {"provenance_sink": metadata} if metadata is not None else {}
+        pol = domain_policy(request.domain, **options)
         return pol, bool(getattr(pol, "local_only", False))
     except Exception:
         # Unresolvable policy means local-only: refuse to leave the machine.
+        if metadata is not None:
+            metadata.clear()
+            metadata["branch"] = "unknown"
         return None, True
 
 
@@ -1072,12 +1103,15 @@ def select_target(request: RoutingRequest, *,
                   resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
                   capacity_receipts: Sequence[Any] = (),
                   now: Optional[datetime] = None,
-                  decision_id: str = "") -> DispatchDecision:
+                  decision_id: str = "", provenance_sink=None) -> DispatchDecision:
     """Select an execution target, or raise :class:`RoutingRefused`.
 
     Pure: every candidate gets the same ordered rules and the first eligible one
     in deterministic order wins (tests assert identical ``decision_hash``).
     """
+    metadata = provenance_sink if type(provenance_sink) is dict else None
+    if metadata is not None:
+        metadata.clear()
     # Evaluate capacity freshness at one instant for the whole decision, so a
     # cited capacity ref can't go stale between assessment and selection.
     selection_time = now if now is not None else datetime.now(timezone.utc)
@@ -1087,8 +1121,22 @@ def select_target(request: RoutingRequest, *,
                              "no candidate profiles were supplied",
                              run_id=request.run_id, packet_id=request.packet_id)
 
-    snapshot = policy or policy_snapshot()
-    resolved_policy, policy_local_only = _resolve_domain_policy(request, domain_policy)
+    snapshot_metadata = {} if metadata is not None else None
+    options = {"provenance_sink": snapshot_metadata} if snapshot_metadata is not None else {}
+    if policy:
+        snapshot = policy
+        if metadata is not None:
+            metadata["snapshot"] = {"kind": "caller_supplied"}
+    else:
+        snapshot = policy_snapshot(**options)
+        if metadata is not None:
+            metadata["snapshot"] = snapshot_metadata
+    domain_metadata = {} if metadata is not None else None
+    options = {"provenance_sink": domain_metadata} if domain_metadata is not None else {}
+    resolved_policy, policy_local_only = _resolve_domain_policy(request, domain_policy, **options)
+    if metadata is not None:
+        metadata["domain"] = domain_metadata
+        metadata["candidates"] = []
     policy_local_only = policy_local_only or request.local_only
     index = _receipt_index(receipts)
     preferred = list(request.preferred_profile_ids)
@@ -1099,10 +1147,17 @@ def select_target(request: RoutingRequest, *,
                 if profile.profile_id in preferred else len(preferred))
         receipt = index.get(profile.profile_id) or index.get(
             f"target:{profile.target_id}")
+        candidate_metadata = {} if metadata is not None else None
+        options = {"provenance_sink": candidate_metadata} if candidate_metadata is not None else {}
         assessments.append(_assess(
             profile, receipt, request, domain_policy=resolved_policy,
             policy_local_only=policy_local_only, resources=resources,
-            capacity_receipts=capacity_receipts, now=selection_time, preference_rank=rank))
+            capacity_receipts=capacity_receipts, now=selection_time, preference_rank=rank,
+            **options))
+        if metadata is not None:
+            metadata["candidates"].append({"target_id": profile.target_id,
+                                           "profile_id": profile.profile_id,
+                                           **candidate_metadata})
 
     eligible = [a for a in assessments if a.eligible]
     local_only = bool(policy_local_only)
@@ -1137,6 +1192,8 @@ def select_target(request: RoutingRequest, *,
     profile = next(p for p in profiles
                    if p.target_id == chosen.target_id
                    and p.profile_id == chosen.profile_id)
+    if metadata is not None:
+        metadata["selected"] = {"target_id": profile.target_id, "profile_id": profile.profile_id}
     receipt = (index.get(profile.profile_id)
                or index.get(f"target:{profile.target_id}"))
     _, selected_capacity_refs, _, _ = classify_capacity_for(

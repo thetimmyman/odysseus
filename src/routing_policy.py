@@ -147,8 +147,51 @@ DANGER_ZONE_KEYS = (
     "absis.enabled",
 )
 
-# (path, mtime, parsed); an mtime change picks up edits without a restart.
+# (path, mtime, parsed, origin); legacy three-item caches remain readable.
+# Origin belongs to this parsed generation, not a later POLICY_PATH lookup.
 _cache: Optional[tuple] = None
+
+
+def _policy_file_identity(handle):
+    """Best-effort metadata on the file the normal reader already opened."""
+    try:
+        info = os.fstat(handle.fileno())
+        identity = {name: getattr(info, "st_" + name) for name in (
+            "dev", "ino", "mode", "uid", "gid", "size", "mtime_ns", "ctime_ns")}
+        return identity if all(type(value) is int for value in identity.values()) else None
+    except Exception:
+        return None
+
+
+def _copy_policy_origin(origin):
+    """Copy only metadata; never copy a cached policy into its provenance."""
+    unknown = {"kind": "unknown", "path": None, "identity": None}
+    if type(origin) is not dict:
+        return unknown
+    if origin.get("kind") == "builtin":
+        return {"kind": "builtin", "path": None, "identity": None,
+                "symbol": "src.routing_policy.DEFAULT_POLICY"}
+    if origin.get("kind") != "file" or type(origin.get("path")) is not str:
+        return unknown
+    identity = origin.get("identity")
+    names = {"dev", "ino", "mode", "uid", "gid", "size", "mtime_ns", "ctime_ns"}
+    if (type(identity) is not dict or set(identity) != names
+            or any(type(value) is not int for value in identity.values())):
+        identity = None
+    return {"kind": "file", "path": origin["path"],
+            "identity": dict(identity) if identity is not None else None}
+
+
+def _policy_provenance(sink, delivery, candidate_path, origin):
+    if type(sink) is dict:
+        try:
+            record = {"delivery": delivery, "candidate_path": (
+                os.fspath(candidate_path) if candidate_path is not None else None),
+                      "origin": _copy_policy_origin(origin)}
+            sink.clear()
+            sink.update(record)
+        except Exception:
+            sink.clear()
 
 
 def _deep_merge_defaults(defaults: dict, override: dict) -> dict:
@@ -207,24 +250,38 @@ def _seed_policy_if_missing() -> None:
         pass
 
 
-def load_policy() -> dict:
+def load_policy(*, provenance_sink=None) -> dict:
     """Current policy; DEFAULT_POLICY when missing or unreadable, never a 500."""
     global _cache
+    capture = type(provenance_sink) is dict
+    _policy_provenance(provenance_sink, "unknown", None, None)
     _seed_policy_if_missing()
+    candidate_path = POLICY_PATH
     try:
         mtime = os.path.getmtime(POLICY_PATH)
     except OSError:
+        _policy_provenance(provenance_sink, "builtin", candidate_path, {"kind": "builtin"})
         return copy.deepcopy(DEFAULT_POLICY)
-    if _cache and _cache[0] == POLICY_PATH and _cache[1] == mtime:
-        return copy.deepcopy(_cache[2])
+    cache = _cache
+    if cache and cache[0] == POLICY_PATH and cache[1] == mtime:
+        origin = cache[3] if len(cache) > 3 else None
+        _policy_provenance(provenance_sink, "cache", POLICY_PATH, origin)
+        return copy.deepcopy(cache[2])
+    candidate_path = POLICY_PATH
     try:
-        with open(POLICY_PATH) as f:
+        with open(candidate_path) as f:
+            before = _policy_file_identity(f) if capture else None
             policy = json.load(f)
+            after = _policy_file_identity(f) if capture else None
         if not isinstance(policy, dict):
             raise ValueError("policy file is not a JSON object")
     except Exception:
+        _policy_provenance(provenance_sink, "builtin", candidate_path, {"kind": "builtin"})
         return copy.deepcopy(DEFAULT_POLICY)
-    _cache = (POLICY_PATH, mtime, policy)
+    origin = {"kind": "file", "path": candidate_path,
+              "identity": before if before is not None and before == after else None}
+    _cache = (POLICY_PATH, mtime, policy, _copy_policy_origin(origin))
+    _policy_provenance(provenance_sink, "file", candidate_path, origin)
     return copy.deepcopy(policy)
 
 
