@@ -139,6 +139,29 @@ def test_route_cli_requires_explicit_paired_mode_before_any_execution(args):
     assert b'route mode' in result.stderr
 
 
+def test_cli_exposes_separate_new_profile_descriptor_input():
+    result = subprocess.run([sys.executable, '-I', str(Path('scripts/odysseus-measure-once').resolve()),
+        '--help'], capture_output=True, timeout=5)
+    assert result.returncode == 0
+    assert b'--new-profile' in result.stdout
+    assert b'UNQUALIFIED' in result.stdout
+
+
+@pytest.mark.parametrize('other', [
+    ['--qualify-boundary'], ['--worker-http'], ['--worker-broker'],
+    ['--changed-route', '--current-spec', 'unused'], ['--current-spec', 'unused'],
+    ['--receipt', 'unused'],
+])
+def test_new_profile_cli_refuses_mixed_modes_before_reading_inputs(other):
+    result = subprocess.run([sys.executable, '-I', str(Path('scripts/odysseus-measure-once').resolve()),
+        '--new-profile', 'absent-descriptor', *other], capture_output=True, timeout=5)
+    assert result.returncode == 2 and result.stdout == b''
+    if '--receipt' in other:
+        assert b'not allowed with argument --new-profile' in result.stderr
+    else:
+        assert b'new-profile mode' in result.stderr
+
+
 @pytest.mark.parametrize('args', [
     ['--qualify-boundary', '--ssh-config-manifest', 'unused'],
     ['--qualify-boundary', '--ssh-config-manifest-sha256', 'a' * 64],

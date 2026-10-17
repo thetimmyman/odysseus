@@ -17,7 +17,8 @@ from src.endpoint_identity import canonical_endpoint_identity
 from src.constants import (LOCAL_QUALIFICATION_BEFORE_FILENAME, LOCAL_QUALIFICATION_AFTER_FILENAME,
                            LOCAL_QUALIFICATION_FAILURE_FILENAME, LOCAL_QUALIFICATION_RECEIPT_FILENAME,
                            LOCAL_MEASUREMENT_OWNERSHIP_FILENAME)
-from src.local_target_qualification import measure_changed_host_profile, measure_changed_route_profile
+from src.local_target_qualification import (measure_changed_host_profile, measure_changed_route_profile,
+                                          measure_new_profile)
 
 
 class MeasurementUnresolved(ValueError):
@@ -181,13 +182,15 @@ def _configuration_evidence(processes):
 
 
 def measure_once(spec, previous, identity_command, output_dir, *, lease, processes,
-                 current_spec=None, now=None):
+                 current_spec=None, new_profile=False, now=None):
     """Run the existing two trials once; publish only after explicit release ACK.
 
     processes supplies bounded, qualified owned-client captures. Successful
     captures establish local exit only. The existing qualifier separately
     validates native done/model/tokens/tool semantics and stable post-identity.
     Any failure retains private evidence and requires owner reconciliation.
+    new_profile explicitly treats previous as a separate UNQUALIFIED descriptor,
+    never as historical authority; it cannot be combined with route migration.
     """
     folder = Path(output_dir)
     folder.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -195,6 +198,8 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
     stage = 'binding'
     try:
         if (getattr(processes, 'qualified', False) is not True
+                or type(new_profile) is not bool or new_profile and current_spec is not None
+                or new_profile and not callable(getattr(processes, 'finish_capture', None))
                 or execution_spec.runtime_kind != 'ollama' or execution_spec.transport != 'http'
                 or execution_spec.max_concurrency != 1
                 or lease.endpoint_identity != canonical_endpoint_identity(execution_spec.endpoint, 'http')
@@ -222,7 +227,10 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
 
         before = capture(LOCAL_QUALIFICATION_BEFORE_FILENAME)
         after = lambda: capture(LOCAL_QUALIFICATION_AFTER_FILENAME)
-        if current_spec is None:
+        if new_profile:
+            candidate, _ = measure_new_profile(spec, previous, before, after,
+                                               folder, transport=send, now=now)
+        elif current_spec is None:
             candidate, _ = measure_changed_host_profile(spec, previous, before, after,
                                                         folder, transport=send, now=now)
         else:
