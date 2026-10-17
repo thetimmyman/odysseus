@@ -8,6 +8,7 @@ as a single stale instance. These tests drive ``_sync_blocking`` against a fake
 CalDAV server that serves real iCalendar text (parsed by ``icalendar``) and
 assert the rows it leaves behind. Names and times are synthetic.
 """
+import asyncio
 import sys
 import tempfile
 import types
@@ -58,6 +59,17 @@ class _FakeCalendar:
     def date_search(self, start, end, expand=False):
         assert expand is False, "series must be pulled unexpanded"
         return [_Obj(r) for r in _Remote.resources]
+
+    def event_by_uid(self, uid):
+        from icalendar import Calendar
+        from caldav.lib.error import NotFoundError
+
+        for resource in _Remote.resources:
+            if any(str(comp.get("uid", "")) == uid
+                   for comp in Calendar.from_ical(resource).walk()
+                   if comp.name == "VEVENT"):
+                return _Obj(resource)
+        raise NotFoundError("resource absent")
 
 
 class _FakePrincipal:
@@ -135,12 +147,32 @@ def _sync():
     return caldav_sync._sync_blocking("alice", "https://caldav.example.test", "u", "p", "acct-1")
 
 
+def _public_sync(monkeypatch):
+    import src.secret_storage as secrets
+
+    monkeypatch.setattr(caldav_sync, "_OWNER_LOCKS", {})
+    monkeypatch.setattr(caldav_sync, "_load_caldav_accounts", lambda owner: [
+        {"id": "acct-1", "url": "https://caldav.example.test", "username": "u", "password": "p"},
+    ])
+    monkeypatch.setattr(caldav_sync, "validate_caldav_url", lambda url: url)
+    monkeypatch.setattr(secrets, "decrypt", lambda value: value)
+    return asyncio.run(caldav_sync.sync_caldav("alice"))
+
+
 def _rows():
     db = _TS()
     try:
         return {e.uid: e for e in db.query(CalendarEvent).all()}
     finally:
         db.close()
+
+
+def _row_fingerprints():
+    return {
+        uid: tuple((column.name, getattr(row, column.name))
+                   for column in CalendarEvent.__table__.columns)
+        for uid, row in _rows().items()
+    }
 
 
 def _weekly_with_exceptions():
@@ -324,6 +356,49 @@ def test_series_deleted_upstream_is_pruned_even_though_its_dtstart_is_old():
     assert "local-series" in rows
     assert "old-single@test" in rows
     assert result["deleted"] == 1
+
+
+@pytest.mark.parametrize("rule", ["FREQ=WEEKLY;COUNT=2", "FREQ=YEARLY;INTERVAL=5"])
+def test_bounded_pull_does_not_delete_an_existing_out_of_window_series(monkeypatch, rule):
+    """An ended or sparse series can exist remotely without matching this window."""
+    old = datetime.utcnow() - timedelta(days=700)
+    resource = _ics(_vevent(
+        "outside-window@test", f"DTSTART:{old:%Y%m%dT%H%M%SZ}",
+        f"DTEND:{old + timedelta(hours=1):%Y%m%dT%H%M%SZ}",
+        "RRULE:" + rule, "SUMMARY:Retained history",
+    ))
+    _Remote.resources = [resource]
+    _sync()  # Seed the cache as if this resource had been observed previously.
+    before = _row_fingerprints()
+    assert set(before) == {"outside-window@test"}
+    monkeypatch.setattr(_FakeCalendar, "date_search", lambda self, start, end, expand=False: [])
+
+    result = _public_sync(monkeypatch)
+
+    assert result["errors"] == []
+    assert result["deleted"] == 0
+    assert _row_fingerprints() == before
+
+
+def test_old_series_is_retained_when_its_remote_absence_cannot_be_confirmed(monkeypatch):
+    old = datetime.utcnow() - timedelta(days=700)
+    _Remote.resources = [_ics(_vevent(
+        "uncertain-series@test", f"DTSTART:{old:%Y%m%dT%H%M%SZ}",
+        "RRULE:FREQ=WEEKLY", "SUMMARY:Uncertain remote state",
+    ))]
+    _sync()
+    before = _row_fingerprints()
+    assert set(before) == {"uncertain-series@test"}
+    monkeypatch.setattr(_FakeCalendar, "date_search", lambda self, start, end, expand=False: [])
+
+    def unavailable(self, uid):
+        raise RuntimeError("synthetic lookup unavailable")
+
+    monkeypatch.setattr(_FakeCalendar, "event_by_uid", unavailable)
+    result = _public_sync(monkeypatch)
+    assert result["deleted"] == 0
+    assert any("could not confirm" in error for error in result["errors"])
+    assert _row_fingerprints() == before
 
 
 def test_override_without_master_is_a_single_event_row():

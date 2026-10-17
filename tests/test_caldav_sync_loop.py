@@ -4,9 +4,11 @@ Everything runs on a fake clock (an injected ``sleep``) and fake sync callables;
 no network, no sleeping, no real preferences file.
 """
 import asyncio
+import contextvars
 import importlib
 import logging
 import random
+import threading
 
 import pytest
 
@@ -307,3 +309,84 @@ def test_a_failed_sync_releases_the_owner_lock(monkeypatch):
         return await asyncio.wait_for(caldav_sync.sync_caldav("alice"), timeout=2)
 
     assert asyncio.run(go())["errors"] == []
+
+
+@pytest.mark.parametrize("cancel_count, worker_fails", [(1, False), (2, False), (1, True), (2, True)])
+def test_cancelled_caller_keeps_owner_custody_until_blocking_pull_finishes(monkeypatch, cancel_count, worker_fails):
+    import src.secret_storage as secrets
+
+    marker = contextvars.ContextVar("synthetic_sync_marker", default=None)
+    monkeypatch.setattr(caldav_sync, "_OWNER_LOCKS", {})
+    monkeypatch.setattr(caldav_sync, "_load_caldav_accounts", lambda owner: [
+        {"url": "https://dav.invalid/", "username": "u", "password": "p"},
+    ])
+    monkeypatch.setattr(caldav_sync, "validate_caldav_url", lambda url: url)
+    monkeypatch.setattr(secrets, "decrypt", lambda value: value)
+
+    async def go():
+        started = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        calls = []
+        contexts = []
+        active = set()
+        finished = []
+        failed = []
+        state_lock = threading.Lock()
+        max_active = 0
+
+        def blocking(owner, *args):
+            nonlocal max_active
+            with state_lock:
+                call_index = len(calls) + 1
+                calls.append(owner)
+                contexts.append(marker.get())
+                active.add(call_index)
+                max_active = max(max_active, len(active))
+            try:
+                assert marker.get() == "synthetic-context"
+                if call_index == 1:
+                    loop.call_soon_threadsafe(started.set)
+                    if not release.wait(2):
+                        raise AssertionError("test did not release its owned worker")
+                    if worker_fails:
+                        with state_lock:
+                            failed.append(call_index)
+                        raise RuntimeError("synthetic blocking pull failed")
+                return {"calendars": 1, "events": 0, "deleted": 0, "errors": []}
+            finally:
+                with state_lock:
+                    active.remove(call_index)
+                    finished.append(call_index)
+
+        monkeypatch.setattr(caldav_sync, "_sync_blocking", blocking)
+        token = marker.set("synthetic-context")
+        first = asyncio.create_task(caldav_sync.sync_caldav("alice"))
+        second = None
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            second = asyncio.create_task(caldav_sync.sync_caldav("alice"))
+            for _ in range(cancel_count):
+                assert first.cancel()
+                await asyncio.sleep(0)
+                assert not first.done(), "cancellation returned while its blocking writer was still active"
+                with state_lock:
+                    assert calls == ["alice"]
+                    assert active == {1}
+        finally:
+            release.set()
+            tasks = [first] + ([second] if second is not None else [])
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            marker.reset(token)
+        assert isinstance(results[0], asyncio.CancelledError)
+        assert results[1]["calendars"] == 1
+        assert results[1]["errors"] == []
+        assert all(task.done() for task in tasks)
+        assert calls == ["alice", "alice"]
+        assert contexts == ["synthetic-context", "synthetic-context"]
+        assert max_active == 1
+        assert finished == [1, 2]
+        assert active == set()
+        assert failed == ([1] if worker_fails else [])
+
+    asyncio.run(go())

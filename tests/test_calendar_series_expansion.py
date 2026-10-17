@@ -371,6 +371,31 @@ def test_editing_a_series_with_exceptions_stays_local(cal, pushed):
     assert pushed == []
 
 
+@pytest.mark.parametrize("bookkeeping", ["zone", "exdate", "override"])
+def test_clearing_rrule_does_not_bypass_the_synced_series_writeback_guard(cal, pushed, bookkeeping):
+    from routes.calendar_routes import EventUpdate
+
+    if bookkeeping == "zone":
+        _load(_series_ics())
+    else:
+        master = _vevent(
+            "series-a@test", "DTSTART:20261013T193000Z", "DTEND:20261013T203000Z",
+            "RRULE:FREQ=WEEKLY", "SUMMARY:Series A",
+            *(["EXDATE:20261103T193000Z"] if bookkeeping == "exdate" else []),
+        )
+        override = [] if bookkeeping == "exdate" else [_vevent(
+            "series-a@test", "RECURRENCE-ID:20261103T193000Z",
+            "DTSTART:20261104T193000Z", "DTEND:20261104T203000Z", "SUMMARY:Moved",
+        )]
+        _load(_wrap(master, *override))
+
+    update = _route(cal, "PUT", "/api/calendar/events/{uid}")
+    out = asyncio.run(update(_request(), "series-a@test", EventUpdate(rrule="")))
+    assert out.get("writeback") == "skipped"
+    assert _rows("series-a@test")["series-a@test"].rrule == ""
+    assert pushed == []
+
+
 def test_editing_an_expanded_occurrence_still_targets_the_series(cal, pushed):
     """Existing behaviour, kept: an expanded occurrence id edits its series."""
     from routes.calendar_routes import EventUpdate
@@ -409,8 +434,10 @@ def test_deleting_a_moved_instance_leaves_the_series_alone(cal, pushed):
     delete = _route(cal, "DELETE", "/api/calendar/events/{uid}")
     out = asyncio.run(delete(_request(), OVERRIDE_UID))
     assert out["writeback"] == "skipped"
-    assert OVERRIDE_UID not in _row_uids()
-    assert "series-a@test" in _row_uids()
+    # Neither the moved event nor its original slot may reappear after DELETE.
+    assert _list(cal, "2026-11-01T00:00:00", "2026-11-08T00:00:00") == []
+    # The master and unaffected occurrences remain usable.
+    assert _list(cal, "2026-10-26T00:00:00", "2026-11-01T00:00:00")[0]["series_uid"] == "series-a@test"
     assert pushed == []
 
 

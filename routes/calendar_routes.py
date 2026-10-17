@@ -120,8 +120,7 @@ def _series_writeback_is_lossy(db, ev: CalendarEvent) -> bool:
     the next DST change. Such series are edited at the source and re-pulled;
     a local edit here stays local until the next sync overwrites it.
     """
-    if not (ev.rrule or "").strip():
-        return False
+    # The bookkeeping remains lossy even when an edit just cleared RRULE.
     if (getattr(ev, "exdate", None) or "") or getattr(ev, "tzid", None):
         return True
     return db.query(CalendarEvent.uid).filter(
@@ -1236,9 +1235,11 @@ def setup_calendar_routes() -> APIRouter:
                 # no resource under this row uid, so there is nothing to delete
                 # remotely and the series must stay intact; the next sync
                 # restores the instance from the server.
-                db.delete(override)
+                # Retain its recurrence key so deleting the moved instance does
+                # not resurrect the master's original occurrence.
+                override.status = "cancelled"
                 db.commit()
-                return {"ok": True, "writeback": "skipped", "note": "removed a single instance of a synced series locally; the next sync restores it"}
+                return {"ok": True, "writeback": "skipped", "note": "cancelled a single instance of a synced series locally; the next sync restores it"}
             ev = _get_or_404_event(db, base_uid, owner)
             # Capture what the remote push needs BEFORE the row is gone.
             _cal = db.query(CalendarCal).filter(CalendarCal.id == ev.calendar_id).first()

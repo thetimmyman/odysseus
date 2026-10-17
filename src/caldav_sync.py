@@ -28,6 +28,7 @@ Design notes:
 """
 
 import asyncio
+import contextvars
 import hashlib
 import ipaddress
 import logging
@@ -491,10 +492,9 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
                 # `seen_uids` holds ROW uids: a series master's UID and the
                 # derived uid of each RECURRENCE-ID override, so an override
                 # reverted upstream is pruned like any other vanished event.
-                # A recurring master keeps its original (possibly years old)
-                # DTSTART, so it is also eligible when that start lies before
-                # the window: the server returns it whenever an occurrence
-                # falls inside, so a series missing from the pull is gone.
+                # An old recurring master is also a deletion candidate, but a
+                # bounded search may legitimately omit an ended or sparse
+                # series. Confirm its remote absence by UID before deleting it.
                 # An override of a series that WAS pulled is eligible wherever
                 # it sits (it may have been moved far from the window): the
                 # server sends every override with its master, so one that is
@@ -516,9 +516,23 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
                         eligible,
                         ~CalendarEvent.uid.in_(seen_uids) if seen_uids else CalendarEvent.uid.isnot(None),
                     ).all()
+                    deleted = 0
                     for ev in stale:
+                        if ev.dtstart < start and ev.rrule:
+                            try:
+                                remote_cal.event_by_uid(ev.uid)
+                            except NotFoundError:
+                                pass  # Authoritative absence, not merely outside the window.
+                            except Exception as e:
+                                result["errors"].append(
+                                    f"{display_name}: could not confirm missing recurring resource ({type(e).__name__})"
+                                )
+                                continue
+                            else:
+                                continue
                         db.delete(ev)
-                    result["deleted"] += len(stale)
+                        deleted += 1
+                    result["deleted"] += deleted
                     db.commit()
             except Exception as e:
                 logger.exception("CalDAV sync failed for one calendar")
@@ -689,7 +703,26 @@ async def _sync_caldav_locked(owner: str) -> dict:
             continue
         try:
             url = validate_caldav_url(url)
-            result = await asyncio.to_thread(_sync_blocking, owner, url, user, pw, account_id)
+            # Keep owner custody through the actual blocking writer's lifetime.
+            # Cancelling an await does not stop a thread. Use an executor Future
+            # (not a separately cancellable Task), preserving to_thread's context.
+            worker = asyncio.get_running_loop().run_in_executor(
+                None, contextvars.copy_context().run,
+                _sync_blocking, owner, url, user, pw, account_id,
+            )
+            try:
+                result = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not worker.cancelled():
+                    worker.exception()  # Consume any failure before propagating cancellation.
+                raise
         except ValueError as e:
             result = {"calendars": 0, "events": 0, "deleted": 0, "errors": [str(e)]}
         except Exception as e:
