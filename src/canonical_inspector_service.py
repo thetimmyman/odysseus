@@ -56,6 +56,19 @@ def _package_in_disclosure_scope(package, generation):
     return False
 
 
+def same_work_intent(original, alternate):
+    """An alternate changes execution custody, never the admitted task."""
+    mutable = {"package_id", "package_hash", "run_id", "source"}
+    source_vantage = {"repo_root", "worktree", "branch", "detached", "snapshot_digest"}
+    try:
+        return (set(original) == set(alternate)
+                and all(original[key] == alternate[key] for key in set(original) - mutable)
+                and {key: value for key, value in original["source"].items() if key not in source_vantage}
+                    == {key: value for key, value in alternate["source"].items() if key not in source_vantage})
+    except (KeyError, TypeError):
+        return False
+
+
 def request_principal(request):
     """Use the existing real cookie gate, then a locked fresh exact snapshot."""
     key = require_admin_cookie(request)
@@ -228,7 +241,7 @@ def _minimized_projection(projection, publication):
     decision = fields(projection.get("dispatch"), (
         "reason", "policy_ref", "decided_by", "decided_at", "fallback"))
     decision["selected"] = fields(projection.get("dispatch", {}).get("selected"), (
-        "target_id", "host", "model", "runtime_kind", "runtime_version", "model_digest", "backend"))
+        "target_id", "host", "provider", "model", "runtime_kind", "runtime_version", "model_digest", "backend"))
     for row in safe_candidates:
         if row["selected"] is True:
             decision["selected"]["profile_id"] = row["profile_id"]
@@ -242,7 +255,8 @@ def _minimized_projection(projection, publication):
     capabilities = {"status": observation_status("capabilities"), "supplements": []}
     for row in projection.get("capabilities", {}).get("supplements", []):
         capabilities["supplements"].append(fields(row, (
-            "receipt_hash", "profile_id", "identity_digest", "observed_at", "qualification_state")))
+            "receipt_hash", "profile_id", "identity_digest", "observed_at", "ttl_s", "qualification_state",
+            "health", "health_checked_at", "health_ttl_s", "health_state")))
     capacity = {"status": observation_status("capacity"), "billing_authority": False, "supplements": []}
     for row in projection.get("capacity", {}).get("supplements", []):
         safe = fields(row, ("receipt_hash", "provider", "pool_id", "entitlement", "state",
@@ -273,10 +287,11 @@ def _minimized_projection(projection, publication):
 
 
 class InspectorService:
-    """Trusted internal DI; route setup supplies no service in production."""
+    """Owned canonical reads and controls, composed by the app lifespan."""
 
     def __init__(self, store, *, retained_root, projector, pilot_adapter=None,
-                 retention_parents=(), restored_disclosure_generation=CANONICAL_PILOT_DISCLOSURE_GENERATION):
+                 retention_parents=(), restored_disclosure_generation=CANONICAL_PILOT_DISCLOSURE_GENERATION,
+                 work_owner=None):
         self._store = store
         self._root = retained_root
         self._project = projector
@@ -284,6 +299,7 @@ class InspectorService:
         self._parents = retention_parents
         self._generation = restored_disclosure_generation
         self._read = read_retained_evidence_bundle
+        self._work_owner = work_owner
 
     def inspect(self, owner, handle, reauthorize):
         try:
@@ -333,6 +349,28 @@ class InspectorService:
         _reauthorize(owner, reauthorize)
         return {"status": "REQUESTED", "receipt": receipt}
 
+    async def submit_alternate(self, owner, handle, dispatch_hash, profile_id, reason, key, reauthorize):
+        result = self.request_alternate(owner, handle, dispatch_hash, profile_id, reason, key, reauthorize)
+        if self._work_owner is not None:
+            package = self.owned_execution_package(owner, handle, reauthorize)
+            self._work_owner.submit_alternate(self, owner, handle, result["receipt"], package, reauthorize)
+        return result
+
+    def owned_execution_package(self, owner, handle, reauthorize):
+        """Trusted owner composition only; no full-package disclosure route."""
+        current = self.inspect(owner, handle, reauthorize)
+        publication = self._store.resolve(owner, handle, self._generation)
+        payload, _artifacts = self._read(self._root, publication.bundle_hash, **READ_LIMITS)
+        package = payload["execution_package"]
+        from src.execution_package import package_hash_is_valid
+        if (payload["evidence_package_hash"] != current["evidence_package_hash"]
+                or not package_hash_is_valid(package)
+                or package["package_hash"] != current["execution_package_hash"]
+                or self._store.resolve(owner, handle, self._generation) != publication):
+            raise UnknownInspection("inspection unavailable")
+        _reauthorize(owner, reauthorize)
+        return package
+
     def request_alternate(self, owner, handle, dispatch_hash, profile_id, reason, key, reauthorize):
         """Record owned intent for another recorded eligible target.
 
@@ -355,6 +393,13 @@ class InspectorService:
                                                 mission_key=current["mission_key"])
         _reauthorize(owner, reauthorize)
         return {"status": "REQUESTED", "receipt": receipt}
+
+    async def admit_tmos(self, owner, packet_id, key, reauthorize):
+        if self._generation != CANONICAL_TMOS_DISCLOSURE_GENERATION or self._work_owner is None:
+            raise InspectorUnavailable("inspector unavailable")
+        _reauthorize(owner, reauthorize)
+        claim, result = await self._work_owner.execute(owner, packet_id, key, reauthorize)
+        return self.publish_tmos_work(owner, claim, result, reauthorize)
 
     async def admit(self, owner, pilot_id, key, reauthorize):
         from src.canonical_pilot_adapter import FixedSyntheticPilot
@@ -447,6 +492,9 @@ class InspectorService:
         authority = dispatch.get("authority") or {}
         if alternate_of is not None:
             request = alternate_of[1]
+            original_package = self.owned_execution_package(owner, alternate_of[0], reauthorize)
+            if not same_work_intent(original_package, package):
+                raise InspectorUnavailable("inspector unavailable")
             selected = [row for row in dispatch.get("candidates_considered", ()) if row.get("selected") is True]
             if (authority.get("action") != "prefer_eligible_target"
                     or authority.get("acting_principal") != owner.auth_key

@@ -72,7 +72,7 @@ def create_worktree(repo_path: str, run_id: str, base_ref: str = "HEAD",
     return target
 
 
-def apply_patch(worktree_path: str, patch_text: str) -> dict:
+def apply_patch(worktree_path: str, patch_text: str, *, allowed_paths=None) -> dict:
     """`git apply --check`, then apply; never commits.
 
     The patch file lives outside the worktree so it can't leak into the tree
@@ -86,6 +86,20 @@ def apply_patch(worktree_path: str, patch_text: str) -> dict:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(patch_text)
+
+        if allowed_paths is not None:
+            # Use git's own complete patch parser: ---/+++ text extraction
+            # alone misses rename, binary and mode-only changes.
+            stats = _git(["-C", worktree_path, "apply", "--numstat", "-z", patch_file])
+            summary = _git(["-C", worktree_path, "apply", "--summary", patch_file])
+            entries = [row.split("\t", 2) for row in stats.stdout.split("\0") if row]
+            allowed = set(allowed_paths)
+            if (stats.returncode != 0 or summary.returncode != 0 or not entries
+                    or any(len(row) != 3 or not row[0].isdigit() or not row[1].isdigit()
+                           or not row[2] or row[2] not in allowed for row in entries)
+                    or any(not re.fullmatch(r"\s*(create|delete) mode 100644 .+", line)
+                           for line in summary.stdout.splitlines() if line.strip())):
+                return {"applied": False, "error": "patch exceeds admitted paths or file operations", "changed_files": []}
 
         check = _git(["-C", worktree_path, "apply", "--check", patch_file])
         if check.returncode != 0:

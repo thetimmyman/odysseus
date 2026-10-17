@@ -8,7 +8,7 @@ from tests.test_canonical_inspector_admission import native_store as native_stor
 from tests.test_canonical_tmos_publication import retained_work
 
 
-def routing_inputs(tmp_path, *, hosted_b=False):
+def routing_inputs(tmp_path, *, hosted_b=False, runtime_options=None):
     from src import dispatch_routing as routing
     from src.dispatch_boundary import TargetEstate
     from src.local_targets import (
@@ -30,7 +30,7 @@ def routing_inputs(tmp_path, *, hosted_b=False):
                                     backend="fixture-backend", endpoint_url=endpoint, endpoint_type="ollama"),
             model=ModelIdentity(model_id="fixture-model", alias="fixture-model", digest="d" * 64),
             context=ContextProfile(configured_context=4096, configured_served_context=4096,
-                safe_working_context=4096, safe_context_source="synthetic-only"),
+                safe_working_context=4096, safe_context_source="synthetic-only", options=runtime_options or {}),
             capabilities=CapabilityEvidence(measured=(routing.CAP_TEXT_GENERATION,
                 routing.CAP_SINGLE_TOOL_CALL, routing.CAP_EXACT_REFERENCE_SEMANTICS)),
             locality=routing.LOCALITY_HOSTED if hosted else PRIVACY_LOCAL_ONLY,
@@ -42,6 +42,7 @@ def routing_inputs(tmp_path, *, hosted_b=False):
             model="fixture-model", model_digest="d" * 64, endpoint_url=endpoint, endpoint_type="ollama",
             locality=routing.LOCALITY_HOSTED if hosted else routing.LOCALITY_LOCAL,
             credential_sha256="c" * 64 if hosted else "",
+            runtime_options=runtime_options or {},
             roles=frozenset({routing.ROLE_IMPLEMENTER}),
             tools=frozenset({"write_file"}), configured_context=4096, configured_served_context=4096,
             network_policy="offline", budget_class="dev"))

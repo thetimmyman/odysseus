@@ -903,6 +903,8 @@ app.router.lifespan_context = _lifespan
 async def _startup_event():
     global upload_cleanup_task
     logger.info("Application starting up...")
+    from src.canonical_inspector_runtime import start_inspector_runtime
+    await start_inspector_runtime(app)
     webhook_manager.set_loop(asyncio.get_running_loop())
     # Wipe any leftover incognito sessions from previous process — they're
     # ephemeral by design and must not survive a restart.
@@ -1138,6 +1140,9 @@ async def _startup_event():
 
 async def _shutdown_event():
     logger.info("Application shutting down...")
+    from src.canonical_inspector_runtime import stop_inspector_runtime
+    if not await stop_inspector_runtime(app):
+        logger.error("Inspector shutdown unresolved; retained invocation requires reconciliation")
     if upload_cleanup_task:
         upload_cleanup_task.cancel()
         try:

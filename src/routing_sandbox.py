@@ -108,12 +108,16 @@ def _default_policy_decision_id() -> str:
 def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
                    run_id: Optional[str] = None, db=None,
                    policy_decision_id: Optional[str] = None,
-                   artifacts_dir: Optional[str] = None) -> dict:
+                   artifacts_dir: Optional[str] = None, timeout_s: Optional[int] = None) -> dict:
     """Run one allowlisted command in the network-less container.
 
     "error" == "docker_unavailable" is an infrastructure failure, not a command
     failure, and must not be scored against the patch."""
     cfg = _sandbox_config(policy)
+    if timeout_s is not None:
+        if type(timeout_s) is not int or timeout_s <= 0:
+            raise ValueError("sandbox packet deadline must be positive")
+        cfg["wallClockSeconds"] = min(cfg["wallClockSeconds"], timeout_s)
     if policy_decision_id is None:
         policy_decision_id = _default_policy_decision_id()
     started_at = _utcnow()
@@ -123,6 +127,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         "stdout_path": None, "stderr_path": None,
         "stdout_truncated": False, "stderr_truncated": False,
         "tool_call_record_id": None, "container_name": None, "cmd": cmd,
+        "timeout_s": cfg["wallClockSeconds"],
     }
 
     if not is_command_allowed(cmd, policy):
