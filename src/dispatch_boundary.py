@@ -603,10 +603,13 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
                         workload: Optional[Mapping[str, Any]] = None,
                         offer_identity: Optional[Mapping[str, Any]] = None,
                         now: Optional[datetime] = None,
-                        decision_id: str = "") -> BoundDispatch:
+                        decision_id: str = "", provenance_sink=None) -> BoundDispatch:
     """Bind an estate and request to a decision without DB or task row, for
     callers whose estate comes from elsewhere (measured fleet, fixture, replay).
     """
+    metadata = provenance_sink if type(provenance_sink) is dict else None
+    if metadata is not None:
+        metadata.clear()
     if capability_store is None:
         raise DispatchBoundaryError(
             "canonical capability store is required; an estate projection or "
@@ -642,7 +645,16 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
     estate = dataclasses.replace(estate, profiles=tuple(canonical_profiles),
                                 receipts=tuple(canonical_receipts),
                                 canonical_receipts=tuple(source_receipts))
-    snapshot = policy or policy_snapshot()
+    snapshot_metadata = {} if metadata is not None else None
+    options = {"provenance_sink": snapshot_metadata} if snapshot_metadata is not None else {}
+    if policy:
+        snapshot = policy
+        if metadata is not None:
+            metadata["snapshot"] = {"kind": "caller_supplied"}
+    else:
+        snapshot = policy_snapshot(**options)
+        if metadata is not None:
+            metadata["snapshot"] = snapshot_metadata
     if not estate.profiles:
         raise DispatchBoundaryError(
             f"{BOUNDARY_REFUSED_NO_PROFILES}: the estate has no profiles to decide "
@@ -658,10 +670,14 @@ def resolve_from_estate(estate: TargetEstate, request: RoutingRequest, *,
             receipts=estate.receipts, skipped=estate.skipped,
             candidates=estate.candidates, canonical_receipts=estate.canonical_receipts)
     capacity = tuple(capacity_receipts or ())
+    selection_metadata = {} if metadata is not None else None
+    options = {"provenance_sink": selection_metadata} if selection_metadata is not None else {}
     decision = select_target(
         request, profiles=estate.profiles, receipts=estate.receipts,
         policy=snapshot, resources=resources,
-        capacity_receipts=capacity, now=now, decision_id=decision_id)
+        capacity_receipts=capacity, now=now, decision_id=decision_id, **options)
+    if metadata is not None:
+        metadata["selection"] = selection_metadata
     from src.offer_economics import configured_quote, quote_digest
     selected = decision.selected_profile
     quote = configured_quote(profile_id=selected.profile_id, model=selected.model,
