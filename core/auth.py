@@ -9,7 +9,7 @@ import secrets
 import threading
 import time
 import logging
-from pathlib import Path
+import math
 from typing import Optional, Dict, Any, List
 
 import bcrypt
@@ -303,6 +303,28 @@ class AuthManager:
 
     def is_admin(self, username: str) -> bool:
         return self.users.get(username, {}).get("is_admin", False)
+
+    def snapshot_admin_account_epoch(self, exact_username: str):
+        """Read an exact current admin incarnation, without normalizing keys.
+
+        This conservative discriminator is not a stable account UUID. Renames
+        and recreated accounts with another timestamp cannot inherit ownership.
+        No password, session or mutable account dictionary escapes the lock.
+        """
+        with self._config_lock:
+            users = self._config.get("users")
+            if (os.getenv("AUTH_ENABLED", "true").lower() != "true"
+                    or not isinstance(exact_username, str) or not exact_username
+                    or exact_username in RESERVED_USERNAMES
+                    or not isinstance(users, dict) or not users):
+                return None
+            account = users.get(exact_username)
+            if not isinstance(account, dict) or account.get("is_admin") is not True:
+                return None
+            created = account.get("created")
+            if type(created) is not float or not math.isfinite(created) or created <= 0:
+                return None
+            return exact_username, "float64_hex:" + created.hex()
 
     def list_users(self) -> List[Dict[str, Any]]:
         return [

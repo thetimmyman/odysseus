@@ -274,8 +274,67 @@ def _resolve_task(db, body: TaskRefRequest):
 _deterministic_route = build_deterministic_route
 
 
-def setup_routing_harness_routes():
+# Source-only finite boundary. Normal application setup supplies no live
+# service: no environment flag, lease token or auth state can enable one.
+from src.canonical_inspector_admission import InspectorUnavailable, UnknownInspection
+from src.canonical_inspector_service import request_principal
+from src.canonical_pilot_adapter import PilotLimit, read_idempotency_key
 
+@router.post("/inspector/pilots/{pilot_id}")
+async def inspector_pilot(pilot_id: str, request: Request):
+    owner = request_principal(request)
+    inspector_service = getattr(request.app.state, "canonical_inspector_service", None)
+    if inspector_service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    try:
+        key = await read_idempotency_key(request.stream(), content_length=request.headers.get("content-length"))
+        return await inspector_service.admit(owner, pilot_id, key, lambda: request_principal(request))
+    except (PilotLimit, InspectorUnavailable, UnknownInspection):
+        raise HTTPException(503, "Inspector unavailable") from None
+
+@router.get("/inspector/attempts/{handle}")
+def inspector_attempt(handle: str, request: Request):
+    owner = request_principal(request)
+    inspector_service = getattr(request.app.state, "canonical_inspector_service", None)
+    if inspector_service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    try:
+        return inspector_service.inspect(owner, handle, lambda: request_principal(request))
+    except (UnknownInspection, InspectorUnavailable):
+        raise HTTPException(404, "Inspection unavailable") from None
+
+@router.post("/inspector/attempts/{handle}/escalation")
+async def inspector_escalation(handle: str, request: Request):
+    owner = request_principal(request)
+    service = getattr(request.app.state, "canonical_inspector_service", None)
+    if service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+    try:
+        raw = await collect_bytes(request.stream(), limit=4096, seconds=5)
+        body = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+        if type(body) is not dict or set(body) != {"dispatch_receipt_hash", "reason", "idempotency_key"}:
+            raise ValueError("invalid request")
+        return service.request_escalation(owner, handle, body["dispatch_receipt_hash"],
+            body["reason"], body["idempotency_key"], lambda: request_principal(request))
+    except (PilotLimit, UnknownInspection, InspectorUnavailable, ValueError, TypeError, RecursionError):
+        raise HTTPException(404, "Inspection unavailable") from None
+
+
+@router.post("/inspector/attempts/{handle}/revoke")
+def inspector_revoke(handle: str, request: Request):
+    owner = request_principal(request)
+    inspector_service = getattr(request.app.state, "canonical_inspector_service", None)
+    if inspector_service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    try:
+        return inspector_service.revoke(owner, handle, lambda: request_principal(request))
+    except (UnknownInspection, InspectorUnavailable):
+        raise HTTPException(404, "Inspection unavailable") from None
+
+
+
+def setup_routing_harness_routes():
     @router.post("/coordinator/wrap")
     def coordinator_wrap(req: WrapRequest, request: Request):
         """Deterministic wrapper around a coordinator decision."""

@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""One bounded RTX profile measurement; never import or activate a receipt.
+
+The boundary-only mode starts two local synthetic units without network use.
+Live mode additionally requires the reviewed normal lease client and its SHA,
+private retained inputs, and a fresh boundary proof in this process.
+"""
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+from types import SimpleNamespace
+import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.local_measurement_owner import BrokerLease, MeasurementUnresolved, measure_once
+from src.local_measurement_config import ReadOnlyConfigProjection, ConfigProjectionRefused
+from src.local_measurement_process import SystemdProcesses, decode_json
+from src.local_target_qualification import _http_transport, read_bounded_http_json
+from src.local_targets import (LocalTargetSpec, make_target_capability_receipt,
+                              target_capability_receipt_hash_is_valid)
+
+
+def load_client(path, expected):
+    raw = Path(path).read_bytes()
+    if len(expected) != 64 or hashlib.sha256(raw).hexdigest() != expected:
+        raise MeasurementUnresolved('normal lease client source mismatch')
+    loader = importlib.machinery.SourceFileLoader('normal_lease_client', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    # Execute precisely the bytes whose digest was checked, without rereading.
+    exec(compile(raw, str(path), 'exec'), module.__dict__)
+    module.BROKER = 'http://127.0.0.1:8745'
+    return module
+
+
+def worker(args):
+    raw = sys.stdin.buffer.read(1048577)
+    if len(raw) > 1048576:
+        raise MeasurementUnresolved('worker input exceeds budget')
+    value = decode_json(raw)
+    if type(value) is not dict:
+        raise MeasurementUnresolved('invalid worker input')
+    if args.worker_http:
+        if set(value) != {'url', 'payload'}:
+            raise MeasurementUnresolved('invalid HTTP worker input')
+        result = _http_transport(value['url'], value['payload'])
+    else:
+        if set(value) != {'path', 'body'} or value['path'] not in ('/acquire', '/heartbeat', '/release'):
+            raise MeasurementUnresolved('invalid broker worker input')
+        client = load_client(args.lease_client, args.lease_client_sha256)
+        # Keep the pinned normal client's HTTP/API behavior; limit its JSON
+        # consumer in THIS isolated worker before it can buffer broker bodies.
+        client.json = SimpleNamespace(dumps=json.dumps,
+            load=lambda response: read_bounded_http_json(response, limit=16384))
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise MeasurementUnresolved('broker redirect refused')
+
+        urllib.request.install_opener(urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), NoRedirect()))
+        status, body = client._post(value['path'], value['body'], timeout=3)
+        result = {'status': status, 'body': body}
+    print(json.dumps(result, allow_nan=False))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--qualify-boundary', action='store_true')
+    modes.add_argument('--worker-http', action='store_true', help=argparse.SUPPRESS)
+    modes.add_argument('--worker-broker', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--lease-client', type=Path)
+    parser.add_argument('--lease-client-sha256')
+    inputs = parser.add_mutually_exclusive_group()
+    inputs.add_argument('--receipt', type=Path)
+    inputs.add_argument('--new-profile', type=Path,
+                        help='Separate sealed UNQUALIFIED descriptor; measure a new deterministic profile.')
+    parser.add_argument('--spec', type=Path)
+    parser.add_argument('--identity-command', type=Path)
+    parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--holder')
+    parser.add_argument('--ssh-config-manifest', type=Path,
+                        help='Pinned native config roots and static Includes; native SSH remains the target parser.')
+    parser.add_argument('--ssh-config-manifest-sha256')
+    parser.add_argument('--changed-route', action='store_true',
+                        help='Explicit new profile for a natively bound hostname change; old spec stays immutable.')
+    parser.add_argument('--current-spec', type=Path,
+                        help='Separately pinned proposed specification; only hostname may change.')
+    args = parser.parse_args(argv)
+    if args.new_profile is not None and (args.qualify_boundary or args.worker_http
+            or args.worker_broker or args.changed_route or args.current_spec is not None):
+        parser.error('new-profile mode cannot be combined with boundary, worker or changed-route modes')
+    projection = None
+    try:
+        if (args.ssh_config_manifest is None) != (args.ssh_config_manifest_sha256 is None):
+            parser.error('config projection requires manifest and source pin together')
+        if args.ssh_config_manifest is not None:
+            if args.worker_http or args.worker_broker:
+                parser.error('config projection belongs to the controller only')
+            fd = os.open(args.ssh_config_manifest, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                meta = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid()
+                        or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_size > 65536):
+                    raise MeasurementUnresolved('config projection manifest is not private and bounded')
+                raw_manifest = stream.read(65537)
+            if (len(raw_manifest) > 65536
+                    or hashlib.sha256(raw_manifest).hexdigest() != args.ssh_config_manifest_sha256):
+                raise MeasurementUnresolved('config projection manifest source mismatch')
+            projection = ReadOnlyConfigProjection(decode_json(raw_manifest))
+        if args.worker_http or args.worker_broker:
+            worker(args)
+            return 0
+        command = [sys.executable, '-I', str(Path(__file__).resolve())]
+        processes = SystemdProcesses(worker_command=command+['--worker-http'], broker_worker=[],
+                                    config_projection=projection)
+        if args.qualify_boundary:
+            if args.changed_route or args.current_spec is not None:
+                parser.error('route mode cannot be combined with boundary-only proof')
+            proof = processes.qualify_no_provider()
+            processes.finish_capture()
+            projection = None
+            proof['configuration_cleanup'] = processes.configuration_evidence()
+            print(json.dumps(proof, sort_keys=True))
+            return 0
+        if args.changed_route != (args.current_spec is not None):
+            parser.error('route mode requires --changed-route and --current-spec together')
+        measurement_input = args.new_profile if args.new_profile is not None else args.receipt
+        if any(value is None for value in (args.lease_client, args.lease_client_sha256,
+                measurement_input, args.spec, args.identity_command, args.output_dir, args.holder)):
+            parser.error('live mode requires all retained inputs, holder and pinned lease client')
+        load_client(args.lease_client, args.lease_client_sha256)
+        raw = decode_json(measurement_input.read_bytes())
+        if not target_capability_receipt_hash_is_valid(raw):
+            raise MeasurementUnresolved('measurement descriptor or receipt is not sealed')
+        previous = make_target_capability_receipt(**raw)
+        spec = LocalTargetSpec(**decode_json(args.spec.read_bytes()))
+        current_spec = (LocalTargetSpec(**decode_json(args.current_spec.read_bytes()))
+                        if args.changed_route else None)
+        identity_command = decode_json(args.identity_command.read_bytes())
+        # Existence is checked BEFORE starting even synthetic qualification.
+        if args.output_dir.exists():
+            raise MeasurementUnresolved('measurement output already exists')
+        processes = SystemdProcesses(worker_command=command+['--worker-http'],
+            broker_worker=command+['--worker-broker', '--lease-client', str(args.lease_client.resolve()),
+                                   '--lease-client-sha256', args.lease_client_sha256],
+            config_projection=projection)
+        processes.qualify_no_provider()
+        execution_spec = current_spec if current_spec is not None else spec
+        lease = BrokerLease(processes.post, endpoint=execution_spec.endpoint, holder=args.holder)
+        candidate = measure_once(spec, previous, identity_command, args.output_dir,
+                                 current_spec=current_spec, new_profile=args.new_profile is not None,
+                                 lease=lease, processes=processes)
+        # measure_once finalized copies before release/publication. No new
+        # filesystem cleanup may fail after the accepted receipt exists.
+        projection = None
+        print(json.dumps({'receipt_hash':candidate.receipt_hash, 'profile_id':candidate.profile_id,
+                          'safe_context':4096, 'applied':False}, sort_keys=True))
+        return 0
+    except Exception as exc:
+        # Provider/collector/broker exceptions may contain private data.
+        print('measurement refused: '+type(exc).__name__+'; no receipt applied', file=sys.stderr)
+        if isinstance(exc, ConfigProjectionRefused):
+            # Same private owned-resource channel as unit reconciliation keys.
+            # No original configuration path/body or exception text is emitted.
+            print(json.dumps({'configuration_projection_refusal':exc.private_evidence()},
+                             sort_keys=True), file=sys.stderr)
+        return 2
+    finally:
+        if projection is not None:
+            try:
+                complete = projection.close() is True
+            except Exception:
+                complete = False
+            if not complete:
+                print('configuration cleanup UNKNOWN; owner reconciliation required', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

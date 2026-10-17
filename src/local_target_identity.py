@@ -280,6 +280,9 @@ def normalize_identity(raw, receipt, *, request_options, endpoint_url=None):
                      declared_context=int(details.get("context_length") or 0),
                      declared_capabilities=show.get("capabilities", []))
         options = {k: request_options[k] for k in ("num_ctx", "num_predict", "temperature", "think")}
+        for key in ("seed", "top_p"):
+            if key in request_options:
+                options[key] = request_options[key]
         options.update(template_sha256=hashlib.sha256(show["template"].encode()).hexdigest(),
                        runtime_environment_sha256=raw["runtime_environment_sha256"])
         context.update(configured_context=options["num_ctx"], configured_served_context=0, options=options)
