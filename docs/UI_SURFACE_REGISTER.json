@@ -53,7 +53,7 @@
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
       "routes/project_files_routes.py": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
       "routes/research_routes.py": "8401bb410cfefda7841dcbeb9d2530e082fe7eb62178f366b557f122a45a9b31",
-      "routes/routing_harness_routes.py": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+      "routes/routing_harness_routes.py": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
       "routes/search_routes.py": "1510aa0e1bbf5cf537aea90406e29f95407eda507264e3d9eec09ca19fc4fb6a",
       "routes/session_routes.py": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
       "routes/shell_routes.py": "7f76cc62bd0cc663212cc31e993893be70c11fcf14b186b1477bf988ad2fec8e",
@@ -5432,7 +5432,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5453,7 +5453,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5473,7 +5473,7 @@
           {
             "path": "routes/routing_harness_routes.py",
             "line": 1,
-            "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+            "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -12877,8 +12877,8 @@
         "reason": "Fixed synthetic-pilot JSON admission uses the existing admin-cookie gate and a trusted per-app service. The app-owned real-work composition cannot execute the synthetic adapter. Default setup supplies no service. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 283,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "line": 318,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12888,8 +12888,8 @@
         "reason": "Owner-checked minimized JSON inspection supports a future client. It adds no navigable HTML page, asset response or browser control; live transport and UI acceptance remain unobserved.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 295,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "line": 330,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12899,8 +12899,8 @@
         "reason": "Owner-checked JSON locator revocation adds no navigable HTML page, asset response or browser control. It does not establish installed service or browser acceptance.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 337,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "line": 372,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12910,8 +12910,8 @@
         "reason": "Owner-cookie authenticated pending escalation request with an exact retained-attempt join; no policy mutation, dispatch or navigable HTML. The app-owned service is absent in default setup.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 319,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "line": 354,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "Mounted bounded JSON request; immutable owner/attempt/dispatch-associated request receipt."
         }
       },
@@ -12921,8 +12921,8 @@
         "reason": "Owner-cookie authenticated preference for another recorded eligible target. An explicitly configured app owner may consume the request once through current canonical routing and retained execution evidence; configuration cannot refresh evidence or grant eligibility. Default setup is unavailable; native and UI acceptance remain unobserved. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 349,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "line": 384,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "Mounted bounded JSON preference; immutable owner, work-item, attempt and dispatch association."
         }
       },
@@ -12932,9 +12932,31 @@
         "reason": "Finite owner-cookie authenticated admission accepts only an idempotency key for one of two pre-admitted work packages. The app lifespan owns normal routing, execution and retention; browser callers supply no command, path, target, package or policy. Default setup remains unavailable and operational acceptance unobserved. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 307,
-          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "line": 342,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
           "claim": "Mounted bounded JSON admission for an explicitly configured finite app owner."
+        }
+      },
+      {
+        "candidate": "GET /api/harness/inspector/setup",
+        "type": "owned_canonical_inspector_json_api",
+        "reason": "Explicit admin-cookie maintenance status reports the existing application database schema, connection qualification and current maintenance availability. Execution qualification remains NOT_RUN. This JSON endpoint creates no navigable page or browser control; native setup and execution acceptance remain unobserved.",
+        "source": {
+          "path": "routes/routing_harness_routes.py",
+          "line": 284,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
+          "claim": "Mounted admin-cookie JSON status over the existing application session factory."
+        }
+      },
+      {
+        "candidate": "POST /api/harness/inspector/setup/schema",
+        "type": "owned_canonical_inspector_json_api",
+        "reason": "Explicit admin-cookie maintenance accepts only an expected fixed schema fingerprint. Disabled execution, absent owner and no unresolved admission are required before adding the fixed feature schema in one SQLite transaction. Partial schema refuses repair; account/configuration checks are snapshots. This adds no navigable page or browser control and does not enable execution or establish native application, restore or pilot acceptance.",
+        "source": {
+          "path": "routes/routing_harness_routes.py",
+          "line": 295,
+          "sha256": "d9bca1d50b8a52217d465f35cb214953b36051427dddc756013e2d7682c7c6f5",
+          "claim": "Mounted bounded fixed-schema JSON maintenance operation; no caller-selected database or DDL."
         }
       }
     ],
