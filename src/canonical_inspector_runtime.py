@@ -434,7 +434,7 @@ class TmosExecutionOwner:
     @staticmethod
     def _verifier(bound, package, number, observed):
         from src.attempt_receipt import artifact_ref, make_verification_receipt
-        from src.local_measurement_process import decode_json
+        from src.work_verification_report import decode_work_verification_report
         from src.local_worker_loop import VerificationExecution
 
         plan = package["verification"]
@@ -446,20 +446,22 @@ class TmosExecutionOwner:
             raise InspectorUnavailable("inspector unavailable")
         out = artifact_ref("verifier-stdout", stdout, storage_uri="memory://verifier-stdout")
         err = artifact_ref("verifier-stderr", stderr, storage_uri="memory://verifier-stderr")
-        report = decode_json(stdout) if observed["exit_code"] == 0 else None
-        if report is not None and (type(report) is not dict or report.get("schema") != "tmos-work-verification-v1"
-                or type(report.get("tests_passed")) is not int or type(report.get("tests_failed")) is not int):
-            raise InspectorUnavailable("inspector unavailable")
+        report = decode_work_verification_report(stdout, command=plan["command"],
+            verifier_digests=observed["verifier_digests"]) if observed["exit_code"] == 0 else None
         fields = dict(receipt_id=str(uuid.uuid4()), run_id=package["run_id"], packet_id=package["packet_id"], attempt=number,
             execution_package_hash=package["package_hash"], verifier_id=plan["verifier_id"], normalized_command=plan["command"],
             source_snapshot_digest=observed["source"]["snapshot_digest"], verifier_paths=tuple(plan["verifier_paths"]),
             verifier_digest=measured.get(plan["verifier_id"], next(iter(measured.values()))),
             worktree=observed["source"]["worktree"], host=observed["host"], started_at=observed["started_at"],
             container=observed.get('container_id', ''),
-            tool_versions=(("container_image", observed['image_id']),) if observed.get('image_id') else (),
+            tool_versions=((("container_image", observed['image_id']),) if observed.get('image_id') else ())
+                + tuple(tuple(pair) for pair in (report or {}).get("tool_versions", ())),
             ended_at=observed["ended_at"], elapsed_s=observed["elapsed_s"], exit_code=observed["exit_code"],
             stdout_ref=out, stderr_ref=err, stdout_bytes=len(stdout), stderr_bytes=len(stderr), timeout_s=observed["timeout_s"],
             proof_vantage="harness worktree", requirement_ids=("deterministic_verification", "source_binding", "scope_check"),
+            tests_collected=(report or {}).get("tests_collected"),
+            tests_executed=(report or {}).get("tests_executed"),
+            tests_skipped=(report or {}).get("tests_skipped"),
             tests_passed=report["tests_passed"] if report is not None else None,
             tests_failed=report["tests_failed"] if report is not None else None)
         main = make_verification_receipt(**fields)
@@ -468,6 +470,9 @@ class TmosExecutionOwner:
             for control, expected in (("positive_control", "PASS"), ("negative_control", "FAIL")):
                 result = report.get(control, {})
                 controls.append(make_verification_receipt(**{**fields, "receipt_id": str(uuid.uuid4()),
+                    # Main-run counters do not measure the separate control runs.
+                    "tests_collected": None, "tests_executed": None, "tests_passed": None,
+                    "tests_failed": None, "tests_skipped": None,
                     "control_id": control, "control_expected": expected, "control_observed": result.get("observed", "UNKNOWN"),
                     "control_passed": result.get("expected") == expected and result.get("observed") == expected,
                     "requirement_ids": ("negative_control",) if control == "negative_control" else ()}))
