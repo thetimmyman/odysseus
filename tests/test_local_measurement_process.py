@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.helpers.docker_cli import block_native_transports
+
 from src.local_measurement_process import SystemdProcesses
 from src.local_measurement_owner import MeasurementUnresolved
 
@@ -272,3 +274,8 @@ def test_cli_constructor_refusal_records_private_owned_copy_key_without_primary_
     assert directory.parent == Path('/tmp')
     assert (directory / '0').read_bytes() == config.read_bytes()
     shutil.rmtree(directory)  # Explicit synthetic-fixture recovery only.
+
+
+@pytest.fixture(autouse=True)
+def no_native_transports(monkeypatch):
+    block_native_transports(monkeypatch)

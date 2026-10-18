@@ -5,11 +5,10 @@ truncation, ToolCallRecord persistence for allowed AND denied attempts, and
 the git worktree lifecycle (clean-tree requirement, jailed create/remove,
 apply --check, failed-patch revert). Never calls real docker."""
 import hashlib
-import json
 import os
+import signal
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -19,6 +18,8 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import core.database as cdb
+from tests.helpers.docker_cli import FakeDocker, block_native_transports
+
 import src.routing_sandbox as rs
 from src.routing_sandbox import is_command_allowed, run_in_sandbox
 from src.routing_workdir import (
@@ -81,135 +82,204 @@ def test_allowlist_rejects(cmd):
     assert is_command_allowed(cmd, SB_POLICY) is False
 
 
-def _fake_run_factory(calls, stdout=b"ok", stderr=b"", returncode=0):
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=stderr)
-    return fake_run
+@pytest.fixture(autouse=True)
+def no_native_transports(monkeypatch):
+    block_native_transports(monkeypatch)
+
+
+def sandbox_fixture(tmp_path, monkeypatch, *, stdout=b'ok', stderr=b''):
+    calls = []
+    docker = FakeDocker(calls, stdout=stdout, stderr=stderr)
+    docker.artifacts = tmp_path / 'artifacts'
+    monkeypatch.setattr(rs, '_bounded_docker', docker)
+    work = tmp_path / 'work'
+    work.mkdir()
+    return docker, work
 
 
 def test_run_in_sandbox_argv(tmp_path, data_dir, monkeypatch):
-    calls = []
-    monkeypatch.setattr(rs.subprocess, "run", _fake_run_factory(calls))
-    wt = tmp_path / "wt"
-    wt.mkdir()
-
-    result = run_in_sandbox(str(wt), "pytest -q", policy=SB_POLICY)
-
-    assert result["allowed"] is True
-    assert result["exit_code"] == 0
-    assert result["timed_out"] is False
-    (argv, kwargs) = calls[0]
-    assert argv[:3] == ["docker", "run", "--rm"]
-    # Network disabled.
-    assert argv[argv.index("--network") + 1] == "none"
-    # Filesystem allowlist: EXACTLY one host mount, the worktree rw at /work.
-    assert argv.count("-v") == 1
-    assert argv[argv.index("-v") + 1] == f"{os.path.realpath(str(wt))}:/work:rw"
-    assert "--mount" not in argv and "--volume" not in argv and "--privileged" not in argv
-    assert argv[argv.index("-w") + 1] == "/work"
-    # Hardening + resource limits from policy.
-    assert argv[argv.index("--cap-drop") + 1] == "ALL"
-    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
-    # Non-root: runs as the host uid so worktree writes survive --cap-drop ALL.
-    assert argv[argv.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
-    assert argv[argv.index("--cpus") + 1] == "1"
-    assert argv[argv.index("--memory") + 1] == "2g"
-    assert argv[argv.index("--pids-limit") + 1] == "64"
-    assert argv[argv.index("--tmpfs") + 1] == "/tmp"
-    # Command exec'd without a shell: image then the shlex'd argv tail.
-    image_idx = argv.index("python:3.12-slim")
-    assert argv[image_idx + 1:] == ["pytest", "-q"]
-    assert "sh" not in argv and "bash" not in argv
-    # Wall clock enforced via subprocess timeout.
-    assert kwargs["timeout"] == 5
-    # Output archived.
-    assert os.path.isfile(result["stdout_path"])
-    with open(result["stdout_path"], "rb") as f:
-        assert f.read() == b"ok"
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch)
+    result = run_in_sandbox(str(wt), 'pytest -q', policy=SB_POLICY, artifacts_dir=str(docker.artifacts))
+    assert result['allowed'] and result['exit_code'] == 0 and not result['timed_out']
+    argv = next(argv for argv, _ in docker.calls if argv[1] == 'create')
+    assert argv[:2] == ['docker', 'create'] and '--rm' not in argv
+    assert argv[argv.index('--network')+1] == 'none'
+    assert argv.count('-v') == 1 and argv[argv.index('-v')+1] == f'{wt}:/work:rw'
+    assert '--mount' not in argv and '--privileged' not in argv
+    assert argv[argv.index('--cap-drop')+1] == 'ALL'
+    assert argv[argv.index('--security-opt')+1] == 'no-new-privileges'
+    assert argv[argv.index('--user')+1] == f'{os.getuid()}:{os.getgid()}'
+    assert argv[argv.index('--cpus')+1] == '1'
+    assert argv[argv.index('--memory')+1] == '2g'
+    assert argv[argv.index('--pids-limit')+1] == '64'
+    assert argv[argv.index('--tmpfs')+1] == '/tmp'
+    assert argv[argv.index(docker.image)+1:] == ['pytest', '-q']
+    assert result['container_id'] == docker.cid and result['image_id'] == docker.image
+    assert result['cleanup_confirmed'] is True
+    assert Path(result['stdout_path']).read_bytes() == b'ok'
 
 
-@pytest.mark.parametrize("requested,expected", [(2, 2), (30, 5)])
+@pytest.mark.parametrize('requested,expected', [(2, 2), (30, 5)])
 def test_run_in_sandbox_packet_deadline_can_only_tighten_policy(tmp_path, data_dir, monkeypatch, requested, expected):
-    calls = []
-    monkeypatch.setattr(rs.subprocess, "run", _fake_run_factory(calls))
-    wt = tmp_path / "wt"
-    wt.mkdir()
-    result = run_in_sandbox(str(wt), "pytest -q", policy=SB_POLICY, timeout_s=requested)
-    assert calls[0][1]["timeout"] == expected
-    assert result["timeout_s"] == expected
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch)
+    result = run_in_sandbox(str(wt), 'pytest -q', policy=SB_POLICY, timeout_s=requested, artifacts_dir=str(docker.artifacts))
+    assert all(0 < options['timeout'] <= expected for _, options in docker.calls)
+    assert result['timeout_s'] == expected
 
 
 def test_run_in_sandbox_mount_label_applied(tmp_path, data_dir, monkeypatch):
-    """A policy mountLabel (SELinux relabel) is appended to the bind mount as
-    a comma-separated option -- required on enforcing hosts or the container
-    can't write to /work. Default policy carries "z"; empty disables it."""
-    calls = []
-    monkeypatch.setattr(rs.subprocess, "run", _fake_run_factory(calls))
-    wt = tmp_path / "wt"
-    wt.mkdir()
-    labeled = {"sandbox": dict(SB_POLICY["sandbox"], mountLabel="z")}
-
-    run_in_sandbox(str(wt), "pytest -q", policy=labeled)
-
-    (argv, _kwargs) = calls[0]
-    assert argv[argv.index("-v") + 1] == f"{os.path.realpath(str(wt))}:/work:rw,z"
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch)
+    labeled = {'sandbox': dict(SB_POLICY['sandbox'], mountLabel='z')}
+    run_in_sandbox(str(wt), 'pytest -q', policy=labeled, artifacts_dir=str(docker.artifacts))
+    argv = next(argv for argv, _ in docker.calls if argv[1] == 'create')
+    assert argv[argv.index('-v')+1] == f'{wt}:/work:rw,z'
 
 
-def test_run_in_sandbox_timeout_kills_container(tmp_path, data_dir, monkeypatch):
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if argv[:2] == ["docker", "run"]:
-            raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 5))
-        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(rs.subprocess, "run", fake_run)
-    wt = tmp_path / "wt"
-    wt.mkdir()
-
-    result = run_in_sandbox(str(wt), "pytest -q", policy=SB_POLICY)
-
-    assert result["timed_out"] is True
-    assert result["exit_code"] is None
-    assert "wall clock" in result["error"]
-    # The docker CLIENT died on timeout; the container must be killed by name.
-    run_argv, kill_argv = calls
-    name = run_argv[run_argv.index("--name") + 1]
-    assert kill_argv == ["docker", "kill", name]
+@pytest.mark.parametrize('fault', ['timeout', 'lost-create-ack', 'foreign-label', 'cleanup-failed'])
+def test_unknown_container_never_starts_or_gets_destroyed_by_name(tmp_path, data_dir, monkeypatch, fault):
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch)
+    docker.fault = fault
+    result = run_in_sandbox(str(wt), 'pytest -q', policy=SB_POLICY, artifacts_dir=str(docker.artifacts))
+    commands = [argv for argv, _ in docker.calls]
+    assert all(argv[-1] == docker.cid for argv in commands if argv[1] in ('start', 'rm'))
+    assert not any('name=' in part for argv in commands for part in argv)
+    if fault in ('lost-create-ack', 'foreign-label'):
+        assert not any(argv[1] in ('start', 'rm') for argv in commands)
+    assert result['cleanup_confirmed'] is (fault == 'timeout')
+    if fault == 'timeout':
+        assert result['timed_out'] and 'wall clock' in result['error']
+    else:
+        assert result['error'] is not None and result['cleanup_state'] == 'UNKNOWN'
 
 
 def test_run_in_sandbox_truncates_output(tmp_path, data_dir, monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        rs.subprocess, "run",
-        _fake_run_factory(calls, stdout=b"x" * 5000, stderr=b"y" * 5000),
-    )
-    wt = tmp_path / "wt"
-    wt.mkdir()
-
-    result = run_in_sandbox(str(wt), "pytest", policy=SB_POLICY)
-
-    assert result["stdout_truncated"] is True
-    assert result["stderr_truncated"] is True
-    assert os.path.getsize(result["stdout_path"]) == 100  # maxOutputBytes
-    assert os.path.getsize(result["stderr_path"]) == 100
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch, stdout=b'x'*5000, stderr=b'y'*5000)
+    result = run_in_sandbox(str(wt), 'pytest', policy=SB_POLICY, artifacts_dir=str(docker.artifacts))
+    assert result['stdout_truncated'] and result['stderr_truncated']
+    assert os.path.getsize(result['stdout_path']) == 100 and os.path.getsize(result['stderr_path']) == 100
+    assert result['cleanup_confirmed'] and result['error'] == 'sandbox output limit exceeded'
 
 
 def test_run_in_sandbox_docker_unavailable(tmp_path, data_dir, monkeypatch):
-    def fake_run(argv, **kwargs):
-        raise FileNotFoundError("docker")
+    def unavailable(*args, **options):
+        raise FileNotFoundError('docker')
+    monkeypatch.setattr(rs, '_bounded_docker', unavailable)
+    wt = tmp_path / 'wt'; wt.mkdir()
+    result = run_in_sandbox(str(wt), 'pytest', policy=SB_POLICY)
+    assert result['error'] == 'docker_unavailable' and result['exit_code'] is None
 
-    monkeypatch.setattr(rs.subprocess, "run", fake_run)
-    wt = tmp_path / "wt"
-    wt.mkdir()
 
-    result = run_in_sandbox(str(wt), "pytest", policy=SB_POLICY)
-    # Infrastructure failure, not command failure.
-    assert result["error"] == "docker_unavailable"
-    assert result["allowed"] is True
-    assert result["exit_code"] is None
+@pytest.mark.parametrize('stream', ['stdout', 'stderr'])
+def test_stream_limit_stops_client_before_buffering_unbounded_output(stream, monkeypatch):
+    original = subprocess.Popen
+    children = []
+
+    def owned_child(*args, **options):
+        child = original(*args, **options)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, 'Popen', owned_child)
+    script = "import os; " + ('os.write(1,b"x"*1000000)' if stream == 'stdout' else 'os.write(2,b"x"*1000000)')
+    observed = rs._bounded_docker([sys.executable, '-I', '-c', script], timeout=2, limit=100)
+    assert len(observed[stream]) <= 100
+    assert observed[stream + '_truncated'] is True
+    assert len(children) == 1
+    child = children[0]
+    assert child.stdout.closed and child.stderr.closed
+    with pytest.raises(ChildProcessError):
+        os.waitpid(child.pid, os.WNOHANG)
+    with pytest.raises(ProcessLookupError):
+        os.killpg(child.pid, 0)
+
+
+@pytest.mark.parametrize('close_at', ['selector', 'stdout'])
+def test_capture_close_failure_holds_but_still_kills_and_reaps_owned_child(monkeypatch, close_at, record_property):
+    original_popen = subprocess.Popen
+    original_selector = rs.selectors.DefaultSelector
+    children = []
+    attempts = []
+    original_killpg = os.killpg
+    close_failure = OSError('synthetic selector close failure')
+
+    class FailingPipe:
+        def __init__(self, pipe, label):
+            self.pipe = pipe
+            self.label = label
+            self.raised = False
+
+        def __getattr__(self, name):
+            return getattr(self.pipe, name)
+
+        def close(self):
+            attempts.append(self.label + '-close')
+            self.pipe.close()
+            if self.label == close_at and not self.raised:
+                self.raised = True
+                raise close_failure
+
+    def owned_child(*args, **options):
+        child = original_popen(*args, **options)
+        child.stdout = FailingPipe(child.stdout, 'stdout')
+        child.stderr = FailingPipe(child.stderr, 'stderr')
+        original_wait = child.wait
+
+        def observed_wait(*args, **options):
+            attempts.append('wait')
+            return original_wait(*args, **options)
+
+        child.wait = observed_wait
+        children.append(child)
+        return child
+
+    class FailingClose:
+        def __init__(self):
+            self.selector = original_selector()
+
+        def __getattr__(self, name):
+            return getattr(self.selector, name)
+
+        def close(self):
+            attempts.append('selector-close')
+            self.selector.close()
+            if close_at == 'selector':
+                raise close_failure
+
+    def observed_killpg(pid, signum):
+        if signum != 0:
+            attempts.append('kill-group')
+        return original_killpg(pid, signum)
+
+    monkeypatch.setattr(subprocess, 'Popen', owned_child)
+    monkeypatch.setattr(rs.selectors, 'DefaultSelector', FailingClose)
+    monkeypatch.setattr(os, 'killpg', observed_killpg)
+    try:
+        with pytest.raises(RuntimeError, match='client cleanup unresolved') as failure:
+            rs._bounded_docker([sys.executable, '-I', '-c', 'import os; os.write(1,b"x"*1000000)'],
+                               timeout=2, limit=100)
+        assert failure.value.__cause__ is close_failure
+        record_property('cleanup_attempts_before_test_recovery', repr(attempts))
+        record_property('original_cause_preserved', True)
+        record_property('result_held_cleanup_unknown', True)
+        assert attempts == ['selector-close', 'stdout-close', 'stderr-close', 'kill-group', 'wait']
+        assert len(children) == 1
+        child = children[0]
+        assert child.stdout.closed and child.stderr.closed
+        with pytest.raises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)
+        with pytest.raises(ProcessLookupError):
+            os.killpg(child.pid, 0)
+    finally:
+        # Also contain a deliberately broken pre-fix implementation: this
+        # test owns this synthetic group and never signals any other PID.
+        for child in children:
+            if child.returncode is None:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait(timeout=1)
+            child.stdout.close(); child.stderr.close()
 
 
 def _db():
@@ -235,15 +305,11 @@ def _seed_run(db):
 
 
 def test_tool_call_record_persisted_for_allowed(tmp_path, data_dir, monkeypatch):
-    calls = []
-    monkeypatch.setattr(rs.subprocess, "run", _fake_run_factory(calls))
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch)
     db = _db()
     run_id = _seed_run(db)
-    wt = tmp_path / "wt"
-    wt.mkdir()
-
     result = run_in_sandbox(str(wt), "pytest -q", policy=SB_POLICY, run_id=run_id,
-                            db=db, policy_decision_id="policy-v-test")
+                            db=db, policy_decision_id="policy-v-test", artifacts_dir=str(docker.artifacts))
 
     rec = db.get(cdb.ToolCallRecord, result["tool_call_record_id"])
     assert rec is not None
@@ -260,8 +326,8 @@ def test_tool_call_record_persisted_for_allowed(tmp_path, data_dir, monkeypatch)
 
 
 def test_tool_call_record_persisted_for_denied(tmp_path, data_dir, monkeypatch):
-    calls = []
-    monkeypatch.setattr(rs.subprocess, "run", _fake_run_factory(calls))
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch)
+    calls = docker.calls
     db = _db()
     run_id = _seed_run(db)
     wt = tmp_path / "wt"

@@ -13,7 +13,6 @@ from pathlib import Path
 import re
 import socket
 import stat
-import subprocess
 import time
 
 from src.inspector_errors import InspectorUnavailable
@@ -49,15 +48,11 @@ def _manifest_file(path):
     return decode_json(_private_bytes(path, 131072))
 
 
-def _container_ended(name):
-    if type(name) is not str or re.fullmatch(r"routing-sbx-[0-9a-f]{12}", name) is None:
-        return False
-    try:
-        checked = subprocess.run(["docker", "container", "ls", "-a", "--filter", "name=^/" + name + "$",
-            "--format", "{{.Names}}"], capture_output=True, timeout=5)
-        return checked.returncode == 0 and checked.stdout == b""
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+def _container_ended(result):
+    """Consume the existing sandbox's exact-CID native cleanup observation."""
+    return (result.get('cleanup_confirmed') is True and result.get('cleanup_state') == 'OBSERVED_REMOVED'
+            and type(result.get('container_id')) is str and re.fullmatch(r'[0-9a-f]{64}', result['container_id']) is not None
+            and type(result.get('image_id')) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', result['image_id']) is not None)
 
 
 def workspace_operation(operation, *, manifest_path=CANONICAL_TMOS_MANIFEST_FILE):
@@ -172,7 +167,8 @@ def workspace_operation(operation, *, manifest_path=CANONICAL_TMOS_MANIFEST_FILE
                     "started_at": started, "ended_at": datetime.now(timezone.utc).isoformat(),
                     "elapsed_s": time.monotonic() - tick, "host": socket.gethostname(),
                     "timeout_s": result["timeout_s"],
-                    "cleanup_confirmed": _container_ended(result.get("container_name"))}
+                    "container_id": result.get('container_id'), "image_id": result.get('image_id'),
+                    "cleanup_confirmed": _container_ended(result)}
         raise InspectorUnavailable("inspector unavailable")
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         raise InspectorUnavailable("inspector unavailable") from None

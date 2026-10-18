@@ -6,11 +6,18 @@ spanning account state and SQLite. Native operational acceptance is separate.
 """
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+import asyncio
+from pathlib import Path
+import sys
+import time
+import uuid
 
 from src import settings
 from src.canonical_inspector_admission import (
     AdmissionStore, InspectorUnavailable, admissions, inspect_inspector_schema, metadata,
 )
+from src.constants import (CANONICAL_INSPECTOR_WORK_ROOT, CANONICAL_TMOS_TRANSPORT_GUARD_FILENAME,
+                           CANONICAL_TMOS_MANIFEST_FILE, CANONICAL_TMOS_PACKET_IDS, LOCAL_MEASUREMENT_COMMAND)
 
 
 class SetupConflict(InspectorUnavailable):
@@ -60,12 +67,12 @@ class InspectorSchemaSetup:
                 "canonical_inspector_runtime", "canonical_inspector_service")):
             raise SetupConflict("Inspector owner must be stopped")
 
-    def _require_inactive(self, connection, state):
-        observed = self._maintenance_snapshot(connection, state)
+    def _require_inactive(self, connection, state, *, transport=None):
+        observed = self._maintenance_snapshot(connection, state, transport=transport)
         if not observed["maintenance_available"]:
             raise SetupConflict("Inspector maintenance refused: " + observed["maintenance_refusal"])
 
-    def _maintenance_snapshot(self, connection, state):
+    def _maintenance_snapshot(self, connection, state, *, transport=None):
         enabled = self._execution_enabled()
         owner_present = any(getattr(self._app_state, name, None) is not None for name in (
             "canonical_inspector_runtime", "canonical_inspector_service"))
@@ -75,11 +82,82 @@ class InspectorSchemaSetup:
         elif state["schema_state"] == "COMPATIBLE":
             unresolved = connection.execute(select(admissions.c.id).where(
                 admissions.c.reserved_slot.is_not(None)).limit(1)).first() is not None
+        try:
+            (Path(CANONICAL_INSPECTOR_WORK_ROOT) / CANONICAL_TMOS_TRANSPORT_GUARD_FILENAME).lstat()
+            unresolved_transport = True
+        except FileNotFoundError:
+            unresolved_transport = False
+        transport_blocked = unresolved_transport and (transport is None or not transport.owns_guard())
         reason = ("EXECUTION_ENABLED" if enabled else "OWNER_PRESENT" if owner_present else
+                  "UNRESOLVED_TRANSPORT" if transport_blocked else
                   "SCHEMA_MISMATCH" if unresolved is None else "UNRESOLVED_ADMISSION" if unresolved else None)
         return {"execution_enabled": enabled, "owner_present": owner_present,
-                "unresolved_admission": unresolved, "maintenance_available": reason is None,
+                "unresolved_admission": unresolved, "unresolved_transport": unresolved_transport,
+                "maintenance_available": reason is None,
                 "maintenance_refusal": reason}
+
+    def qualify_transport(self, owner, expected_manifest_digest, reauthorize):
+        """Two app-owned operational proofs; never dispatch or grant eligibility."""
+        from src.canonical_inspector_workspace import _manifest_file, manifest_digest
+        from src.local_measurement_process import SystemdProcesses
+        from src.local_measurement_transport import SshTransport
+
+        self._authorize(owner, reauthorize)
+        processes = None
+        completed = False
+        try:
+            self._require_disabled_owner()
+            with self._sessions() as session:
+                connection = AdmissionStore._qualified_connection(session)
+                self._require_inactive(connection, inspect_inspector_schema(connection))
+            manifest = _manifest_file(CANONICAL_TMOS_MANIFEST_FILE)
+            if type(manifest) is not dict:
+                raise InspectorUnavailable("inspector setup unavailable")
+            if manifest_digest(manifest) != expected_manifest_digest:
+                raise SetupConflict("Inspector manifest identity changed")
+            if manifest.get("principal") != {"auth_key": owner.auth_key, "account_epoch": owner.account_epoch}:
+                raise InspectorUnavailable("inspector setup unavailable")
+            packet_id = next((key for key in CANONICAL_TMOS_PACKET_IDS if key in manifest.get("packages", {})), None)
+            deadline = time.monotonic() + 180
+            transport = SshTransport(manifest, run_id=str(uuid.uuid4()), packet_id=packet_id, deadline=deadline)
+
+            def guard():
+                self._authorize(owner, reauthorize)
+                self._require_disabled_owner()
+                if time.monotonic() >= deadline:
+                    raise InspectorUnavailable("inspector setup unavailable")
+                with self._sessions() as session:
+                    connection = AdmissionStore._qualified_connection(session)
+                    self._require_inactive(connection, inspect_inspector_schema(connection), transport=transport)
+                return True
+
+            guard()
+            command = [sys.executable, "-I", LOCAL_MEASUREMENT_COMMAND]
+            processes = SystemdProcesses(worker_command=command + ["--worker-http"], broker_worker=[], transport=transport)
+            result = processes.qualify_no_provider(lease_valid=guard)
+            if (result.get("provider_calls") != 0 or result.get("executor_descendant_termination") is not True
+                    or [row.get("kind") for row in result.get("processes", [])] != ["proof-normal", "proof-descendant"]):
+                raise InspectorUnavailable("inspector setup unavailable")
+            guard()
+            if processes.finish_capture() is not True or processes.finalize_ownership(allowed=guard) is not True:
+                raise InspectorUnavailable("inspector setup unavailable")
+            completed = True
+            return {"schema": "inspector-transport-proof-v1", "status": "OBSERVED_THIS_CALL",
+                    "proofs_completed": 2, "app_client_stop_confirmed": True,
+                    "executor_descendant_stop_confirmed": True, "provider_calls": 0,
+                    "broker_calls": 0, "execution_qualification": "NOT_GRANTED"}
+        except SetupConflict:
+            raise
+        except (SQLAlchemyError, OSError, ValueError, TypeError, RuntimeError):
+            raise InspectorUnavailable("inspector setup unavailable") from None
+        finally:
+            if processes is not None and not completed:
+                processes.request_stop()
+                # This does not clear an unresolved guard, even when stop was
+                # observed. Failed authority/publication needs reconciliation.
+                cleanup_observed = asyncio.run(processes.abort_capture())
+                if not cleanup_observed:
+                    raise InspectorUnavailable("inspector transport cleanup unresolved") from None
 
     def initialize(self, owner, expected_schema_hash, reauthorize):
         """Explicit fixed addition, never owner preparation or execution enablement.

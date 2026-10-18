@@ -92,6 +92,22 @@ async def _stream(reader):
         yield chunk
 
 
+def systemd_command(unit, seconds, command, *, bindings=(), description=None):
+    """Same fixed native containment for local capture and the SSH helper."""
+    properties = ['ExitType=cgroup', 'KillMode=control-group', 'SendSIGKILL=yes',
+        'TimeoutStopSec=1', f'RuntimeMaxSec={seconds}', 'MemoryMax=1G', 'MemorySwapMax=0',
+        'TasksMax=32', 'CPUQuota=100%', 'UMask=0077', 'LimitFSIZE=2097152',
+        'NoNewPrivileges=yes', 'ProtectControlGroups=yes', 'RestrictSUIDSGID=yes']
+    properties.extend('BindReadOnlyPaths='+source+':'+destination+':norbind'
+                      for source, destination in bindings)
+    if description is not None:
+        properties.append('Description='+description)
+    argv = ['systemd-run', '--user', '--pipe', '--wait', '--quiet', '--service-type=exec',
+            '--expand-environment=no', '--unit='+unit]
+    argv.extend('--property='+value for value in properties)
+    return [*argv, '--', *command]
+
+
 class _Boundary:
     def __init__(self, owner, process, unit, lease_valid, evidence):
         self.owner, self.process, self.unit = owner, process, unit
@@ -166,7 +182,7 @@ class SystemdProcesses:
     supplying a stale proof file or an environment flag.
     """
 
-    def __init__(self, *, worker_command, broker_worker, config_projection=None, workspace_worker=None):
+    def __init__(self, *, worker_command, broker_worker, config_projection=None, workspace_worker=None, transport=None):
         self._worker, self._broker_worker = worker_command, broker_worker
         self._config_projection = config_projection
         self._configuration_state = 'NOT_CONFIGURED' if config_projection is None else 'READY'
@@ -178,6 +194,11 @@ class SystemdProcesses:
         self._boundaries = []
         self._closed = False
         self._pending_starts = 0
+        if transport is not None:
+            from src.local_measurement_transport import SshTransport
+            if type(transport) is not SshTransport or config_projection is not None:
+                raise MeasurementUnresolved('unsupported process transport')
+        self._transport = transport
 
     def _record(self, row, **changes):
         with self._evidence_lock:
@@ -193,10 +214,14 @@ class SystemdProcesses:
             return [dict(row) for row in self._captures]
 
     def configuration_evidence(self):
+        if self._transport is not None:
+            return self._transport._configuration_state
         return self._configuration_state
 
     def finish_capture(self):
         """Complete private-copy cleanup before release/receipt publication."""
+        if self._transport is not None:
+            return self._transport.check_configuration()
         if self._config_projection is not None:
             try:
                 self._config_projection.verify()
@@ -218,6 +243,8 @@ class SystemdProcesses:
         return self._qualified
 
     async def _start(self, command, seconds, lease_valid, input_bytes=b'', *, kind):
+        if self._transport is not None:
+            return await self._transport.start(self, command, seconds, lease_valid, input_bytes, kind=kind)
         with self._evidence_lock:
             if self._closed or lease_valid() is not True:
                 raise MeasurementUnresolved('owned capture is closed')
@@ -228,18 +255,12 @@ class SystemdProcesses:
         with self._evidence_lock:
             self._captures.append(row)
         self._record(row)  # Durable diagnostic precedes ANY start request.
-        properties = ['ExitType=cgroup', 'KillMode=control-group', 'SendSIGKILL=yes',
-            'TimeoutStopSec=1', f'RuntimeMaxSec={seconds}', 'MemoryMax=1G', 'MemorySwapMax=0',
-            'TasksMax=32', 'CPUQuota=100%', 'UMask=0077', 'LimitFSIZE=2097152',
-            'NoNewPrivileges=yes', 'ProtectControlGroups=yes', 'RestrictSUIDSGID=yes']
+        bindings = ()
         if self._config_projection is not None and kind in ('identity', 'proof-normal', 'proof-descendant'):
-            properties.extend('BindReadOnlyPaths='+source+':'+destination+':norbind'
-                              for source, destination in self._config_projection.bindings())
-        argv = ['systemd-run', '--user', '--pipe', '--wait', '--quiet', '--service-type=exec',
-                '--expand-environment=no', '--unit='+unit]
-        argv.extend('--property='+value for value in properties)
+            bindings = self._config_projection.bindings()
+        argv = systemd_command(unit, seconds, command, bindings=bindings)
         try:
-            process = await asyncio.create_subprocess_exec(*argv, '--', *command,
+            process = await asyncio.create_subprocess_exec(*argv,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             boundary = _Boundary(self, process, unit, lambda: not self._closed and lease_valid(), row)
             with self._evidence_lock:
@@ -258,8 +279,12 @@ class SystemdProcesses:
             await boundary.terminate_all()
             raise
 
-    def qualify_no_provider(self):
-        """Two owned synthetic units only; no network, SSH, broker or provider."""
+    def qualify_no_provider(self, *, lease_valid=lambda: True):
+        """Two owned synthetic units; explicit transport may use fixed SSH.
+
+        The native default uses no network. Neither mode calls a broker or
+        provider, and neither proof grants routing eligibility.
+        """
         if self._qualified or self._closed:
             raise MeasurementUnresolved('one-shot boundary proof already used')
 
@@ -268,7 +293,7 @@ class SystemdProcesses:
                 'import sys; print("owned-output"); print("owned-error",file=sys.stderr)']
                 if self._config_projection is None else self._config_projection.proof_command())
             normal = await self._start(normal_command,
-                5, lambda: True, kind='proof-normal')
+                5, lease_valid, kind='proof-normal')
             try:
                 stdout, stderr, code = await asyncio.wait_for(asyncio.gather(
                     collect_bytes(normal.stdout, limit=4096, seconds=5),
@@ -283,7 +308,7 @@ class SystemdProcesses:
                 'import subprocess,sys; p=subprocess.Popen([sys.executable,"-I","-c",'
                 '"import time; time.sleep(60)"],start_new_session=True,stdin=subprocess.DEVNULL,'
                 'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); print(p.pid,flush=True)'],
-                10, lambda: True, kind='proof-descendant')
+                10, lease_valid, kind='proof-descendant')
             try:
                 pid_raw = await asyncio.wait_for(descendant.process.stdout.readline(), 3)
                 if not pid_raw.strip().isdigit():
@@ -291,11 +316,14 @@ class SystemdProcesses:
                 pid = int(pid_raw)
                 await asyncio.sleep(0.3)
                 state = await descendant._state()
-                group = descendant.cgroup
-                if (descendant.process.returncode is not None or state.get('ActiveState') != 'active'
-                        or group is None or f'0::{str(group).removeprefix(str(CGROUP_ROOT))}'
-                        not in Path(f'/proc/{pid}/cgroup').read_text().splitlines()
-                        or 'populated 1' not in (group/'cgroup.events').read_text().splitlines()):
+                if self._transport is not None:
+                    owned = state.get('populated') == 1 and await descendant.owns_descendant(pid)
+                else:
+                    group = descendant.cgroup
+                    owned = (group is not None and f'0::{str(group).removeprefix(str(CGROUP_ROOT))}'
+                        in Path(f'/proc/{pid}/cgroup').read_text().splitlines()
+                        and 'populated 1' in (group/'cgroup.events').read_text().splitlines())
+                if (descendant.process.returncode is not None or state.get('ActiveState') != 'active' or not owned):
                     raise MeasurementUnresolved('whole-descendant ownership unproven')
             finally:
                 await descendant.terminate_all()
@@ -304,12 +332,21 @@ class SystemdProcesses:
 
         try:
             asyncio.run(prove())
+            if self._transport is not None and (self._closed or self._transport.deadline - time.monotonic() <= 8):
+                raise MeasurementUnresolved('execution boundary budget exhausted')
             if self._config_projection is not None:
                 self._config_projection.verify()
         except Exception:
+            if self._transport is not None:
+                self._closed = True
             raise MeasurementUnresolved('local boundary qualification failed') from None
         self._qualified = True
         self._deadline = time.monotonic() + 900
+        if self._transport is not None:
+            self._deadline = min(self._deadline, self._transport.deadline - 8)
+        if self._transport is not None:
+            return {'app_client_capture': True, 'executor_descendant_termination': True,
+                    'provider_cancellation': False, 'provider_calls': 0, 'processes': self.evidence()}
         return {'local_capture': True, 'local_descendant_termination': True,
                 'remote_cancellation': False, 'provider_calls': 0, 'processes':self.evidence()}
 
@@ -318,14 +355,28 @@ class SystemdProcesses:
             raise MeasurementUnresolved('owned capture not qualified or lease unavailable')
         raw = json.dumps(value, allow_nan=False).encode() if value is not None else b''
         remaining = min(seconds, self._deadline - time.monotonic())
+        if self._transport is not None:
+            remaining = min(remaining, self._transport.deadline - time.monotonic() - 8)
         if remaining <= 0 or len(raw) > _JSON_BYTES:
             raise MeasurementUnresolved('owned capture budget exhausted')
 
         async def capture():
+            capture_deadline = time.monotonic() + remaining
             boundary = await self._start(command, remaining, lease_valid, raw, kind=kind)
+            budget_options = {}
+            capture_seconds = remaining
+            if self._transport is not None:
+                capture_seconds = capture_deadline - time.monotonic()
+                total_seconds = min(self._transport.deadline, capture_deadline + 8) - time.monotonic()
+                if capture_seconds <= 0 or total_seconds <= 0:
+                    from src.canonical_pilot_adapter import _stop
+                    await _stop(boundary, grace_seconds=3, confirm_seconds=5)
+                    raise MeasurementUnresolved('owned capture budget exhausted')
+                budget_options = dict(total_seconds=total_seconds, termination_grace_seconds=3,
+                                      termination_confirm_seconds=5)
             stdout, _, code = await collect_process(boundary, CaptureBudget(
                 stdout_bytes=limit, stderr_bytes=_STDERR_BYTES, total_bytes=limit+_STDERR_BYTES,
-                seconds=remaining))
+                seconds=capture_seconds, **budget_options))
             if code != 0:
                 raise MeasurementUnresolved('owned worker did not complete successfully')
             return decode_json(stdout)
@@ -333,6 +384,8 @@ class SystemdProcesses:
         try:
             return asyncio.run(capture())
         except Exception:
+            if self._transport is not None:
+                self._closed = True
             raise MeasurementUnresolved('owned capture unresolved') from None
 
     def identity(self, command, *, lease_valid):
@@ -361,7 +414,11 @@ class SystemdProcesses:
     def post(self, path, body):
         response = self._json(self._broker_worker, {'path':path, 'body':body}, seconds=8,
                               limit=16384, lease_valid=lambda: True, kind='broker')
-        if type(response) is not dict or set(response) != {'status', 'body'}:
+        if (type(response) is not dict or set(response) != {'status', 'body'}
+                or self._transport is not None and (type(response['status']) is not int
+                    or not 100 <= response['status'] <= 599 or type(response['body']) is not dict)):
+            if self._transport is not None:
+                self._closed = True
             raise MeasurementUnresolved('broker envelope unavailable')
         return response['status'], response['body']
 
@@ -382,6 +439,37 @@ class SystemdProcesses:
         """Invalidate active capture guards in their owning event loops."""
         with self._evidence_lock:
             self._closed = True
+
+    def finalize_ownership(self, *, allowed=lambda: True):
+        """Close this one-shot adapter after completed release/retention.
+
+        Failure never removes an unresolved transport guard. Native callers
+        retain the existing lifecycle and have no additional journal to close.
+        """
+        if self._transport is None:
+            return True
+        if self._closed or not asyncio.run(self.confirm_stopped()):
+            return False
+        if allowed() is not True:
+            return False
+        result = self._transport.finalize_ownership()
+        if result is True:
+            self._closed = True
+        return result
+
+    async def abort_capture(self):
+        """Bounded cleanup of known captures, with uncertainty retained."""
+        from src.canonical_pilot_adapter import _stop
+        with self._evidence_lock:
+            if self._pending_starts:
+                return False
+            boundaries = tuple(self._boundaries)
+        complete = True
+        for boundary in boundaries:
+            stopped = await _stop(boundary, grace_seconds=3 if self._transport else 1,
+                                   confirm_seconds=5 if self._transport else 2)
+            complete = stopped and complete
+        return complete
 
     async def confirm_stopped(self):
         with self._evidence_lock:

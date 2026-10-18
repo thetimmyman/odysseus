@@ -1,5 +1,7 @@
 """App-owned real-work composition with inert I/O; no runtime qualification."""
 import pytest
+
+from tests.helpers.docker_cli import block_native_transports
 from sqlalchemy.orm import sessionmaker
 
 from tests.test_canonical_inspector_admission import native_store as native_store
@@ -430,7 +432,8 @@ def test_workspace_verifier_retains_both_streams_and_requires_container_end_ackn
         err.chmod(0o600)
         return {"allowed": True, "exit_code": 0, "timed_out": False, "error": None,
             "stdout_path": str(out), "stderr_path": str(err), "stdout_truncated": False,
-            "stderr_truncated": False, "container_name": "routing-sbx-" + "a" * 12,
+            "stderr_truncated": False, "container_id": "c" * 64, "image_id": "sha256:" + "d" * 64,
+            "cleanup_confirmed": True, "cleanup_state": "OBSERVED_REMOVED",
             "timeout_s": options["timeout_s"]}
 
     original_run = subprocess.run
@@ -456,7 +459,7 @@ def test_workspace_verifier_retains_both_streams_and_requires_container_end_ackn
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["initial", "alternate", "alternate-stale", "alternate-identity-mismatch",
+@pytest.mark.parametrize("scenario", ["initial", "ssh-transport", "alternate", "alternate-stale", "alternate-identity-mismatch",
                                       "initial-identity-mismatch", "initial-container-unknown", "initial-revoked",
                                       "initial-permission"])
 async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_attempt(native_store, tmp_path, monkeypatch, scenario):
@@ -484,6 +487,9 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     manifest["runtime"] = {"lease_client": "/synthetic/lease-client", "lease_client_sha256": "a" * 64,
         "identity_commands": {p.target_id: [p.target_id] for p in profiles},
         "preferred_profiles": [profiles[0].profile_id]}
+    if scenario == "ssh-transport":
+        from tests.test_owned_measurement_transport import transport_manifest
+        manifest["runtime"]["execution_transport"] = transport_manifest()["runtime"]["execution_transport"]
     manifest_path.write_text(json.dumps(manifest))
     policy = {"routingPolicyVersion": "synthetic-owned-loop-v1"}
     monkeypatch.setattr("src.routing_policy.load_policy", lambda **_kwargs: policy)
@@ -496,11 +502,17 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
         qualified = False
 
         def __init__(self, **configuration):
+            if scenario == "ssh-transport":
+                from src.local_measurement_transport import SshTransport
+                assert type(configuration.get("transport")) is SshTransport
+                assert configuration["transport"].packet_id == template.packet_id
             super().__init__(**configuration)
             self.profile = profiles[min(len(instances), 1)]
             instances.append(self)
 
-        def qualify_no_provider(self):
+        def qualify_no_provider(self, *, lease_valid=None):
+            if scenario == "ssh-transport":
+                assert lease_valid is not None and lease_valid()
             calls.append("local-proof-source-fixture")
             self.qualified = True
 
@@ -543,6 +555,11 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
             calls.append("capture-cleanup-source-fixture")
             return True
 
+        def finalize_ownership(self, *, allowed=lambda: True):
+            assert allowed() is True
+            calls.append("ownership-finalized-source-fixture")
+            return True
+
     def verifier(worktree, command, **options):
         directory = Path(options["artifacts_dir"])
         out, err = directory / "stdout", directory / "stderr"
@@ -553,7 +570,9 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
         out.chmod(0o600); err.chmod(0o600)
         return {"allowed": True, "exit_code": 0, "timed_out": False, "error": None,
             "stdout_path": str(out), "stderr_path": str(err), "stdout_truncated": False,
-            "stderr_truncated": False, "container_name": "routing-sbx-" + "a" * 12,
+            "stderr_truncated": False, "container_id": "c" * 64, "image_id": "sha256:" + "d" * 64,
+            "cleanup_confirmed": fault['mode'] != 'initial-container-unknown',
+            "cleanup_state": 'UNKNOWN' if fault['mode'] == 'initial-container-unknown' else 'OBSERVED_REMOVED',
             "timeout_s": options["timeout_s"]}
 
     original_run = subprocess.run
@@ -601,6 +620,8 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     assert calls.count("model-source-fixture") == 1
     assert calls[0] == "local-proof-source-fixture"
     assert calls.index("capture-cleanup-source-fixture") < calls.index("/release")
+    if scenario == "ssh-transport":
+        assert calls.index("/release") < calls.index("ownership-finalized-source-fixture")
     if scenario.startswith("alternate"):
         import asyncio
         from datetime import timedelta
@@ -643,3 +664,8 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
         await asyncio.sleep(0.02)
         assert calls.count("model-source-fixture") == 2
     assert await stop_inspector_runtime(app) is True
+
+
+@pytest.fixture(autouse=True)
+def no_native_transports(monkeypatch):
+    block_native_transports(monkeypatch)
