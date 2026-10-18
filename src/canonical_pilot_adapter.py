@@ -102,6 +102,8 @@ class CaptureBudget:
     total_bytes: int
     seconds: float
     total_seconds: float | None = None
+    termination_grace_seconds: float = CANONICAL_PILOT_TERMINATION_GRACE_SECONDS
+    termination_confirm_seconds: float = CANONICAL_PILOT_TERMINATION_CONFIRM_SECONDS
     used_bytes: int = field(default=0, init=False)
     _deadline: float | None = field(default=None, init=False)
     _failed: bool = field(default=False, init=False)
@@ -113,6 +115,9 @@ class CaptureBudget:
         _positive(self.seconds)
         if self.total_seconds is not None:
             _positive(self.total_seconds)
+        if (_positive(self.termination_grace_seconds) > 3
+                or _positive(self.termination_confirm_seconds) > 5):
+            raise PilotLimit("pilot unavailable")
 
 
 async def _bounded_wait(awaitable, seconds):
@@ -124,11 +129,11 @@ async def _bounded_wait(awaitable, seconds):
     return task.result()
 
 
-async def _stop(boundary):
+async def _stop(boundary, *, grace_seconds=CANONICAL_PILOT_TERMINATION_GRACE_SECONDS,
+                confirm_seconds=CANONICAL_PILOT_TERMINATION_CONFIRM_SECONDS):
     try:
-        await _bounded_wait(boundary.terminate_all(), CANONICAL_PILOT_TERMINATION_GRACE_SECONDS)
-        return await _bounded_wait(boundary.confirm_stopped(),
-                                   CANONICAL_PILOT_TERMINATION_CONFIRM_SECONDS) is True
+        await _bounded_wait(boundary.terminate_all(), grace_seconds)
+        return await _bounded_wait(boundary.confirm_stopped(), confirm_seconds) is True
     except Exception:
         return False
 
@@ -183,7 +188,7 @@ async def collect_process(boundary, budget: CaptureBudget):
         await asyncio.wait({watcher}, timeout=CANONICAL_PILOT_TERMINATION_CONFIRM_SECONDS)
         if (type(exit_code) is not int or boundary.lease_valid() is not True
                 or await _bounded_wait(boundary.confirm_stopped(), min(
-                    CANONICAL_PILOT_TERMINATION_CONFIRM_SECONDS,
+                    budget.termination_confirm_seconds,
                     max(0, budget._deadline - time.monotonic()))) is not True):
             raise PilotLimit("pilot unavailable")
         return stdout, stderr, exit_code
@@ -191,7 +196,8 @@ async def collect_process(boundary, budget: CaptureBudget):
         budget._failed = True
         # Stop the owning boundary FIRST: draining/cancellation can itself be
         # uncooperative. Never wait indefinitely for task cancellation to finish.
-        await _stop(boundary)
+        await _stop(boundary, grace_seconds=budget.termination_grace_seconds,
+                    confirm_seconds=budget.termination_confirm_seconds)
         for task in tasks:
             task.cancel()
         if tasks:

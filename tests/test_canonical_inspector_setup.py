@@ -3,6 +3,8 @@
 These are source/interface checks, not production migration or pilot evidence.
 """
 import pytest
+
+from tests.helpers.docker_cli import block_native_transports
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
@@ -49,6 +51,120 @@ def test_admin_can_inspect_configured_native_schema_without_initializing_it(setu
     assert "existing-application.db" not in response.text
     with pytest.raises(InspectorUnavailable):
         AdmissionStore(sessions).check_schema()
+
+
+def test_transport_setup_refuses_unauthenticated_request_before_any_process(setup_client, monkeypatch):
+    _, _, client, _, _ = setup_client
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("unauthorized transport must not start a process")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", forbidden)
+    response = client.post("/api/harness/inspector/setup/transport",
+                           json={"expected_manifest_digest": "a" * 64})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("fault", ["none", "digest", "principal", "actor-renamed"])
+def test_transport_setup_runs_only_fixed_owned_proofs(setup_client, tmp_path, monkeypatch, fault):
+    import asyncio
+    import json
+    from src.canonical_inspector_workspace import manifest_digest
+    from src.constants import CANONICAL_TMOS_TRANSPORT_GUARD_FILENAME
+    from tests.test_canonical_inspector_admission import principal
+    from tests.test_owned_measurement_transport import transport_manifest, SyntheticExecutor
+
+    _, manager, client, _, _ = setup_client
+    manifest = transport_manifest()
+    manifest["principal"] = principal().__dict__
+    if fault == "principal":
+        manifest["principal"]["auth_key"] = "other"
+    fixed = tmp_path / "owner.json"
+    fixed.write_text(json.dumps(manifest)); fixed.chmod(0o600)
+    monkeypatch.setattr("src.canonical_inspector_setup.CANONICAL_TMOS_MANIFEST_FILE", fixed)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    monkeypatch.setattr("src.canonical_inspector_setup.CANONICAL_INSPECTOR_WORK_ROOT", work)
+    monkeypatch.setattr("src.local_measurement_transport.CANONICAL_INSPECTOR_WORK_ROOT", work)
+    peer = SyntheticExecutor(manifest["runtime"]["execution_transport"]["executor"])
+    if fault == "actor-renamed":
+        respond = peer.respond
+
+        def rename_after_normal_unit(process, value):
+            respond(process, value)
+            if value["operation"] == "launch" and value["kind"] == "proof-normal":
+                assert manager.rename_user("admin", "renamed", requesting_user="other")
+
+        peer.respond = rename_after_normal_unit
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", peer.start)
+    response = client.post("/api/harness/inspector/setup/transport", headers={"x-test-user": "admin"},
+                           json={"expected_manifest_digest": "b" * 64 if fault == "digest" else manifest_digest(manifest)})
+    if fault != "none":
+        assert response.status_code == (409 if fault == "digest" else 503)
+        if fault == "actor-renamed":
+            assert [call.envelope["kind"] for call in peer.calls if call.envelope["operation"] == "launch"] == ["proof-normal"]
+            status = client.get("/api/harness/inspector/setup", headers={"x-test-user": "other"}).json()
+            assert status["maintenance_refusal"] == "UNRESOLVED_TRANSPORT"
+            assert status["unresolved_transport"] is True
+        else:
+            assert peer.calls == []
+        return
+    assert response.status_code == 200, response.text
+    assert response.json() == {"schema": "inspector-transport-proof-v1", "status": "OBSERVED_THIS_CALL",
+        "proofs_completed": 2, "app_client_stop_confirmed": True, "executor_descendant_stop_confirmed": True,
+        "provider_calls": 0, "broker_calls": 0, "execution_qualification": "NOT_GRANTED"}
+    assert [call.envelope["kind"] for call in peer.calls if call.envelope["operation"] == "launch"] == ["proof-normal", "proof-descendant"]
+    assert all(call.returncode is not None for call in peer.calls)
+    assert not (work / CANONICAL_TMOS_TRANSPORT_GUARD_FILENAME).exists()
+    assert client.get("/api/harness/inspector/setup", headers={"x-test-user": "admin"}).json()["schema_state"] == "ABSENT"
+
+
+@pytest.mark.parametrize("headers,body,expected", [
+    ({"x-test-user": "admin", "x-test-bearer": "yes"}, {"expected_manifest_digest": "a" * 64}, 403),
+    ({"x-test-user": "internal-tool"}, {"expected_manifest_digest": "a" * 64}, 403),
+    ({"x-test-user": "admin", "origin": "https://foreign.invalid"}, {"expected_manifest_digest": "a" * 64}, 403),
+    ({"x-test-user": "admin", "origin": "http://[broken"}, {"expected_manifest_digest": "a" * 64}, 403),
+    ({"x-test-user": "admin", "sec-fetch-site": "cross-site"}, {"expected_manifest_digest": "a" * 64}, 403),
+    ({"x-test-user": "admin", "sec-fetch-site": "same-site"}, {"expected_manifest_digest": "a" * 64}, 403),
+    ({"x-test-user": "admin"}, {"expected_manifest_digest": "a" * 64, "command": "refused"}, 400),
+    ({"x-test-user": "admin"}, {"expected_manifest_digest": False}, 400),
+    ({"x-test-user": "admin"}, {"expected_manifest_digest": "A" * 64}, 400),
+    ({"x-test-user": "admin"}, {"expected_manifest_digest": "a" * 63}, 400),
+    ({"x-test-user": "admin"}, {}, 400),
+])
+def test_transport_auth_csrf_and_shape_refuse_before_backend(setup_client, monkeypatch, headers, body, expected):
+    _, _, client, _, _ = setup_client
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("refused transport must not start a process")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", forbidden)
+    response = client.post("/api/harness/inspector/setup/transport", headers=headers, json=body)
+    assert response.status_code == expected
+
+
+@pytest.mark.parametrize("state", ["enabled", "owner-present", "unresolved-transport"])
+def test_transport_maintenance_requires_disabled_idle_state(setup_client, tmp_path, monkeypatch, state):
+    from src import settings
+    from src.constants import CANONICAL_TMOS_TRANSPORT_GUARD_FILENAME
+    app, _, client, _, _ = setup_client
+    if state == "enabled":
+        settings.save_settings({"canonicalInspector": {"enabled": True}})
+    elif state == "owner-present":
+        app.state.canonical_inspector_runtime = object()
+    else:
+        work = tmp_path / "work"
+        work.mkdir(mode=0o700)
+        (work / CANONICAL_TMOS_TRANSPORT_GUARD_FILENAME).write_bytes(b"unknown prior ownership")
+        monkeypatch.setattr("src.canonical_inspector_setup.CANONICAL_INSPECTOR_WORK_ROOT", work)
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("non-idle transport must not start a process")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", forbidden)
+    response = client.post("/api/harness/inspector/setup/transport", headers={"x-test-user": "admin"},
+                           json={"expected_manifest_digest": "a" * 64})
+    assert response.status_code == 409
 
 
 def test_explicit_admin_addition_is_compatible_and_preserves_application_data(setup_client):
@@ -369,3 +485,8 @@ def test_malformed_duplicate_or_oversized_request_cannot_initialize_schema(setup
     assert response.status_code == 400
     with pytest.raises(InspectorUnavailable):
         AdmissionStore(sessions).check_schema()
+
+
+@pytest.fixture(autouse=True)
+def no_native_transports(monkeypatch):
+    block_native_transports(monkeypatch)

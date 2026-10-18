@@ -169,14 +169,23 @@ class TmosExecutionOwner:
         lease, processes, claim = None, None, None
         try:
             runtime = self._manifest["runtime"]
+            self._authorize(owner, reauthorize)
+            run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([
+                manifest_digest(self._manifest), owner.auth_key, owner.account_epoch, packet_id, key],
+                separators=(",", ":"))))
+            transport_options = {}
+            if runtime.get("execution_transport") is not None:
+                from src.local_measurement_transport import SshTransport
+                transport_options["transport"] = SshTransport(self._manifest, run_id=run_id,
+                    packet_id=packet_id, deadline=call["deadline"])
             projection = (ReadOnlyConfigProjection(runtime["ssh_config_projection"])
-                          if runtime.get("ssh_config_projection") is not None else None)
+                          if not transport_options and runtime.get("ssh_config_projection") is not None else None)
             command = [sys.executable, "-I", LOCAL_MEASUREMENT_COMMAND]
             processes = self._process_factory(worker_command=command + ["--worker-http"],
                 broker_worker=command + ["--worker-broker", "--lease-client", runtime["lease_client"],
                     "--lease-client-sha256", runtime["lease_client_sha256"]],
                 workspace_worker=command + ["--worker-workspace", "--tmos-manifest", CANONICAL_TMOS_MANIFEST_FILE],
-                config_projection=projection)
+                config_projection=projection, **transport_options)
             call["processes"] = processes
 
             def guard():
@@ -186,10 +195,10 @@ class TmosExecutionOwner:
                 return True
 
             guard()
-            processes.qualify_no_provider()
-            run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([
-                manifest_digest(self._manifest), owner.auth_key, owner.account_epoch, packet_id, key],
-                separators=(",", ":"))))
+            if transport_options:
+                processes.qualify_no_provider(lease_valid=guard)
+            else:
+                processes.qualify_no_provider()
             operation = {"schema": "tmos-workspace-operation-v1", "packet_id": packet_id, "run_id": run_id,
                          "manifest_digest": manifest_digest(self._manifest)}
             call["stage"] = "prepare"
@@ -279,6 +288,8 @@ class TmosExecutionOwner:
             lease.release_completed()
             call["stage"] = "retention"
             path = retain_evidence_bundle(self._root, result.evidence_package, artifacts=result.artifacts)
+            if transport_options and processes.finalize_ownership(allowed=guard) is not True:
+                raise InspectorUnavailable("inspector unavailable")
             call["resolved"] = True
             return claim, PilotExecution(path.stem, result.attempts[0].receipt_hash, True)
         except Exception as failure:
@@ -444,6 +455,8 @@ class TmosExecutionOwner:
             source_snapshot_digest=observed["source"]["snapshot_digest"], verifier_paths=tuple(plan["verifier_paths"]),
             verifier_digest=measured.get(plan["verifier_id"], next(iter(measured.values()))),
             worktree=observed["source"]["worktree"], host=observed["host"], started_at=observed["started_at"],
+            container=observed.get('container_id', ''),
+            tool_versions=(("container_image", observed['image_id']),) if observed.get('image_id') else (),
             ended_at=observed["ended_at"], elapsed_s=observed["elapsed_s"], exit_code=observed["exit_code"],
             stdout_ref=out, stderr_ref=err, stdout_bytes=len(stdout), stderr_bytes=len(stderr), timeout_s=observed["timeout_s"],
             proof_vantage="harness worktree", requirement_ids=("deterministic_verification", "source_binding", "scope_check"),

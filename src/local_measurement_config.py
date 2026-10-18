@@ -283,6 +283,19 @@ class ReadOnlyConfigProjection:
         except Exception:
             raise MeasurementUnresolved('SSH configuration projection changed or unavailable') from None
 
+    def native_client_config(self):
+        """One declared native -F root, with executable Match refused.
+
+        SSH interprets the pinned static Includes. Refusing every Match
+        section avoids implementing a second conditional configuration parser.
+        """
+        self.verify()
+        for _entry, raw, _stamp_value in self._sources:
+            for line in raw.decode('utf-8').splitlines():
+                if re.split(r'[=\s]', line.strip(), maxsplit=1)[0].lower() == 'match':
+                    raise MeasurementUnresolved('conditional SSH transport configuration refused')
+        return self._roots[0][0]
+
     def bindings(self):
         self.verify()
         # Also protect the backing directory at its own path. Protecting only
@@ -299,6 +312,13 @@ class ReadOnlyConfigProjection:
                            for entry, _, _ in self._sources]}
         return [sys.executable, '-I', '-c', _PROJECTION_PROOF, json.dumps(value)]
 
+    def retain_for_reconciliation(self):
+        """Keep copies when a native reader's termination is still unknown."""
+        if self._temporary is None:
+            return None
+        self._temporary._finalizer.detach()
+        return self._temporary.name
+
     def close(self):
         if self._cleanup_attempted:
             return self._cleanup_complete
@@ -310,6 +330,7 @@ class ReadOnlyConfigProjection:
             self._cleanup_complete = True
         except Exception:
             self._cleanup_complete = False
+            self.retain_for_reconciliation()
         return self._cleanup_complete
 
     def __enter__(self):

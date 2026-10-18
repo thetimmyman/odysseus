@@ -5,15 +5,21 @@ capabilities dropped, resource and time limits, truncated output. Commands run
 without a shell and must match the allowlist. Every attempt, including denied
 ones, is recorded as a ToolCallRecord."""
 import hashlib
+import asyncio
+import json
 import os
+from pathlib import Path
+import re
 import shlex
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from src import routing_policy
 from src.routing_workdir import data_root
+from src.constants import ROUTING_SANDBOX_ARTIFACT_DIRNAME, ROUTING_SANDBOX_OWNERSHIP_SUFFIX
 
 DEFAULT_SANDBOX = {
     "image": "python:3.12-slim",
@@ -150,6 +156,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
     argv = [
         "docker", "run", "--rm",
         "--name", container_name,
+        "--entrypoint", "",
         "--network", "none",
         "--cpus", str(cfg["cpus"]),
         "--memory", f"{cfg['memoryGb']}g",
@@ -168,48 +175,116 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         *shlex.split(cmd),
     ]
 
-    stdout_bytes = b""
-    stderr_bytes = b""
+    max_bytes = int(cfg["maxOutputBytes"])
+    if not 0 < max_bytes <= 1048576:
+        raise ValueError("sandbox output budget unavailable")
+    if artifacts_dir is None:
+        artifacts_dir = os.path.join(data_root(), "routing", "runs", ROUTING_SANDBOX_ARTIFACT_DIRNAME)
+    os.makedirs(artifacts_dir, mode=0o700, exist_ok=True)
+    ownership = Path(artifacts_dir) / (container_name + ROUTING_SANDBOX_OWNERSHIP_SUFFIX)
+    result.update(container_id=None, image_id=None, cleanup_confirmed=False,
+                  cleanup_state="NOT_CREATED", ownership_path=str(ownership))
+    deadline = time.monotonic() + cfg["wallClockSeconds"]
+    stdout_bytes, stderr_bytes = b"", b""
+    cid = None
+    created = False
+    observed = None
+    nonce = uuid.uuid4().hex
+    labels = {"odysseus.sandbox.nonce": nonce, "odysseus.sandbox.run": run_id or "unbound"}
+
+    def remaining():
+        value = deadline - time.monotonic()
+        if value <= 0:
+            raise subprocess.TimeoutExpired("sandbox", cfg["wallClockSeconds"])
+        return value
+
+    def call(arguments, *, limit=65536, cleanup=False):
+        capture = _bounded_docker(["docker", *arguments], timeout=min(3, remaining()), limit=limit)
+        if capture["timed_out"]:
+            raise subprocess.TimeoutExpired(arguments, cfg["wallClockSeconds"])
+        if capture["stdout_truncated"] or capture["stderr_truncated"]:
+            raise ValueError("sandbox control output exceeded budget")
+        return capture
+
     try:
-        proc = subprocess.run(argv, capture_output=True, timeout=cfg["wallClockSeconds"])
-        result["exit_code"] = proc.returncode
-        stdout_bytes = proc.stdout or b""
-        stderr_bytes = proc.stderr or b""
-    except subprocess.TimeoutExpired as e:
-        # A timeout kills only the docker client; the container must be killed by name.
-        result["timed_out"] = True
-        result["error"] = f"wall clock limit of {cfg['wallClockSeconds']}s exceeded"
-        stdout_bytes = e.stdout or b""
-        stderr_bytes = e.stderr or b""
-        try:
-            subprocess.run(["docker", "kill", container_name], capture_output=True, timeout=30)
-        except Exception:
-            pass  # best effort; --rm reaps it once the daemon notices
+        # Resolve an already installed image first: create never pulls or
+        # silently substitutes a new mutable tag after the observation.
+        image = call(["image", "inspect", "--format", "{{.Id}}", cfg["image"]])
+        image_id = image["stdout"].decode().strip()
+        if image["code"] != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            raise ValueError("sandbox image unavailable")
+        result["image_id"] = image_id
+        image_index = argv.index(cfg["image"])
+        argv[image_index] = image_id
+        argv[1:3] = ["create"]
+        argv[2:2] = [item for key, value in labels.items() for item in ("--label", key + "=" + value)]
+        # Intent is durable BEFORE create. A lost create acknowledgement stays
+        # unknown: no start, retry, name lookup or name-based destruction.
+        intent = {"schema": "sandbox-ownership-v1", "name": container_name,
+                  "labels": labels, "image_id": image_id, "create_argv": argv,
+                  "worktree": os.path.realpath(worktree_path), "state": "CREATE_REQUESTED"}
+        _ownership_record(ownership, intent)
+        created = True
+        create = call(argv[1:])
+        candidate = create["stdout"].decode().strip()
+        if create["code"] != 0 or re.fullmatch(r"[0-9a-f]{64}", candidate) is None:
+            raise ValueError("sandbox create acknowledgement unavailable")
+        cid = result["container_id"] = candidate
+        observed = _inspect_owned(call, cid, intent)
+        _ownership_record(ownership.with_name(ownership.stem + ".created.json"),
+                          {"container_id": cid, "inspection": observed})
+        attached = _bounded_docker(["docker", "start", "--attach", "--", cid],
+                                   timeout=max(0.001, remaining() - min(5, cfg['wallClockSeconds'] / 2)), limit=max_bytes)
+        stdout_bytes, stderr_bytes = attached["stdout"], attached["stderr"]
+        result["stdout_truncated"] = attached["stdout_truncated"]
+        result["stderr_truncated"] = attached["stderr_truncated"]
+        result["timed_out"] = attached["timed_out"]
+        if attached["timed_out"]:
+            result["error"] = f"wall clock limit of {cfg['wallClockSeconds']}s exceeded"
+        elif attached["stdout_truncated"] or attached["stderr_truncated"]:
+            result["error"] = "sandbox output limit exceeded"
+        else:
+            state = _inspect_owned(call, cid, intent)
+            if state["State"].get("Running") is not False or type(state["State"].get("ExitCode")) is not int:
+                raise ValueError("sandbox completion unavailable")
+            result["exit_code"] = state["State"]["ExitCode"]
+            if attached["code"] != result["exit_code"]:
+                raise ValueError("sandbox client/container exit mismatch")
     except FileNotFoundError:
         result["error"] = "docker_unavailable"
-        result["tool_call_record_id"] = _record_tool_call(
-            db, run_id=run_id, cmd=cmd, worktree_path=worktree_path,
-            allowed=True, started_at=started_at, completed_at=_utcnow(),
-            exit_code=None, stdout_path=None, stderr_path=None,
-            policy_decision_id=policy_decision_id,
-        )
-        return result
+    except subprocess.TimeoutExpired:
+        result["timed_out"] = True
+        result["error"] = f"wall clock limit of {cfg['wallClockSeconds']}s exceeded"
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        result["error"] = "sandbox ownership or execution unavailable"
+    finally:
+        if cid is not None and observed is not None:
+            try:
+                # Recheck all ownership/isolation facts before destructive
+                # controls. Never address a name, guessed or replaced CID.
+                _inspect_owned(lambda args: call(args, cleanup=True), cid, intent)
+                removed = call(["rm", "--force", "--", cid], cleanup=True)
+                absent = call(["container", "ls", "--all", "--no-trunc", "--filter", "id=" + cid,
+                               "--format", "{{.ID}}"], cleanup=True)
+                result["cleanup_confirmed"] = removed["code"] == 0 and absent["code"] == 0 and absent["stdout"] == b""
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.TimeoutExpired):
+                result["cleanup_confirmed"] = False
+            result["cleanup_state"] = "OBSERVED_REMOVED" if result["cleanup_confirmed"] else "UNKNOWN"
+        elif created:
+            result["cleanup_state"] = "UNKNOWN"
+        if result["cleanup_confirmed"]:
+            _ownership_record(ownership.with_name(ownership.stem + ".closed.json"),
+                              {"container_id": cid, "cleanup_state": result["cleanup_state"]})
+        elif created and result['error'] is None:
+            result['error'] = 'sandbox cleanup unresolved'
 
-    max_bytes = int(cfg["maxOutputBytes"])
-    result["stdout_truncated"] = len(stdout_bytes) > max_bytes
-    result["stderr_truncated"] = len(stderr_bytes) > max_bytes
-
-    if artifacts_dir is None:
-        artifacts_dir = os.path.join(data_root(), "routing", "runs", "_sandbox")
-    os.makedirs(artifacts_dir, exist_ok=True)
     stdout_path = os.path.join(artifacts_dir, f"{container_name}.stdout.log")
     stderr_path = os.path.join(artifacts_dir, f"{container_name}.stderr.log")
-    with open(stdout_path, "wb") as f:
-        f.write(stdout_bytes[:max_bytes])
-    with open(stderr_path, "wb") as f:
-        f.write(stderr_bytes[:max_bytes])
-    result["stdout_path"] = stdout_path
-    result["stderr_path"] = stderr_path
+    for path, raw in ((stdout_path, stdout_bytes), (stderr_path, stderr_bytes)):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+    result["stdout_path"], result["stderr_path"] = stdout_path, stderr_path
 
     result["tool_call_record_id"] = _record_tool_call(
         db, run_id=run_id, cmd=cmd, worktree_path=worktree_path,
@@ -218,3 +293,88 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         stderr_path=stderr_path, policy_decision_id=policy_decision_id,
     )
     return result
+
+
+def _ownership_record(path, value):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(value, stream, sort_keys=True, allow_nan=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _inspect_owned(call, cid, intent):
+    capture = call(['inspect', '--', cid])
+    rows = json.loads(capture['stdout'])
+    if capture['code'] != 0 or type(rows) is not list or len(rows) != 1:
+        raise ValueError('sandbox inspection unavailable')
+    row = rows[0]
+    host, config = row['HostConfig'], row['Config']
+    mounts = row['Mounts']
+    argv = intent['create_argv']
+    image_index = argv.index(intent['image_id'])
+    user = argv[argv.index('--user') + 1] if '--user' in argv else ''
+    if (row['Id'] != cid or row['Name'] != '/' + intent['name'] or row['Image'] != intent['image_id']
+            or any(config.get('Labels', {}).get(key) != value for key, value in intent['labels'].items())
+            or config.get('Cmd') != argv[image_index+1:]
+            or config.get('Entrypoint') not in (None, []) or config.get('User', '') != user
+            or host.get('NetworkMode') != 'none' or host.get('Privileged') is not False
+            or host.get('AutoRemove') is not False or host.get('CapDrop') != ['ALL']
+            or 'no-new-privileges' not in host.get('SecurityOpt', [])
+            or host.get('PidsLimit') != int(argv[argv.index('--pids-limit')+1])
+            or host.get('Memory') != int(float(argv[argv.index('--memory')+1][:-1]) * 1024**3)
+            or host.get('NanoCpus') != int(float(argv[argv.index('--cpus')+1]) * 1e9)
+            or host.get('Tmpfs') != {'/tmp': ''} or host.get('Binds') != [argv[argv.index('-v')+1]]
+            or config.get('WorkingDir') != '/work'
+            or len([mount for mount in mounts if mount.get('Type') == 'bind']) != 1
+            or any(not (mount.get('Type') == 'bind' and mount.get('Source') == intent['worktree']
+                        and mount.get('Destination') == '/work' and mount.get('RW') is True)
+                   and not (mount.get('Type') == 'tmpfs' and mount.get('Destination') == '/tmp') for mount in mounts)):
+        raise ValueError('sandbox ownership or isolation mismatch')
+    return row
+
+
+def _bounded_docker(argv, *, timeout, limit):
+    """Own the client; cap each stream while reading, before accumulating it."""
+    async def capture():
+        process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env={key: value for key, value in os.environ.items() if key in ('HOME', 'XDG_RUNTIME_DIR')}
+                | {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+        streams = [bytearray(), bytearray()]
+        truncated = [False, False]
+        timed_out = False
+
+        async def read(reader, index):
+            while chunk := await reader.read(min(8192, limit + 1 - len(streams[index]))):
+                remaining = limit - len(streams[index])
+                streams[index].extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    truncated[index] = True
+                    raise ValueError('sandbox output limit exceeded')
+
+        tasks = [asyncio.create_task(read(process.stdout, 0)), asyncio.create_task(read(process.stderr, 1)),
+                 asyncio.create_task(process.wait())]
+        try:
+            async with asyncio.timeout(max(0.001, timeout - 0.2)):
+                await asyncio.gather(*tasks)
+        except TimeoutError:
+            timed_out = True
+        except ValueError:
+            pass
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if process.returncode is None:
+                process.kill()
+            await asyncio.wait_for(process.wait(), 0.2)
+        return {'code': process.returncode, 'stdout': bytes(streams[0]), 'stderr': bytes(streams[1]),
+                'stdout_truncated': truncated[0], 'stderr_truncated': truncated[1], 'timed_out': timed_out}
+    return asyncio.run(capture())
