@@ -5,13 +5,15 @@ capabilities dropped, resource and time limits, truncated output. Commands run
 without a shell and must match the allowlist. Every attempt, including denied
 ones, is recorded as a ToolCallRecord."""
 import hashlib
-import asyncio
 import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shlex
+import signal
 import subprocess
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -48,6 +50,12 @@ DEFAULT_SANDBOX = {
 
 # No shell expands these, but rejecting them keeps hostile input failing closed.
 _SHELL_METACHARACTERS = (";", "|", "&", "`", "$(", ">", "<", "\n", "\r")
+
+
+class _ClientCleanupUnresolved(RuntimeError):
+    def __init__(self, primary_error):
+        super().__init__('owned sandbox client cleanup unresolved')
+        self.primary_error = primary_error
 
 
 def _utcnow() -> datetime:
@@ -189,6 +197,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
     cid = None
     created = False
     observed = None
+    client_cleanup_unknown = False
     nonce = uuid.uuid4().hex
     labels = {"odysseus.sandbox.nonce": nonce, "odysseus.sandbox.run": run_id or "unbound"}
 
@@ -250,6 +259,9 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
             result["exit_code"] = state["State"]["ExitCode"]
             if attached["code"] != result["exit_code"]:
                 raise ValueError("sandbox client/container exit mismatch")
+    except _ClientCleanupUnresolved:
+        client_cleanup_unknown = True
+        result['error'] = 'sandbox client cleanup unresolved'
     except FileNotFoundError:
         result["error"] = "docker_unavailable"
     except subprocess.TimeoutExpired:
@@ -258,7 +270,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         result["error"] = "sandbox ownership or execution unavailable"
     finally:
-        if cid is not None and observed is not None:
+        if cid is not None and observed is not None and not client_cleanup_unknown:
             try:
                 # Recheck all ownership/isolation facts before destructive
                 # controls. Never address a name, guessed or replaced CID.
@@ -270,7 +282,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
             except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.TimeoutExpired):
                 result["cleanup_confirmed"] = False
             result["cleanup_state"] = "OBSERVED_REMOVED" if result["cleanup_confirmed"] else "UNKNOWN"
-        elif created:
+        elif created or client_cleanup_unknown:
             result["cleanup_state"] = "UNKNOWN"
         if result["cleanup_confirmed"]:
             _ownership_record(ownership.with_name(ownership.stem + ".closed.json"),
@@ -340,41 +352,114 @@ def _inspect_owned(call, cid, intent):
 
 
 def _bounded_docker(argv, *, timeout, limit):
-    """Own the client; cap each stream while reading, before accumulating it."""
-    async def capture():
-        process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    """Cap before buffering; close owned pipes and reap independently of EOF.
+
+    The client has its own session. Keep its leader unreaped until the owned
+    group is stopped, so its PID cannot be reused for a different group.
+    Container termination remains the separate exact-CID protocol above.
+    """
+    deadline = time.monotonic() + timeout
+    capture_deadline = deadline - min(1, timeout / 2)
+    streams, truncated = [bytearray(), bytearray()], [False, False]
+    process, selector = None, None
+    timed_out = False
+    interrupted, previous = [], {}
+    primary_error = None
+    cleanup_unknown = False
+
+    def defer(signum, _frame):
+        interrupted.append(signum)
+
+    try:
+        # Worker threads cannot receive Python signal handlers; their owner
+        # controls cancellation. Defer main-thread interrupts through custody.
+        if threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous[signum] = signal.signal(signum, defer)
+        if interrupted:
+            raise InterruptedError('owned sandbox client interrupted')
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, start_new_session=True, bufsize=0,
             env={key: value for key, value in os.environ.items() if key in ('HOME', 'XDG_RUNTIME_DIR')}
                 | {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
-        streams = [bytearray(), bytearray()]
-        truncated = [False, False]
-        timed_out = False
-
-        async def read(reader, index):
-            while chunk := await reader.read(min(8192, limit + 1 - len(streams[index]))):
-                remaining = limit - len(streams[index])
-                streams[index].extend(chunk[:remaining])
-                if len(chunk) > remaining:
+        selector = selectors.DefaultSelector()
+        for index, stream in enumerate((process.stdout, process.stderr)):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, index)
+        while True:
+            if interrupted:
+                raise InterruptedError('owned sandbox client interrupted')
+            ended = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if ended is not None and not selector.get_map():
+                break
+            remaining = capture_deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            if not selector.get_map():
+                time.sleep(min(0.01, remaining))
+            for key, _event in selector.select(min(0.05, remaining)):
+                index = key.data
+                chunk = os.read(key.fd, min(8192, limit + 1 - len(streams[index])))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                available = limit - len(streams[index])
+                streams[index].extend(chunk[:available])
+                if len(chunk) > available:
                     truncated[index] = True
-                    raise ValueError('sandbox output limit exceeded')
-
-        tasks = [asyncio.create_task(read(process.stdout, 0)), asyncio.create_task(read(process.stderr, 1)),
-                 asyncio.create_task(process.wait())]
+            if any(truncated):
+                break
+    except BaseException as failure:
+        primary_error = failure
+    finally:
         try:
-            async with asyncio.timeout(max(0.001, timeout - 0.2)):
-                await asyncio.gather(*tasks)
-        except TimeoutError:
-            timed_out = True
-        except ValueError:
-            pass
+            try:
+                if selector is not None:
+                    try:
+                        selector.close()
+                    except BaseException as failure:
+                        primary_error = primary_error or failure
+                        cleanup_unknown = True
+            finally:
+                if process is not None:
+                    try:
+                        # Attempt each close independently. A failure retains
+                        # HOLD but cannot skip owned group termination/reaping.
+                        for stream in (process.stdout, process.stderr):
+                            if stream is not None:
+                                try:
+                                    stream.close()
+                                except BaseException as failure:
+                                    primary_error = primary_error or failure
+                                    cleanup_unknown = True
+                    finally:
+                        try:
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            except BaseException as failure:
+                                primary_error = primary_error or failure
+                                cleanup_unknown = True
+                        finally:
+                            try:
+                                process.wait(timeout=max(0.001, deadline - time.monotonic()))
+                            except BaseException as failure:
+                                primary_error = primary_error or failure
+                                cleanup_unknown = True
         finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            if process.returncode is None:
-                process.kill()
-            await asyncio.wait_for(process.wait(), 0.2)
-        return {'code': process.returncode, 'stdout': bytes(streams[0]), 'stderr': bytes(streams[1]),
-                'stdout_truncated': truncated[0], 'stderr_truncated': truncated[1], 'timed_out': timed_out}
-    return asyncio.run(capture())
+            for signum, handler in previous.items():
+                try:
+                    signal.signal(signum, handler)
+                except BaseException as failure:
+                    primary_error = primary_error or failure
+                    cleanup_unknown = True
+    if cleanup_unknown:
+        raise _ClientCleanupUnresolved(primary_error) from primary_error
+    if primary_error is not None:
+        raise primary_error
+    if interrupted:
+        raise InterruptedError('owned sandbox client interrupted')
+    return {'code': process.returncode, 'stdout': bytes(streams[0]), 'stderr': bytes(streams[1]),
+            'stdout_truncated': truncated[0], 'stderr_truncated': truncated[1], 'timed_out': timed_out}

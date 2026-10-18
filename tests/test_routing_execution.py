@@ -6,6 +6,7 @@ the git worktree lifecycle (clean-tree requirement, jailed create/remove,
 apply --check, failed-patch revert). Never calls real docker."""
 import hashlib
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -169,11 +170,116 @@ def test_run_in_sandbox_docker_unavailable(tmp_path, data_dir, monkeypatch):
 
 
 @pytest.mark.parametrize('stream', ['stdout', 'stderr'])
-def test_stream_limit_stops_client_before_buffering_unbounded_output(stream):
+def test_stream_limit_stops_client_before_buffering_unbounded_output(stream, monkeypatch):
+    original = subprocess.Popen
+    children = []
+
+    def owned_child(*args, **options):
+        child = original(*args, **options)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, 'Popen', owned_child)
     script = "import os; " + ('os.write(1,b"x"*1000000)' if stream == 'stdout' else 'os.write(2,b"x"*1000000)')
     observed = rs._bounded_docker([sys.executable, '-I', '-c', script], timeout=2, limit=100)
     assert len(observed[stream]) <= 100
     assert observed[stream + '_truncated'] is True
+    assert len(children) == 1
+    child = children[0]
+    assert child.stdout.closed and child.stderr.closed
+    with pytest.raises(ChildProcessError):
+        os.waitpid(child.pid, os.WNOHANG)
+    with pytest.raises(ProcessLookupError):
+        os.killpg(child.pid, 0)
+
+
+@pytest.mark.parametrize('close_at', ['selector', 'stdout'])
+def test_capture_close_failure_holds_but_still_kills_and_reaps_owned_child(monkeypatch, close_at, record_property):
+    original_popen = subprocess.Popen
+    original_selector = rs.selectors.DefaultSelector
+    children = []
+    attempts = []
+    original_killpg = os.killpg
+    close_failure = OSError('synthetic selector close failure')
+
+    class FailingPipe:
+        def __init__(self, pipe, label):
+            self.pipe = pipe
+            self.label = label
+            self.raised = False
+
+        def __getattr__(self, name):
+            return getattr(self.pipe, name)
+
+        def close(self):
+            attempts.append(self.label + '-close')
+            self.pipe.close()
+            if self.label == close_at and not self.raised:
+                self.raised = True
+                raise close_failure
+
+    def owned_child(*args, **options):
+        child = original_popen(*args, **options)
+        child.stdout = FailingPipe(child.stdout, 'stdout')
+        child.stderr = FailingPipe(child.stderr, 'stderr')
+        original_wait = child.wait
+
+        def observed_wait(*args, **options):
+            attempts.append('wait')
+            return original_wait(*args, **options)
+
+        child.wait = observed_wait
+        children.append(child)
+        return child
+
+    class FailingClose:
+        def __init__(self):
+            self.selector = original_selector()
+
+        def __getattr__(self, name):
+            return getattr(self.selector, name)
+
+        def close(self):
+            attempts.append('selector-close')
+            self.selector.close()
+            if close_at == 'selector':
+                raise close_failure
+
+    def observed_killpg(pid, signum):
+        if signum != 0:
+            attempts.append('kill-group')
+        return original_killpg(pid, signum)
+
+    monkeypatch.setattr(subprocess, 'Popen', owned_child)
+    monkeypatch.setattr(rs.selectors, 'DefaultSelector', FailingClose)
+    monkeypatch.setattr(os, 'killpg', observed_killpg)
+    try:
+        with pytest.raises(RuntimeError, match='client cleanup unresolved') as failure:
+            rs._bounded_docker([sys.executable, '-I', '-c', 'import os; os.write(1,b"x"*1000000)'],
+                               timeout=2, limit=100)
+        assert failure.value.__cause__ is close_failure
+        record_property('cleanup_attempts_before_test_recovery', repr(attempts))
+        record_property('original_cause_preserved', True)
+        record_property('result_held_cleanup_unknown', True)
+        assert attempts == ['selector-close', 'stdout-close', 'stderr-close', 'kill-group', 'wait']
+        assert len(children) == 1
+        child = children[0]
+        assert child.stdout.closed and child.stderr.closed
+        with pytest.raises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)
+        with pytest.raises(ProcessLookupError):
+            os.killpg(child.pid, 0)
+    finally:
+        # Also contain a deliberately broken pre-fix implementation: this
+        # test owns this synthetic group and never signals any other PID.
+        for child in children:
+            if child.returncode is None:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait(timeout=1)
+            child.stdout.close(); child.stderr.close()
 
 
 def _db():
