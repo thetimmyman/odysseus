@@ -48,7 +48,7 @@ def worker(args):
     if type(value) is not dict:
         raise MeasurementUnresolved('invalid worker input')
     if args.worker_workspace:
-        from src.canonical_inspector_runtime import workspace_operation
+        from src.canonical_inspector_workspace import workspace_operation
         from src.constants import CANONICAL_TMOS_MANIFEST_FILE
         if args.tmos_manifest != Path(CANONICAL_TMOS_MANIFEST_FILE):
             raise MeasurementUnresolved('workspace manifest must be the admitted owner configuration')

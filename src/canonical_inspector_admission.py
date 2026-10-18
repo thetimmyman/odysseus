@@ -29,10 +29,7 @@ from src.constants import (
     CANONICAL_PILOT_ID, CANONICAL_PILOT_KEY_BYTES,
     CANONICAL_TMOS_DISCLOSURE_GENERATION, CANONICAL_TMOS_PACKET_IDS, CANONICAL_TMOS_WORK_ID,
 )
-
-
-class InspectorUnavailable(ValueError):
-    """No acknowledged operation; never implies safe redispatch."""
+from src.inspector_errors import InspectorUnavailable
 
 
 class UnknownInspection(ValueError):
