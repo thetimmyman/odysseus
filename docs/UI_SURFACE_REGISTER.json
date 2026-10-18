@@ -6,19 +6,19 @@
     "source_file_count": 224,
     "source_pins": {
       "AGENTS.md": "2e2e69f07438d9fb339a760c32528f1f406cea2cc0e2f5be162ed6c8bf900230",
-      "app.py": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+      "app.py": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
       "routes/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "routes/admin_wipe_routes.py": "b78047e84499d698ec3009d7ec7eae17baf37153b061ce0690c3dea378658dba",
       "routes/api_token_routes.py": "ceb88f537963e61ddb223c1ae992248c7c28c5e57d29176cfc1c2f1f388f0241",
       "routes/assistant_routes.py": "97e25e8d17c09ef187d31aa847bb98ff402d5459802f3658f7b048f7f83179b4",
       "routes/auth_routes.py": "c12fe31d0eb1e831786b2681d799127b07d555b77207b8c55ef014252aaf0304",
       "routes/backup_routes.py": "dbb6ba02af0cec80fd6cbe384c3cbda6612a27da8f87382f57334d59659296bc",
-      "routes/calendar_routes.py": "946367c66e26925c7a864b253790d64d15b88fb18b2b9fc68cd71c1267617627",
+      "routes/calendar_routes.py": "8b6429cf127f25f77041e0b857647e4d5e6692579cbd0a5d47a7553d66e71398",
       "routes/chat_helpers.py": "0864e71f07746bed7513c73d597e8d85b91c5014d470713f9e245b1fe57aa1f3",
       "routes/chat_routes.py": "c28a45396c8da8fa02eb811bbc4ba6ed209ebbff8193d611d34a5d01e1c1db72",
       "routes/chatgpt_subscription_routes.py": "21e10a76ac4af4d5010d87f671c339fde98bb32ba3a63dc733611717ce7a3811",
       "routes/cleanup_routes.py": "43a69d8c81eda210089bc80e2384288c19b3606e96c114c7c883797c444bcf1d",
-      "routes/codex_routes.py": "b876c8fe5124c25eea6196cd38de4f811bb62a8bfc56706f7db328c504065217",
+      "routes/codex_routes.py": "14558d6f46edeb0849038a4405a29c5377062691b749c135935c5804abb7e86c",
       "routes/compare_routes.py": "9278c5c64c4421f1e5559975c2ed01fcd101460f07f9a8b6e748227465f3831b",
       "routes/config_routes.py": "e720005ab8698be76bfde4f2434081126c5894afa0e72b72eece8562ac8481f0",
       "routes/contacts_routes.py": "4552ce47115c19421a4a9355cb1afdf4d36bd3872afd025a6decb3b8cb75cfdd",
@@ -53,7 +53,7 @@
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
       "routes/project_files_routes.py": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
       "routes/research_routes.py": "8401bb410cfefda7841dcbeb9d2530e082fe7eb62178f366b557f122a45a9b31",
-      "routes/routing_harness_routes.py": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+      "routes/routing_harness_routes.py": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
       "routes/search_routes.py": "1510aa0e1bbf5cf537aea90406e29f95407eda507264e3d9eec09ca19fc4fb6a",
       "routes/session_routes.py": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
       "routes/shell_routes.py": "7f76cc62bd0cc663212cc31e993893be70c11fcf14b186b1477bf988ad2fec8e",
@@ -2117,7 +2117,7 @@
             "evidence": {
               "path": "app.py",
               "line": 793,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /."
             }
           }
@@ -2398,7 +2398,7 @@
           {
             "path": "routes/calendar_routes.py",
             "line": 1,
-            "sha256": "946367c66e26925c7a864b253790d64d15b88fb18b2b9fc68cd71c1267617627",
+            "sha256": "8b6429cf127f25f77041e0b857647e4d5e6692579cbd0a5d47a7553d66e71398",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -2473,7 +2473,7 @@
             "evidence": {
               "path": "app.py",
               "line": 807,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /calendar."
             }
           }
@@ -2861,7 +2861,7 @@
             "evidence": {
               "path": "app.py",
               "line": 815,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /cookbook."
             }
           },
@@ -3238,7 +3238,7 @@
             "evidence": {
               "path": "app.py",
               "line": 819,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /email."
             }
           }
@@ -3505,7 +3505,7 @@
             "evidence": {
               "path": "app.py",
               "line": 827,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /gallery."
             }
           },
@@ -3734,7 +3734,7 @@
             "evidence": {
               "path": "app.py",
               "line": 835,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /library."
             }
           },
@@ -3969,7 +3969,7 @@
             "evidence": {
               "path": "app.py",
               "line": 823,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /memory."
             }
           },
@@ -4168,7 +4168,7 @@
             "evidence": {
               "path": "app.py",
               "line": 803,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /notes."
             }
           },
@@ -4366,7 +4366,7 @@
             "evidence": {
               "path": "app.py",
               "line": 831,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /tasks."
             }
           },
@@ -5432,7 +5432,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5453,7 +5453,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5467,13 +5467,13 @@
         "apis": [
           "routes/routing_harness_routes.py"
         ],
-        "session_state": "Diagnostic and policy panels are not inferred to be ordinary user preferences.",
+        "session_state": "Diagnostic and policy panels are not ordinary user preferences. Canonical Inspector attempts and alternate requests require the owning admin cookie session and account epoch; an alternate request records intent without starting dispatch.",
         "scope": "host-wide diagnostic/configuration context",
         "evidence": [
           {
             "path": "routes/routing_harness_routes.py",
             "line": 1,
-            "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+            "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -6274,7 +6274,7 @@
             "evidence": {
               "path": "app.py",
               "line": 844,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /login."
             }
           }
@@ -6324,7 +6324,7 @@
         {
           "path": "app.py",
           "line": 1,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         }
       ],
@@ -6333,7 +6333,7 @@
         {
           "path": "app.py",
           "line": 1,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         }
       ],
@@ -6358,7 +6358,7 @@
           {
             "path": "app.py",
             "line": 838,
-            "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+            "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
             "claim": "/backgrounds route references static/backgrounds.html; that target is absent from pinned source tree."
           }
         ],
@@ -6369,7 +6369,7 @@
             "evidence": {
               "path": "app.py",
               "line": 839,
-              "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+              "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
               "claim": "Direct route /backgrounds."
             }
           }
@@ -6388,7 +6388,7 @@
           {
             "path": "app.py",
             "line": 839,
-            "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+            "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
             "claim": "/backgrounds route points at absent static/backgrounds.html; no DOM root or responsive selector exists in pinned source."
           }
         ],
@@ -6803,7 +6803,7 @@
         "source": {
           "path": "app.py",
           "line": 793,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6815,7 +6815,7 @@
         "source": {
           "path": "app.py",
           "line": 839,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present_target_missing"
@@ -6827,7 +6827,7 @@
         "source": {
           "path": "app.py",
           "line": 807,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6839,7 +6839,7 @@
         "source": {
           "path": "app.py",
           "line": 815,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6851,7 +6851,7 @@
         "source": {
           "path": "app.py",
           "line": 819,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6863,7 +6863,7 @@
         "source": {
           "path": "app.py",
           "line": 827,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6875,7 +6875,7 @@
         "source": {
           "path": "app.py",
           "line": 835,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6887,7 +6887,7 @@
         "source": {
           "path": "app.py",
           "line": 844,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6899,7 +6899,7 @@
         "source": {
           "path": "app.py",
           "line": 823,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6911,7 +6911,7 @@
         "source": {
           "path": "app.py",
           "line": 803,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -6923,7 +6923,7 @@
         "source": {
           "path": "app.py",
           "line": 831,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct page-serving route from sealed application source."
         },
         "status": "source_present"
@@ -12823,7 +12823,7 @@
         "source": {
           "path": "app.py",
           "line": 839,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "serve_backgrounds route target."
         }
       },
@@ -12845,7 +12845,7 @@
         "source": {
           "path": "app.py",
           "line": 532,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Router mounting begins; source hash pins the complete application module."
         }
       },
@@ -12856,7 +12856,7 @@
         "source": {
           "path": "app.py",
           "line": 839,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "serve_backgrounds route references missing file."
         }
       },
@@ -12874,11 +12874,11 @@
       {
         "candidate": "POST /api/harness/inspector/pilots/{pilot_id}",
         "type": "owned_canonical_inspector_json_api",
-        "reason": "Fixed synthetic-pilot JSON admission uses the existing admin-cookie gate and a trusted per-app service; normal setup supplies no service. No navigable HTML page, asset response or browser control is added.",
+        "reason": "Fixed synthetic-pilot JSON admission uses the existing admin-cookie gate and a trusted per-app service. The app-owned real-work composition cannot execute the synthetic adapter. Default setup supplies no service. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 283,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12889,7 +12889,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 295,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12899,20 +12899,42 @@
         "reason": "Owner-checked JSON locator revocation adds no navigable HTML page, asset response or browser control. It does not establish installed service or browser acceptance.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 324,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "line": 337,
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
       {
         "candidate": "POST /api/harness/inspector/attempts/{handle}/escalation",
         "type": "owned_canonical_inspector_json_api",
-        "reason": "Owner-cookie authenticated pending escalation request with exact retained-attempt join; no policy mutation, dispatch or navigable HTML. Normal setup still supplies no live inspector service.",
+        "reason": "Owner-cookie authenticated pending escalation request with an exact retained-attempt join; no policy mutation, dispatch or navigable HTML. The app-owned service is absent in default setup.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 306,
-          "sha256": "44ab66056702b68a3c048ea9c86f62ac5e2c99fa5d0f0a9459d320bd187ae989",
+          "line": 319,
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
           "claim": "Mounted bounded JSON request; immutable owner/attempt/dispatch-associated request receipt."
+        }
+      },
+      {
+        "candidate": "POST /api/harness/inspector/attempts/{handle}/alternate",
+        "type": "owned_canonical_inspector_json_api",
+        "reason": "Owner-cookie authenticated preference for another recorded eligible target. An explicitly configured app owner may consume the request once through current canonical routing and retained execution evidence; configuration cannot refresh evidence or grant eligibility. Default setup is unavailable; native and UI acceptance remain unobserved. No navigable HTML or browser control is added.",
+        "source": {
+          "path": "routes/routing_harness_routes.py",
+          "line": 349,
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "claim": "Mounted bounded JSON preference; immutable owner, work-item, attempt and dispatch association."
+        }
+      },
+      {
+        "candidate": "POST /api/harness/inspector/tmos/{packet_id}",
+        "type": "owned_canonical_inspector_json_api",
+        "reason": "Finite owner-cookie authenticated admission accepts only an idempotency key for one of two pre-admitted work packages. The app lifespan owns normal routing, execution and retention; browser callers supply no command, path, target, package or policy. Default setup remains unavailable and operational acceptance unobserved. No navigable HTML or browser control is added.",
+        "source": {
+          "path": "routes/routing_harness_routes.py",
+          "line": 307,
+          "sha256": "0061e705f22bdd3b21cdf01f722bc445e01e4fc363353b93950829874d7e3540",
+          "claim": "Mounted bounded JSON admission for an explicitly configured finite app owner."
         }
       }
     ],
@@ -12974,7 +12996,7 @@
         "source": {
           "path": "app.py",
           "line": 410,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct API/asset route."
         }
       },
@@ -12985,7 +13007,7 @@
         "source": {
           "path": "app.py",
           "line": 849,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct API route."
         }
       },
@@ -12996,7 +13018,7 @@
         "source": {
           "path": "app.py",
           "line": 854,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct API route."
         }
       },
@@ -13007,7 +13029,7 @@
         "source": {
           "path": "app.py",
           "line": 858,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct API route."
         }
       },
@@ -13018,7 +13040,7 @@
         "source": {
           "path": "app.py",
           "line": 869,
-          "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+          "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
           "claim": "Direct API route."
         }
       }
@@ -13029,7 +13051,7 @@
       "source": {
         "path": "app.py",
         "line": 407,
-        "sha256": "c5e5172c781bb86e90e620a55c6c5f226e975f5a5670606a5794fbe6d7e4e5f1",
+        "sha256": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
         "claim": "Static file mount."
       }
     },

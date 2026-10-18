@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import re
 import threading
 import uuid
 
@@ -22,8 +23,12 @@ from sqlalchemy import (
     select, update,
 )
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.schema import CreateTable
 
-from src.constants import CANONICAL_PILOT_ID, CANONICAL_PILOT_KEY_BYTES
+from src.constants import (
+    CANONICAL_PILOT_ID, CANONICAL_PILOT_KEY_BYTES,
+    CANONICAL_TMOS_DISCLOSURE_GENERATION, CANONICAL_TMOS_PACKET_IDS, CANONICAL_TMOS_WORK_ID,
+)
 
 
 class InspectorUnavailable(ValueError):
@@ -75,6 +80,26 @@ class PreparedPilot:
 
 
 @dataclass(frozen=True)
+class PreparedTmosWork:
+    """Trusted execution owner's prepared intent for the two Inspector packets.
+
+    Hashes identify intent, not execution or routing permission. The service
+    must validate the canonical package before admission and retained evidence
+    before publication. No HTTP caller may construct this object.
+    """
+    run_id: str
+    packet_id: str
+    package_hash: str
+    config_digest: str
+
+    def __post_init__(self):
+        if (type(self.run_id) is not str or not 0 < len(self.run_id) <= 128
+                or self.packet_id not in CANONICAL_TMOS_PACKET_IDS
+                or not _digest(self.package_hash) or not _digest(self.config_digest)):
+            raise InspectorUnavailable("inspector unavailable")
+
+
+@dataclass(frozen=True)
 class Publication:
     bundle_hash: str
     evidence_hash: str
@@ -120,7 +145,10 @@ admissions = Table(
     CheckConstraint("(reserved_slot IS NOT NULL AND reserved_slot=1 AND slot_released_at IS NULL) OR "
                     "(reserved_slot IS NULL AND slot_released_at IS NOT NULL)"),
     CheckConstraint("auth_origin = 'admin_cookie'"),
-    CheckConstraint("pilot_id = 'synthetic-uppercase' AND packet_id = 'synthetic-uppercase'"),
+    CheckConstraint(
+        f"(pilot_id = '{CANONICAL_PILOT_ID}' AND packet_id = '{CANONICAL_PILOT_ID}') OR "
+        f"(pilot_id = '{CANONICAL_TMOS_WORK_ID}' AND packet_id IN "
+        f"({', '.join(repr(packet) for packet in CANONICAL_TMOS_PACKET_IDS)}))"),
 )
 events = Table(
     "canonical_inspector_event", metadata,
@@ -172,6 +200,7 @@ interventions = Table(
 def _sqlite_trigger(table, name, action, condition, message):
     ddl = (f"CREATE TRIGGER {name} BEFORE {action} ON {table.name} "
            f"WHEN {condition} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    metadata.info.setdefault("sqlite_trigger_ddl", {})[name] = ddl
     event.listen(table, "after_create", DDL(ddl).execute_if(dialect="sqlite"))
 
 
@@ -230,6 +259,8 @@ class _DispatchClaim:
         self._id, self._owner, self._prepared = identity, owner, prepared
         self._store = store
         self._execution_started = False
+        self._alternate_of = None
+        self._alternate_claim_hash = None
 
     def __reduce__(self):
         raise TypeError("dispatch claims cannot be serialized")
@@ -241,6 +272,30 @@ class AdmissionStore:
         self._claims = {}
         self._consumed = {}
         self._claim_lock = threading.Lock()
+
+    def check_schema(self):
+        """Read-only exact compatibility check; never migrate or initialize.
+
+        This checks the current connection and source-owned DDL. It does not
+        establish native crash durability, backups or restored-state acceptance.
+        """
+        try:
+            with self._sessions() as session:
+                connection = self._qualified_connection(session)
+                expected = {table.name: str(CreateTable(table).compile(dialect=connection.dialect))
+                            for table in metadata.sorted_tables}
+                expected.update(metadata.info["sqlite_trigger_ddl"])
+                names = tuple(metadata.tables)
+                parameters = ",".join("?" for _ in names)
+                rows = connection.exec_driver_sql(
+                    "SELECT name,sql FROM sqlite_master WHERE type IN ('table','trigger') "
+                    f"AND tbl_name IN ({parameters})", names).all()
+                normalized = lambda value: " ".join(value.strip().rstrip(";").split())
+                if ({name: normalized(sql) for name, sql in rows}
+                        != {name: normalized(sql) for name, sql in expected.items()}):
+                    raise InspectorUnavailable("inspector unavailable")
+        except (SQLAlchemyError, OSError, ValueError, TypeError):
+            raise InspectorUnavailable("inspector unavailable") from None
 
     @staticmethod
     def _qualified_connection(session):
@@ -258,18 +313,33 @@ class AdmissionStore:
         return connection
 
     def admit(self, owner: Principal, idempotency_key: str, prepared: PreparedPilot):
-        if (not isinstance(owner, Principal) or not isinstance(prepared, PreparedPilot)
+        if not isinstance(prepared, PreparedPilot):
+            raise InspectorUnavailable("inspector unavailable")
+        return self._admit(owner, idempotency_key, prepared, CANONICAL_PILOT_ID)
+
+    def admit_tmos_work(self, owner: Principal, idempotency_key: str, prepared: PreparedTmosWork):
+        """Commit an actual cookie principal's real-work origin exactly once.
+
+        This persistence primitive neither selects a target nor starts work.
+        Normal service setup still has no live executor or schema initializer.
+        """
+        if type(prepared) is not PreparedTmosWork:
+            raise InspectorUnavailable("inspector unavailable")
+        return self._admit(owner, idempotency_key, prepared, CANONICAL_TMOS_WORK_ID)
+
+    def _admit(self, owner, idempotency_key, prepared, pilot_id):
+        if (not isinstance(owner, Principal)
                 or type(idempotency_key) is not str or not idempotency_key
                 or len(idempotency_key.encode("utf-8")) > CANONICAL_PILOT_KEY_BYTES):
             raise InspectorUnavailable("inspector unavailable")
         identity = str(uuid.uuid4())
-        intent = hashlib.sha256((CANONICAL_PILOT_ID + ":" + prepared.config_digest).encode()).hexdigest()
+        intent = hashlib.sha256((pilot_id + ":" + prepared.config_digest).encode()).hexdigest()
         try:
             with self._sessions() as session:
                 self._qualified_connection(session)
                 session.execute(insert(admissions).values(
                     id=identity, principal_key=owner.auth_key, account_epoch=owner.account_epoch,
-                    idempotency_key=idempotency_key, intent_digest=intent, pilot_id=CANONICAL_PILOT_ID,
+                    idempotency_key=idempotency_key, intent_digest=intent, pilot_id=pilot_id,
                     run_id=prepared.run_id, packet_id=prepared.packet_id, package_hash=prepared.package_hash,
                     config_digest=prepared.config_digest, auth_origin="admin_cookie", admitted_at=_now(),
                     reserved_slot=1, slot_released_at=None))
@@ -299,14 +369,144 @@ class AdmissionStore:
                 raise InspectorUnavailable("inspector unavailable")
         return claim._id
 
-    def _begin_execution(self, claim):
+    def _begin_execution(self, claim, *, alternate_of=None):
         """Only the exact committed claim's one owning invocation may start."""
         with self._claim_lock:
             if (type(claim) is not _DispatchClaim or self._consumed.get(claim._id) is not claim
                     or claim._store is not self or claim._execution_started):
                 raise InspectorUnavailable("inspector unavailable")
             claim._execution_started = True
+            claim._alternate_of = alternate_of
             return claim._prepared
+
+    def begin_tmos_work(self, claim, owner):
+        """Start only the existing owner's consumed real-work claim once.
+
+        This records invocation custody; normal dispatch still owns every
+        policy, capability, capacity and permission check before provider use.
+        """
+        self._consumed_origin(claim, owner)
+        if type(claim._prepared) is not PreparedTmosWork:
+            raise InspectorUnavailable("inspector unavailable")
+        return self._begin_execution(claim)
+
+    def begin_tmos_alternate(self, claim, owner, original_handle, request_hash):
+        """Bind the one-use real invocation to its exact still-pending request.
+
+        A restart cannot reconstruct the consumed claim. The durable global
+        slot stays held on uncertainty. This does not qualify transport or
+        exempt normal dispatch and invocation revalidation.
+        """
+        self._consumed_origin(claim, owner)
+        original = self.resolve(owner, original_handle, CANONICAL_TMOS_DISCLOSURE_GENERATION)
+        receipts = self.interventions(owner, original_handle, CANONICAL_TMOS_DISCLOSURE_GENERATION)
+        requests = [row for row in receipts if row.get("receipt_hash") == request_hash
+                    and row.get("status") == "REQUESTED" and row.get("action") == "prefer_eligible_target"]
+        if (type(claim._prepared) is not PreparedTmosWork or len(requests) != 1
+                or claim._prepared.packet_id != original.packet_id or claim._prepared.run_id == original.run_id
+                or any(row.get("operator_request_receipt_hash") == request_hash for row in receipts)):
+            raise InspectorUnavailable("inspector unavailable")
+        prepared = self._begin_execution(claim, alternate_of=(original_handle, requests[0]))
+        # Mark local custody before COMMIT. Uncertain persistence must never
+        # return a reusable invocation or silently recover it after restart.
+        try:
+            with self._sessions() as session:
+                self._qualified_connection(session)
+                row = session.execute(self._owned_query(owner, original_handle,
+                    CANONICAL_TMOS_DISCLOSURE_GENERATION)).mappings().one_or_none()
+                if row is None:
+                    raise InspectorUnavailable("inspector unavailable")
+                rows = session.execute(select(interventions.c.receipt).where(
+                    interventions.c.publication_id == row["id"]).limit(65)).scalars().all()
+                receipts = [json.loads(value) for value in rows]
+                request = requests[0]
+                if (len(receipts) >= 63 or request not in receipts
+                        or any(value.get("operator_request_receipt_hash") == request_hash for value in receipts)):
+                    raise InspectorUnavailable("inspector unavailable")
+                receipt = {
+                    "schema": "operator-intervention-claim-v1", "action": "prefer_eligible_target", "status": "CLAIMED",
+                    "actor": owner.auth_key, "account_epoch": owner.account_epoch, "recorded_at": _now(),
+                    "operator_request_receipt_hash": request_hash, "mission_key": request["mission_key"],
+                    "original_dispatch_receipt_hash": request["original_dispatch_receipt_hash"],
+                    "attempt_receipt_hash": request["attempt_receipt_hash"], "packet_id": prepared.packet_id,
+                    "run_id": prepared.run_id, "execution_package_hash": prepared.package_hash,
+                }
+                receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+                session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=row["id"],
+                    idempotency_key="claim:" + request_hash, receipt=json.dumps(receipt)))
+                session.commit()
+        except (SQLAlchemyError, OSError, ValueError, TypeError, KeyError):
+            raise InspectorUnavailable("inspector unavailable") from None
+        claim._alternate_claim_hash = receipt["receipt_hash"]
+        return prepared
+
+    def tmos_alternate_origin(self, claim, owner):
+        self.tmos_origin(claim, owner)
+        if claim._alternate_of is None or not _digest(claim._alternate_claim_hash):
+            raise InspectorUnavailable("inspector unavailable")
+        return claim._alternate_of
+
+    def fail_tmos_alternate(self, claim, owner, *, stage, refusal_code=None):
+        """Append uncertainty to the consumed request, retaining its global slot.
+
+        This proves neither a provider stop nor cleanup. Missing result hashes
+        stay absent; a failed invocation never becomes an APPLIED preference.
+        """
+        original_handle, request = self.tmos_alternate_origin(claim, owner)
+        from src.dispatch_routing import KNOWN_REFUSALS
+        if refusal_code is not None and refusal_code not in KNOWN_REFUSALS:
+            raise InspectorUnavailable("inspector unavailable")
+        if stage not in {"routing", "lease", "invoke", "verify", "post_identity", "cleanup",
+                         "release", "retention", "publication"}:
+            raise InspectorUnavailable("inspector unavailable")
+        try:
+            with self._sessions() as session:
+                self._qualified_connection(session)
+                original = session.execute(self._owned_query(owner, original_handle,
+                    CANONICAL_TMOS_DISCLOSURE_GENERATION)).mappings().one_or_none()
+                if original is None:
+                    raise InspectorUnavailable("inspector unavailable")
+                rows = session.execute(select(interventions.c.receipt).where(
+                    interventions.c.publication_id == original["id"]).limit(65)).scalars().all()
+                receipts = [json.loads(raw) for raw in rows]
+                terminal = [row for row in receipts if row.get("operator_request_receipt_hash") == request["receipt_hash"]
+                            and row.get("status") in {"APPLIED", "UNRESOLVED"}]
+                if terminal:
+                    if len(terminal) == 1 and terminal[0].get("status") == "UNRESOLVED":
+                        return terminal[0]
+                    raise InspectorUnavailable("inspector unavailable")
+                if (len(receipts) >= 64 or request not in receipts
+                        or not any(row.get("receipt_hash") == claim._alternate_claim_hash
+                                   and row.get("status") == "CLAIMED" for row in receipts)):
+                    raise InspectorUnavailable("inspector unavailable")
+                receipt = {"schema": "operator-intervention-result-v1", "action": "prefer_eligible_target",
+                    "status": "UNRESOLVED", "actor": owner.auth_key, "account_epoch": owner.account_epoch,
+                    "recorded_at": _now(), "operator_request_receipt_hash": request["receipt_hash"],
+                    "invocation_receipt_hash": claim._alternate_claim_hash, "mission_key": request["mission_key"],
+                    "original_dispatch_receipt_hash": request["original_dispatch_receipt_hash"],
+                    "attempt_receipt_hash": request["attempt_receipt_hash"], "packet_id": claim._prepared.packet_id,
+                    "resulting_run_id": claim._prepared.run_id, "resulting_execution_package_hash": claim._prepared.package_hash,
+                    "failed_stage": stage, "reason_code": "execution_unresolved", "routing_refusal_code": refusal_code,
+                    "cleanup_confirmed": False,
+                    "resulting_handle": None, "resulting_dispatch_receipt_hash": None,
+                    "resulting_attempt_receipt_hash": None, "resulting_evidence_package_hash": None,
+                    "resulting_bundle_hash": None}
+                receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+                session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=original["id"],
+                    idempotency_key="result:" + request["receipt_hash"], receipt=json.dumps(receipt)))
+                session.commit()
+                return receipt
+        except (SQLAlchemyError, OSError, ValueError, TypeError, KeyError):
+            raise InspectorUnavailable("inspector unavailable") from None
+
+    def tmos_origin(self, claim, owner):
+        """Read a started real-work origin without reconstructing authority."""
+        self._consumed_origin(claim, owner)
+        if type(claim._prepared) is not PreparedTmosWork or claim._execution_started is not True:
+            raise InspectorUnavailable("inspector unavailable")
+        return claim._prepared
 
     def release_terminal(self, claim, *, cleanup_confirmed):
         identity = self._consumed_origin(claim, claim._owner)
@@ -340,14 +540,17 @@ class AdmissionStore:
                     actor_key=owner.auth_key, actor_epoch=owner.account_epoch,
                     recorded_at=_now(), reason_code="owner_revoked" if revoked else "retained")
 
-    def publish(self, claim, owner, publication):
+    def publish(self, claim, owner, publication, *, alternate_of=None):
         """Native persistence primitive; service owns canonical/durability joins.
 
         This is not an HTTP admission or a retention acknowledgement. Trusted
         service orchestration must verify the exact retained bytes first.
         """
         identity = self._consumed_origin(claim, owner)
-        if not isinstance(publication, Publication):
+        if (not isinstance(publication, Publication)
+                or (type(claim._prepared) is PreparedTmosWork
+                    and publication.disclosure_generation != CANONICAL_TMOS_DISCLOSURE_GENERATION)
+                or claim._alternate_of != alternate_of):
             raise InspectorUnavailable("inspector unavailable")
         handle = str(uuid.uuid4())
         try:
@@ -356,11 +559,64 @@ class AdmissionStore:
                 origin = session.execute(select(admissions).where(admissions.c.id == identity)).mappings().one()
                 if session.execute(select(events.c.id).where(events.c.admission_id == identity)).first():
                     raise InspectorUnavailable("inspector unavailable")
-                session.execute(insert(events).values(**self._event_values(origin, owner, publication, handle=handle)))
+                values = self._event_values(origin, owner, publication, handle=handle)
+                session.execute(insert(events).values(**values))
+                if alternate_of is not None:
+                    self._append_alternate_result(session, owner, origin, publication, handle, alternate_of,
+                                                  claim._alternate_claim_hash)
                 session.commit()
         except (SQLAlchemyError, OSError):
             raise InspectorUnavailable("inspector unavailable") from None
         return handle
+
+    def _append_alternate_result(self, session, owner, origin, publication, handle, alternate_of, claim_hash):
+        """Commit the application audit and new locator in the same transaction.
+
+        Canonical evidence validation belongs to the service before this
+        persistence primitive. This join still refuses changed ownership,
+        revocation, a different origin, replay and a result-key collision.
+        """
+        original_handle, request = alternate_of
+        original = session.execute(self._owned_query(owner, original_handle,
+            CANONICAL_TMOS_DISCLOSURE_GENERATION)).mappings().one_or_none()
+        if (original is None or publication.disclosure_generation != CANONICAL_TMOS_DISCLOSURE_GENERATION
+                or origin["packet_id"] != original["packet_id"] or origin["run_id"] == original["run_id"]):
+            raise InspectorUnavailable("inspector unavailable")
+        rows = session.execute(select(interventions.c.receipt).where(
+            interventions.c.publication_id == original["id"]).limit(65)).scalars().all()
+        receipts = [json.loads(row) for row in rows]
+        claims = [row for row in receipts if row.get("receipt_hash") == claim_hash
+                  and row.get("schema") == "operator-intervention-claim-v1" and row.get("status") == "CLAIMED"
+                  and row.get("operator_request_receipt_hash") == request["receipt_hash"]
+                  and row.get("run_id") == origin["run_id"]
+                  and row.get("execution_package_hash") == origin["package_hash"]]
+        if (len(receipts) >= 64 or request not in receipts
+                or request.get("action") != "prefer_eligible_target" or request.get("status") != "REQUESTED"
+                or request.get("actor") != owner.auth_key or request.get("account_epoch") != owner.account_epoch
+                or request.get("original_dispatch_receipt_hash") != original["dispatch_hash"]
+                or request.get("attempt_receipt_hash") != original["attempt_hash"]
+                or len(claims) != 1
+                or any(row.get("operator_request_receipt_hash") == request["receipt_hash"]
+                       and row.get("status") in {"APPLIED", "UNRESOLVED"} for row in receipts)):
+            raise InspectorUnavailable("inspector unavailable")
+        receipt = {
+            "schema": "operator-intervention-result-v1", "action": "prefer_eligible_target", "status": "APPLIED",
+            "actor": owner.auth_key, "account_epoch": owner.account_epoch, "recorded_at": _now(),
+            "operator_request_receipt_hash": request["receipt_hash"],
+            "invocation_receipt_hash": claim_hash, "mission_key": request["mission_key"],
+            "original_dispatch_receipt_hash": original["dispatch_hash"], "attempt_receipt_hash": original["attempt_hash"],
+            "requested_profile_id": request["requested_profile_id"], "packet_id": origin["packet_id"],
+            "resulting_run_id": origin["run_id"], "resulting_handle": handle,
+            "resulting_execution_package_hash": origin["package_hash"],
+            "resulting_dispatch_receipt_hash": publication.dispatch_hash,
+            "resulting_attempt_receipt_hash": publication.attempt_hash,
+            "resulting_evidence_package_hash": publication.evidence_hash,
+            "resulting_bundle_hash": publication.bundle_hash,
+        }
+        receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+        session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=original["id"],
+            idempotency_key="result:" + request["receipt_hash"], receipt=json.dumps(receipt)))
 
     @staticmethod
     def _owned_query(owner, handle, generation=None):
@@ -402,6 +658,26 @@ class AdmissionStore:
             raise UnknownInspection("inspection unavailable") from None
 
     def request_escalation(self, owner, handle, generation, dispatch_hash, reason, key):
+        return self._request_intervention(owner, handle, generation, dispatch_hash, reason, key,
+                                          action="require_escalation")
+
+    def request_alternate(self, owner, handle, generation, dispatch_hash, profile_id, reason, key, *, mission_key):
+        """Record an owned preference; the fresh canonical selector still decides.
+
+        A recorded request neither creates a decision/attempt nor grants
+        eligibility. The execution owner must separately execute and publish.
+        """
+        if (generation != CANONICAL_TMOS_DISCLOSURE_GENERATION
+                or type(profile_id) is not str or not profile_id.strip()
+                or len(profile_id.encode("utf-8")) > 1024
+                or type(mission_key) is not str or re.fullmatch(r"TMOS-[1-9][0-9]*", mission_key) is None):
+            raise UnknownInspection("inspection unavailable")
+        return self._request_intervention(owner, handle, generation, dispatch_hash, reason, key,
+                                          action="prefer_eligible_target", requested_profile_id=profile_id,
+                                          mission_key=mission_key)
+
+    def _request_intervention(self, owner, handle, generation, dispatch_hash, reason, key,
+                              *, action, requested_profile_id=None, mission_key=None):
         if (type(reason) is not str or not reason.strip() or len(reason.encode()) > 1024
                 or type(key) is not str or not 0 < len(key.encode()) <= 128):
             raise UnknownInspection("inspection unavailable")
@@ -409,26 +685,40 @@ class AdmissionStore:
             with self._sessions() as session:
                 self._qualified_connection(session)
                 row = session.execute(self._owned_query(owner, handle, generation)).mappings().one_or_none()
-                if row is None or row["dispatch_hash"] != dispatch_hash:
+                if (row is None or row["dispatch_hash"] != dispatch_hash
+                        or (action == "prefer_eligible_target" and row["packet_id"] not in CANONICAL_TMOS_PACKET_IDS)):
                     raise UnknownInspection("inspection unavailable")
                 existing = session.execute(select(interventions.c.receipt).where(
                     interventions.c.publication_id == row["id"], interventions.c.idempotency_key == key)).scalar_one_or_none()
                 if existing is not None:
                     receipt = json.loads(existing)
-                    if receipt["reason"] != reason:
+                    if (receipt.get("reason") != reason or receipt.get("action") != action
+                            or receipt.get("requested_profile_id") != requested_profile_id
+                            or receipt.get("mission_key") != mission_key):
                         raise UnknownInspection("inspection unavailable")
                     return receipt
-                count = session.execute(select(interventions.c.id).where(
+                rows = session.execute(select(interventions.c.receipt).where(
                     interventions.c.publication_id == row["id"]).limit(64)).all()
-                if len(count) >= 64:
+                receipts = [json.loads(item[0]) for item in rows]
+                applied = {item.get("operator_request_receipt_hash") for item in receipts
+                           if item.get("status") in {"APPLIED", "UNRESOLVED"}}
+                claimed = {item.get("operator_request_receipt_hash") for item in receipts if item.get("status") == "CLAIMED"}
+                pending = sum(1 if item.get("receipt_hash") in claimed else 2 for item in receipts
+                              if item.get("action") == "prefer_eligible_target" and item.get("status") == "REQUESTED"
+                              and item.get("receipt_hash") not in applied)
+                # Reserve immutable claim and result positions for pending work.
+                if len(rows) + pending + (3 if action == "prefer_eligible_target" else 1) > 64:
                     raise UnknownInspection("inspection unavailable")
-                receipt = {"schema": "operator-intervention-request-v1", "action": "require_escalation",
+                receipt = {"schema": "operator-intervention-request-v1", "action": action,
                            "actor": owner.auth_key, "account_epoch": owner.account_epoch,
                            "recorded_at": _now(), "reason": reason, "status": "REQUESTED",
                            "execution_package_hash": row["package_hash"], "run_id": row["run_id"],
                            "packet_id": row["packet_id"], "attempt_receipt_hash": row["attempt_hash"],
                            "original_dispatch_receipt_hash": row["dispatch_hash"],
                            "resulting_dispatch_receipt_hash": None}
+                if requested_profile_id is not None:
+                    receipt["requested_profile_id"] = requested_profile_id
+                    receipt["mission_key"] = mission_key
                 receipt["receipt_hash"] = hashlib.sha256(json.dumps(receipt, sort_keys=True,
                     separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
                 session.execute(insert(interventions).values(id=str(uuid.uuid4()), publication_id=row["id"],
@@ -456,7 +746,9 @@ class AdmissionStore:
                                   row["dispatch_hash"], row["disclosure_generation"])
                 if replacement is not None and (not isinstance(replacement, Publication)
                         or replacement.attempt_hash != old.attempt_hash
-                        or replacement.dispatch_hash != old.dispatch_hash):
+                        or replacement.dispatch_hash != old.dispatch_hash
+                        or (row["packet_id"] in CANONICAL_TMOS_PACKET_IDS
+                            and replacement.disclosure_generation != CANONICAL_TMOS_DISCLOSURE_GENERATION)):
                     raise UnknownInspection("inspection unavailable")
                 origin = {name: row[name] for name in ("run_id", "packet_id", "package_hash")}
                 origin["id"] = row["admission_id"]

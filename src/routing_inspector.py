@@ -130,7 +130,12 @@ def _capability_view(receipt: TargetCapabilityReceipt, *, now: datetime,
         "profile_id": receipt.profile_id,
         "identity_digest": receipt.identity_digest(),
         "observed_at": receipt.observed_at,
+        "ttl_s": receipt.ttl_s,
         "qualification_state": state,
+        "health": receipt.health,
+        "health_checked_at": receipt.health_checked_at,
+        "health_ttl_s": receipt.health_ttl_s,
+        "health_state": receipt.health_state(now=now),
         "locality": receipt.locality,
         "privacy_class": receipt.privacy_class,
         "network_class": receipt.network_class,
@@ -318,6 +323,7 @@ def _project_routing_mapping(
         capacity[item.receipt_hash] = _capacity_view(item, now=moment, refs=capacity_refs)
 
     selected_caps = [caps[ref] for ref in sorted(cap_refs) if ref in caps]
+    providers = {row["runtime"]["provider"] for row in selected_caps if row["runtime"].get("provider")}
     selected_capacity = [capacity[ref.split(":", 1)[1]] for ref in sorted(capacity_refs)
                          if ref.startswith("capacity:") and ref.split(":", 1)[1] in capacity]
     cap_status = ("OBSERVED" if any(row["status"] == "OBSERVED" for row in selected_caps)
@@ -355,6 +361,7 @@ def _project_routing_mapping(
             "policy_ref": dispatch["policy_ref"] or "UNKNOWN",
             "decided_at": dispatch["decided_at"] or "UNKNOWN",
             "selected": {
+                "provider": next(iter(providers)) if len(providers) == 1 else "UNKNOWN",
                 "target_id": dispatch["selected_target_id"],
                 "host": dispatch["selected_host"],
                 "model": dispatch["selected_model"],
@@ -369,6 +376,7 @@ def _project_routing_mapping(
                          "network_policy": dispatch["network_policy"] or "UNKNOWN"},
             "candidates_considered": _plain(rows) if rows else "UNKNOWN",
             "fallback": _plain(selected_rows[0].get("fallback_used")) if selected_rows else "UNKNOWN",
+            "authority": _plain(dispatch.get("authority")),
         },
         "capabilities": {"status": cap_status, "references": sorted(cap_refs),
                          "supplements": selected_caps},

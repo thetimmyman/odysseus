@@ -274,8 +274,8 @@ def _resolve_task(db, body: TaskRefRequest):
 _deterministic_route = build_deterministic_route
 
 
-# Source-only finite boundary. Normal application setup supplies no live
-# service: no environment flag, lease token or auth state can enable one.
+# The app lifespan owns an explicitly configured finite service. Missing
+# native state keeps these routes unavailable; no environment flag enables it.
 from src.canonical_inspector_admission import InspectorUnavailable, UnknownInspection
 from src.canonical_inspector_service import request_principal
 from src.canonical_pilot_adapter import PilotLimit, read_idempotency_key
@@ -302,6 +302,19 @@ def inspector_attempt(handle: str, request: Request):
         return inspector_service.inspect(owner, handle, lambda: request_principal(request))
     except (UnknownInspection, InspectorUnavailable):
         raise HTTPException(404, "Inspection unavailable") from None
+
+
+@router.post("/inspector/tmos/{packet_id}")
+async def inspector_tmos(packet_id: str, request: Request):
+    owner = request_principal(request)
+    service = getattr(request.app.state, "canonical_inspector_service", None)
+    if service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    try:
+        key = await read_idempotency_key(request.stream(), content_length=request.headers.get("content-length"))
+        return await service.admit_tmos(owner, packet_id, key, lambda: request_principal(request))
+    except (PilotLimit, InspectorUnavailable, UnknownInspection):
+        raise HTTPException(503, "Inspector unavailable") from None
 
 @router.post("/inspector/attempts/{handle}/escalation")
 async def inspector_escalation(handle: str, request: Request):
@@ -330,6 +343,24 @@ def inspector_revoke(handle: str, request: Request):
     try:
         return inspector_service.revoke(owner, handle, lambda: request_principal(request))
     except (UnknownInspection, InspectorUnavailable):
+        raise HTTPException(404, "Inspection unavailable") from None
+
+
+@router.post("/inspector/attempts/{handle}/alternate")
+async def inspector_alternate(handle: str, request: Request):
+    owner = request_principal(request)
+    service = getattr(request.app.state, "canonical_inspector_service", None)
+    if service is None:
+        raise HTTPException(503, "Inspector unavailable")
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+    try:
+        raw = await collect_bytes(request.stream(), limit=4096, seconds=5)
+        body = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+        if type(body) is not dict or set(body) != {"dispatch_receipt_hash", "profile_id", "reason", "idempotency_key"}:
+            raise ValueError("invalid request")
+        return await service.submit_alternate(owner, handle, body["dispatch_receipt_hash"], body["profile_id"],
+            body["reason"], body["idempotency_key"], lambda: request_principal(request))
+    except (PilotLimit, UnknownInspection, InspectorUnavailable, ValueError, TypeError, RecursionError):
         raise HTTPException(404, "Inspection unavailable") from None
 
 

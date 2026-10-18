@@ -129,6 +129,17 @@ def test_run_in_sandbox_argv(tmp_path, data_dir, monkeypatch):
         assert f.read() == b"ok"
 
 
+@pytest.mark.parametrize("requested,expected", [(2, 2), (30, 5)])
+def test_run_in_sandbox_packet_deadline_can_only_tighten_policy(tmp_path, data_dir, monkeypatch, requested, expected):
+    calls = []
+    monkeypatch.setattr(rs.subprocess, "run", _fake_run_factory(calls))
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    result = run_in_sandbox(str(wt), "pytest -q", policy=SB_POLICY, timeout_s=requested)
+    assert calls[0][1]["timeout"] == expected
+    assert result["timeout_s"] == expected
+
+
 def test_run_in_sandbox_mount_label_applied(tmp_path, data_dir, monkeypatch):
     """A policy mountLabel (SELinux relabel) is appended to the bind mount as
     a comma-separated option -- required on enforcing hosts or the container

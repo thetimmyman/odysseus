@@ -39,6 +39,9 @@ APP_DB = os.path.join(DATA_DIR, "app.db")
 CANONICAL_INSPECTOR_ROOT = os.path.join(DATA_DIR, "canonical_inspector")
 CANONICAL_INSPECTOR_WORK_ROOT = os.path.join(CANONICAL_INSPECTOR_ROOT, "work")
 CANONICAL_INSPECTOR_RETAINED_ROOT = os.path.join(CANONICAL_INSPECTOR_ROOT, "retained")
+CANONICAL_TMOS_MANIFEST_FILE = os.path.join(CANONICAL_INSPECTOR_ROOT, "tmos-owner.json")
+LOCAL_MEASUREMENT_COMMAND = os.path.join(BASE_DIR, "scripts", "odysseus-measure-once")
+CANONICAL_TMOS_VERIFICATION_DIRNAME = "verification"
 # Ephemeral private SSH config copies must stay outside checkouts and ignore TMPDIR.
 LOCAL_MEASUREMENT_CONFIG_TEMP_ROOT = "/tmp"
 SSH_SYSTEM_CONFIG_FILE = "/etc/ssh/ssh_config"
@@ -46,6 +49,9 @@ SSH_SYSTEM_CONFIG_FILE = "/etc/ssh/ssh_config"
 # Source-only pilot. No environment variable enables a live adapter or schema.
 CANONICAL_INSPECTOR_ENABLED = False
 CANONICAL_PILOT_ID = "synthetic-uppercase"
+CANONICAL_TMOS_WORK_ID = "tmos-routing-inspector"
+CANONICAL_TMOS_PACKET_IDS = ("routing-inspector-command", "routing-inspector-control")
+CANONICAL_TMOS_DISCLOSURE_GENERATION = "tmos-routing-inspector-v1"
 CANONICAL_PILOT_DISCLOSURE_GENERATION = "public-uppercase-v1"
 CANONICAL_PILOT_BODY_BYTES = 512
 CANONICAL_PILOT_BODY_SECONDS = 5

@@ -17,20 +17,28 @@ Design notes:
 - Events upsert by VEVENT UID (kept as the local `uid`). Local
   CalDAV-sourced events not seen in the latest pull are deleted so
   remote deletions propagate.
+- A recurring event is ONE resource holding a master VEVENT (RRULE, EXDATE)
+  plus RECURRENCE-ID override VEVENTs under the same UID. The master keeps the
+  UID row; each override gets its own row (see `src/recurrence.py`) so the
+  series expansion in `routes/calendar_routes.py` can drop excluded and
+  replaced occurrences instead of the last VEVENT overwriting the master.
 - Datetimes are converted to UTC and the row is flagged `is_utc=True`
   so the serializer adds the Z suffix and the frontend renders in the
   user's local TZ correctly.
 """
 
 import asyncio
+import contextvars
 import hashlib
 import ipaddress
 import logging
 import os
 import socket
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, urlunparse
+
+from src.recurrence import encode_keys, override_uid, recurrence_key, tzid_for
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +250,83 @@ def _build_dav_client(url: str, username: str, password: str):
     return client
 
 
+def _exdate_keys(comp, all_day: bool) -> set:
+    """Occurrence keys excluded by every EXDATE line of a series master."""
+    raw = comp.get("exdate")
+    items = raw if isinstance(raw, list) else ([] if raw is None else [raw])
+    keys = set()
+    for item in items:
+        for entry in getattr(item, "dts", None) or []:
+            value, _ = _to_utc_naive(entry.dt)
+            keys.add(recurrence_key(value, all_day))
+    return keys
+
+
+def _event_row_from_vevent(comp):
+    """Turn one VEVENT into ``(row_uid, fields)``; ``fields`` is None when the
+    VEVENT has no DTSTART (it is still reported as seen so it is never pruned).
+
+    A master keeps the VEVENT UID. A RECURRENCE-ID override gets its own row uid
+    so it cannot overwrite the master (see ``src/recurrence.py``).
+    """
+    uid_val = str(comp.get("uid", "")) or str(uuid.uuid4())
+
+    rid_p = comp.get("recurrence-id")
+    rid_key = None
+    if rid_p is not None:
+        rid_value, rid_all_day = _to_utc_naive(rid_p.dt)
+        rid_key = recurrence_key(rid_value, rid_all_day)
+    row_uid = override_uid(uid_val, rid_key) if rid_key else uid_val
+
+    dtstart_p = comp.get("dtstart")
+    if not dtstart_p:
+        return row_uid, None
+    start_dt, all_day = _to_utc_naive(dtstart_p.dt)
+
+    dtend_p = comp.get("dtend")
+    if dtend_p:
+        end_dt, _ = _to_utc_naive(dtend_p.dt)
+    elif all_day:
+        end_dt = start_dt + timedelta(days=1)
+    else:
+        end_dt = start_dt + timedelta(hours=1)
+
+    # is_utc reflects whether the source carried a TZ we converted from.
+    # All-day = no TZ semantics.
+    row_is_utc = (
+        not all_day
+        and isinstance(dtstart_p.dt, datetime)
+        and dtstart_p.dt.tzinfo is not None
+    )
+
+    fields = {
+        "summary": str(comp.get("summary", "")),
+        "description": str(comp.get("description", "")),
+        "location": str(comp.get("location", "")),
+        "dtstart": start_dt,
+        "dtend": end_dt,
+        "all_day": all_day,
+        "is_utc": row_is_utc,
+        "status": "cancelled" if str(comp.get("status", "")).strip().upper() == "CANCELLED" else "confirmed",
+        "rrule": "",
+        "exdate": "",
+        "tzid": None,
+        "series_uid": None,
+        "recurrence_id": None,
+    }
+    if rid_key:
+        # An override is a single event; it never carries its own series rule.
+        fields["series_uid"] = uid_val
+        fields["recurrence_id"] = rid_key
+    else:
+        fields["rrule"] = comp.get("rrule").to_ical().decode() if comp.get("rrule") else ""
+        if fields["rrule"]:
+            fields["exdate"] = encode_keys(_exdate_keys(comp, all_day))
+            if row_is_utc:
+                fields["tzid"] = tzid_for(dtstart_p.dt, getattr(dtstart_p, "params", None))
+    return row_uid, fields
+
+
 def _should_prune_window(seen_uids: set, parse_failed: bool) -> bool:
     """Whether the post-sync prune of vanished CalDAV events is safe to run.
 
@@ -263,6 +348,7 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
     # the integrations form still works, sync just no-ops with an error.
     from caldav.lib.error import AuthorizationError, NotFoundError
     from core.database import CalendarCal, CalendarEvent, SessionLocal
+    from sqlalchemy import and_, or_
 
     result = {"calendars": 0, "events": 0, "deleted": 0, "errors": []}
 
@@ -360,67 +446,33 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
                     for comp in ical.walk():
                         if comp.name != "VEVENT":
                             continue
-                        uid_val = str(comp.get("uid", "")) or str(uuid.uuid4())
-                        seen_uids.add(uid_val)
-
-                        dtstart_p = comp.get("dtstart")
-                        if not dtstart_p:
+                        try:
+                            row_uid, fields = _event_row_from_vevent(comp)
+                        except Exception as e:
+                            # One unreadable VEVENT must not abort the calendar,
+                            # and seen_uids is now incomplete, so skip the prune.
+                            result["errors"].append(f"{display_name}: VEVENT parse failed ({e})")
+                            parse_failed = True
                             continue
-                        start_dt, all_day = _to_utc_naive(dtstart_p.dt)
+                        seen_uids.add(row_uid)
+                        if fields is None:
+                            continue
 
-                        dtend_p = comp.get("dtend")
-                        if dtend_p:
-                            end_dt, _ = _to_utc_naive(dtend_p.dt)
-                        elif all_day:
-                            end_dt = start_dt + timedelta(days=1)
-                        else:
-                            end_dt = start_dt + timedelta(hours=1)
-
-                        # is_utc reflects whether the source carried a TZ
-                        # we converted from. All-day = no TZ semantics.
-                        row_is_utc = (
-                            not all_day
-                            and isinstance(dtstart_p.dt, datetime)
-                            and dtstart_p.dt.tzinfo is not None
-                        )
-
-                        summary = str(comp.get("summary", ""))
-                        description = str(comp.get("description", ""))
-                        location = str(comp.get("location", ""))
-                        rrule = (
-                            comp.get("rrule").to_ical().decode()
-                            if comp.get("rrule")
-                            else ""
-                        )
-
-                        existing = _find_existing_event(db, pending, uid_val, local_cal.id)
+                        existing = _find_existing_event(db, pending, row_uid, local_cal.id)
                         if existing:
                             existing.calendar_id = local_cal.id
-                            existing.summary = summary
-                            existing.description = description
-                            existing.location = location
-                            existing.dtstart = start_dt
-                            existing.dtend = end_dt
-                            existing.all_day = all_day
-                            existing.is_utc = row_is_utc
-                            existing.rrule = rrule
+                            for name, value in fields.items():
+                                setattr(existing, name, value)
                             existing.origin = "caldav"
                         else:
                             new_ev = CalendarEvent(
-                                uid=uid_val,
+                                uid=row_uid,
                                 calendar_id=local_cal.id,
-                                summary=summary,
-                                description=description,
-                                location=location,
-                                dtstart=start_dt,
-                                dtend=end_dt,
-                                all_day=all_day,
-                                is_utc=row_is_utc,
-                                rrule=rrule,
                                 origin="caldav",
+                                **fields,
                             )
                             db.add(new_ev)
-                            pending[uid_val] = new_ev
+                            pending[row_uid] = new_ev
                         result["events"] += 1
                 db.commit()
 
@@ -436,17 +488,51 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
                 # delete events that still exist upstream but could not be read
                 # (the empty-seen_uids case wipes the whole window; a partial
                 # failure deletes just the unreadable rows).
+                #
+                # `seen_uids` holds ROW uids: a series master's UID and the
+                # derived uid of each RECURRENCE-ID override, so an override
+                # reverted upstream is pruned like any other vanished event.
+                # An old recurring master is also a deletion candidate, but a
+                # bounded search may legitimately omit an ended or sparse
+                # series. Confirm its remote absence by UID before deleting it.
+                # An override of a series that WAS pulled is eligible wherever
+                # it sits (it may have been moved far from the window): the
+                # server sends every override with its master, so one that is
+                # not in `seen_uids` was removed upstream.
                 if _should_prune_window(seen_uids, parse_failed):
+                    eligible = or_(
+                        and_(CalendarEvent.dtstart >= start, CalendarEvent.dtstart <= end),
+                        and_(
+                            CalendarEvent.dtstart < start,
+                            CalendarEvent.rrule.isnot(None),
+                            CalendarEvent.rrule != "",
+                        ),
+                    )
+                    if seen_uids:
+                        eligible = or_(eligible, CalendarEvent.series_uid.in_(seen_uids))
                     stale = db.query(CalendarEvent).filter(
                         CalendarEvent.calendar_id == local_cal.id,
                         CalendarEvent.origin == "caldav",
-                        CalendarEvent.dtstart >= start,
-                        CalendarEvent.dtstart <= end,
+                        eligible,
                         ~CalendarEvent.uid.in_(seen_uids) if seen_uids else CalendarEvent.uid.isnot(None),
                     ).all()
+                    deleted = 0
                     for ev in stale:
+                        if ev.dtstart < start and ev.rrule:
+                            try:
+                                remote_cal.event_by_uid(ev.uid)
+                            except NotFoundError:
+                                pass  # Authoritative absence, not merely outside the window.
+                            except Exception as e:
+                                result["errors"].append(
+                                    f"{display_name}: could not confirm missing recurring resource ({type(e).__name__})"
+                                )
+                                continue
+                            else:
+                                continue
                         db.delete(ev)
-                    result["deleted"] += len(stale)
+                        deleted += 1
+                    result["deleted"] += deleted
                     db.commit()
             except Exception as e:
                 logger.exception("CalDAV sync failed for one calendar")
@@ -570,9 +656,28 @@ def _load_caldav_accounts(owner: str) -> list:
     return []
 
 
+# One sync per owner at a time. The periodic loop, the calendar route and the
+# token route all land here; two pulls racing on the same rows only produce
+# duplicate-key errors, so a second caller waits for the first and then pulls
+# again (it gets data at least as fresh as when it asked).
+_OWNER_LOCKS: dict = {}
+
+
+def _owner_lock(owner: str) -> asyncio.Lock:
+    lock = _OWNER_LOCKS.get(owner)
+    if lock is None:
+        lock = _OWNER_LOCKS[owner] = asyncio.Lock()
+    return lock
+
+
 async def sync_caldav(owner: str) -> dict:
     """Pull CalDAV state into local DB for `owner` across all configured accounts.
-    Returns aggregated counts + per-account errors."""
+    Returns aggregated counts + per-account errors. Serialized per owner."""
+    async with _owner_lock(owner):
+        return await _sync_caldav_locked(owner)
+
+
+async def _sync_caldav_locked(owner: str) -> dict:
     from src.secret_storage import decrypt
 
     accounts = _load_caldav_accounts(owner)
@@ -598,7 +703,26 @@ async def sync_caldav(owner: str) -> dict:
             continue
         try:
             url = validate_caldav_url(url)
-            result = await asyncio.to_thread(_sync_blocking, owner, url, user, pw, account_id)
+            # Keep owner custody through the actual blocking writer's lifetime.
+            # Cancelling an await does not stop a thread. Use an executor Future
+            # (not a separately cancellable Task), preserving to_thread's context.
+            worker = asyncio.get_running_loop().run_in_executor(
+                None, contextvars.copy_context().run,
+                _sync_blocking, owner, url, user, pw, account_id,
+            )
+            try:
+                result = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not worker.cancelled():
+                    worker.exception()  # Consume any failure before propagating cancellation.
+                raise
         except ValueError as e:
             result = {"calendars": 0, "events": 0, "deleted": 0, "errors": [str(e)]}
         except Exception as e:

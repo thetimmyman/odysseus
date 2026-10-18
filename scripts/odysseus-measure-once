@@ -47,7 +47,13 @@ def worker(args):
     value = decode_json(raw)
     if type(value) is not dict:
         raise MeasurementUnresolved('invalid worker input')
-    if args.worker_http:
+    if args.worker_workspace:
+        from src.canonical_inspector_runtime import workspace_operation
+        from src.constants import CANONICAL_TMOS_MANIFEST_FILE
+        if args.tmos_manifest != Path(CANONICAL_TMOS_MANIFEST_FILE):
+            raise MeasurementUnresolved('workspace manifest must be the admitted owner configuration')
+        result = workspace_operation(value)
+    elif args.worker_http:
         if set(value) != {'url', 'payload'}:
             raise MeasurementUnresolved('invalid HTTP worker input')
         result = _http_transport(value['url'], value['payload'])
@@ -77,6 +83,8 @@ def main(argv=None):
     modes.add_argument('--qualify-boundary', action='store_true')
     modes.add_argument('--worker-http', action='store_true', help=argparse.SUPPRESS)
     modes.add_argument('--worker-broker', action='store_true', help=argparse.SUPPRESS)
+    modes.add_argument('--worker-workspace', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--tmos-manifest', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--lease-client', type=Path)
     parser.add_argument('--lease-client-sha256')
     inputs = parser.add_mutually_exclusive_group()
@@ -96,14 +104,14 @@ def main(argv=None):
                         help='Separately pinned proposed specification; only hostname may change.')
     args = parser.parse_args(argv)
     if args.new_profile is not None and (args.qualify_boundary or args.worker_http
-            or args.worker_broker or args.changed_route or args.current_spec is not None):
+            or args.worker_broker or args.worker_workspace or args.changed_route or args.current_spec is not None):
         parser.error('new-profile mode cannot be combined with boundary, worker or changed-route modes')
     projection = None
     try:
         if (args.ssh_config_manifest is None) != (args.ssh_config_manifest_sha256 is None):
             parser.error('config projection requires manifest and source pin together')
         if args.ssh_config_manifest is not None:
-            if args.worker_http or args.worker_broker:
+            if args.worker_http or args.worker_broker or args.worker_workspace:
                 parser.error('config projection belongs to the controller only')
             fd = os.open(args.ssh_config_manifest, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
             with os.fdopen(fd, 'rb') as stream:
@@ -116,7 +124,7 @@ def main(argv=None):
                     or hashlib.sha256(raw_manifest).hexdigest() != args.ssh_config_manifest_sha256):
                 raise MeasurementUnresolved('config projection manifest source mismatch')
             projection = ReadOnlyConfigProjection(decode_json(raw_manifest))
-        if args.worker_http or args.worker_broker:
+        if args.worker_http or args.worker_broker or args.worker_workspace:
             worker(args)
             return 0
         command = [sys.executable, '-I', str(Path(__file__).resolve())]

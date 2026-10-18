@@ -16,12 +16,42 @@ import uuid
 
 from src.canonical_pilot_adapter import CaptureBudget, collect_bytes, collect_process
 from src.local_measurement_owner import MeasurementUnresolved
+from src.constants import CANONICAL_TMOS_PACKET_IDS
 
 
 CGROUP_ROOT = Path('/sys/fs/cgroup')
 _CONTROL_SECONDS = 0.6
 _STDERR_BYTES = 65536
 _JSON_BYTES = 1048576
+
+
+def checked_workspace_operation(operation):
+    """Finite wire shape shared by the owner capture and configured worker."""
+    try:
+        copied = decode_json(json.dumps(operation, allow_nan=False).encode())
+        if type(copied) is not dict:
+            raise ValueError('workspace operation unavailable')
+        action = copied.get('operation')
+        expected = {'schema', 'operation', 'packet_id', 'run_id', 'manifest_digest'}
+        if action in ('snapshot', 'apply', 'verify'):
+            expected.add('package')
+        if action == 'apply':
+            expected.add('patch')
+        if action == 'verify':
+            expected.update(('policy_hash', 'timeout_s'))
+        run_id, digest = copied.get('run_id'), copied.get('manifest_digest')
+        if (set(copied) != expected or action not in ('prepare', 'snapshot', 'apply', 'verify')
+                or copied.get('schema') != 'tmos-workspace-operation-v1'
+                or copied.get('packet_id') not in CANONICAL_TMOS_PACKET_IDS
+                or str(uuid.UUID(run_id)) != run_id
+                or type(digest) is not str or len(digest) != 64
+                or any(character not in '0123456789abcdef' for character in digest)):
+            raise ValueError('workspace operation unavailable')
+        if action == 'verify' and (type(copied['timeout_s']) is not int or not 0 < copied['timeout_s'] <= 180):
+            raise ValueError('workspace deadline unavailable')
+        return copied
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise MeasurementUnresolved('workspace operation unavailable') from None
 
 
 def decode_json(raw):
@@ -136,7 +166,7 @@ class SystemdProcesses:
     supplying a stale proof file or an environment flag.
     """
 
-    def __init__(self, *, worker_command, broker_worker, config_projection=None):
+    def __init__(self, *, worker_command, broker_worker, config_projection=None, workspace_worker=None):
         self._worker, self._broker_worker = worker_command, broker_worker
         self._config_projection = config_projection
         self._configuration_state = 'NOT_CONFIGURED' if config_projection is None else 'READY'
@@ -144,6 +174,10 @@ class SystemdProcesses:
         self._deadline = 0
         self._captures = []
         self._evidence_lock = threading.Lock()
+        self._workspace_worker = workspace_worker
+        self._boundaries = []
+        self._closed = False
+        self._pending_starts = 0
 
     def _record(self, row, **changes):
         with self._evidence_lock:
@@ -184,6 +218,10 @@ class SystemdProcesses:
         return self._qualified
 
     async def _start(self, command, seconds, lease_valid, input_bytes=b'', *, kind):
+        with self._evidence_lock:
+            if self._closed or lease_valid() is not True:
+                raise MeasurementUnresolved('owned capture is closed')
+            self._pending_starts += 1
         unit = 'odysseus-measure-' + uuid.uuid4().hex + '.service'
         row = {'unit':unit, 'kind':kind, 'local_stop_proven':False,
                'remote_stop_proven':False, 'launcher_exit_code':None}
@@ -200,10 +238,18 @@ class SystemdProcesses:
         argv = ['systemd-run', '--user', '--pipe', '--wait', '--quiet', '--service-type=exec',
                 '--expand-environment=no', '--unit='+unit]
         argv.extend('--property='+value for value in properties)
-        process = await asyncio.create_subprocess_exec(*argv, '--', *command,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        boundary = _Boundary(self, process, unit, lease_valid, row)
         try:
+            process = await asyncio.create_subprocess_exec(*argv, '--', *command,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            boundary = _Boundary(self, process, unit, lambda: not self._closed and lease_valid(), row)
+            with self._evidence_lock:
+                self._boundaries.append(boundary)
+        finally:
+            with self._evidence_lock:
+                self._pending_starts -= 1
+        try:
+            if self._closed or lease_valid() is not True:
+                raise MeasurementUnresolved('owned capture is closed')
             process.stdin.write(input_bytes)
             await asyncio.wait_for(process.stdin.drain(), 3)
             process.stdin.close()
@@ -214,7 +260,7 @@ class SystemdProcesses:
 
     def qualify_no_provider(self):
         """Two owned synthetic units only; no network, SSH, broker or provider."""
-        if self._qualified:
+        if self._qualified or self._closed:
             raise MeasurementUnresolved('one-shot boundary proof already used')
 
         async def prove():
@@ -268,7 +314,7 @@ class SystemdProcesses:
                 'remote_cancellation': False, 'provider_calls': 0, 'processes':self.evidence()}
 
     def _json(self, command, value, *, seconds, limit, lease_valid, kind):
-        if not self.qualified or lease_valid() is not True:
+        if self._closed or not self.qualified or lease_valid() is not True:
             raise MeasurementUnresolved('owned capture not qualified or lease unavailable')
         raw = json.dumps(value, allow_nan=False).encode() if value is not None else b''
         remaining = min(seconds, self._deadline - time.monotonic())
@@ -318,3 +364,32 @@ class SystemdProcesses:
         if type(response) is not dict or set(response) != {'status', 'body'}:
             raise MeasurementUnresolved('broker envelope unavailable')
         return response['status'], response['body']
+
+    def workspace(self, operation, *, lease_valid):
+        """Capture one fixed owner-prepared TMOS workspace operation.
+
+        The configured worker independently checks the admitted manifest and
+        package. There is no argv, shell, URL or general command input here.
+        Local exit does not prove remote provider/container cancellation.
+        """
+        if not self._workspace_worker:
+            raise MeasurementUnresolved('workspace capture unavailable')
+        operation = checked_workspace_operation(operation)
+        return self._json(self._workspace_worker, operation, seconds=180,
+                          limit=_JSON_BYTES, lease_valid=lease_valid, kind='workspace')
+
+    def request_stop(self):
+        """Invalidate active capture guards in their owning event loops."""
+        with self._evidence_lock:
+            self._closed = True
+
+    async def confirm_stopped(self):
+        with self._evidence_lock:
+            if self._pending_starts:
+                return False
+            boundaries = tuple(self._boundaries)
+        for boundary in boundaries:
+            if not await boundary.confirm_stopped():
+                return False
+        with self._evidence_lock:
+            return not self._pending_starts and all(row.get('local_stop_proven') is True for row in self._captures)
