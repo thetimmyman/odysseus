@@ -242,8 +242,9 @@ def test_a_server_that_trickles_its_answer_is_cut_off_at_the_budget(monkeypatch,
 
 
 def test_a_request_without_a_pull_deadline_is_capped_by_the_pull_budget(monkeypatch, trickle):
-    """The write-back builds its client without a deadline; each request there is
-    capped by CALDAV_SYNC_TIMEOUT_SECONDS instead of running as long as the server likes."""
+    """A client built without a deadline (the write-back always passes one; see
+    test_caldav_writeback_deadline.py) caps each request by CALDAV_SYNC_TIMEOUT_SECONDS
+    instead of letting it run as long as the server likes."""
     pytest.importorskip("caldav")
     monkeypatch.setenv("CALDAV_REQUEST_TIMEOUT_SECONDS", "5")
     monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "1")

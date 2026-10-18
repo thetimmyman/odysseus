@@ -13,7 +13,7 @@
       "routes/assistant_routes.py": "97e25e8d17c09ef187d31aa847bb98ff402d5459802f3658f7b048f7f83179b4",
       "routes/auth_routes.py": "c12fe31d0eb1e831786b2681d799127b07d555b77207b8c55ef014252aaf0304",
       "routes/backup_routes.py": "dbb6ba02af0cec80fd6cbe384c3cbda6612a27da8f87382f57334d59659296bc",
-      "routes/calendar_routes.py": "7ee7044893b6cbf07c8d57698ac24074417d1569e1c2c3eb07ba2d0a8647013a",
+      "routes/calendar_routes.py": "d0dd8ddec4d7001bc066492720e8adee4140b04211f712de6298c61c72bc0b33",
       "routes/chat_helpers.py": "0864e71f07746bed7513c73d597e8d85b91c5014d470713f9e245b1fe57aa1f3",
       "routes/chat_routes.py": "c28a45396c8da8fa02eb811bbc4ba6ed209ebbff8193d611d34a5d01e1c1db72",
       "routes/chatgpt_subscription_routes.py": "21e10a76ac4af4d5010d87f671c339fde98bb32ba3a63dc733611717ce7a3811",
@@ -2398,7 +2398,7 @@
           {
             "path": "routes/calendar_routes.py",
             "line": 1,
-            "sha256": "7ee7044893b6cbf07c8d57698ac24074417d1569e1c2c3eb07ba2d0a8647013a",
+            "sha256": "d0dd8ddec4d7001bc066492720e8adee4140b04211f712de6298c61c72bc0b33",
             "claim": "Backend route source associated with this surface."
           }
         ]

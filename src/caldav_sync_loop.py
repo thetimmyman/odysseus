@@ -16,8 +16,12 @@ This module is that loop: every ``CALDAV_SYNC_INTERVAL_SECONDS`` (default 600,
   ``owner_timeout_seconds()`` either: it cancels that pull, moves on, and leaves
   the owner alone in later passes until the abandoned pull has really ended. An
   owner's accounts are pulled one after another, each with a budget of its own,
-  so that wait grows with the number of accounts. A blocking worker thread cannot
-  be interrupted, so it may outlive its timeout; skipping the owner keeps such a
+  so that wait grows with the number of accounts, up to ``MAX_CALDAV_ACCOUNTS``:
+  an owner can neither save nor have pulled more than that, so the longest an
+  owner can hold the pass is a fixed time that no preference setting changes (about
+  55 minutes with the default budgets, and only for an owner whose every account
+  is served as slowly as the budget allows). A blocking worker thread cannot be
+  interrupted, so it may outlive its timeout; skipping the owner keeps such a
   straggler from being joined by a second pull.
 * A failure (bad credentials, server down, a bug) is logged and the loop carries
   on; one owner's failure does not stop the others.
@@ -103,19 +107,21 @@ def caldav_owners() -> list:
 
 
 def owner_account_count(owner: str) -> int:
-    """How many CalDAV accounts a pull of ``owner`` walks, at least 1.
+    """How many CalDAV accounts a pull of ``owner`` walks: at least 1, at most
+    ``MAX_CALDAV_ACCOUNTS`` (a pull walks no more, however many are saved).
 
     A read of the preference store only (unlike ``_load_caldav_accounts`` it
     migrates and re-encrypts nothing); any trouble reading it counts as one.
     """
     try:
+        from src.caldav_sync import MAX_CALDAV_ACCOUNTS
         from src.user_preferences import load_for_user
 
         prefs = load_for_user(owner)
     except Exception:
         return 1
     accounts = prefs.get("caldav_accounts") if isinstance(prefs, dict) else None
-    return max(1, len(accounts)) if isinstance(accounts, list) else 1
+    return min(max(1, len(accounts)), MAX_CALDAV_ACCOUNTS) if isinstance(accounts, list) else 1
 
 
 def owner_timeout_seconds(environ=None, accounts: int = 1) -> float:
@@ -125,12 +131,15 @@ def owner_timeout_seconds(environ=None, accounts: int = 1) -> float:
     budget of its own, so the wait is, per account, that budget and one more
     request (the read blocked when the budget ran out), plus a little slack once.
     Sized for one account it would cut off an owner whose second account is merely
-    slow, and the accounts after it would never get a turn.
+    slow, and the accounts after it would never get a turn. ``accounts`` counts
+    only up to ``MAX_CALDAV_ACCOUNTS``, the most a pull walks, so what the owner
+    configures cannot stretch the wait past a fixed bound.
     """
-    from src.caldav_sync import request_timeout_seconds, sync_timeout_seconds
+    from src.caldav_sync import MAX_CALDAV_ACCOUNTS, request_timeout_seconds, sync_timeout_seconds
 
     per_account = sync_timeout_seconds(environ) + request_timeout_seconds(environ)
-    return max(1, int(accounts)) * per_account + OWNER_TIMEOUT_GRACE_SECONDS
+    counted = min(max(1, int(accounts)), MAX_CALDAV_ACCOUNTS)
+    return counted * per_account + OWNER_TIMEOUT_GRACE_SECONDS
 
 
 class _NotPulled(Exception):

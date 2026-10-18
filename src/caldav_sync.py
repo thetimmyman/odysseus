@@ -68,6 +68,16 @@ ENV_SYNC_TIMEOUT = "CALDAV_SYNC_TIMEOUT_SECONDS"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 DEFAULT_SYNC_TIMEOUT_SECONDS = 300
 
+# Most CalDAV accounts one owner may keep, and so the most a pull walks. An
+# owner's accounts are pulled one after another, each with a budget of its own,
+# so the time a pull can hold the periodic loop (see `src/caldav_sync_loop.py`) is
+# this many budgets at most. Without a limit that time grew with a number the
+# owner types in, and one user adding accounts that pointed at slow servers could
+# keep every later owner from being pulled for hours. Saving a further account is
+# refused (`POST /api/calendar/config/accounts`); accounts saved beyond it before
+# the limit existed are not pulled and the pull says so.
+MAX_CALDAV_ACCOUNTS = 10
+
 # Monotonic clock for the pull's time budget; a name of its own so tests can move it.
 _clock = time.monotonic
 
@@ -428,8 +438,8 @@ def _build_dav_client(url: str, username: str, password: str, deadline=None):
     DAVClient defaults to none, which lets a silent server block a request for good.
     That timeout does not bound a server that keeps trickling data, so each request
     is capped as a whole too (see ``_cap_request_time``): by ``deadline``, the
-    `_clock` time at which the caller's pull budget ends, or by the whole budget
-    when the caller (the write-back) has none.
+    `_clock` time at which the caller's budget ends (the pull's, or the write-back's
+    own), or by the whole pull budget when the caller has none.
     """
     import caldav
 
@@ -913,6 +923,12 @@ async def _sync_caldav_locked(owner: str) -> dict:
         }
 
     totals: dict = {"calendars": 0, "events": 0, "deleted": 0, "errors": []}
+    if len(accounts) > MAX_CALDAV_ACCOUNTS:
+        totals["errors"].append(
+            f"{len(accounts) - MAX_CALDAV_ACCOUNTS} CalDAV account(s) beyond the limit of "
+            f"{MAX_CALDAV_ACCOUNTS} were not pulled; remove accounts to get back under the limit"
+        )
+        accounts = accounts[:MAX_CALDAV_ACCOUNTS]
     for acc in accounts:
         url = (acc.get("url") or "").strip()
         user = (acc.get("username") or "").strip()

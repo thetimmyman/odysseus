@@ -730,3 +730,101 @@ def test_an_owner_whose_accounts_are_each_slow_is_not_cut_off_part_way(monkeypat
     assert outcome["alice"] is not None and outcome["alice"]["calendars"] == 3
     assert outcome["alice"]["errors"] == []
     assert left == {}
+
+
+# ── what an owner types in cannot stretch the wait ───────────────────────────
+
+def test_the_wait_for_an_owner_stops_growing_at_the_account_limit():
+    """The finding: 50 accounts used to mean a wait of 50 * 330 s (4.6 h) for one
+    owner while every owner after it got no pull. The count is capped, so the
+    wait has a fixed ceiling whatever number of accounts is configured."""
+    env = {"CALDAV_SYNC_TIMEOUT_SECONDS": "120", "CALDAV_REQUEST_TIMEOUT_SECONDS": "20"}
+    limit = caldav_sync.MAX_CALDAV_ACCOUNTS
+    ceiling = loop_mod.owner_timeout_seconds(env, accounts=limit)
+    assert ceiling == limit * 140 + loop_mod.OWNER_TIMEOUT_GRACE_SECONDS
+    assert loop_mod.owner_timeout_seconds(env, accounts=limit - 1) < ceiling
+    for count in (limit + 1, 50, 200, 10**9):
+        assert loop_mod.owner_timeout_seconds(env, accounts=count) == ceiling
+    # At the shipped defaults that is under an hour, not the 4.6 h of 50 accounts.
+    assert loop_mod.owner_timeout_seconds({}, accounts=50) < 3600
+
+
+def test_account_count_of_an_owner_stops_at_the_account_limit(monkeypatch):
+    limit = caldav_sync.MAX_CALDAV_ACCOUNTS
+    many = [{"id": f"acct-{n}"} for n in range(limit * 5)]
+    monkeypatch.setattr(prefs_mod, "load_all", lambda: {"_users": {
+        "greedy": {"caldav_accounts": many},
+        "exact": {"caldav_accounts": many[:limit]},
+        "below": {"caldav_accounts": many[: limit - 1]},
+    }})
+    assert loop_mod.owner_account_count("greedy") == limit
+    assert loop_mod.owner_account_count("exact") == limit
+    assert loop_mod.owner_account_count("below") == limit - 1
+
+
+def test_an_owner_with_a_huge_account_list_is_waited_for_no_longer_than_one_at_the_limit(monkeypatch):
+    limit = caldav_sync.MAX_CALDAV_ACCOUNTS
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "100")
+    monkeypatch.setenv("CALDAV_REQUEST_TIMEOUT_SECONDS", "10")
+    monkeypatch.setattr(prefs_mod, "load_all", lambda: {"_users": {
+        "greedy": {"caldav_accounts": [{"id": f"g{n}"} for n in range(50)]},
+        "full": {"caldav_accounts": [{"id": f"f{n}"} for n in range(limit)]},
+        "other": {"caldav_accounts": [{"id": "o"}]},
+    }})
+    waits = {}
+
+    async def fake_pull(owner, sync, timeout, pending):
+        waits[owner] = timeout
+        return _ok()
+
+    monkeypatch.setattr(loop_mod, "_pull_owner", fake_pull)
+    asyncio.run(loop_mod.run_sync_pass(["greedy", "full", "other"], lambda owner: None))
+
+    assert waits["greedy"] == waits["full"] == limit * 110 + loop_mod.OWNER_TIMEOUT_GRACE_SECONDS
+    assert waits["other"] == 110 + loop_mod.OWNER_TIMEOUT_GRACE_SECONDS
+
+
+def _fake_accounts(monkeypatch, count):
+    import src.secret_storage as secrets
+
+    monkeypatch.setattr(caldav_sync, "_OWNER_LOCKS", {})
+    monkeypatch.setattr(caldav_sync, "_load_caldav_accounts", lambda owner: [
+        {"id": f"acct-{n}", "label": f"Acct {n}", "url": "https://dav.invalid/", "username": "u", "password": "p"}
+        for n in range(count)
+    ])
+    monkeypatch.setattr(caldav_sync, "validate_caldav_url", lambda url: url)
+    monkeypatch.setattr(secrets, "decrypt", lambda value: value)
+
+
+def test_a_pull_walks_no_more_accounts_than_the_limit_and_says_so(monkeypatch):
+    limit = caldav_sync.MAX_CALDAV_ACCOUNTS
+    _fake_accounts(monkeypatch, limit + 3)
+    started = []
+
+    def account(owner, url, user, pw, account_id):
+        started.append(account_id)
+        return {"calendars": 1, "events": 2, "deleted": 0, "errors": []}
+
+    monkeypatch.setattr(caldav_sync, "_sync_blocking", account)
+    result = asyncio.run(caldav_sync.sync_caldav("greedy"))
+
+    assert started == [f"acct-{n}" for n in range(limit)]
+    assert result["calendars"] == limit and result["events"] == 2 * limit
+    assert len(result["errors"]) == 1
+    assert "3 CalDAV account(s) beyond the limit of %d" % limit in result["errors"][0]
+
+
+def test_a_pull_at_the_limit_walks_every_account_without_complaint(monkeypatch):
+    limit = caldav_sync.MAX_CALDAV_ACCOUNTS
+    _fake_accounts(monkeypatch, limit)
+    started = []
+
+    def account(owner, url, user, pw, account_id):
+        started.append(account_id)
+        return {"calendars": 1, "events": 0, "deleted": 0, "errors": []}
+
+    monkeypatch.setattr(caldav_sync, "_sync_blocking", account)
+    result = asyncio.run(caldav_sync.sync_caldav("full"))
+
+    assert len(started) == limit
+    assert result["errors"] == []

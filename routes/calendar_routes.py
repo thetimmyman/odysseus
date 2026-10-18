@@ -854,6 +854,15 @@ def setup_calendar_routes() -> APIRouter:
             raise HTTPException(400, str(e))
         if not body.get("password"):
             raise HTTPException(400, "Password is required")
+        accounts = _get_caldav_accounts(owner)
+        # Accounts are pulled one after another, so the number an owner keeps
+        # bounds how long their pull can hold the periodic sync loop.
+        from src.caldav_sync import MAX_CALDAV_ACCOUNTS
+        if len(accounts) >= MAX_CALDAV_ACCOUNTS:
+            raise HTTPException(
+                400,
+                f"At most {MAX_CALDAV_ACCOUNTS} CalDAV accounts can be saved; remove one first",
+            )
         from src.secret_storage import encrypt
         new_acc = {
             "id": str(_uuid.uuid4()),
@@ -862,7 +871,6 @@ def setup_calendar_routes() -> APIRouter:
             "username": (body.get("username") or "").strip(),
             "password": encrypt(body["password"]),
         }
-        accounts = _get_caldav_accounts(owner)
         accounts.append(new_acc)
         _save_caldav_accounts(owner, accounts)
         return {"ok": True, "id": new_acc["id"]}
