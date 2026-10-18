@@ -1,8 +1,8 @@
 """Feature-specific immutable origin and append-only retained locator events.
 
-Separate metadata deliberately has no production registration or initializer.
-Importing this module never imports core.database or creates a table. An owner
-must separately admit a migration against the existing native engine. Isolated
+Separate metadata has no automatic production registration or initializer.
+Importing this module never imports core.database or creates a table. Explicit
+authenticated maintenance admits the fixed addition on the existing engine. Isolated
 file-SQLite tests exercise source guarantees; they do not qualify production
 crash durability, restore, transport or execution.
 """
@@ -266,6 +266,33 @@ class _DispatchClaim:
         raise TypeError("dispatch claims cannot be serialized")
 
 
+def inspect_inspector_schema(connection):
+    """Classify only this connection's fixed feature objects, without DDL.
+
+    Callers qualify their native connection first. Reusing this classifier in a
+    write transaction does not open another session or observe another snapshot.
+    """
+    normalize = lambda value: " ".join(value.strip().rstrip(";").split())
+    expected = {table.name: normalize(str(CreateTable(table).compile(dialect=connection.dialect)))
+                for table in metadata.sorted_tables}
+    expected.update({name: normalize(ddl) for name, ddl in metadata.info["sqlite_trigger_ddl"].items()})
+    names, tables = tuple(expected), tuple(metadata.tables)
+    parameters = ",".join("?" for _ in names)
+    table_parameters = ",".join("?" for _ in tables)
+    rows = connection.exec_driver_sql(
+        "SELECT name,type,sql FROM sqlite_master WHERE "
+        f"name IN ({parameters}) OR (type IN ('table','trigger') AND tbl_name IN ({table_parameters}))",
+        names + tables).fetchmany(65)
+    if len(rows) > 64 or sum(len(row[2] or "") for row in rows) > 131072:
+        raise InspectorUnavailable("inspector unavailable")
+    observed = {name: normalize(sql or "") for name, _kind, sql in rows}
+    return {"schema_state": "ABSENT" if not rows else "COMPATIBLE" if observed == expected else "MISMATCH",
+            "expected_schema_hash": hashlib.sha256(json.dumps(expected, sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest(),
+            "table_count": sum(kind == "table" for _name, kind, _sql in rows),
+            "trigger_count": sum(kind == "trigger" for _name, kind, _sql in rows)}
+
+
 class AdmissionStore:
     def __init__(self, session_factory):
         self._sessions = session_factory
@@ -282,17 +309,7 @@ class AdmissionStore:
         try:
             with self._sessions() as session:
                 connection = self._qualified_connection(session)
-                expected = {table.name: str(CreateTable(table).compile(dialect=connection.dialect))
-                            for table in metadata.sorted_tables}
-                expected.update(metadata.info["sqlite_trigger_ddl"])
-                names = tuple(metadata.tables)
-                parameters = ",".join("?" for _ in names)
-                rows = connection.exec_driver_sql(
-                    "SELECT name,sql FROM sqlite_master WHERE type IN ('table','trigger') "
-                    f"AND tbl_name IN ({parameters})", names).all()
-                normalized = lambda value: " ".join(value.strip().rstrip(";").split())
-                if ({name: normalized(sql) for name, sql in rows}
-                        != {name: normalized(sql) for name, sql in expected.items()}):
+                if inspect_inspector_schema(connection)["schema_state"] != "COMPATIBLE":
                     raise InspectorUnavailable("inspector unavailable")
         except (SQLAlchemyError, OSError, ValueError, TypeError):
             raise InspectorUnavailable("inspector unavailable") from None
