@@ -204,7 +204,37 @@ def test_workspace_capture_cannot_start_without_the_same_operational_process_pro
             "manifest_digest": "a" * 64}, lease_valid=lambda: True)
 
 
-def test_fixed_workspace_cli_uses_only_its_private_admitted_manifest(tmp_path, monkeypatch):
+def test_workspace_cli_refuses_valid_inert_input_without_app_database_dependencies(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    from src.constants import LOCAL_MEASUREMENT_COMMAND
+
+    data = tmp_path / "native-data"
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(data))
+    fixed = data / "canonical_inspector" / "tmos-owner.json"
+    command = [sys.executable, "-I", "-S", "-B", LOCAL_MEASUREMENT_COMMAND,
+               "--worker-workspace", "--tmos-manifest", str(fixed)]
+    response = subprocess.run(command, input=b"{}", capture_output=True, timeout=5)
+    assert response.returncode == 2
+    assert response.stdout == b""
+    assert response.stderr == b"measurement refused: InspectorUnavailable; no receipt applied\n"
+    assert not Path(os.environ["ODYSSEUS_DATA_DIR"]).exists()
+
+
+def test_workspace_refusals_keep_the_existing_app_exception_identity():
+    from src.canonical_inspector_admission import InspectorUnavailable as AdmissionRefusal
+    from src.canonical_inspector_runtime import InspectorUnavailable as RuntimeRefusal
+    from src.canonical_inspector_workspace import InspectorUnavailable as WorkspaceRefusal
+    from src.inspector_errors import InspectorUnavailable
+
+    assert AdmissionRefusal is RuntimeRefusal is WorkspaceRefusal is InspectorUnavailable
+
+
+@pytest.mark.parametrize("python_flags", [("-I", "-B"), ("-I", "-S", "-B")],
+                         ids=["normal-python", "without-site-packages"])
+def test_fixed_workspace_cli_uses_only_its_private_admitted_manifest(tmp_path, monkeypatch, python_flags):
     import json
     import os
     from pathlib import Path
@@ -218,7 +248,8 @@ def test_fixed_workspace_cli_uses_only_its_private_admitted_manifest(tmp_path, m
     fixed = root / "tmos-owner.json"
     fixed.write_bytes(path.read_bytes())
     fixed.chmod(0o600)
-    command = [sys.executable, "-I", LOCAL_MEASUREMENT_COMMAND, "--worker-workspace", "--tmos-manifest", str(fixed)]
+    command = [sys.executable, *python_flags, LOCAL_MEASUREMENT_COMMAND,
+               "--worker-workspace", "--tmos-manifest", str(fixed)]
     response = subprocess.run(command, input=json.dumps(operation).encode(), capture_output=True, timeout=5)
     assert response.returncode == 0, response.stderr
     assert json.loads(response.stdout)["source"]["detached"] is True
@@ -265,7 +296,7 @@ def workspace_fixture(tmp_path, monkeypatch):
     from tests.test_canonical_tmos_publication import tmos_package
 
     monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr("src.canonical_inspector_runtime.CANONICAL_INSPECTOR_WORK_ROOT", tmp_path / "captures")
+    monkeypatch.setattr("src.canonical_inspector_workspace.CANONICAL_INSPECTOR_WORK_ROOT", tmp_path / "captures")
     repo = tmp_path / "source"
     repo.mkdir()
     for command in (
