@@ -9,6 +9,16 @@ This module is that loop: every ``CALDAV_SYNC_INTERVAL_SECONDS`` (default 600,
 * Owners are processed one after another and a pass finishes before the next
   sleep starts, so the loop never overlaps itself. ``sync_caldav`` also
   serializes per owner, so a pass cannot race a manual sync either.
+* One owner cannot stall the rest. The CalDAV client has a finite network
+  timeout, a pull of one account stops itself when its time budget is spent and
+  no single request outlasts that budget, however slowly the server answers (see
+  ``src/caldav_sync.py``), and the loop does not wait for an owner beyond
+  ``owner_timeout_seconds()`` either: it cancels that pull, moves on, and leaves
+  the owner alone in later passes until the abandoned pull has really ended. An
+  owner's accounts are pulled one after another, each with a budget of its own,
+  so that wait grows with the number of accounts. A blocking worker thread cannot
+  be interrupted, so it may outlive its timeout; skipping the owner keeps such a
+  straggler from being joined by a second pull.
 * A failure (bad credentials, server down, a bug) is logged and the loop carries
   on; one owner's failure does not stop the others.
 * The wait between passes is jittered by +/-10% so a restart does not line every
@@ -19,10 +29,12 @@ This module is that loop: every ``CALDAV_SYNC_INTERVAL_SECONDS`` (default 600,
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+import math
 import os
 import random
-from typing import Awaitable, Callable, Iterable, Optional
+from typing import Awaitable, Callable, Iterable, MutableMapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +45,10 @@ DEFAULT_INTERVAL_SECONDS = 600
 MIN_INTERVAL_SECONDS = 60
 JITTER_FRACTION = 0.1
 STARTUP_DELAY_SECONDS = (15.0, 45.0)
+# Extra time a pass waits for an owner on top of the pull's own limits, so a pull
+# that merely runs long stops itself and reports what it did before the loop
+# gives up on it.
+OWNER_TIMEOUT_GRACE_SECONDS = 5.0
 
 
 def sync_interval_seconds(environ=None) -> int:
@@ -42,16 +58,20 @@ def sync_interval_seconds(environ=None) -> int:
     if not raw:
         return DEFAULT_INTERVAL_SECONDS
     try:
-        value = int(float(raw))
+        value = float(raw)
     except ValueError:
+        value = math.nan
+    if not math.isfinite(value):
         logger.warning("%s=%r is not a number; using %ss", ENV_INTERVAL, raw, DEFAULT_INTERVAL_SECONDS)
         return DEFAULT_INTERVAL_SECONDS
+    # Decide on the number as written: truncating first would turn 0.5 into 0
+    # and so switch the loop off, when only a value <= 0 means "disabled".
     if value <= 0:
         return 0
     if value < MIN_INTERVAL_SECONDS:
-        logger.warning("%s=%s is below the %ss floor; using the floor", ENV_INTERVAL, value, MIN_INTERVAL_SECONDS)
+        logger.warning("%s=%s is below the %ss floor; using the floor", ENV_INTERVAL, raw, MIN_INTERVAL_SECONDS)
         return MIN_INTERVAL_SECONDS
-    return value
+    return int(value)
 
 
 def _has_caldav(prefs) -> bool:
@@ -82,12 +102,87 @@ def caldav_owners() -> list:
     return []
 
 
+def owner_account_count(owner: str) -> int:
+    """How many CalDAV accounts a pull of ``owner`` walks, at least 1.
+
+    A read of the preference store only (unlike ``_load_caldav_accounts`` it
+    migrates and re-encrypts nothing); any trouble reading it counts as one.
+    """
+    try:
+        from src.user_preferences import load_for_user
+
+        prefs = load_for_user(owner)
+    except Exception:
+        return 1
+    accounts = prefs.get("caldav_accounts") if isinstance(prefs, dict) else None
+    return max(1, len(accounts)) if isinstance(accounts, list) else 1
+
+
+def owner_timeout_seconds(environ=None, accounts: int = 1) -> float:
+    """How long a pass waits for one owner's pull before moving on.
+
+    The pull walks the owner's accounts one after another and each gets a time
+    budget of its own, so the wait is, per account, that budget and one more
+    request (the read blocked when the budget ran out), plus a little slack once.
+    Sized for one account it would cut off an owner whose second account is merely
+    slow, and the accounts after it would never get a turn.
+    """
+    from src.caldav_sync import request_timeout_seconds, sync_timeout_seconds
+
+    per_account = sync_timeout_seconds(environ) + request_timeout_seconds(environ)
+    return max(1, int(accounts)) * per_account + OWNER_TIMEOUT_GRACE_SECONDS
+
+
+class _NotPulled(Exception):
+    """An owner the pass gave up on or did not start; already logged."""
+
+
+def _retire(pending: MutableMapping, owner: str, task: asyncio.Task) -> None:
+    if pending.get(owner) is task:
+        del pending[owner]
+    if not task.cancelled():
+        task.exception()  # mark it retrieved; whatever it raised was reported when awaited
+
+
+async def _pull_owner(owner: str, sync, timeout: float, pending: MutableMapping) -> dict:
+    previous = pending.get(owner)
+    if previous is not None and not previous.done():
+        logger.warning("Periodic CalDAV sync for %s skipped: its previous pull is still running", owner)
+        raise _NotPulled(owner)
+    task = asyncio.ensure_future(sync(owner))
+    pending[owner] = task
+    task.add_done_callback(functools.partial(_retire, pending, owner))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+    if not done:
+        # Cancelling asks the pull to stop; the worker thread behind it cannot be
+        # interrupted, so the task may stay pending a while (see `pending`).
+        task.cancel()
+        logger.error(
+            "Periodic CalDAV sync for %s timed out after %gs; moving on to the next owner", owner, timeout,
+        )
+        raise _NotPulled(owner)
+    return task.result()
+
+
 async def run_sync_pass(
     owners: Optional[Iterable[str]] = None,
     sync: Optional[Callable[[str], Awaitable[dict]]] = None,
+    *,
+    timeout: Optional[float] = None,
+    pending: Optional[MutableMapping] = None,
 ) -> dict:
     """Pull every owner once. Returns ``{owner: result-or-None}``; ``None`` marks
-    an owner whose sync raised. Never raises (except cancellation)."""
+    an owner whose sync raised, timed out or was skipped because its previous
+    pull (abandoned after a timeout) is still running. ``pending`` carries those
+    unfinished pulls from pass to pass. ``timeout`` is how long to wait for each
+    owner, in seconds; by default it is sized to the owner's number of accounts
+    (see ``owner_timeout_seconds``). Never raises (except cancellation)."""
+    if pending is None:
+        pending = {}
     if sync is None:
         from src.caldav_sync import sync_caldav as sync
     if owners is None:
@@ -100,9 +195,13 @@ async def run_sync_pass(
     outcome: dict = {}
     for owner in owners:
         try:
-            result = await sync(owner)
+            wait = timeout if timeout is not None else owner_timeout_seconds(accounts=owner_account_count(owner))
+            result = await _pull_owner(owner, sync, wait, pending)
         except asyncio.CancelledError:
             raise
+        except _NotPulled:
+            outcome[owner] = None
+            continue
         except Exception:
             logger.exception("Periodic CalDAV sync failed for owner %s", owner)
             outcome[owner] = None
@@ -133,8 +232,10 @@ async def caldav_sync_loop(
     list_owners: Callable[[], Iterable[str]] = caldav_owners,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rng=random,
+    owner_timeout: Optional[float] = None,
 ) -> None:
     """Run passes forever, ``interval`` seconds (jittered) apart."""
+    pending: dict = {}
     await sleep(rng.uniform(*STARTUP_DELAY_SECONDS))
     while True:
         try:
@@ -143,7 +244,7 @@ async def caldav_sync_loop(
             logger.exception("CalDAV sync loop: could not list owners")
             owners = []
         if owners:
-            await run_sync_pass(owners, sync)
+            await run_sync_pass(owners, sync, timeout=owner_timeout, pending=pending)
         await sleep(jittered(interval, rng))
 
 

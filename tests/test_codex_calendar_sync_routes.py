@@ -165,6 +165,60 @@ def test_calendars_needs_a_calendar_scope(routers):
     assert err.value.status_code == 403
 
 
+def _owner_rows(owner):
+    db = _TS()
+    try:
+        return [(c.name, c.source) for c in db.query(CalendarCal).filter_by(owner=owner).all()]
+    finally:
+        db.close()
+
+
+def test_a_read_token_lists_without_creating_the_default_calendar(routers):
+    """A calendar:read token must stay side-effect free: an owner with no calendar
+    gets an empty list and no row is written."""
+    listing = _endpoint(routers.codex, "GET", "/api/codex/calendar/calendars")
+    assert _owner_rows("carol") == []
+    out = asyncio.run(listing(_token_request({"calendar:read"}, owner="carol")))
+    assert out == {"calendars": []}
+    assert _owner_rows("carol") == []
+
+
+def test_a_write_token_gets_the_default_calendar_made_on_first_list(routers):
+    listing = _endpoint(routers.codex, "GET", "/api/codex/calendar/calendars")
+    out = asyncio.run(listing(_token_request({"calendar:write"}, owner="dave")))
+    assert [c["name"] for c in out["calendars"]] == ["Personal"]
+    assert _owner_rows("dave") == [("Personal", "local")]
+
+
+def test_a_cookie_session_listing_still_creates_the_default_calendar(routers):
+    listing = _endpoint(routers.codex, "GET", "/api/codex/calendar/calendars")
+    request = SimpleNamespace(
+        state=SimpleNamespace(current_user="erin"),
+        app=SimpleNamespace(state=SimpleNamespace(auth_manager=SimpleNamespace(is_configured=True))),
+        client=SimpleNamespace(host="203.0.113.10"),
+    )
+    out = asyncio.run(listing(request))
+    assert [c["name"] for c in out["calendars"]] == ["Personal"]
+    assert _owner_rows("erin") == [("Personal", "local")]
+
+
+def test_a_read_token_after_the_default_exists_sees_it(routers):
+    listing = _endpoint(routers.codex, "GET", "/api/codex/calendar/calendars")
+    asyncio.run(listing(_token_request({"calendar:write"}, owner="dave")))
+    out = asyncio.run(listing(_token_request({"calendar:read"}, owner="dave")))
+    assert [c["name"] for c in out["calendars"]] == ["Personal"]
+    assert len(_owner_rows("dave")) == 1
+
+
+def test_calendars_is_unavailable_without_a_calendar_router():
+    from routes.codex_routes import setup_codex_routes
+
+    listing = _endpoint(setup_codex_routes(), "GET", "/api/codex/calendar/calendars")
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(listing(_token_request({"calendar:read"})))
+    assert err.value.status_code == 503
+
+
 # ── update ────────────────────────────────────────────────────────────────────
 
 def _summary(uid="ev-a"):
@@ -180,6 +234,69 @@ def test_update_changes_the_owners_event(routers):
     out = asyncio.run(update(_token_request({"calendar:write"}), "ev-a", {"summary": "Renamed"}))
     assert out == {"ok": True}
     assert _summary() == "Renamed"
+
+
+def _synced_series(**fields):
+    db = _TS()
+    try:
+        db.add(CalendarCal(id="cal-dav", owner="alice", name="Synced", source="caldav"))
+        db.add(CalendarEvent(
+            uid="series-s@test", calendar_id="cal-dav", summary="Series", origin="caldav",
+            dtstart=datetime(2026, 11, 4, 19, 30), dtend=datetime(2026, 11, 4, 20, 30),
+            is_utc=True, rrule="FREQ=WEEKLY", **fields,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _rrule_of(uid):
+    db = _TS()
+    try:
+        return db.query(CalendarEvent).filter_by(uid=uid).one().rrule
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("fields", [{"tzid": "America/New_York"}, {"exdate": "20261111T193000Z"}])
+def test_clearing_the_rule_of_a_synced_series_through_a_token_stays_local(routers, monkeypatch, fields):
+    """The write-back would replace the remote resource with one UTC, non-recurring
+    event and lose its zone and exclusions, so a token edit is held back as well."""
+    import src.caldav_writeback as writeback
+
+    pushed = []
+
+    async def record(*args, **kwargs):
+        pushed.append((args, kwargs))
+
+    monkeypatch.setattr(writeback, "writeback_event", record)
+    _synced_series(**fields)
+    update = _endpoint(routers.codex, "PUT", "/api/codex/calendar/events/{uid}")
+
+    out = asyncio.run(update(_token_request({"calendar:write"}), "series-s@test", {"rrule": ""}))
+
+    assert out["writeback"] == "skipped"
+    assert pushed == []
+    assert _rrule_of("series-s@test") == ""
+
+
+def test_clearing_the_rule_of_a_plain_synced_event_is_still_pushed(routers, monkeypatch):
+    """Control for the test above: with nothing a push would lose, it goes through."""
+    import src.caldav_writeback as writeback
+
+    pushed = []
+
+    async def record(owner, source, cal_id, payload, delete=False):
+        pushed.append(payload)
+
+    monkeypatch.setattr(writeback, "writeback_event", record)
+    _synced_series()
+    update = _endpoint(routers.codex, "PUT", "/api/codex/calendar/events/{uid}")
+
+    out = asyncio.run(update(_token_request({"calendar:write"}), "series-s@test", {"rrule": ""}))
+
+    assert out == {"ok": True}
+    assert [p["rrule"] for p in pushed] == [""]
 
 
 def test_update_needs_the_calendar_write_scope(routers):

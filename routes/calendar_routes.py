@@ -227,6 +227,33 @@ def _ensure_default_calendar(db, owner: str = None) -> CalendarCal:
     return cal
 
 
+def list_owner_calendars(owner: str, *, create_default: bool = True) -> dict:
+    """The ``{"calendars": [...]}`` payload for ``owner``.
+
+    ``create_default`` makes sure the owner has a calendar first, which writes a
+    "Personal" row on a first call. A caller that must stay read-only (a
+    ``calendar:read`` token) passes False and gets an empty list instead; the
+    default is then created by the first write, which falls back to it when no
+    ``calendar_href`` is given.
+    """
+    db = SessionLocal()
+    try:
+        if create_default:
+            _ensure_default_calendar(db, owner)
+        cals = db.query(CalendarCal).filter(CalendarCal.owner == owner).all()
+        return {"calendars": [
+            {"name": c.name, "href": c.id, "color": c.color, "source": c.source}
+            for c in cals
+        ]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list calendars: %s", e)
+        raise HTTPException(500, "Failed to list calendars")
+    finally:
+        db.close()
+
+
 # Per-request user time context. chat_routes sets this from browser timezone
 # headers so natural-language times the LLM emits ("today at 9pm") are parsed
 # in the user's timezone, not the server's clock. None = unknown, fall back to
@@ -1001,21 +1028,7 @@ def setup_calendar_routes() -> APIRouter:
     @router.get("/calendars")
     async def list_calendars(request: Request):
         owner = _require_user(request)
-        db = SessionLocal()
-        try:
-            _ensure_default_calendar(db, owner)
-            cals = db.query(CalendarCal).filter(CalendarCal.owner == owner).all()
-            return {"calendars": [
-                {"name": c.name, "href": c.id, "color": c.color, "source": c.source}
-                for c in cals
-            ]}
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("Failed to list calendars: %s", e)
-            raise HTTPException(500, "Failed to list calendars")
-        finally:
-            db.close()
+        return list_owner_calendars(owner)
 
     @router.get("/events")
     async def list_events(request: Request, start: str, end: str, calendar: str = ""):

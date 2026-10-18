@@ -68,19 +68,32 @@ def tzid_for(value, params=None) -> Optional[str]:
     zone to expand), and for zone names this host cannot resolve (a custom
     VTIMEZONE). A series without a usable zone expands in fixed UTC, which
     drifts by an hour across a DST change; see ``routes/calendar_routes``.
+
+    The ``TZID`` parameter is tried first, then the zone the parser already
+    resolved on the value. They differ for a non-IANA name such as the Windows
+    ``Eastern Standard Time`` that Exchange and Outlook servers send: icalendar
+    maps it to ``America/New_York`` on the value, but ``ZoneInfo`` cannot load
+    the parameter text.
     """
     if not isinstance(value, datetime) or value.tzinfo is None:
         return None
-    name = None
+    candidates = []
     if params is not None:
         try:
-            name = params.get("TZID")
+            candidates.append(params.get("TZID"))
         except Exception:
-            name = None
-    name = str(name or getattr(value.tzinfo, "key", None) or getattr(value.tzinfo, "zone", None) or "")
-    if not name or name.upper() in _UTC_NAMES:
-        return None
-    return name if load_zone(name) is not None else None
+            pass
+    candidates.append(getattr(value.tzinfo, "key", None))
+    candidates.append(getattr(value.tzinfo, "zone", None))
+    for candidate in candidates:
+        name = str(candidate or "")
+        if not name:
+            continue
+        if name.upper() in _UTC_NAMES:
+            return None
+        if load_zone(name) is not None:
+            return name
+    return None
 
 
 def wall_to_utc_naive(wall: datetime, zone: ZoneInfo) -> datetime:
