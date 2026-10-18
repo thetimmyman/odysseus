@@ -459,7 +459,7 @@ def test_workspace_verifier_retains_both_streams_and_requires_container_end_ackn
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["initial", "ssh-transport", "alternate", "alternate-stale", "alternate-identity-mismatch",
+@pytest.mark.parametrize("scenario", ["initial", "measured", "ssh-transport", "alternate", "alternate-stale", "alternate-identity-mismatch",
                                       "initial-identity-mismatch", "initial-container-unknown", "initial-revoked",
                                       "initial-permission"])
 async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_attempt(native_store, tmp_path, monkeypatch, scenario):
@@ -473,7 +473,7 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     from tests.test_canonical_inspector_admission import principal
     from tests.test_inspector_alternate import routing_inputs
 
-    _, engine = native_store
+    store, engine = native_store
     manifest_path, template, _ = workspace_fixture(tmp_path, monkeypatch)
     estate, capabilities, _, profiles = routing_inputs(tmp_path,
         runtime_options={"num_ctx": 4096, "num_predict": 512, "temperature": 0, "think": False})
@@ -566,6 +566,11 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
         report = {"schema": "tmos-work-verification-v1", "tests_passed": 2, "tests_failed": 0,
             "positive_control": {"expected": "PASS", "observed": "PASS"},
             "negative_control": {"expected": "FAIL", "observed": "FAIL"}}
+        if scenario == "measured":
+            report.update(tests_collected=2, tests_executed=2, tests_skipped=0,
+                tool_versions=[["node", "v24.10.0"], ["vitest", "4.1.11"]],
+                provenance={"command": command,
+                    "verifier_digests": [list(pair) for pair in template.verification.verifier_digests]})
         out.write_text(json.dumps(report)); err.write_bytes(b"")
         out.chmod(0o600); err.chmod(0o600)
         return {"allowed": True, "exit_code": 0, "timed_out": False, "error": None,
@@ -613,6 +618,22 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     assert view["semantic_acceptance"] == "UNKNOWN"
     assert view["routing"]["decision"]["selected"]["profile_id"] == profiles[0].profile_id
     assert view["routing"]["decision"]["selected"]["provider"] == "ollama"
+    if scenario in ("initial", "measured"):
+        from src.canonical_inspector_service import READ_LIMITS
+        from src.constants import CANONICAL_TMOS_DISCLOSURE_GENERATION
+        from src.evidence_io import read_retained_evidence_bundle
+        from src.attempt_receipt import verification_receipt_hash_is_valid
+
+        publication = store.resolve(principal(), result["handle"], CANONICAL_TMOS_DISCLOSURE_GENERATION)
+        payload, _ = read_retained_evidence_bundle(retained, publication.bundle_hash, **READ_LIMITS)
+        main = next(row for row in payload["verification_receipts"] if not row["control_id"])
+        assert verification_receipt_hash_is_valid(main)
+        assert [main[name] for name in ("tests_collected", "tests_executed", "tests_skipped")] == (
+            [2, 2, 0] if scenario == "measured" else [None, None, None])
+        assert main["tool_versions"] == [["container_image", "sha256:" + "d" * 64]] + (
+            [["node", "v24.10.0"], ["vitest", "4.1.11"]] if scenario == "measured" else [])
+        assert all(row[name] is None for row in payload["verification_receipts"] if row["control_id"]
+            for name in ("tests_collected", "tests_executed", "tests_passed", "tests_failed", "tests_skipped"))
     health = view["routing"]["capabilities"]["supplements"][0]
     assert health["health_state"] == "live"
     assert health["health_ttl_s"] == 300
