@@ -280,6 +280,41 @@ from src.canonical_inspector_admission import InspectorUnavailable, UnknownInspe
 from src.canonical_inspector_service import request_principal
 from src.canonical_pilot_adapter import PilotLimit, read_idempotency_key
 
+
+@router.get("/inspector/setup")
+def inspector_setup_status(request: Request):
+    owner = request_principal(request)
+    from src.canonical_inspector_setup import InspectorSchemaSetup
+    try:
+        return InspectorSchemaSetup(SessionLocal, app_state=request.app.state).status(
+            owner, lambda: request_principal(request))
+    except InspectorUnavailable:
+        raise HTTPException(503, "Inspector setup unavailable") from None
+
+
+@router.post("/inspector/setup/schema")
+async def inspector_setup_schema(request: Request):
+    owner = request_principal(request)
+    from starlette.concurrency import run_in_threadpool
+    from src.canonical_inspector_setup import InspectorSchemaSetup, SetupConflict
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+    try:
+        raw = await collect_bytes(request.stream(), limit=4096, seconds=5)
+        body = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+        if type(body) is not dict or set(body) != {"expected_schema_hash"}:
+            raise ValueError("invalid request")
+    except (PilotLimit, ValueError, TypeError, RecursionError):
+        raise HTTPException(400, "Invalid inspector setup request") from None
+    try:
+        setup = InspectorSchemaSetup(SessionLocal, app_state=request.app.state)
+        return await run_in_threadpool(setup.initialize, owner, body["expected_schema_hash"],
+                                       lambda: request_principal(request))
+    except SetupConflict as error:
+        raise HTTPException(409, str(error)) from None
+    except InspectorUnavailable:
+        raise HTTPException(503, "Inspector setup unavailable") from None
+
+
 @router.post("/inspector/pilots/{pilot_id}")
 async def inspector_pilot(pilot_id: str, request: Request):
     owner = request_principal(request)
