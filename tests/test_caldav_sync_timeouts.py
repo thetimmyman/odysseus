@@ -7,8 +7,8 @@ both build their client in ``_build_dav_client``, which has to set a finite
 timeout. That timeout bounds each socket read, not the request, so a server that
 trickles its answer out a few bytes at a time is never cut off by it; the pull's
 time budget therefore has to cap the request itself. Everything here is local: a
-socket that listens and stays silent, or answers nds in for
-the stuck server.
+socket that listens and stays silent, or one that answers a byte at a time,
+stands in for the stuck server.
 """
 import asyncio
 import contextvars
