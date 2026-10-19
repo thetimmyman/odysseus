@@ -153,6 +153,21 @@ def _retire(pending: MutableMapping, owner: str, task: asyncio.Task) -> None:
         task.exception()  # mark it retrieved; whatever it raised was reported when awaited
 
 
+async def _await_ended(task: asyncio.Task, timeout: float) -> None:
+    """Wait up to ``timeout`` for a cancelled pull to end, ignoring further cancels."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not task.done():
+        left = deadline - loop.time()
+        if left <= 0:
+            logger.error("A cancelled CalDAV pull is still running after %gs; not waiting longer", timeout)
+            return
+        try:
+            await asyncio.wait({task}, timeout=left)
+        except asyncio.CancelledError:
+            continue
+
+
 async def _pull_owner(owner: str, sync, timeout: float, pending: MutableMapping) -> dict:
     previous = pending.get(owner)
     if previous is not None and not previous.done():
@@ -165,6 +180,10 @@ async def _pull_owner(owner: str, sync, timeout: float, pending: MutableMapping)
         done, _ = await asyncio.wait({task}, timeout=timeout)
     except asyncio.CancelledError:
         task.cancel()
+        # The pull suppresses cancellation until its worker thread has finished,
+        # so wait for it (bounded) before letting shutdown go on; a further
+        # cancellation of this wait is still honoured once the pull has ended.
+        await _await_ended(task, timeout)
         raise
     if not done:
         # Cancelling asks the pull to stop; the worker thread behind it cannot be

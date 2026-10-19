@@ -323,6 +323,23 @@ class _RequestOutOfTime(BaseException):
 
 _REQUEST_THREAD_NAME = "caldav-request"
 
+# Request threads whose call ran out of time but have not exited yet (typically
+# blocked in a C call such as DNS resolution, which no socket timeout bounds).
+# They are kept so that a pull cannot pile new requests on top of a stuck
+# resolver without limit: past MAX_OVERDUE_REQUESTS no further request starts
+# until some of them have ended.
+MAX_OVERDUE_REQUESTS = 4
+_overdue_threads: "set[threading.Thread]" = set()
+_overdue_lock = threading.Lock()
+
+
+def _overdue_count() -> int:
+    """How many abandoned request threads are still running (ended ones are dropped)."""
+    with _overdue_lock:
+        for thread in [t for t in _overdue_threads if not t.is_alive()]:
+            _overdue_threads.discard(thread)
+        return len(_overdue_threads)
+
 
 def _stop_thread(thread: threading.Thread) -> bool:
     """Make ``thread`` raise `_RequestOutOfTime` the next time it runs Python code.
@@ -352,11 +369,16 @@ def _call_within(seconds: float, grace: float, fn, /, *args, **kwargs):
     thread stands for, for as long as it likes. When time is up the call's
     thread is told to stop (see `_stop_thread`) and given up to ``grace`` seconds
     to do so; the caller does not go on using whatever state the call touched.
+    A thread that is still running after the grace stays on a bounded list of
+    overdue requests (``MAX_OVERDUE_REQUESTS``), and no new request starts while
+    that list is full.
     Nothing is started when no time is left. What the call raises is raised here
     unchanged, and it runs in a copy of the caller's context.
     """
     if seconds <= 0:
         raise TimeoutError("the time budget of the CalDAV pull is spent")
+    if _overdue_count() >= MAX_OVERDUE_REQUESTS:
+        raise TimeoutError("earlier CalDAV requests are still stuck; not starting another")
     box: dict = {}
     settled = threading.Lock()
     finished = threading.Event()
@@ -383,6 +405,11 @@ def _call_within(seconds: float, grace: float, fn, /, *args, **kwargs):
         if overdue:
             if stopped:
                 thread.join(grace)
+            if thread.is_alive():
+                # Still inside a blocking call: keep it counted so that later
+                # pulls cannot pile more requests onto it without bound.
+                with _overdue_lock:
+                    _overdue_threads.add(thread)
             raise TimeoutError(f"a CalDAV request did not finish within the {seconds:g}s left of its time budget")
     thread.join()
     if "error" in box:

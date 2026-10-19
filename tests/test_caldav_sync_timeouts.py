@@ -362,3 +362,31 @@ def test_call_within_does_not_start_a_call_without_time():
     with pytest.raises(TimeoutError):
         caldav_sync._call_within(-3, 1, lambda: called.append(1))
     assert called == []
+
+
+def test_a_thread_stuck_past_its_grace_stays_counted_and_caps_new_requests(monkeypatch):
+    """A request blocked in a call that cannot be interrupted (DNS) outlives the
+    grace; it must stay tracked, and once too many are stuck no new one starts."""
+    release = threading.Event()
+    monkeypatch.setattr(caldav_sync, "_stop_thread", lambda thread: False)
+    monkeypatch.setattr(caldav_sync, "MAX_OVERDUE_REQUESTS", 2)
+    monkeypatch.setattr(caldav_sync, "_overdue_threads", set())
+    try:
+        for _ in range(2):
+            with pytest.raises(TimeoutError):
+                caldav_sync._call_within(0.05, 0.01, release.wait)
+        assert caldav_sync._overdue_count() == 2
+
+        called = []
+        with pytest.raises(TimeoutError, match="still stuck"):
+            caldav_sync._call_within(5, 1, lambda: called.append(1))
+        assert called == []
+
+        release.set()
+        deadline = time.monotonic() + 3
+        while caldav_sync._overdue_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert caldav_sync._overdue_count() == 0
+        assert caldav_sync._call_within(5, 1, lambda: "ok") == "ok"
+    finally:
+        release.set()

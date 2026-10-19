@@ -828,3 +828,56 @@ def test_a_pull_at_the_limit_walks_every_account_without_complaint(monkeypatch):
 
     assert len(started) == limit
     assert result["errors"] == []
+
+
+def test_cancelling_a_pass_waits_for_a_pull_that_ends_only_after_its_worker():
+    """Shutdown cancels the loop; the pull holds on until its worker thread is done,
+    and the cancelled pass must not report itself finished before that."""
+    async def go():
+        release = threading.Event()
+        started = asyncio.Event()
+        ended = []
+
+        async def sync(owner):
+            started.set()
+            try:
+                await _hold_until(release)
+            finally:
+                ended.append(owner)
+
+        task = asyncio.create_task(loop_mod.run_sync_pass(["alice"], sync, timeout=3600))
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done(), "the pass returned while its pull was still running"
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        return ended
+
+    assert asyncio.run(go()) == ["alice"]
+
+
+def test_cancelling_a_pass_does_not_wait_for_a_pull_forever():
+    async def go():
+        started = asyncio.Event()
+        stop = threading.Event()
+
+        async def sync(owner):
+            started.set()
+            while not stop.is_set():
+                try:
+                    await asyncio.sleep(0.005)
+                except asyncio.CancelledError:
+                    pass
+
+        task = asyncio.create_task(loop_mod.run_sync_pass(["alice"], sync, timeout=0.2))
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 3)
+        finally:
+            stop.set()
+
+    asyncio.run(go())
