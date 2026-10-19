@@ -130,6 +130,8 @@ Example: "YES — The report covers all major aspects with evidence from multipl
 Example: "NO — We still lack information about the economic impact."
 """
 
+_PRIOR_CLAIM_LABEL_RE = re.compile(r"[ \t]*\[C\d{1,6}\]")
+
 CLAIM_LABEL_KEEP_RULE = (
     " Every finding carries a claim label such as [C3]; keep each label next to its source "
     "wherever that source is cited, exactly as given, so later steps can still tell which "
@@ -295,6 +297,14 @@ class DeepResearcher:
         self._start_time = time.time()
         findings: List[Dict] = list(prior_findings) if prior_findings else []
         report = prior_report or ""
+        if self.run_recorder is not None:
+            # Claim ids restart at C1 in every run: labels carried over from an
+            # earlier run would collide with this run's ids and misattribute
+            # old claims to new sources, so drop them (copying, not mutating,
+            # the caller's saved findings).
+            report = _PRIOR_CLAIM_LABEL_RE.sub("", report)
+            findings = [{k: v for k, v in f.items() if k != "claim_id"}
+                        if isinstance(f, dict) else f for f in findings]
 
         # PLAN: Analyze the question and create a research strategy
         if not prior_report:

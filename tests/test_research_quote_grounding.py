@@ -282,3 +282,29 @@ async def test_synthesis_prompt_unchanged_when_record_is_off(fake_page):
     researcher, _ = await _extract(_spoofed_reply(), run_record=False)
     prompt = await _synth_prompt(researcher)
     assert "claim label" not in prompt and "C99" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_continuation_does_not_reuse_prior_run_claim_labels(fake_page):
+    researcher = DeepResearcher(llm_endpoint="http://local.test/v1/chat/completions",
+                                llm_model="local-model", run_record=True)
+    prompts = []
+
+    async def fake_llm(messages, **kwargs):
+        prompts.append(messages[-1]["content"])
+        return "word " * 600
+
+    researcher._llm = fake_llm
+    researcher._create_plan = lambda q: _async_value("plan")
+    researcher._generate_queries = lambda *a, **k: _async_value([])
+    prior_findings = [{"url": "https://old.test", "claim_id": "C1", "summary": "old"}]
+    await researcher.research("q", prior_report="Old claim [C1] stands.",
+                              prior_findings=prior_findings, prior_urls=None)
+    assert "claim_id" not in researcher.findings[0]
+    assert prior_findings[0]["claim_id"] == "C1"  # caller's saved data untouched
+    assert researcher._claim_citations() == ""
+    assert prompts and all("[C1]" not in p for p in prompts)
+
+
+async def _async_value(value):
+    return value
