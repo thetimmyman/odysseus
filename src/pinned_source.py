@@ -227,6 +227,8 @@ def _git_env() -> dict:
         "LC_ALL": "C",
         # A refs/replace/<sha> entry must not swap the object a pin names.
         "GIT_NO_REPLACE_OBJECTS": "1",
+        # A partial clone must not reach its promisor remote during a "local" lookup.
+        "GIT_NO_LAZY_FETCH": "1",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": devnull,
         "GIT_CONFIG_SYSTEM": devnull,
@@ -315,12 +317,16 @@ def _resolve_local(
             flags,
             "local git lookup could not run (git missing or timeout)",
         )
-    if rc != 0:
+    if rc == 1:
+        # ``--verify --quiet`` exits 1 for "no such revision" and nothing else;
+        # a fatal error (corrupt repo, unreadable objects) exits higher.
         return PinResult(
             FALSE,
             flags,
             f"{classify_ref(ref)} {ref!r} does not resolve in local repo",
         )
+    if rc != 0:
+        return PinResult(UNRESOLVABLE, flags, "local git could not resolve the ref")
     sha = out.decode("utf-8", "replace").strip()
     if not re.fullmatch(r"[0-9a-f]{4,64}", sha):
         return PinResult(UNRESOLVABLE, flags, "unexpected rev-parse output")
@@ -328,7 +334,7 @@ def _resolve_local(
     # A ref that resolves is not necessarily pinned: a branch can hide
     # behind a tag-looking name (``stable-1``).  Ask git which ref the
     # name actually selected; only a ``refs/heads/`` hit is a branch.
-    if UNPINNED not in flags:
+    if UNPINNED not in flags and classify_ref(ref) != "commit":
         rc_b, out_b, _err_b = _run_git(
             [
                 "git",
@@ -346,9 +352,10 @@ def _resolve_local(
                 flags,
                 "local ref classification could not run (git missing or timeout)",
             )
-        if rc_b == 0 and out_b.decode("utf-8", "replace").strip().startswith(
-            ("refs/heads/", "refs/remotes/")
-        ):
+        # Only an unambiguous tag is a stable pin.  A branch, a remote-tracking
+        # ref, or a name git cannot place (empty output: a tag and a branch
+        # sharing one name) can move, so it is flagged.
+        if not (rc_b == 0 and out_b.decode("utf-8", "replace").strip().startswith("refs/tags/")):
             flags.append(UNPINNED)
 
     if path is None:
@@ -474,7 +481,8 @@ def resolve_pin(
         repo_dir = os.path.join(os.fspath(local_repos_root), repo)
         if _is_git_repo(repo_dir):
             local = _resolve_local(pin, ref, path, repo_dir, flags)
-            if local is not None:
+            # A local "could not answer" is not an answer: the fetcher may still.
+            if local is not None and not (local.status == UNRESOLVABLE and fetcher is not None):
                 return local
 
     # --- 2) Otherwise the injected fetcher (never a first-party client).

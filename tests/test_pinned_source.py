@@ -806,3 +806,45 @@ def test_unencodable_provider_text_is_unresolvable_not_an_exception():
                                 quote="x"),
                          fetcher=lambda *a: (True, "bad \udc80 text"))
     assert result.status == UNRESOLVABLE
+
+
+def test_name_shared_by_tag_and_branch_is_flagged_unpinned(git_repo, root):
+    _git(git_repo, "branch", "shared")
+    _git(git_repo, "tag", "shared", "main")
+    result = resolve_pin(_repo_file(ref="shared", path="read.txt"), local_repos_root=root)
+    assert result.status == TRUE
+    assert UNPINNED in result.flags
+
+
+def test_a_plain_tag_is_not_flagged(git_repo, root):
+    result = resolve_pin(_repo_file(ref="v1.0.0", path="read.txt"), local_repos_root=root)
+    assert result.status == TRUE
+    assert UNPINNED not in result.flags
+
+
+def test_fatal_rev_parse_is_unresolvable_and_lets_the_fetcher_answer(git_repo, root, monkeypatch):
+    real = pinned_source._run_git
+
+    def broken(args, cwd):
+        if "rev-parse" in args:
+            return 128, b"", b"fatal: bad object"
+        return real(args, cwd)
+
+    monkeypatch.setattr(pinned_source, "_run_git", broken)
+    result = resolve_pin(_repo_file(ref="main", path="read.txt"), local_repos_root=root)
+    assert result.status == UNRESOLVABLE
+
+
+def test_git_environment_blocks_lazy_fetch_and_replace_objects():
+    env = pinned_source._git_env()
+    assert env["GIT_NO_LAZY_FETCH"] == "1" and env["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_local_failure_falls_through_to_the_fetcher(git_repo, root, monkeypatch):
+    monkeypatch.setattr(pinned_source, "_run_git", lambda args, cwd: (128, b"", b"fatal"))
+    result = resolve_pin(
+        _repo_file(ref="main", path="read.txt", quote="beta"),
+        local_repos_root=root,
+        fetcher=lambda kind, repo, ref, path: (True, "alpha beta"),
+    )
+    assert result.status == TRUE and result.matched_quote is True
