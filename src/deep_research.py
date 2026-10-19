@@ -130,11 +130,6 @@ Example: "YES — The report covers all major aspects with evidence from multipl
 Example: "NO — We still lack information about the economic impact."
 """
 
-# A run mints far fewer claims than this; the bound keeps minted ids inside the
-# six digits _registry_claim_id accepts.
-MAX_CLAIM_ID_RESERVED = 9999
-_PRIOR_CLAIM_LABEL_RE = re.compile(r"\[C(\d{1,6})\]")
-
 CLAIM_LABEL_KEEP_RULE = (
     " Every finding carries a claim label such as [C3]; keep each label next to its source "
     "wherever that source is cited, exactly as given, so later steps can still tell which "
@@ -288,6 +283,7 @@ class DeepResearcher:
         prior_report: str = "",
         prior_findings: Optional[List[Dict]] = None,
         prior_urls: Optional[Set[str]] = None,
+        prior_claim_floor: int = 0,
     ) -> str:
         """Run iterative research and return a final report.
 
@@ -296,6 +292,7 @@ class DeepResearcher:
             prior_report: Previous report to continue from (for follow-up research).
             prior_findings: Previous findings to build on.
             prior_urls: URLs already visited (won't be re-fetched).
+            prior_claim_floor: highest claim id minted by the earlier run.
         """
         self._start_time = time.time()
         findings: List[Dict] = list(prior_findings) if prior_findings else []
@@ -303,15 +300,11 @@ class DeepResearcher:
         if self.run_recorder is not None:
             # Claim ids restart at C1 in a fresh recorder, so a carried-over
             # report that already cites [C1]..[Cn] could clash with ids minted
-            # now.  Rather than edit the report (its bracketed text may be the
-            # user's own), start this run's ids after the highest one it cites.
-            # Labels beyond MAX_CLAIM_ID_RESERVED are not ids this system minted
-            # (a hostile page title can print [C999999]); ignore them so they
-            # cannot push new ids out of the accepted range.
-            cited = [n for n in (int(m) for m in _PRIOR_CLAIM_LABEL_RE.findall(report))
-                     if n <= MAX_CLAIM_ID_RESERVED]
-            if cited:
-                self.run_recorder.reserve_claim_ids(max(cited))
+            # now.  The caller passes the highest id the earlier run's saved
+            # record minted (trusted: never parsed from report text, which a
+            # page can influence); this run's ids start after it.
+            if prior_claim_floor:
+                self.run_recorder.reserve_claim_ids(prior_claim_floor)
             # Any claim_id on carried-over findings belongs to the earlier run.
             findings = [{k: v for k, v in f.items() if k != "claim_id"}
                         if isinstance(f, dict) else f for f in findings]

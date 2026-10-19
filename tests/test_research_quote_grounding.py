@@ -285,7 +285,7 @@ async def test_synthesis_prompt_unchanged_when_record_is_off(fake_page):
 
 
 @pytest.mark.asyncio
-async def test_continuation_mints_claim_ids_above_those_the_prior_report_cites(fake_page):
+async def test_continuation_mints_claim_ids_above_the_prior_runs_floor(fake_page, tmp_path):
     researcher = DeepResearcher(llm_endpoint="http://local.test/v1/chat/completions",
                                 llm_model="local-model", run_record=True)
     prompts = []
@@ -299,13 +299,14 @@ async def test_continuation_mints_claim_ids_above_those_the_prior_report_cites(f
     researcher._generate_queries = lambda *a, **k: _async_value([])
     prior_findings = [{"url": "https://old.test", "claim_id": "C1", "summary": "old"}]
     await researcher.research("q", prior_report="Old claim [C1] and [C2] stand.",
-                              prior_findings=prior_findings, prior_urls=None)
+                              prior_findings=prior_findings, prior_claim_floor=2)
     assert "claim_id" not in researcher.findings[0]
     assert prior_findings[0]["claim_id"] == "C1"  # caller's saved data untouched
     assert any("Old claim [C1] and [C2] stand." in p for p in prompts)  # text left alone
     new = await researcher._fetch_and_extract("https://example.test/a", "q", "A")
     researcher.findings.append(new)
     assert new["claim_id"] == "C3"
+    assert researcher.run_recorder.build(blob_dir=tmp_path / "blobs")["claim_id_floor"] == 3
 
 
 async def _async_value(value):
@@ -356,7 +357,7 @@ def test_quote_with_the_raw_guard_marker_is_not_grounded():
 
 
 @pytest.mark.asyncio
-async def test_hostile_huge_prior_label_cannot_exhaust_the_id_range(fake_page):
+async def test_report_text_cannot_move_the_claim_counter(fake_page):
     researcher = DeepResearcher(llm_endpoint="http://local.test/v1/chat/completions",
                                 llm_model="local-model", run_record=True)
 
@@ -366,7 +367,20 @@ async def test_hostile_huge_prior_label_cannot_exhaust_the_id_range(fake_page):
     researcher._llm = fake_llm
     researcher._create_plan = lambda q: _async_value("plan")
     researcher._generate_queries = lambda *a, **k: _async_value([])
-    await researcher.research("q", prior_report="Injected [C999999] and real [C2].")
+    await researcher.research("q", prior_report="Injected [C999999] and [C9999].")
     new = await researcher._fetch_and_extract("https://example.test/a", "q", "A")
-    assert new["claim_id"] == "C3"
-    assert researcher._registry_claim_id(new) == "C3"
+    assert new["claim_id"] == "C1"
+
+
+def test_saved_claim_id_floor_comes_from_the_saved_record_only(monkeypatch):
+    from src.research_handler import ResearchHandler
+    handler = ResearchHandler.__new__(ResearchHandler)
+    saved = {"run_record": {"claim_id_floor": 7}, "raw_report": "[C999999]"}
+    monkeypatch.setattr(handler, "_get_session_json", lambda sid: saved)
+    assert handler._saved_claim_id_floor("s") == 7
+    saved["run_record"]["claim_id_floor"] = 10**9
+    assert handler._saved_claim_id_floor("s") == 100000
+    saved["run_record"]["claim_id_floor"] = "9"
+    assert handler._saved_claim_id_floor("s") == 0
+    monkeypatch.setattr(handler, "_get_session_json", lambda sid: None)
+    assert handler._saved_claim_id_floor("s") == 0

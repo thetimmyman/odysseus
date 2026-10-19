@@ -297,6 +297,8 @@ class ResearchRunRecorder:
             "claims": claims,
             "llm_calls": calls,
             "totals": totals,
+            # Highest claim id minted; a continuation starts its ids after it.
+            "claim_id_floor": self._claim_ids,
             "routing_run_id": self.routing_run_id,
         }
 
