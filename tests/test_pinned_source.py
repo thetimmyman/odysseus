@@ -1002,3 +1002,21 @@ def test_local_tag_proof_survives_the_provider_fallback(tmp_path):
         fetcher=lambda kind, repo, ref, path: (True, "notes"),
     )
     assert result.status == TRUE and UNPINNED not in result.flags
+
+
+def test_disabled_provider_still_flags_a_movable_looking_ref():
+    result = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="feature/release", path="x.md"),
+                         enabled=False)
+    assert result.status == NOT_SEARCHED and UNPINNED in result.flags
+
+
+def test_hex_name_resolving_through_another_namespace_is_unpinned(git_repo, root):
+    _git(git_repo, "update-ref", "refs/abcdef3", "main")
+    result = resolve_pin(_repo_file(ref="abcdef3", path="read.txt"), local_repos_root=root)
+    assert result.status == TRUE and UNPINNED in result.flags
+
+
+def test_an_abbreviated_commit_id_stays_pinned(git_repo, root):
+    short = first_commit_sha(git_repo)[:10]
+    result = resolve_pin(_repo_file(ref=short, path="read.txt"), local_repos_root=root)
+    assert result.status == TRUE and UNPINNED not in result.flags

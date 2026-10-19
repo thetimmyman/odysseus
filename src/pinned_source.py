@@ -415,13 +415,16 @@ def _resolve_local(
     elif classify_ref(ref) != "commit":
         if UNPINNED not in flags:
             flags.append(UNPINNED)
-    elif not selected and _movable_ref_exists(repo_dir, ref):
-        # Hex-shaped name that is also a branch/remote-tracking ref: git cannot
-        # place it, and it could drift if either is removed.
-        if UNPINNED not in flags:
-            flags.append(UNPINNED)
-    elif proof is not None:
-        proof["stable"] = True  # a plain commit
+    elif (not selected and sha.startswith(ref.lower())
+          and not _movable_ref_exists(repo_dir, ref)):
+        # Proven a raw object id: the input resolved to a commit whose id it is a
+        # prefix of, and no branch/remote-tracking ref shares the name.
+        if proof is not None:
+            proof["stable"] = True
+    elif UNPINNED not in flags:
+        # A hex-shaped name that resolved some other way (another ref namespace,
+        # a branch/tag clash, or a probe that could not run) can drift.
+        flags.append(UNPINNED)
 
     if path is None:
         if pin.kind == "release_notes" or (pin.quote is not None and pin.quote.strip()):
@@ -494,8 +497,10 @@ def resolve_pin(
     raw_ref = pin.ref if isinstance(pin.ref, str) else None
     has_ref = raw_ref is not None and bool(raw_ref.strip())
     if has_ref:
-        if classify_ref(raw_ref.strip()) == "branch":
-            flags.append(UNPINNED)
+        # Until a lookup proves otherwise (local git, or a provider naming the
+        # ref kind), only a commit-shaped ref counts as pinned.  This holds for
+        # every outcome, including the ones that perform no lookup.
+        _apply_remote_flags(flags, raw_ref.strip(), None, False)
     else:
         flags.append(UNPINNED)
 
