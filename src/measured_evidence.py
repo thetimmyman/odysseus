@@ -41,6 +41,7 @@ import re
 import stat
 import unicodedata
 from dataclasses import dataclass
+from fractions import Fraction
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -164,7 +165,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             status=NOT_SEARCHED, sources=(),
             reason="measured-evidence provider is disabled",
         )
-    if root is None:
+    if root is None or (isinstance(root, (str, os.PathLike)) and not str(os.fspath(root)).strip()):
         return LookupResult(
             status=UNAVAILABLE, sources=(),
             reason="no measured-evidence root is configured",
@@ -385,7 +386,7 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
     """Report vendor-claim vs measurement conflicts; never resolve them.
 
     Comparisons are grouped by case-folded, whitespace-normalised subject and
-    metric. Equal units (case-insensitive) within ``rel_tolerance`` of the
+    metric. Equal units (case-sensitive symbols) within ``rel_tolerance`` of the
     measurement are agreements; outside tolerance they are conflicts with the
     measurement authoritative; differing units are uncomparable. Every matching
     measurement is compared. Assertions with no matching measurement appear
@@ -412,7 +413,7 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
         if not matches:
             continue
         for measurement, measured in matches:
-            if _normalize(assertion.unit) != _normalize(measurement.unit):
+            if _unit_key(assertion.unit) != _unit_key(measurement.unit):
                 # Different units: no ratio is meaningful, so none is reported.
                 uncomparable.append(_comparison(
                     assertion, measurement, None,
@@ -422,8 +423,10 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
             if measured == 0:
                 relative = 0.0 if claimed == 0 else None
             else:
+                # Exact arithmetic: an integer and a float that differ by one count must not be
+                # rounded into agreement, whichever way each side was written in the JSON.
                 try:
-                    relative = abs(claimed - measured) / abs(measured)
+                    relative = float(abs(Fraction(claimed) - Fraction(measured)) / abs(Fraction(measured)))
                 except OverflowError:
                     relative = None
                 if relative is not None and not math.isfinite(relative):
@@ -521,6 +524,11 @@ def _match_key(subject, metric) -> tuple[str, str]:
     return (_normalize(subject), _normalize(metric))
 
 
+def _unit_key(value) -> str:
+    """Whitespace-normalised unit symbol; case is kept because MW and mW, MB and Mb differ."""
+    return " ".join(str(value).split())
+
+
 def _normalize(value) -> str:
     return " ".join(str(value).split()).casefold()
 
@@ -555,6 +563,46 @@ def _score(path_str, text, tokens) -> int:
     return total
 
 
+def _scan_tree(path, state, budget, depth):
+    """Yield ``(directory, file name)`` below ``path``, files before subdirectories, both sorted.
+
+    Entries are counted while the directory is read, so one very wide directory stops at
+    ``_MAX_ENTRIES_WALKED`` instead of being listed whole first. Symlinks are never followed or
+    yielded; a directory that cannot be read is recorded in ``state["walk_error"]``.
+    """
+    if depth > 32:
+        return
+    dirs: list[str] = []
+    files: list[str] = []
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                budget[0] += 1
+                if budget[0] > _MAX_ENTRIES_WALKED:
+                    if state is not None:
+                        state["walk_capped"] = True
+                    return
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        dirs.append(entry.name)
+                    elif entry.is_file(follow_symlinks=False):
+                        files.append(entry.name)
+                except OSError:
+                    continue
+    except OSError as err:
+        if state is not None:
+            state["walk_error"] = str(getattr(err, "filename", None) or err)
+        return
+    for name in sorted(files):
+        yield str(path), name
+    for name in sorted(dirs):
+        if state is not None and state.get("walk_capped"):
+            return
+        yield from _scan_tree(os.path.join(path, name), state, budget, depth + 1)
+
+
 def _iter_candidate_files(root, state=None):
     """Relative paths under ``evidence/`` and ``benchmark/<name>/results/``, symlinked dirs skipped.
 
@@ -574,22 +622,15 @@ def _iter_candidate_files(root, state=None):
             if state is not None:
                 state["walk_error"] = f"{top}: {err.strerror or err.errno}"
             continue
-        def _walk_error(err, _state=state):
-            if _state is not None:
-                _state["walk_error"] = str(err.filename or err)
-
-        for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=_walk_error):
-            entries += len(dirnames) + len(filenames)
-            if entries > _MAX_ENTRIES_WALKED:
-                if state is not None:
-                    state["walk_capped"] = True
-                return
-            dirnames[:] = sorted(name for name in dirnames if not os.path.islink(os.path.join(dirpath, name)))
-            for name in sorted(filenames):
-                rel = Path(os.path.relpath(os.path.join(dirpath, name), root))
-                parts = rel.parts
-                if ".." in parts:
-                    continue
-                if top == "benchmark" and not (len(parts) >= 4 and parts[2] == "results"):
-                    continue
-                yield rel
+        budget = [entries]
+        for dirpath, name in _scan_tree(base, state, budget, 0):
+            rel = Path(os.path.relpath(os.path.join(dirpath, name), root))
+            parts = rel.parts
+            if ".." in parts:
+                continue
+            if top == "benchmark" and not (len(parts) >= 4 and parts[2] == "results"):
+                continue
+            yield rel
+        entries = budget[0]
+        if state is not None and state.get("walk_capped"):
+            return

@@ -232,7 +232,7 @@ def test_vendor_claim_vs_measurement_is_reported_as_a_conflict():
 
 
 def test_claim_within_tolerance_is_an_agreement_not_a_conflict():
-    assertion = me.Assertion("C2", "GPU decode", "throughput", 13.0, "TOK/S", "doc")
+    assertion = me.Assertion("C2", "GPU decode", "throughput", 13.0, "tok/s", "doc")
 
     report = me.find_conflicts([assertion], [_bench_measurement(12.0)])
 
@@ -680,3 +680,55 @@ def test_unexpected_open_failures_are_unavailable_not_skipped(tmp_path, monkeypa
     monkeypatch.setattr(os, "open", failing)
     result = me.find_measured_sources("needle", root=root, enabled=True)
     assert result.status == me.UNAVAILABLE
+
+
+def test_unit_symbols_are_case_sensitive_but_whitespace_insensitive():
+    mw = me.Assertion("C1", "GPU decode", "power", 1.0, "MW", "vendor")
+    report = me.find_conflicts([mw], [me.Measurement("GPU decode", "power", 1.0, "mW", BENCH_PATH)])
+    assert not report.agreements and len(report.uncomparable) == 1
+    spaced = me.Assertion("C2", "GPU decode", "power", 1.0, "tok /  s", "vendor")
+    same = me.find_conflicts([spaced], [me.Measurement("GPU decode", "power", 1.0, "tok / s", BENCH_PATH)])
+    assert len(same.agreements) == 1
+
+
+def test_mixed_integer_and_float_comparisons_are_exact():
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 9007199254740993, "tok/s", "vendor")
+    report = me.find_conflicts([assertion], [_bench_measurement(9007199254740992.0)], rel_tolerance=0)
+    assert not report.agreements and len(report.conflicts) == 1
+    same = me.find_conflicts([assertion], [_bench_measurement(9007199254740993)], rel_tolerance=0)
+    assert len(same.agreements) == 1
+
+
+def test_a_very_wide_directory_stops_at_the_entry_cap_while_it_is_read(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    for index in range(60):
+        (root / "evidence" / f"img{index:02d}.png").write_bytes(b"x")
+    monkeypatch.setattr(me, "_MAX_ENTRIES_WALKED", 20)
+    seen = []
+    real_scandir = os.scandir
+
+    class Counting:
+        def __init__(self, path):
+            self.inner = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.inner.close()
+
+        def __iter__(self):
+            for entry in self.inner:
+                seen.append(entry.name)
+                yield entry
+
+    monkeypatch.setattr(os, "scandir", lambda path: Counting(path))
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    assert result.status == me.UNAVAILABLE and len(seen) <= 21
+
+
+@pytest.mark.parametrize("empty", ["", "   "])
+def test_an_empty_root_is_unconfigured_not_the_working_directory(empty):
+    result = me.find_measured_sources("needle", root=empty, enabled=True)
+    assert result.status == me.UNAVAILABLE and "no measured-evidence root" in result.reason
