@@ -7,7 +7,7 @@ verbatim (after whitespace collapse)?
 
 Stdlib only.  Remote resolution goes through a caller-injected ``fetcher``
 callable -- this module never imports a network client, reads no environment
-variables for behavior, and keeps no global state.  Pin text is untrusted
+variable for behavior (``PATH`` is used only to locate git), and keeps no global state.  Pin text is untrusted
 data: it is hashed and compared, never executed or interpreted.
 
 Statuses (see :class:`PinResult`):
@@ -224,6 +224,9 @@ def _git_env() -> dict:
     """
     devnull = os.path.devnull
     return {
+        # Executable search only (so git is found where the caller finds it);
+        # it takes no part in what a lookup concludes.
+        "PATH": os.environ.get("PATH", os.defpath),
         "LC_ALL": "C",
         # A refs/replace/<sha> entry must not swap the object a pin names.
         "GIT_NO_REPLACE_OBJECTS": "1",
@@ -334,33 +337,43 @@ def _resolve_local(
     # A ref that resolves is not necessarily pinned: a branch can hide
     # behind a tag-looking name (``stable-1``).  Ask git which ref the
     # name actually selected; only a ``refs/heads/`` hit is a branch.
-    if UNPINNED not in flags and classify_ref(ref) != "commit":
-        rc_b, out_b, _err_b = _run_git(
-            [
-                "git",
-                "rev-parse",
-                "--symbolic-full-name",
-                "--verify",
-                "--quiet",
-                ref,
-            ],
-            cwd=repo_dir,
+    rc_b, out_b, _err_b = _run_git(
+        [
+            "git",
+            "rev-parse",
+            "--symbolic-full-name",
+            "--verify",
+            "--quiet",
+            ref,
+        ],
+        cwd=repo_dir,
+    )
+    if rc_b is None:
+        return PinResult(
+            UNRESOLVABLE,
+            flags,
+            "local ref classification could not run (git missing or timeout)",
         )
-        if rc_b is None:
-            return PinResult(
-                UNRESOLVABLE,
-                flags,
-                "local ref classification could not run (git missing or timeout)",
-            )
-        # Only an unambiguous tag is a stable pin.  A branch, a remote-tracking
-        # ref, or a name git cannot place (empty output: a tag and a branch
-        # sharing one name) can move, so it is flagged.
-        if not (rc_b == 0 and out_b.decode("utf-8", "replace").strip().startswith("refs/tags/")):
+    # Git's answer replaces the string heuristic.  An unambiguous tag is a
+    # stable pin (even if it is named ``main``).  A branch or remote-tracking
+    # ref can move.  A commit-shaped ref that selects no ref at all is just
+    # a commit.  Anything else git cannot place (empty output: a tag and a
+    # branch sharing one name) is treated as movable.
+    selected = out_b.decode("utf-8", "replace").strip() if rc_b == 0 else ""
+    if selected.startswith("refs/tags/"):
+        if UNPINNED in flags:
+            flags.remove(UNPINNED)
+    elif selected.startswith(("refs/heads/", "refs/remotes/")):
+        if UNPINNED not in flags:
             flags.append(UNPINNED)
+    elif classify_ref(ref) != "commit" and UNPINNED not in flags:
+        flags.append(UNPINNED)
 
     if path is None:
-        if pin.kind == "release_notes":
-            # The ref exists, but without a path there are no notes to read.
+        if pin.kind == "release_notes" or (pin.quote is not None and pin.quote.strip()):
+            # The ref exists, but with no path there is no text to read: notes
+            # need a file, and a requested quote can never be confirmed from a
+            # ref alone.  Hand over to the fetcher (or report no answer).
             return None
         return PinResult(
             TRUE,
@@ -502,6 +515,11 @@ def resolve_pin(
             return PinResult(FALSE, flags, "provider reports the pin was not found")
         if not isinstance(text, (str, type(None))):
             return PinResult(UNRESOLVABLE, flags, "fetcher returned non-string text")
+        if (UNPINNED not in flags and classify_ref(ref) != "commit"
+                and not _VERSION_RE.fullmatch(ref)):
+            # A remote answer carries no ref-kind metadata: anything not shaped
+            # like a commit or a version might be a moving branch.
+            flags.append(UNPINNED)
         if text is None and pin.quote is not None and pin.quote.strip():
             return PinResult(
                 UNRESOLVABLE, flags, "provider returned no text; quote cannot be verified"

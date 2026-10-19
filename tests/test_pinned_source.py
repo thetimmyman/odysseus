@@ -848,3 +848,62 @@ def test_local_failure_falls_through_to_the_fetcher(git_repo, root, monkeypatch)
         fetcher=lambda kind, repo, ref, path: (True, "alpha beta"),
     )
     assert result.status == TRUE and result.matched_quote is True
+
+
+def test_docs_version_quote_without_a_path_is_not_confirmed_locally(git_repo, root):
+    pin = PinRef(kind="docs_version", repo="myrepo", ref="v1.0.0", quote="made up claim")
+    result = resolve_pin(pin, local_repos_root=root)
+    assert result.status == UNRESOLVABLE
+    assert result.matched_quote is None
+
+
+def test_remote_branch_shaped_ref_is_flagged_unpinned():
+    fetcher = lambda *a: (True, "text")  # noqa: E731
+    branch = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="feature/release",
+                                path="x.md"), fetcher=fetcher)
+    tag = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="v1.2.3", path="x.md"),
+                      fetcher=fetcher)
+    commit = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="abc1234", path="x.md"),
+                         fetcher=fetcher)
+    assert UNPINNED in branch.flags
+    assert UNPINNED not in tag.flags and UNPINNED not in commit.flags
+
+
+def test_hex_named_branch_is_flagged_unpinned(git_repo, root):
+    _git(git_repo, "branch", "abcdef0", "main")
+    result = resolve_pin(_repo_file(ref="abcdef0", path="read.txt"), local_repos_root=root)
+    assert result.status == TRUE and UNPINNED in result.flags
+
+
+def test_a_real_commit_sha_stays_pinned(git_repo, root):
+    result = resolve_pin(_repo_file(ref=first_commit_sha(git_repo), path="read.txt"),
+                         local_repos_root=root)
+    assert result.status == TRUE and UNPINNED not in result.flags
+
+
+def test_a_tag_named_like_a_branch_is_cleared_of_the_heuristic_flag(tmp_path):
+    repo = tmp_path / "tagmain"
+    subprocess.run(["git", "init", "-q", "-b", "trunk", str(repo)], check=True)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-qm", "c")
+    _git(repo, "tag", "stable")
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="tagmain", ref="stable", path="f.txt"),
+        local_repos_root=tmp_path,
+    )
+    assert result.status == TRUE and UNPINNED not in result.flags
+
+
+def test_git_found_through_the_callers_path(git_repo, root, monkeypatch):
+    seen = {}
+    real = subprocess.run
+
+    def spy(args, **kw):
+        seen["path"] = kw["env"].get("PATH")
+        return real(args, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setenv("PATH", os.environ["PATH"])
+    resolve_pin(_repo_file(ref="main", path="read.txt"), local_repos_root=root)
+    assert seen["path"] == os.environ["PATH"]
