@@ -253,8 +253,8 @@ class ResearchHandler:
         if _research_json_path(session_id) is None:
             raise ValueError("Invalid research session_id")
 
-        if prior_report and not prior_claim_floor:
-            prior_claim_floor = self._saved_claim_id_floor(session_id)
+        if not prior_claim_floor:
+            prior_claim_floor = self._continuation_claim_floor(session_id, prior_report)
 
         # Resolve the hard wall-clock timeout from settings when the caller
         # didn't pin one. Local / edge models routinely need more than the
@@ -727,6 +727,19 @@ class ResearchHandler:
         except Exception as e:
             logger.error(f"Failed to build research run record: {e}")
             return None
+
+    def _continuation_claim_floor(self, session_id: str, prior_report: str) -> int:
+        """Floor for a run that continues this session, else 0.
+
+        A continuation with a report always counts. One started while the
+        session's run is still in flight carries no report (the marker's is
+        empty), but it still has to start after the ids that run minted."""
+        if prior_report:
+            return self._saved_claim_id_floor(session_id)
+        saved = self._get_session_json(session_id) or {}
+        if saved.get("status") == "running":
+            return self._saved_claim_id_floor(session_id)
+        return 0
 
     def _saved_claim_id_floor(self, session_id: str) -> int:
         """Highest claim id the saved run for this session minted (0 if none).
