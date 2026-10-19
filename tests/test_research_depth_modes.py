@@ -1,6 +1,5 @@
 """Tests for named research depth modes with deterministic default selection."""
 
-import asyncio
 import time
 from unittest.mock import AsyncMock
 
