@@ -130,6 +130,7 @@ def _repo_file(**kw):
         ("2.1.0", "version"),
         ("1.2.3-rc.1", "tag"),
         ("v10.20.30", "tag"),
+        ("V1.2.3", "tag"),
         ("main", "branch"),
         ("master", "branch"),
         ("HEAD", "branch"),
@@ -1020,3 +1021,28 @@ def test_an_abbreviated_commit_id_stays_pinned(git_repo, root):
     short = first_commit_sha(git_repo)[:10]
     result = resolve_pin(_repo_file(ref=short, path="read.txt"), local_repos_root=root)
     assert result.status == TRUE and UNPINNED not in result.flags
+
+
+def test_malformed_provider_answer_cannot_clear_the_unpinned_flag():
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="a/b", ref="feature/release"),
+        fetcher=lambda *a: (None, None, "tag"),
+    )
+    assert result.status == UNRESOLVABLE
+    assert UNPINNED in result.flags
+
+
+def test_symbolic_branch_pointing_at_a_tag_is_not_a_pin(git_repo, root):
+    _git(git_repo, "symbolic-ref", "refs/heads/moving", "refs/tags/v1.0.0")
+    result = resolve_pin(
+        _repo_file(ref="moving", path="read.txt"), local_repos_root=root
+    )
+    assert UNPINNED in result.flags
+
+
+def test_a_real_tag_cited_by_full_ref_name_stays_pinned(git_repo, root):
+    for ref in ("v1.0.0", "tags/v1.0.0", "refs/tags/v1.0.0"):
+        result = resolve_pin(
+            _repo_file(ref=ref, path="read.txt"), local_repos_root=root
+        )
+        assert UNPINNED not in result.flags, ref

@@ -73,7 +73,7 @@ _KNOWN_BRANCHES = frozenset(
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,64}")  # sha1 (40) or sha256 (64) object ids
 # Tag/version: 1.2.3, v1.2.3, with an optional -rc1 / +build suffix.
 _VERSION_RE = re.compile(
-    r"v?\d{1,9}(?:\.\d{1,9}){1,9}(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?"
+    r"[vV]?\d{1,9}(?:\.\d{1,9}){1,9}(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?"
 )
 # A plain local directory name (no separators, no leading dot).
 _REPO_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*")
@@ -404,7 +404,15 @@ def _resolve_local(
     # a commit.  Anything else git cannot place (empty output: a tag and a
     # branch sharing one name) is treated as movable.
     selected = out_b.decode("utf-8", "replace").strip() if rc_b == 0 else ""
-    if selected.startswith("refs/tags/"):
+    # Git dereferences a symbolic ref (``refs/heads/moving`` -> a tag), so a
+    # selected tag whose name is not the one cited is an alias that can be
+    # re-pointed; it proves nothing.
+    cited = ref[len("refs/"):] if ref.startswith("refs/") else ref
+    cited = cited[len("tags/"):] if cited.startswith("tags/") else cited
+    if selected.startswith("refs/tags/") and selected != "refs/tags/" + cited:
+        if UNPINNED not in flags:
+            flags.append(UNPINNED)
+    elif selected.startswith("refs/tags/"):
         if proof is not None:
             proof["stable"] = True
         if UNPINNED in flags:
@@ -573,9 +581,9 @@ def resolve_pin(
             )
         found, text = result[0], result[1]
         ref_kind = result[2] if len(result) == 3 else None
-        _apply_remote_flags(flags, ref, ref_kind, bool(proof))
         if type(found) is not bool:
             return PinResult(UNRESOLVABLE, flags, "fetcher returned a non-boolean found flag")
+        _apply_remote_flags(flags, ref, ref_kind, bool(proof))
         if not found:
             return PinResult(FALSE, flags, "provider reports the pin was not found")
         if not isinstance(text, (str, type(None))):
