@@ -37,6 +37,7 @@ import json
 import math
 import os
 import re
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +54,7 @@ UNAVAILABLE = "UNAVAILABLE"
 
 _CANDIDATE_SUFFIXES = frozenset({".json", ".jsonl", ".md", ".txt", ".csv"})
 _MAX_CANDIDATE_BYTES = 8 * 1024 * 1024
-_TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
+_TOKEN_SPLIT = re.compile(r"[\W_]+")
 _CONFLICT_NOTE = "conflict: the measurement is authoritative; the vendor claim is reported, not resolved or averaged"
 
 
@@ -64,7 +65,8 @@ class MeasuredSource:
     kind: str
     trust_class: str
     rank: int
-    content_sha256: str
+    content_sha256: str  # sha256 of ``text`` exactly as returned (the run-record contract)
+    file_sha256: str  # sha256 of the whole file on disk
     text: str
     truncated: bool
     size_bytes: int
@@ -104,9 +106,10 @@ class Conflict:
     metric: str
     claimed: float
     measured: float
-    unit: str
+    claimed_unit: str
+    measured_unit: str
     measured_path: str
-    relative_difference: float
+    relative_difference: float | None  # None: the measurement is exactly zero and the claim is not
     note: str
 
 
@@ -161,13 +164,10 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
     for rel, abs_path in _iter_candidate_files(root_path):
         if rel.suffix.casefold() not in _CANDIDATE_SUFFIXES:
             continue
-        try:
-            if abs_path.stat().st_size > _MAX_CANDIDATE_BYTES:
-                continue
-            data = abs_path.read_bytes()
-        except OSError:
+        data = _read_regular_file(abs_path)
+        if data is None:
             continue
-        text = data.decode("utf-8", errors="replace")[:MAX_TEXT_BYTES]
+        text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="replace")
         path_str = rel.as_posix()
         score = _score(path_str, text, tokens)
         if score <= 0:
@@ -178,7 +178,8 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             kind=SOURCE_KIND,
             trust_class=TRUST_CLASS,
             rank=MEASURED_RANK,
-            content_sha256=hashlib.sha256(data).hexdigest(),
+            content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            file_sha256=hashlib.sha256(data).hexdigest(),
             text=text,
             truncated=len(data) > MAX_TEXT_BYTES,
             size_bytes=len(data),
@@ -218,6 +219,7 @@ def as_run_record_sources(sources, start_index=1) -> list:
             "title": source.path,
             "retrieved_at": retrieved_at,
             "content_sha256": source.content_sha256,
+            "file_sha256": source.file_sha256,
             "chars": len(source.text),
             "kind": source.kind,
             "trust_class": source.trust_class,
@@ -258,7 +260,11 @@ def extract_measurements(source) -> list:
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
-        if isinstance(value, float) and not math.isfinite(value):
+        try:
+            value = float(value)
+        except OverflowError:
+            continue
+        if not math.isfinite(value):
             continue
         measurements.append(Measurement(
             subject=subject, metric=metric, value=value,
@@ -289,10 +295,12 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
         if not matches:
             continue
         for measurement in matches:
-            denominator = max(abs(measurement.value), 1e-9)
-            relative = abs(assertion.value - measurement.value) / denominator
+            if measurement.value == 0:
+                relative = 0.0 if assertion.value == 0 else None
+            else:
+                relative = abs(assertion.value - measurement.value) / abs(measurement.value)
             if _normalize(assertion.unit) == _normalize(measurement.unit):
-                if relative <= rel_tolerance:
+                if relative is not None and relative <= rel_tolerance:
                     agreements.append(_comparison(
                         assertion, measurement, relative,
                         "within tolerance: the measurement agrees with the claim",
@@ -318,6 +326,30 @@ def measured_evidence_root():
     return str(value) if value else None
 
 
+def _read_regular_file(path):
+    """Read a candidate through one no-follow descriptor, or None.
+
+    The size check and the read use the same open descriptor, so a path swapped for a symlink
+    after the confinement check cannot redirect the read, and a file that grows is still capped.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_CANDIDATE_BYTES:
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            data = handle.read(_MAX_CANDIDATE_BYTES + 1)
+        return None if len(data) > _MAX_CANDIDATE_BYTES else data
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def _comparison(assertion, measurement, relative, note) -> Conflict:
     return Conflict(
         claim_id=assertion.claim_id,
@@ -325,7 +357,8 @@ def _comparison(assertion, measurement, relative, note) -> Conflict:
         metric=assertion.metric,
         claimed=assertion.value,
         measured=measurement.value,
-        unit=assertion.unit,
+        claimed_unit=assertion.unit,
+        measured_unit=measurement.unit,
         measured_path=measurement.path,
         relative_difference=relative,
         note=note,
@@ -351,7 +384,9 @@ def _query_tokens(query) -> list[str]:
         return []
     tokens: list[str] = []
     for part in _TOKEN_SPLIT.split(query.casefold()):
-        if len(part) >= 3 and part not in tokens:
+        # Three characters for ASCII words; scripts written without spaces (CJK and others) have
+        # shorter meaningful tokens.
+        if (len(part) >= 3 or (len(part) >= 2 and not part.isascii())) and part not in tokens:
             tokens.append(part)
     return tokens
 

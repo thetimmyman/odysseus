@@ -23,7 +23,8 @@ def _source(path, text):
         kind=me.SOURCE_KIND,
         trust_class=me.TRUST_CLASS,
         rank=me.MEASURED_RANK,
-        content_sha256=hashlib.sha256(data).hexdigest(),
+        content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        file_sha256=hashlib.sha256(data).hexdigest(),
         text=text[:me.MAX_TEXT_BYTES],
         truncated=len(data) > me.MAX_TEXT_BYTES,
         size_bytes=len(data),
@@ -128,7 +129,10 @@ def test_large_file_is_hashed_fully_and_marked_truncated(tmp_path):
     [source] = result.sources
     assert source.truncated is True
     assert source.size_bytes == len(payload)
-    assert source.content_sha256 == hashlib.sha256(payload).hexdigest()
+    assert source.file_sha256 == hashlib.sha256(payload).hexdigest()
+    # content_sha256 follows the run-record contract: the hash of the exact text handed out.
+    assert source.content_sha256 == hashlib.sha256(source.text.encode("utf-8")).hexdigest()
+    assert source.content_sha256 != source.file_sha256
     assert len(source.text) == me.MAX_TEXT_BYTES
     assert source.text.startswith("alpha")
 
@@ -188,6 +192,7 @@ def test_as_run_record_sources_shape():
     assert record["url"] == "measured:evidence/run1/bench.json"
     assert record["title"] == "evidence/run1/bench.json"
     assert record["content_sha256"] == source.content_sha256
+    assert record["file_sha256"] == source.file_sha256
     assert record["chars"] == len(source.text)
     assert record["kind"] == me.SOURCE_KIND
     assert record["trust_class"] == me.TRUST_CLASS
@@ -208,7 +213,8 @@ def test_vendor_claim_vs_measurement_is_reported_as_a_conflict():
     conflict = report.conflicts[0]
     assert conflict.claim_id == "C1"
     assert conflict.measured_path == BENCH_PATH
-    assert (conflict.claimed, conflict.measured, conflict.unit) == (40.0, 12.0, "tok/s")
+    assert (conflict.claimed, conflict.measured, conflict.claimed_unit, conflict.measured_unit) == (
+        40.0, 12.0, "tok/s", "tok/s")
     assert "authoritative" in conflict.note
 
 
@@ -293,3 +299,69 @@ def test_extract_measurements_handles_none_convention():
     assert me.extract_measurements(_source("evidence/x.json", json.dumps([1, 2]))) == []
     assert me.extract_measurements(_source("evidence/x.json", json.dumps({"measurements": 5}))) == []
     assert me.extract_measurements(_source("evidence/x.md", "plain text, no json")) == []
+
+
+def test_text_cap_is_in_bytes_not_characters(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    # 40,000 two-byte characters put the query term past byte 65,536: it must not be found there.
+    (root / "evidence" / "wide.txt").write_text("\u00e9" * 40000 + " needle", encoding="utf-8")
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    assert result.status == me.NONE
+
+
+def test_text_returned_never_exceeds_the_byte_cap(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "wide.txt").write_text("needle " + "\u00e9" * 40000, encoding="utf-8")
+    [source] = me.find_measured_sources("needle", root=root, enabled=True).sources
+    assert len(source.text.encode("utf-8")) <= me.MAX_TEXT_BYTES + 3  # a split tail may become U+FFFD
+
+
+def test_symlink_swapped_in_after_listing_is_not_followed(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("needle outside the root")
+    link = tmp_path / "evidence_link.txt"
+    link.symlink_to(secret)
+    assert me._read_regular_file(link) is None
+    assert me._read_regular_file(secret) == b"needle outside the root"
+    assert me._read_regular_file(tmp_path) is None  # directories are not regular files
+
+
+def test_non_latin_query_finds_matching_evidence(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "zh.txt").write_text("\u89e3\u7801\u901f\u5ea6 12 tok/s", encoding="utf-8")
+    result = me.find_measured_sources("\u89e3\u7801\u901f\u5ea6", root=root, enabled=True)
+    assert result.status == me.OK
+    assert [src.path for src in result.sources] == ["evidence/zh.txt"]
+
+
+def test_huge_integer_measurement_is_skipped_not_fatal():
+    source = _source(BENCH_PATH, '{"measurements": [{"subject": "a", "metric": "m", "value": 1' + "0" * 400
+                     + ', "unit": "u"}, {"subject": "a", "metric": "m", "value": 5, "unit": "u"}]}')
+    measurements = me.extract_measurements(source)
+    assert [m.value for m in measurements] == [5.0]
+    assert me.find_conflicts([me.Assertion("C", "a", "m", 5.0, "u", "v")], measurements).agreements
+
+
+def test_tiny_measurements_are_compared_by_their_own_magnitude():
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 1e-10, "tok/s", "vendor")
+    report = me.find_conflicts([assertion], [_bench_measurement(1e-12)])
+    assert len(report.conflicts) == 1 and report.agreements == ()
+
+
+def test_zero_measurement_conflicts_with_a_nonzero_claim_without_a_ratio():
+    nonzero = me.Assertion("C1", "GPU decode", "throughput", 3.0, "tok/s", "vendor")
+    zero = me.Assertion("C2", "GPU decode", "throughput", 0.0, "tok/s", "vendor")
+    report = me.find_conflicts([nonzero, zero], [_bench_measurement(0.0)])
+    assert [c.claim_id for c in report.conflicts] == ["C1"]
+    assert report.conflicts[0].relative_difference is None
+    assert [c.claim_id for c in report.agreements] == ["C2"]
+
+
+def test_uncomparable_result_keeps_both_units():
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 40.0, "tok/s", "vendor")
+    report = me.find_conflicts([assertion], [_bench_measurement(12.0, unit="ms")])
+    [item] = report.uncomparable
+    assert (item.claimed_unit, item.measured_unit) == ("tok/s", "ms")
