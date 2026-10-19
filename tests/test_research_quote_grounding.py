@@ -384,3 +384,25 @@ def test_saved_claim_id_floor_comes_from_the_saved_record_only(monkeypatch):
     assert handler._saved_claim_id_floor("s") == 0
     monkeypatch.setattr(handler, "_get_session_json", lambda sid: None)
     assert handler._saved_claim_id_floor("s") == 0
+
+
+def test_saved_claim_id_floor_survives_the_running_marker(monkeypatch):
+    from src.research_handler import ResearchHandler
+    handler = ResearchHandler.__new__(ResearchHandler)
+    marker = {"status": "running", "raw_report": "", "claim_id_floor": 4}
+    monkeypatch.setattr(handler, "_get_session_json", lambda sid: marker)
+    assert handler._saved_claim_id_floor("s") == 4
+
+
+def test_overlapping_continuation_reads_the_running_marker_floor(monkeypatch):
+    from src.research_handler import ResearchHandler
+    handler = ResearchHandler.__new__(ResearchHandler)
+    marker = {"status": "running", "raw_report": "", "claim_id_floor": 4}
+    monkeypatch.setattr(handler, "_get_session_json", lambda sid: marker)
+    # No report on the continuation, but the session's run is still in flight.
+    assert handler._continuation_claim_floor("s", "") == 4
+    # A fresh run in a session whose last run finished stays at zero.
+    done = {"status": "completed", "run_record": {"claim_id_floor": 9}}
+    monkeypatch.setattr(handler, "_get_session_json", lambda sid: done)
+    assert handler._continuation_claim_floor("s", "") == 0
+    assert handler._continuation_claim_floor("s", "prior report") == 9
