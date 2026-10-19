@@ -47,6 +47,7 @@ TRUST_CLASS = "authoritative"
 SOURCE_KIND = "measured"
 MAX_TEXT_BYTES = 65536
 _MAX_FILES_SCANNED = 5000
+_MAX_ENTRIES_WALKED = 20000  # files and directories listed, whatever their type
 _MAX_BYTES_SCANNED = 256 * 1024 * 1024
 
 OK = "OK"
@@ -161,7 +162,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         )
     try:
         limit_n = int(limit)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         limit_n = 5
     limit_n = max(1, min(20, limit_n))
 
@@ -170,7 +171,8 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
     best: list[MeasuredSource] = []
     matched = scanned = total_bytes = 0
     capped = False
-    for rel in _iter_candidate_files(root_path):
+    walk: dict[str, bool] = {}
+    for rel in _iter_candidate_files(root_path, walk):
         if rel.suffix.casefold() not in _CANDIDATE_SUFFIXES:
             continue
         if scanned >= _MAX_FILES_SCANNED or total_bytes >= _MAX_BYTES_SCANNED:
@@ -205,6 +207,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         best.sort(key=lambda source: (-source.score, source.path))
         del best[limit_n:]
 
+    capped = capped or walk.get("walk_capped", False)
     note = f"; scan stopped at the per-lookup limit after {scanned} files" if capped else ""
     if not best:
         return LookupResult(
@@ -311,9 +314,15 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
     measurement is compared. Assertions with no matching measurement appear
     nowhere (silence is not agreement).
     """
-    index: dict[tuple[str, str], list[Measurement]] = {}
+    tolerance = _finite_number(rel_tolerance)
+    if tolerance is None or tolerance < 0:
+        raise ValueError("rel_tolerance must be a finite number >= 0")
+    index: dict[tuple[str, str], list[tuple[Measurement, float]]] = {}
     for measurement in measurements:
-        index.setdefault(_match_key(measurement.subject, measurement.metric), []).append(measurement)
+        value = _finite_number(getattr(measurement, "value", None))
+        if value is None:
+            continue  # a non-finite or overflowing measurement cannot be compared
+        index.setdefault(_match_key(measurement.subject, measurement.metric), []).append((measurement, value))
 
     conflicts: list[Conflict] = []
     agreements: list[Conflict] = []
@@ -325,24 +334,25 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
         matches = index.get(_match_key(assertion.subject, assertion.metric))
         if not matches:
             continue
-        for measurement in matches:
-            if measurement.value == 0:
-                relative = 0.0 if claimed == 0 else None
-            else:
-                relative = abs(claimed - measurement.value) / abs(measurement.value)
-            if _normalize(assertion.unit) == _normalize(measurement.unit):
-                if relative is not None and relative <= rel_tolerance:
-                    agreements.append(_comparison(
-                        assertion, measurement, relative,
-                        "within tolerance: the measurement agrees with the claim",
-                    ))
-                else:
-                    conflicts.append(_comparison(assertion, measurement, relative, _CONFLICT_NOTE))
-            else:
+        for measurement, measured in matches:
+            if _normalize(assertion.unit) != _normalize(measurement.unit):
+                # Different units: no ratio is meaningful, so none is reported.
                 uncomparable.append(_comparison(
-                    assertion, measurement, relative,
+                    assertion, measurement, None,
                     f"different units ({assertion.unit!r} vs {measurement.unit!r}): no conversion attempted",
                 ))
+                continue
+            if measured == 0:
+                relative = 0.0 if claimed == 0 else None
+            else:
+                relative = abs(claimed - measured) / abs(measured)
+            if relative is not None and relative <= tolerance:
+                agreements.append(_comparison(
+                    assertion, measurement, relative,
+                    "within tolerance: the measurement agrees with the claim",
+                ))
+            else:
+                conflicts.append(_comparison(assertion, measurement, relative, _CONFLICT_NOTE))
     return ConflictReport(tuple(conflicts), tuple(agreements), tuple(uncomparable))
 
 
@@ -406,7 +416,7 @@ def _comparison(assertion, measurement, relative, note) -> Conflict:
         metric=assertion.metric,
         claimed_origin=assertion.origin,
         claimed=_finite_number(assertion.value),
-        measured=measurement.value,
+        measured=_finite_number(measurement.value),
         claimed_unit=assertion.unit,
         measured_unit=measurement.unit,
         measured_path=measurement.path,
@@ -453,16 +463,25 @@ def _score(path_str, text, tokens) -> int:
     return total
 
 
-def _iter_candidate_files(root):
+def _iter_candidate_files(root, state=None):
     """Relative paths under ``evidence/`` and ``benchmark/<name>/results/``, symlinked dirs skipped.
 
     This only lists; ``_read_regular_file`` re-validates every component when it opens a path.
+    Every directory and file the walk looks at counts toward ``_MAX_ENTRIES_WALKED`` whether or not
+    it is a candidate, so a tree of unsupported artifacts cannot make a lookup run unbounded; the
+    walk then stops and ``state["walk_capped"]`` is set.
     """
+    entries = 0
     for top in ("evidence", "benchmark"):
         base = root / top
         if not base.is_dir() or base.is_symlink():
             continue
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            entries += len(dirnames) + len(filenames)
+            if entries > _MAX_ENTRIES_WALKED:
+                if state is not None:
+                    state["walk_capped"] = True
+                return
             dirnames[:] = sorted(name for name in dirnames if not os.path.islink(os.path.join(dirpath, name)))
             for name in sorted(filenames):
                 rel = Path(os.path.relpath(os.path.join(dirpath, name), root))

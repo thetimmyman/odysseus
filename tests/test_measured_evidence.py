@@ -456,3 +456,53 @@ def test_settings_keys_are_registered_and_off_by_default():
     assert DEFAULT_SETTINGS["research_measured_evidence_root"] == ""
     assert me.measured_evidence_enabled() is False
     assert me.measured_evidence_root() is None
+
+
+def test_unsupported_files_and_empty_dirs_count_toward_the_walk_cap(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    for index in range(40):
+        (root / "evidence" / f"img{index:02d}.png").write_bytes(b"x")
+        (root / "evidence" / f"empty{index:02d}").mkdir()
+    (root / "evidence" / "zz.txt").write_text("needle")
+    monkeypatch.setattr(me, "_MAX_ENTRIES_WALKED", 30)
+    capped = me.find_measured_sources("needle", root=root, enabled=True)
+    assert "scan stopped" in capped.reason and capped.sources == ()
+    monkeypatch.setattr(me, "_MAX_ENTRIES_WALKED", 20000)
+    full = me.find_measured_sources("needle", root=root, enabled=True)
+    assert [s.path for s in full.sources] == ["evidence/zz.txt"]
+
+
+def test_incomparable_units_report_no_ratio():
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 40.0, "tok/s", "vendor")
+    report = me.find_conflicts([assertion], [_bench_measurement(12.0, unit="ms")])
+    [item] = report.uncomparable
+    assert item.relative_difference is None
+    # Negative control: equal units still carry the ratio.
+    same = me.find_conflicts([assertion], [_bench_measurement(12.0)])
+    assert same.conflicts[0].relative_difference == pytest.approx(40.0 / 12.0 - 1)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 10 ** 400, True, "12"])
+def test_invalid_directly_constructed_measurements_are_skipped(value):
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 40.0, "tok/s", "vendor")
+    report = me.find_conflicts([assertion], [_bench_measurement(value), _bench_measurement(12.0)])
+    assert len(report.conflicts) == 1 and report.conflicts[0].measured == 12.0
+    assert not report.agreements and not report.uncomparable
+
+
+@pytest.mark.parametrize("tolerance", [-0.1, float("inf"), float("nan"), 10 ** 400, None, True])
+def test_invalid_tolerances_are_refused(tolerance):
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 12.0, "tok/s", "vendor")
+    with pytest.raises(ValueError, match="rel_tolerance"):
+        me.find_conflicts([assertion], [_bench_measurement(12.0)], rel_tolerance=tolerance)
+    # Negative control: zero is a valid, strict tolerance.
+    assert me.find_conflicts([assertion], [_bench_measurement(12.0)], rel_tolerance=0).agreements
+
+
+def test_infinite_limit_falls_back_to_the_default(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "a.txt").write_text("needle")
+    result = me.find_measured_sources("needle", root=root, enabled=True, limit=float("inf"))
+    assert result.status == me.OK and len(result.sources) == 1
