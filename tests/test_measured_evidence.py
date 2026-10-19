@@ -806,7 +806,7 @@ def test_listing_follows_the_opened_root_not_the_path_that_replaced_it(tmp_path,
 
     def swap_after_root_open(path, flags, *args, **kwargs):
         fd = real_open(path, flags, *args, **kwargs)
-        if not swapped and Path(path) == root.resolve():
+        if not swapped and path == "root" and kwargs.get("dir_fd") is not None:
             swapped.append(True)
             root.rename(tmp_path / "moved")
             (root / "evidence").mkdir(parents=True)  # an empty replacement tree at the same path
@@ -857,3 +857,45 @@ def test_bytes_read_by_a_rejected_read_still_count_against_the_budget(tmp_path, 
     result = me.find_measured_sources("needle", root=root, enabled=True)
     # Every rejected read cost 100 bytes, so the 250-byte budget ran out: incomplete, not "no evidence".
     assert result.status == me.UNAVAILABLE
+
+
+def test_an_ancestor_swapped_for_a_symlink_before_the_root_open_is_refused(tmp_path, monkeypatch):
+    parent = tmp_path / "parent"
+    (parent / "root" / "evidence").mkdir(parents=True)
+    (parent / "root" / "evidence" / "a.json").write_text('{"needle": 1}')
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "root" / "evidence").mkdir(parents=True)
+    (elsewhere / "root" / "evidence" / "evil.json").write_text('{"needle": 2}')
+    real_resolve = Path.resolve
+
+    def swap_after_resolve(self, *args, **kwargs):
+        out = real_resolve(self, *args, **kwargs)
+        if out == (parent / "root").resolve() and parent.is_dir() and not parent.is_symlink():
+            parent.rename(tmp_path / "parent-moved")
+            parent.symlink_to(elsewhere)
+        return out
+
+    monkeypatch.setattr(Path, "resolve", swap_after_resolve)
+    result = me.find_measured_sources("needle", root=parent / "root", enabled=True)
+    assert "evidence/evil.json" not in [s.path for s in result.sources]
+
+
+def test_canonically_equivalent_subjects_are_compared():
+    measurement = me.Measurement(subject="caf" + "é", metric="latency", value=10.0, unit="ms", path="p")
+    assertion = me.Assertion("C1", "café", "latency", 99.0, "ms", "doc")
+    report = me.find_conflicts([assertion], [measurement])
+    assert len(report.conflicts) == 1
+
+
+def test_an_oversized_integer_skips_only_that_entry():
+    raw = ('{"measurements": [{"subject": "a", "metric": "m", "unit": "u", "value": 1' + "0" * 5000 + '},'
+           ' {"subject": "b", "metric": "m", "unit": "u", "value": 7}]}').encode()
+    parsed, capped = me._parse_measurements_capped(raw, "p")
+    assert [m.subject for m in parsed] == ["b"] and not capped
+
+
+@pytest.mark.parametrize("value,expected", [("false", False), ("true", False), (1, False), (True, True), (False, False)])
+def test_only_a_real_boolean_enables_the_provider(monkeypatch, value, expected):
+    import src.settings as settings
+    monkeypatch.setattr(settings, "get_setting", lambda key, default=None: value)
+    assert me.measured_evidence_enabled() is expected

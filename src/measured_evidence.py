@@ -210,7 +210,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
     limit_n = max(1, min(20, limit_n))
 
     try:
-        root_fd = os.open(root_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        root_fd = _open_dir_nofollow(root_path)
     except OSError as err:
         return LookupResult(
             status=UNAVAILABLE, sources=(),
@@ -342,10 +342,19 @@ def _parse_measurements(raw, path) -> tuple:
     return _parse_measurements_capped(raw, path)[0]
 
 
+def _bounded_int(text: str):
+    """Integer literals beyond the float range become NaN (skipped later) instead of raising.
+
+    Python refuses to convert integers of more than 4300 digits, which would make ``json.loads``
+    fail for the whole file; a literal this long cannot be a finite measurement anyway.
+    """
+    return int(text) if len(text) <= 400 else math.nan
+
+
 def _parse_measurements_capped(raw, path) -> tuple:
     """(measurements, capped): ``capped`` only when a valid entry beyond the cap was left out."""
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, parse_int=_bounded_int)
     except (ValueError, TypeError, RecursionError):
         return (), False
     if not isinstance(data, dict):
@@ -458,7 +467,8 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
 
 def measured_evidence_enabled() -> bool:
     from src.settings import get_setting
-    return bool(get_setting("research_measured_evidence", False))
+    # Only a real boolean enables the provider: the string "false" is truthy and must not switch it on.
+    return get_setting("research_measured_evidence", False) is True
 
 
 def measured_evidence_root():
@@ -472,6 +482,26 @@ _SKIP_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR
 
 class _Unreadable(Exception):
     """A candidate that exists but could not be read (permissions or I/O)."""
+
+
+def _open_dir_nofollow(path) -> int:
+    """Open ``path`` one component at a time from ``/`` without following a symlink at any step.
+
+    ``O_NOFOLLOW`` alone only protects the last component; walking down from a trusted ancestor
+    descriptor means an ancestor swapped for a symlink after the path was resolved is refused.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    parts = Path(os.path.abspath(os.fspath(path))).parts
+    current = os.open(parts[0], os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for part in parts[1:]:
+            nxt = os.open(part, flags, dir_fd=current)
+            os.close(current)
+            current = nxt
+        return current
+    except BaseException:
+        os.close(current)
+        raise
 
 
 def _read_regular_file(root_fd, rel, used=None):
@@ -547,7 +577,7 @@ def _unit_key(value) -> str:
 
 
 def _normalize(value) -> str:
-    return " ".join(str(value).split()).casefold()
+    return _fold(" ".join(str(value).split()))
 
 
 def _entry_kind(source):
