@@ -22,10 +22,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling test-module import
 
 import core.database as cdb
+from tests.helpers.docker_cli import FakeDocker, block_native_transports
+
 import src.routing_sandbox as rs
 import src.routing_verification as rv
 from src.routing_coordinator import VerificationMode
 from src.routing_workdir import worktrees_root
+
+
+@pytest.fixture(autouse=True)
+def no_native_transports(monkeypatch):
+    block_native_transports(monkeypatch)
+
 
 SB_IMAGE = "python:3.12-slim"
 SB_POLICY = {
@@ -137,20 +145,15 @@ def _fake_docker(monkeypatch, behavior):
     is applied there (exactly how fuzz/equivalence baselining differs).
     behavior: {cmd_string: fn(worktree_path) -> (returncode, stdout_bytes)}"""
     calls = []
-    real_run = subprocess.run  # git (worktree lifecycle) must keep working
+    docker = FakeDocker([])
 
-    def fake_run(argv, **kwargs):
-        if argv[:1] != ["docker"]:
-            return real_run(argv, **kwargs)
-        if argv[:2] != ["docker", "run"]:
-            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
-        worktree = argv[argv.index("-v") + 1].split(":")[0]
-        cmd = " ".join(argv[argv.index(SB_IMAGE) + 1:])
-        rc, out = behavior[cmd](worktree)
-        calls.append({"cmd": cmd, "worktree": worktree, "rc": rc})
-        return subprocess.CompletedProcess(argv, rc, stdout=out, stderr=b"")
+    def execute(command, worktree):
+        rc, out = behavior[command](worktree)
+        calls.append({'cmd': command, 'worktree': worktree, 'rc': rc})
+        return rc, out
 
-    monkeypatch.setattr(rs.subprocess, "run", fake_run)
+    docker.behavior = execute
+    monkeypatch.setattr(rs, '_bounded_docker', docker)
     return calls
 
 

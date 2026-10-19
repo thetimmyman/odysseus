@@ -27,7 +27,7 @@ from src.local_targets import (LocalTargetSpec, make_target_capability_receipt,
                               target_capability_receipt_hash_is_valid)
 
 
-def load_client(path, expected):
+def load_client(path, expected, *, broker_url=None):
     raw = Path(path).read_bytes()
     if len(expected) != 64 or hashlib.sha256(raw).hexdigest() != expected:
         raise MeasurementUnresolved('normal lease client source mismatch')
@@ -36,19 +36,19 @@ def load_client(path, expected):
     module = importlib.util.module_from_spec(spec)
     # Execute precisely the bytes whose digest was checked, without rereading.
     exec(compile(raw, str(path), 'exec'), module.__dict__)
-    module.BROKER = 'http://127.0.0.1:8745'
+    module.BROKER = 'http://127.0.0.1:8745' if broker_url is None else broker_url
     return module
 
 
-def worker(args):
-    raw = sys.stdin.buffer.read(1048577)
+def worker(args, *, input_bytes=None):
+    raw = sys.stdin.buffer.read(1048577) if input_bytes is None else input_bytes
     if len(raw) > 1048576:
         raise MeasurementUnresolved('worker input exceeds budget')
     value = decode_json(raw)
     if type(value) is not dict:
         raise MeasurementUnresolved('invalid worker input')
     if args.worker_workspace:
-        from src.canonical_inspector_runtime import workspace_operation
+        from src.canonical_inspector_workspace import workspace_operation
         from src.constants import CANONICAL_TMOS_MANIFEST_FILE
         if args.tmos_manifest != Path(CANONICAL_TMOS_MANIFEST_FILE):
             raise MeasurementUnresolved('workspace manifest must be the admitted owner configuration')
@@ -60,7 +60,8 @@ def worker(args):
     else:
         if set(value) != {'path', 'body'} or value['path'] not in ('/acquire', '/heartbeat', '/release'):
             raise MeasurementUnresolved('invalid broker worker input')
-        client = load_client(args.lease_client, args.lease_client_sha256)
+        client = load_client(args.lease_client, args.lease_client_sha256,
+                             broker_url=getattr(args, 'broker_url', None))
         # Keep the pinned normal client's HTTP/API behavior; limit its JSON
         # consumer in THIS isolated worker before it can buffer broker bodies.
         client.json = SimpleNamespace(dumps=json.dumps,
@@ -78,6 +79,14 @@ def worker(args):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if "--owned-executor" in argv or "--executor-unit" in argv:
+        try:
+            from src.local_measurement_transport import executor_cli
+            return executor_cli(argv, worker=worker)
+        except Exception as exc:
+            print('measurement refused: '+type(exc).__name__+'; no receipt applied', file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--qualify-boundary', action='store_true')

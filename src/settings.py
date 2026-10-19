@@ -244,11 +244,16 @@ DEFAULT_FEATURES = {
 
 # ── Settings (data/settings.json) ──
 
-def load_settings() -> dict:
-    """Load settings merged with defaults. Always returns a complete dict."""
+def load_settings(*, strict: bool = False) -> dict:
+    """Load settings merged with defaults.
+
+    Explicit maintenance uses strict reads: bypass the cache and propagate a
+    missing/unreadable/malformed source rather than infer disabled defaults.
+    Normal callers retain the cached, complete-dict behavior.
+    """
     global _settings_cache
     now = time.monotonic()
-    if _settings_cache and (now - _settings_cache[0]) < _CACHE_TTL:
+    if not strict and _settings_cache and (now - _settings_cache[0]) < _CACHE_TTL:
         return _settings_cache[1]
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -257,8 +262,11 @@ def load_settings() -> dict:
             raise ValueError("settings must be an object")
         merged = {**DEFAULT_SETTINGS, **saved}
     except (FileNotFoundError, PermissionError, json.JSONDecodeError, ValueError):
+        if strict:
+            raise
         merged = dict(DEFAULT_SETTINGS)
-    _settings_cache = (now, merged)
+    if not strict:
+        _settings_cache = (now, merged)
     return merged
 
 

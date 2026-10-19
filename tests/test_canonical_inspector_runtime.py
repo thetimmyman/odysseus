@@ -1,5 +1,7 @@
 """App-owned real-work composition with inert I/O; no runtime qualification."""
 import pytest
+
+from tests.helpers.docker_cli import block_native_transports
 from sqlalchemy.orm import sessionmaker
 
 from tests.test_canonical_inspector_admission import native_store as native_store
@@ -204,7 +206,37 @@ def test_workspace_capture_cannot_start_without_the_same_operational_process_pro
             "manifest_digest": "a" * 64}, lease_valid=lambda: True)
 
 
-def test_fixed_workspace_cli_uses_only_its_private_admitted_manifest(tmp_path, monkeypatch):
+def test_workspace_cli_refuses_valid_inert_input_without_app_database_dependencies(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    from src.constants import LOCAL_MEASUREMENT_COMMAND
+
+    data = tmp_path / "native-data"
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(data))
+    fixed = data / "canonical_inspector" / "tmos-owner.json"
+    command = [sys.executable, "-I", "-S", "-B", LOCAL_MEASUREMENT_COMMAND,
+               "--worker-workspace", "--tmos-manifest", str(fixed)]
+    response = subprocess.run(command, input=b"{}", capture_output=True, timeout=5)
+    assert response.returncode == 2
+    assert response.stdout == b""
+    assert response.stderr == b"measurement refused: InspectorUnavailable; no receipt applied\n"
+    assert not Path(os.environ["ODYSSEUS_DATA_DIR"]).exists()
+
+
+def test_workspace_refusals_keep_the_existing_app_exception_identity():
+    from src.canonical_inspector_admission import InspectorUnavailable as AdmissionRefusal
+    from src.canonical_inspector_runtime import InspectorUnavailable as RuntimeRefusal
+    from src.canonical_inspector_workspace import InspectorUnavailable as WorkspaceRefusal
+    from src.inspector_errors import InspectorUnavailable
+
+    assert AdmissionRefusal is RuntimeRefusal is WorkspaceRefusal is InspectorUnavailable
+
+
+@pytest.mark.parametrize("python_flags", [("-I", "-B"), ("-I", "-S", "-B")],
+                         ids=["normal-python", "without-site-packages"])
+def test_fixed_workspace_cli_uses_only_its_private_admitted_manifest(tmp_path, monkeypatch, python_flags):
     import json
     import os
     from pathlib import Path
@@ -218,7 +250,8 @@ def test_fixed_workspace_cli_uses_only_its_private_admitted_manifest(tmp_path, m
     fixed = root / "tmos-owner.json"
     fixed.write_bytes(path.read_bytes())
     fixed.chmod(0o600)
-    command = [sys.executable, "-I", LOCAL_MEASUREMENT_COMMAND, "--worker-workspace", "--tmos-manifest", str(fixed)]
+    command = [sys.executable, *python_flags, LOCAL_MEASUREMENT_COMMAND,
+               "--worker-workspace", "--tmos-manifest", str(fixed)]
     response = subprocess.run(command, input=json.dumps(operation).encode(), capture_output=True, timeout=5)
     assert response.returncode == 0, response.stderr
     assert json.loads(response.stdout)["source"]["detached"] is True
@@ -265,7 +298,7 @@ def workspace_fixture(tmp_path, monkeypatch):
     from tests.test_canonical_tmos_publication import tmos_package
 
     monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr("src.canonical_inspector_runtime.CANONICAL_INSPECTOR_WORK_ROOT", tmp_path / "captures")
+    monkeypatch.setattr("src.canonical_inspector_workspace.CANONICAL_INSPECTOR_WORK_ROOT", tmp_path / "captures")
     repo = tmp_path / "source"
     repo.mkdir()
     for command in (
@@ -399,7 +432,8 @@ def test_workspace_verifier_retains_both_streams_and_requires_container_end_ackn
         err.chmod(0o600)
         return {"allowed": True, "exit_code": 0, "timed_out": False, "error": None,
             "stdout_path": str(out), "stderr_path": str(err), "stdout_truncated": False,
-            "stderr_truncated": False, "container_name": "routing-sbx-" + "a" * 12,
+            "stderr_truncated": False, "container_id": "c" * 64, "image_id": "sha256:" + "d" * 64,
+            "cleanup_confirmed": True, "cleanup_state": "OBSERVED_REMOVED",
             "timeout_s": options["timeout_s"]}
 
     original_run = subprocess.run
@@ -425,7 +459,7 @@ def test_workspace_verifier_retains_both_streams_and_requires_container_end_ackn
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["initial", "alternate", "alternate-stale", "alternate-identity-mismatch",
+@pytest.mark.parametrize("scenario", ["initial", "measured", "ssh-transport", "alternate", "alternate-stale", "alternate-identity-mismatch",
                                       "initial-identity-mismatch", "initial-container-unknown", "initial-revoked",
                                       "initial-permission"])
 async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_attempt(native_store, tmp_path, monkeypatch, scenario):
@@ -439,7 +473,7 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     from tests.test_canonical_inspector_admission import principal
     from tests.test_inspector_alternate import routing_inputs
 
-    _, engine = native_store
+    store, engine = native_store
     manifest_path, template, _ = workspace_fixture(tmp_path, monkeypatch)
     estate, capabilities, _, profiles = routing_inputs(tmp_path,
         runtime_options={"num_ctx": 4096, "num_predict": 512, "temperature": 0, "think": False})
@@ -453,6 +487,9 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     manifest["runtime"] = {"lease_client": "/synthetic/lease-client", "lease_client_sha256": "a" * 64,
         "identity_commands": {p.target_id: [p.target_id] for p in profiles},
         "preferred_profiles": [profiles[0].profile_id]}
+    if scenario == "ssh-transport":
+        from tests.test_owned_measurement_transport import transport_manifest
+        manifest["runtime"]["execution_transport"] = transport_manifest()["runtime"]["execution_transport"]
     manifest_path.write_text(json.dumps(manifest))
     policy = {"routingPolicyVersion": "synthetic-owned-loop-v1"}
     monkeypatch.setattr("src.routing_policy.load_policy", lambda **_kwargs: policy)
@@ -465,11 +502,17 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
         qualified = False
 
         def __init__(self, **configuration):
+            if scenario == "ssh-transport":
+                from src.local_measurement_transport import SshTransport
+                assert type(configuration.get("transport")) is SshTransport
+                assert configuration["transport"].packet_id == template.packet_id
             super().__init__(**configuration)
             self.profile = profiles[min(len(instances), 1)]
             instances.append(self)
 
-        def qualify_no_provider(self):
+        def qualify_no_provider(self, *, lease_valid=None):
+            if scenario == "ssh-transport":
+                assert lease_valid is not None and lease_valid()
             calls.append("local-proof-source-fixture")
             self.qualified = True
 
@@ -512,17 +555,29 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
             calls.append("capture-cleanup-source-fixture")
             return True
 
+        def finalize_ownership(self, *, allowed=lambda: True):
+            assert allowed() is True
+            calls.append("ownership-finalized-source-fixture")
+            return True
+
     def verifier(worktree, command, **options):
         directory = Path(options["artifacts_dir"])
         out, err = directory / "stdout", directory / "stderr"
         report = {"schema": "tmos-work-verification-v1", "tests_passed": 2, "tests_failed": 0,
             "positive_control": {"expected": "PASS", "observed": "PASS"},
             "negative_control": {"expected": "FAIL", "observed": "FAIL"}}
+        if scenario == "measured":
+            report.update(tests_collected=2, tests_executed=2, tests_skipped=0,
+                tool_versions=[["node", "v24.10.0"], ["vitest", "4.1.11"]],
+                provenance={"command": command,
+                    "verifier_digests": [list(pair) for pair in template.verification.verifier_digests]})
         out.write_text(json.dumps(report)); err.write_bytes(b"")
         out.chmod(0o600); err.chmod(0o600)
         return {"allowed": True, "exit_code": 0, "timed_out": False, "error": None,
             "stdout_path": str(out), "stderr_path": str(err), "stdout_truncated": False,
-            "stderr_truncated": False, "container_name": "routing-sbx-" + "a" * 12,
+            "stderr_truncated": False, "container_id": "c" * 64, "image_id": "sha256:" + "d" * 64,
+            "cleanup_confirmed": fault['mode'] != 'initial-container-unknown',
+            "cleanup_state": 'UNKNOWN' if fault['mode'] == 'initial-container-unknown' else 'OBSERVED_REMOVED',
             "timeout_s": options["timeout_s"]}
 
     original_run = subprocess.run
@@ -563,6 +618,22 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     assert view["semantic_acceptance"] == "UNKNOWN"
     assert view["routing"]["decision"]["selected"]["profile_id"] == profiles[0].profile_id
     assert view["routing"]["decision"]["selected"]["provider"] == "ollama"
+    if scenario in ("initial", "measured"):
+        from src.canonical_inspector_service import READ_LIMITS
+        from src.constants import CANONICAL_TMOS_DISCLOSURE_GENERATION
+        from src.evidence_io import read_retained_evidence_bundle
+        from src.attempt_receipt import verification_receipt_hash_is_valid
+
+        publication = store.resolve(principal(), result["handle"], CANONICAL_TMOS_DISCLOSURE_GENERATION)
+        payload, _ = read_retained_evidence_bundle(retained, publication.bundle_hash, **READ_LIMITS)
+        main = next(row for row in payload["verification_receipts"] if not row["control_id"])
+        assert verification_receipt_hash_is_valid(main)
+        assert [main[name] for name in ("tests_collected", "tests_executed", "tests_skipped")] == (
+            [2, 2, 0] if scenario == "measured" else [None, None, None])
+        assert main["tool_versions"] == [["container_image", "sha256:" + "d" * 64]] + (
+            [["node", "v24.10.0"], ["vitest", "4.1.11"]] if scenario == "measured" else [])
+        assert all(row[name] is None for row in payload["verification_receipts"] if row["control_id"]
+            for name in ("tests_collected", "tests_executed", "tests_passed", "tests_failed", "tests_skipped"))
     health = view["routing"]["capabilities"]["supplements"][0]
     assert health["health_state"] == "live"
     assert health["health_ttl_s"] == 300
@@ -570,6 +641,8 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
     assert calls.count("model-source-fixture") == 1
     assert calls[0] == "local-proof-source-fixture"
     assert calls.index("capture-cleanup-source-fixture") < calls.index("/release")
+    if scenario == "ssh-transport":
+        assert calls.index("/release") < calls.index("ownership-finalized-source-fixture")
     if scenario.startswith("alternate"):
         import asyncio
         from datetime import timedelta
@@ -612,3 +685,8 @@ async def test_app_owned_execution_runs_normal_loop_and_publishes_exact_inert_at
         await asyncio.sleep(0.02)
         assert calls.count("model-source-fixture") == 2
     assert await stop_inspector_runtime(app) is True
+
+
+@pytest.fixture(autouse=True)
+def no_native_transports(monkeypatch):
+    block_native_transports(monkeypatch)

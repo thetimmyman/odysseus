@@ -11,6 +11,27 @@ calendar by matching that same hash, then PUT/DELETE the VEVENT by its UID via
 the `caldav` lib. Writes are best-effort: the local DB stays the source of truth,
 and a remote failure is reported, never fatal to the local operation.
 
+A write-back is awaited inside the event routes, on a worker thread of the loop's
+default executor that every other ``asyncio.to_thread`` caller shares, and one
+write-back makes several HTTP requests (principal, calendars, lookup, save). So it
+is bounded like a pull is, and the bound covers the whole write-back, not each
+request:
+
+* One deadline, ``CALDAV_WRITEBACK_TIMEOUT_SECONDS`` (default 30), starts when the
+  write-back is asked for. Waiting for a turn, discovery, the lookup and the save
+  all draw on it, each request is capped by what is left of it (see
+  ``caldav_sync._cap_request_time``), and the route gets its answer by then. A
+  server that trickles bytes can no longer stretch a write-back to a budget per
+  request.
+* An owner has one write-back running at a time, and at most
+  ``MAX_CONCURRENT_WRITEBACKS`` run across all owners. Both limits are held until
+  the worker thread has really ended, not only until the caller stopped waiting
+  (a blocked thread cannot be interrupted, and a route that is cancelled or cut
+  off by the request timeout leaves its thread running). A write-back that cannot
+  get a turn within its deadline is not run and says so; the shared executor
+  therefore never has more than ``MAX_CONCURRENT_WRITEBACKS`` of its threads
+  taken by write-backs, whoever saved a CalDAV account and whatever it points at.
+
 The pure pieces (``build_event_ical``, ``find_remote_calendar``, ``push_event``)
 take their inputs by argument so they unit-test against a fake client with no
 network.
@@ -18,9 +39,28 @@ network.
 
 import asyncio
 import logging
+import weakref
 from datetime import timezone
 
 logger = logging.getLogger(__name__)
+
+# One write-back as a whole: waiting for a turn, discovery, lookup and save. Every
+# value that is not a positive number falls back to the default, as for the pull's
+# timeouts. Keep it under the HTTP request timeout (``REQUEST_HARD_TIMEOUT``, 45 s
+# by default) so the route answers with the result instead of being cut off.
+ENV_WRITEBACK_TIMEOUT = "CALDAV_WRITEBACK_TIMEOUT_SECONDS"
+DEFAULT_WRITEBACK_TIMEOUT_SECONDS = 30
+
+# Most write-backs running at once across all owners, each on a thread of the
+# shared default executor. An owner also has only one at a time (see `_Gate`).
+MAX_CONCURRENT_WRITEBACKS = 4
+
+
+def writeback_timeout_seconds(environ=None) -> float:
+    """Wall-clock budget of one write-back, from the moment it is asked for."""
+    from src.caldav_sync import _positive_seconds
+
+    return _positive_seconds(environ, ENV_WRITEBACK_TIMEOUT, DEFAULT_WRITEBACK_TIMEOUT_SECONDS)
 
 
 def _stable_cal_id(remote_url: str, owner: str = "", account_id: str = "") -> str:
@@ -108,6 +148,11 @@ def push_event(calendars, local_cal_id: str, ev: dict, *, delete: bool = False,
 
     try:
         existing = remote.event_by_uid(uid)
+    except TimeoutError:
+        # The write-back's time is spent (see `_writeback_blocking`). That is not
+        # "no such event": a delete would report the event already gone, and a save
+        # would go on to create a second copy of it.
+        raise
     except Exception:
         existing = None
 
@@ -132,7 +177,8 @@ def _discover_calendars(client):
     from caldav.lib.error import AuthorizationError, NotFoundError
     try:
         return client.principal().calendars()
-    except (AuthorizationError, NotFoundError):
+    except (AuthorizationError, NotFoundError, TimeoutError):
+        # TimeoutError: the write-back's time is spent, so nothing is left to try.
         raise
     except Exception:
         try:
@@ -142,16 +188,154 @@ def _discover_calendars(client):
 
 
 def _writeback_blocking(local_cal_id, ev, delete, url, username, password,
-                        owner="", account_id="") -> dict:
+                        owner="", account_id="", deadline=None) -> dict:
+    """The write-back itself, synchronous, for a worker thread.
+
+    ``deadline`` is the `caldav_sync._clock` time at which the whole write-back
+    ends (`writeback_event` sets it when the write-back is asked for); without one
+    the write-back gets a full ``writeback_timeout_seconds()`` from now. Every
+    request of the client is capped by it, so the lot (discovery, lookup, save)
+    cannot take longer, and a server that trickles bytes cannot hold this thread
+    for one budget per request. Raises TimeoutError once it is spent.
+    """
+    from src import caldav_sync
     from src.caldav_sync import _build_dav_client
+
+    if deadline is None:
+        deadline = caldav_sync._clock() + writeback_timeout_seconds()
     # Redirects disabled here too: the write-back path opens its own DAVClient,
     # so it needs the same SSRF-via-redirect protection as the pull path.
-    client = _build_dav_client(url, username, password)
+    client = _build_dav_client(url, username, password, deadline=deadline)
     calendars = _discover_calendars(client)
     if not calendars:
         return {"ok": False, "error": "no remote calendars discovered"}
     return push_event(calendars, local_cal_id, ev, delete=delete,
                       owner=owner, account_id=account_id)
+
+
+class _Permit:
+    """Turns of the write-back gate that are given back together, once."""
+
+    def __init__(self):
+        self._held: list = []
+
+    def take(self, primitive) -> None:
+        self._held.append(primitive)
+
+    def release(self) -> None:
+        held, self._held = self._held, []
+        for primitive in reversed(held):
+            primitive.release()
+
+
+class _Gate:
+    """Who may run a write-back now, for one event loop: one per owner, and no more
+    than ``MAX_CONCURRENT_WRITEBACKS`` in all. Primitives belong to a loop, hence
+    one gate per loop (a process has one; every ``asyncio.run`` of a test has its own).
+    """
+
+    def __init__(self):
+        self.slots = asyncio.Semaphore(MAX_CONCURRENT_WRITEBACKS)
+        self.owners: dict = {}
+
+    def owner_lock(self, owner: str) -> asyncio.Lock:
+        lock = self.owners.get(owner)
+        if lock is None:
+            lock = self.owners[owner] = asyncio.Lock()
+        return lock
+
+
+_GATES: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _gate() -> _Gate:
+    loop = asyncio.get_running_loop()
+    gate = _GATES.get(loop)
+    if gate is None:
+        gate = _GATES[loop] = _Gate()
+    return gate
+
+
+async def _take_within(primitive, seconds: float) -> bool:
+    """Acquire a lock or semaphore, giving up after ``seconds``. A cancelled or
+    timed-out wait holds nothing."""
+    if seconds <= 0:
+        return False
+    try:
+        async with asyncio.timeout(seconds):
+            await primitive.acquire()
+    except TimeoutError:
+        return False
+    return True
+
+
+def _run_writeback(deadline, *args) -> dict:
+    """What the worker thread runs: the write-back, with every failure as a result."""
+    from src import caldav_sync
+
+    try:
+        if caldav_sync._clock() >= deadline:
+            # It waited for a thread of the pool (or for the loop) until its time
+            # was up, which is the moment to stop, not to start.
+            return {"ok": False, "error": "CalDAV write-back timed out before it started"}
+        return _writeback_blocking(*args, deadline=deadline)
+    except TimeoutError as e:
+        logger.warning("CalDAV write-back ran out of time: %s", e)
+        return {"ok": False, "error": "CalDAV write-back timed out"}
+    except Exception as e:
+        logger.exception("CalDAV write-back raised")
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def _retrieve(task: "asyncio.Future") -> None:
+    # Nobody may be awaiting the task any more (the caller gave up on it); take its
+    # outcome so the loop does not complain about a result nobody read.
+    if not task.cancelled():
+        task.exception()
+
+
+async def _run_bounded(owner: str, deadline: float, *args) -> dict:
+    """Run ``_writeback_blocking(*args)`` on a worker thread, when the owner and the
+    pool allow it, so that the caller has its answer by ``deadline`` and no more
+    than the gate allows are ever running.
+
+    The owner's lock and the pool slot are given back when the worker task ends, not
+    when this coroutine does: a caller that is cancelled, or stops waiting at the
+    deadline, leaves a thread that is still running, and that thread must go on
+    counting against the limits.
+    """
+    from src import caldav_sync
+
+    clock = caldav_sync._clock
+    gate = _gate()
+    permit = _Permit()
+    handed_over = False
+    try:
+        lock = gate.owner_lock(owner)
+        if not await _take_within(lock, deadline - clock()):
+            return {"ok": False, "error": "an earlier CalDAV write-back for this user is still running"}
+        permit.take(lock)
+        if not await _take_within(gate.slots, deadline - clock()):
+            return {"ok": False, "error": "too many CalDAV write-backs are running; try again shortly"}
+        permit.take(gate.slots)
+
+        task = asyncio.ensure_future(asyncio.to_thread(_run_writeback, deadline, *args))
+        handed_over = True
+        task.add_done_callback(lambda _task: permit.release())
+        task.add_done_callback(_retrieve)
+    finally:
+        if not handed_over:
+            permit.release()
+
+    try:
+        # Shielded: the wait may end (deadline, or the route is cancelled) while the
+        # thread goes on, and cancelling a task that has not started would drop its
+        # work item and with it the only thing that gives the turns back.
+        async with asyncio.timeout(max(deadline - clock(), 0)):
+            return await asyncio.shield(task)
+    except TimeoutError:
+        logger.warning("CalDAV write-back did not finish within its time budget")
+        return {"ok": False, "error": "CalDAV write-back timed out"}
 
 
 async def writeback_event(owner: str, calendar_source: str, calendar_id: str,
@@ -160,15 +344,19 @@ async def writeback_event(owner: str, calendar_source: str, calendar_id: str,
 
     No-ops (``{"skipped": ...}``) when the calendar isn't CalDAV-backed or no
     credentials are configured. Never raises — a remote failure is logged and
-    returned, the local DB remaining the source of truth.
+    returned, the local DB remaining the source of truth. Returns within
+    ``writeback_timeout_seconds()`` of being called, however slow the server is
+    (see the module docstring for what is bounded and how).
     """
     if calendar_source != "caldav":
         return {"skipped": "not a caldav calendar"}
     try:
+        from src import caldav_sync
         from src.caldav_sync import _load_caldav_accounts
         from src.secret_storage import decrypt
         from core.database import CalendarCal, SessionLocal
 
+        deadline = caldav_sync._clock() + writeback_timeout_seconds()
         accounts = _load_caldav_accounts(owner)
         if not accounts:
             return {"skipped": "caldav not configured"}
@@ -201,8 +389,8 @@ async def writeback_event(owner: str, calendar_source: str, calendar_id: str,
             logger.warning("CalDAV write-back URL rejected: %s", e)
             return {"ok": False, "error": str(e)[:200]}
         acc_id = acc.get("id") or ""
-        result = await asyncio.to_thread(
-            _writeback_blocking, calendar_id, ev, delete, url, user, pw, owner, acc_id
+        result = await _run_bounded(
+            owner, deadline, calendar_id, ev, delete, url, user, pw, owner, acc_id,
         )
         if not result.get("ok"):
             logger.warning("CalDAV write-back did not apply: %s", result.get("error") or result)
