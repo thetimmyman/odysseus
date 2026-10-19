@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from src import pinned_source as ps
+from src import pinned_source
 from src.pinned_source import (
     FALSE,
     NOT_SEARCHED,
@@ -40,8 +40,10 @@ def _make_repo(tmp_path, name="myrepo"):
     """Build a tiny local repo with two commits, a tag, and extra branches.
 
     Layout: ``v1.0.0`` points at the first commit (adds read.txt); the
-    second commit (HEAD of ``main``) adds docs/version.txt; ``stable`` and
-    ``develop`` exist as branch names without a version shape.
+    second commit (HEAD of ``main``) adds docs/version.txt.  ``master``,
+    ``latest``, ``stable``, ``stable-1`` and ``develop`` exist as branch
+    names: the first two exercise branch-class refs, ``stable-1`` is a
+    real branch with a tag-like shape.
     """
     repo = tmp_path / name
 
@@ -77,15 +79,15 @@ def _make_repo(tmp_path, name="myrepo"):
     git("add", "read.txt")
     git("commit", "-qm", "first")
     git("tag", "v1.0.0")
+    git("branch", "-m", "main")
     (repo / "docs").mkdir()
     (repo / "docs" / "version.txt").write_text(
         "Version 2.0.0: pinned source notes.\n", encoding="utf-8"
     )
     git("add", "docs/version.txt")
     git("commit", "-qm", "second")
-    git("branch", "stable")
-    git("branch", "stable-1")
-    git("branch", "develop")
+    for branch in ("master", "latest", "stable", "stable-1", "develop"):
+        git("branch", branch)
     return repo
 
 
@@ -254,6 +256,42 @@ def test_branch_tag_shape_ref_still_unpinned(root):
     )
     assert result.status == TRUE
     assert UNPINNED in result.flags
+
+
+def test_docs_version_without_path_resolves_ref_locally(root):
+    # A docs_version pin names the version; with a local clone the ref
+    # itself is the thing to confirm, and no file content is claimed.
+    result = resolve_pin(
+        PinRef(kind="docs_version", repo="myrepo", ref="v1.0.0"),
+        local_repos_root=root,
+    )
+    assert result.status == TRUE
+    assert result.text_sha256 is None
+    assert UNPINNED not in result.flags
+
+
+def test_release_notes_without_path_is_not_answered_locally(root):
+    # The ref exists locally, but release notes cannot be read without a
+    # path: with no fetcher that is an unanswered lookup, never TRUE.
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="myrepo", ref="v1.0.0"),
+        local_repos_root=root,
+    )
+    assert result.status == UNRESOLVABLE
+
+    calls = []
+
+    def fake(kind, repo, ref, path):
+        calls.append((kind, repo, ref, path))
+        return (True, "notes at the pin")
+
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="myrepo", ref="v1.0.0"),
+        local_repos_root=root,
+        fetcher=fake,
+    )
+    assert result.status == TRUE
+    assert calls == [("release_notes", "myrepo", "v1.0.0", None)]
 
 
 # --- UNRESOLVABLE -----------------------------------------------------------
@@ -583,11 +621,14 @@ def test_odd_but_safe_ref_shapes_go_to_git_and_answer_false(git_repo, root):
         assert result.status == FALSE, (ref, result)
 
 
-def test_pin_ref_kind_validation():
-    with pytest.raises(ValueError):
-        PinRef(kind="bogus")
+def test_pin_ref_field_type_validation():
+    # Spec: a bad ``kind`` is untrusted input handled as a rejected
+    # PinResult (see test_unknown_kind_rejected), not a constructor
+    # exception; field *types* are still validated eagerly.
     with pytest.raises(ValueError):
         PinRef(kind="repo_file", repo=123)
+    with pytest.raises(ValueError):
+        PinRef(kind="repo_file", repo="myrepo", ref=1.0)
 
 
 def test_unknown_kind_rejected(tmp_path):
@@ -612,6 +653,7 @@ def test_no_env_reads_outside_fixture(tmp_path):
     # Behavior must not depend on the ambient environment: identical results
     # when irrelevant env chatter is present or absent.
     git_repo = _make_repo(tmp_path, "myrepo")
+    assert (git_repo / ".git").exists()
     result = resolve_pin(
         _repo_file(ref="v1.0.0", path="read.txt", quote=QUOTE),
         local_repos_root=tmp_path,
