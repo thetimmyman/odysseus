@@ -411,6 +411,31 @@ def test_fetcher_found_no_text(tmp_path):
     assert result.text_sha256 is None
 
 
+def test_fetcher_found_without_text_cannot_verify_a_quote():
+    def fake(kind, repo, ref, path):
+        return (True, None)
+
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="a/b", ref="v1.0.0", quote="shipped"),
+        fetcher=fake,
+    )
+    assert result.status == UNRESOLVABLE
+    assert result.matched_quote is None
+
+
+def test_oversized_file_is_unresolvable_not_false(tmp_path, monkeypatch):
+    root = tmp_path / "repos"
+    root.mkdir()
+    repo = _make_repo(root)
+    monkeypatch.setattr(pinned_source, "MAX_OUTPUT", 8)
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo=repo.name, ref="main", path="read.txt",
+               quote="a passage that would sit past the cap"),
+        local_repos_root=root,
+    )
+    assert result.status == UNRESOLVABLE
+
+
 # --- disabled flag: NOT_SEARCHED, fetcher never called -----------------------
 
 

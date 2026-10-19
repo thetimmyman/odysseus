@@ -254,7 +254,9 @@ def _run_git(args: list, cwd: str):
         )
     except (subprocess.TimeoutExpired, OSError):
         return None, b"", b""
-    return proc.returncode, proc.stdout[:MAX_OUTPUT], proc.stderr[:MAX_OUTPUT]
+    # Keep one byte past the cap so callers can tell "exactly at the cap"
+    # from "truncated".
+    return proc.returncode, proc.stdout[: MAX_OUTPUT + 1], proc.stderr[:MAX_OUTPUT]
 
 
 def _collapsed_contains(text: str, quote: str) -> bool:
@@ -363,6 +365,9 @@ def _resolve_local(
         )
     if rc != 0:
         return PinResult(FALSE, flags, f"path {path} does not exist at that pin")
+    if len(out) > MAX_OUTPUT:
+        # A truncated read cannot prove a quote is absent: no answer, not FALSE.
+        return PinResult(UNRESOLVABLE, flags, "file larger than the read cap; cannot verify")
     text = out.decode("utf-8", "replace")
     return _finish_with_text(pin, text, flags)
 
@@ -465,6 +470,10 @@ def resolve_pin(
             return PinResult(FALSE, flags, "provider reports the pin was not found")
         if not isinstance(text, (str, type(None))):
             return PinResult(UNRESOLVABLE, flags, "fetcher returned non-string text")
+        if text is None and pin.quote is not None and pin.quote.strip():
+            return PinResult(
+                UNRESOLVABLE, flags, "provider returned no text; quote cannot be verified"
+            )
         if text is None:
             return PinResult(
                 TRUE,
