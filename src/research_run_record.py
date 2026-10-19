@@ -175,6 +175,8 @@ class ResearchRunRecorder:
         if isinstance(finding, dict) and finding.get("source_id") in known:
             self._claim_ids += 1
             finding["claim_id"] = f"C{self._claim_ids}"
+        elif isinstance(finding, dict):
+            finding.pop("claim_id", None)  # never keep an id the registry did not mint
         self.findings.append(finding)
 
     def add_llm_call(self, *, purpose: str, model: str, started_at: str, latency_ms: int,

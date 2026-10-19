@@ -804,27 +804,31 @@ class DeepResearcher:
     # ------------------------------------------------------------------
     # FINAL REPORT
     # ------------------------------------------------------------------
+    def _registry_claim_id(self, finding) -> str:
+        """The finding's claim id, only if this run's record registry stamped it.
+
+        Extractor output can carry arbitrary extra keys, so a claim id is
+        trusted only when the run recorder is on and the id has the shape the
+        registry mints."""
+        if getattr(self, "run_recorder", None) is None or not isinstance(finding, dict):
+            return ""
+        claim_id = finding.get("claim_id")
+        if isinstance(claim_id, str) and re.fullmatch(r"C\d{1,6}", claim_id):
+            return claim_id
+        return ""
+
     def _claim_citations(self) -> str:
         """Prompt block listing this run's supplied claim ids.
 
         Empty when the run record is off (or no finding is tied to a source),
-        so the final-report prompt stays as it was before claim ids existed."""
-        entries = []
-        for finding in getattr(self, "findings", None) or []:
-            if not isinstance(finding, dict):
-                continue
-            claim_id = finding.get("claim_id")
-            if not claim_id:
-                continue
-            title = finding.get("title") or "Untitled"
-            url = finding.get("url") or ""
-            summary = finding.get("summary") or finding.get("evidence") or ""
-            if not isinstance(summary, str):
-                summary = ""
-            entries.append(f"- [{claim_id}] {title} ({url}): {summary[:300]}")
-        if not entries:
+        so the final-report prompt stays as it was before claim ids existed.
+        Only the registry-minted ids go in: titles, URLs and summaries are
+        page-controlled and stay in the evidence block, not in these rules."""
+        ids = [cid for cid in (self._registry_claim_id(f)
+                               for f in getattr(self, "findings", None) or []) if cid]
+        if not ids:
             return ""
-        return CLAIM_CITATION_RULES.format(claims="\n".join(entries))
+        return CLAIM_CITATION_RULES.format(claims="\n".join(f"- [{cid}]" for cid in ids))
 
     async def _final_report(self, question: str, report: str) -> str:
         """LLM writes a polished final report, retrying if too short."""
@@ -989,7 +993,7 @@ class DeepResearcher:
             evidence = f.get("evidence", "")
             # Use summary if available, fall back to truncated evidence
             content = summary if summary else (evidence[:1000] if evidence else "(no content)")
-            claim_id = f.get("claim_id")
+            claim_id = self._registry_claim_id(f)
             label = f"Finding {i} [{claim_id}]" if claim_id else f"Finding {i}"
             parts.append(f"**{label}** — [{title}]({url})\n{content}")
         return "\n\n".join(parts)
