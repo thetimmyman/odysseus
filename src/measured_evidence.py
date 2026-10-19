@@ -32,6 +32,7 @@ module-level mutable state.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
@@ -48,6 +49,7 @@ TRUST_CLASS = "authoritative"
 SOURCE_KIND = "measured"
 MAX_TEXT_BYTES = 65536
 _MAX_FILES_SCANNED = 5000
+_MAX_MEASUREMENTS_PER_FILE = 1000  # structured entries kept per source
 _MAX_ENTRIES_WALKED = 20000  # files and directories listed, whatever their type
 _MAX_BYTES_SCANNED = 256 * 1024 * 1024
 
@@ -77,6 +79,7 @@ class MeasuredSource:
     score: int
     # Parsed from the whole file when it is JSON, so a document cut at MAX_TEXT_BYTES keeps them.
     measurements: tuple | None = None  # None: not parsed from the whole file; () : parsed, none found
+    measurements_capped: bool = False  # the file held more entries than _MAX_MEASUREMENTS_PER_FILE
 
 
 @dataclass(frozen=True)
@@ -149,7 +152,12 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             status=UNAVAILABLE, sources=(),
             reason="no measured-evidence root is configured",
         )
-    root_path = Path(root)
+    try:
+        # Resolve the configured root once; every later open is no-follow from this real path, so
+        # a swap of the root for a symlink after this point is refused rather than followed.
+        root_path = Path(root).resolve(strict=True)
+    except (OSError, RuntimeError):
+        root_path = Path(root)
     if not root_path.is_dir():
         return LookupResult(
             status=UNAVAILABLE, sources=(),
@@ -180,7 +188,11 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             capped = True
             break
         scanned += 1
-        data = _read_regular_file(root_path, rel)
+        try:
+            data = _read_regular_file(root_path, rel)
+        except _Unreadable as err:
+            walk.setdefault("walk_error", str(err))
+            continue
         if data is None:
             continue
         total_bytes += len(data)
@@ -191,6 +203,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         if score <= 0:
             continue
         matched += 1
+        parsed = _parse_measurements(data, path_str) if rel.suffix.casefold() == ".json" else None
         best.append(MeasuredSource(
             path=path_str,
             url="measured:" + path_str,
@@ -203,7 +216,8 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             truncated=len(data) > MAX_TEXT_BYTES,
             size_bytes=len(data),
             score=score,
-            measurements=_parse_measurements(data, path_str) if rel.suffix.casefold() == ".json" else None,
+            measurements=parsed,
+            measurements_capped=parsed is not None and len(parsed) >= _MAX_MEASUREMENTS_PER_FILE,
         ))
         best.sort(key=lambda source: (-source.score, source.path))
         del best[limit_n:]
@@ -299,6 +313,8 @@ def _parse_measurements(raw, path) -> tuple:
         if value is None:
             continue
         measurements.append(Measurement(subject=subject, metric=metric, value=value, unit=unit, path=path))
+        if len(measurements) >= _MAX_MEASUREMENTS_PER_FILE:
+            break  # bounded: a compact file must not expand into an unbounded object graph
     return tuple(measurements)
 
 
@@ -381,6 +397,10 @@ def measured_evidence_root():
     return str(value) if value else None
 
 
+class _Unreadable(Exception):
+    """A candidate that exists but could not be read (permissions or I/O)."""
+
+
 def _read_regular_file(root, rel):
     """Read ``root/rel`` through descriptors anchored at ``root``, or None.
 
@@ -396,7 +416,7 @@ def _read_regular_file(root, rel):
         return None
     fds = []
     try:
-        current = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        current = os.open(root, dir_flags)
         fds.append(current)
         for part in parts[:-1]:
             current = os.open(part, dir_flags, dir_fd=current)
@@ -413,7 +433,11 @@ def _read_regular_file(root, rel):
                 or after.st_mtime_ns != before.st_mtime_ns):
             return None
         return data
-    except OSError:
+    except OSError as err:
+        if err.errno in (errno.EACCES, errno.EPERM, errno.EIO):
+            # An operational failure, not an intentional skip (symlink, vanished file, not a
+            # regular file): the evidence exists but could not be checked.
+            raise _Unreadable(f"{Path(rel).as_posix()}: {err.strerror or err.errno}") from err
         return None
     finally:
         for fd in fds:

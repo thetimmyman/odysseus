@@ -546,3 +546,46 @@ def test_an_unreadable_evidence_directory_is_unavailable_not_none(tmp_path):
     assert result.status == me.UNAVAILABLE and "could not be read" in result.reason
     # Negative control: once readable, the same tree finds the file.
     assert me.find_measured_sources("needle", root=root, enabled=True).status == me.OK
+
+
+def test_an_unreadable_candidate_file_is_unavailable_not_none(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    locked = root / "evidence" / "a.txt"
+    locked.write_text("needle")
+    locked.chmod(0)
+    try:
+        result = me.find_measured_sources("needle", root=root, enabled=True)
+    finally:
+        locked.chmod(0o644)
+    assert result.status == me.UNAVAILABLE and "a.txt" in result.reason
+    # Negative control: an intentionally skipped symlink stays NONE.
+    other = tmp_path / "other"
+    (other / "evidence").mkdir(parents=True)
+    (other / "evidence" / "link.txt").symlink_to(locked)
+    assert me.find_measured_sources("needle", root=other, enabled=True).status == me.NONE
+
+
+def test_a_root_that_is_a_symlink_swapped_in_after_resolution_is_not_followed(tmp_path):
+    real = tmp_path / "real"
+    (real / "evidence").mkdir(parents=True)
+    (real / "evidence" / "a.txt").write_text("needle")
+    outside = tmp_path / "outside"
+    (outside / "evidence").mkdir(parents=True)
+    (outside / "evidence" / "a.txt").write_text("secret needle")
+    resolved = real.resolve()
+    real.rename(tmp_path / "moved")
+    real.symlink_to(outside)
+    assert me._read_regular_file(resolved, Path("evidence/a.txt")) is None
+
+
+def test_structured_measurements_per_file_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(me, "_MAX_MEASUREMENTS_PER_FILE", 5)
+    root = tmp_path / "root"
+    (root / "benchmark" / "gpu" / "results").mkdir(parents=True)
+    entries = [{"subject": f"s{i}", "metric": "m", "value": float(i), "unit": "u"} for i in range(50)]
+    (root / "benchmark" / "gpu" / "results" / "run.json").write_text(json.dumps({"measurements": entries}))
+    [source] = me.find_measured_sources("run", root=root, enabled=True).sources
+    assert len(source.measurements) == 5 and source.measurements_capped is True
