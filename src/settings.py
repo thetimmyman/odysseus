@@ -91,6 +91,10 @@ DEFAULT_SETTINGS = {
     "research_planning_timeout_seconds": 90,
     "research_query_timeout_seconds": 90,
     "research_extraction_concurrency": 3,
+    # Save a checkable run record with each deep-research result: per-source
+    # retrieved text (content-addressed blobs), sha256, extractor evidence
+    # per finding, and a RoutingModelRun row per LLM call. Off by default.
+    "research_run_record": False,
     # Hard wall-clock cap on a single deep-research run. The previous 600s
     # (10 min) default cut off slow local / edge LLMs mid-synthesis; 1800s
     # (30 min) is comfortable for most local setups while still bounding
