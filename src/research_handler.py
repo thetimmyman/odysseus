@@ -235,6 +235,7 @@ class ResearchHandler:
         prior_report: str = "",
         prior_findings: list = None,
         prior_urls: set = None,
+        prior_claim_floor: int = 0,
         max_rounds: Optional[int] = None,
         search_provider: str = None,
         category: str = None,
@@ -251,6 +252,9 @@ class ResearchHandler:
         """
         if _research_json_path(session_id) is None:
             raise ValueError("Invalid research session_id")
+
+        if prior_report and not prior_claim_floor:
+            prior_claim_floor = self._saved_claim_id_floor(session_id)
 
         # Resolve the hard wall-clock timeout from settings when the caller
         # didn't pin one. Local / edge models routinely need more than the
@@ -327,6 +331,7 @@ class ResearchHandler:
                         prior_report=prior_report,
                         prior_findings=prior_findings,
                         prior_urls=prior_urls,
+                        prior_claim_floor=prior_claim_floor,
                         max_rounds=max_rounds,
                         search_provider=search_provider,
                         category=category,
@@ -717,6 +722,18 @@ class ResearchHandler:
             logger.error(f"Failed to build research run record: {e}")
             return None
 
+    def _saved_claim_id_floor(self, session_id: str) -> int:
+        """Highest claim id the saved run for this session minted (0 if none).
+
+        Read from our own saved run record, never from report text, so a page
+        cannot influence it."""
+        saved = self._get_session_json(session_id) or {}
+        record = saved.get("run_record")
+        floor = record.get("claim_id_floor") if isinstance(record, dict) else 0
+        if isinstance(floor, bool) or not isinstance(floor, int):
+            return 0
+        return max(0, min(floor, 100000))
+
     def _get_session_json(self, session_id: str) -> Optional[dict]:
         """Load the saved research JSON for a session, if it exists."""
         path = _research_json_path(session_id)
@@ -828,6 +845,7 @@ class ResearchHandler:
         prior_report: str = "",
         prior_findings: list = None,
         prior_urls: set = None,
+        prior_claim_floor: int = 0,
         max_rounds: Optional[int] = None,
         search_provider: str = None,
         category: str = None,
@@ -946,6 +964,7 @@ class ResearchHandler:
                 prior_report=prior_report,
                 prior_findings=prior_findings,
                 prior_urls=prior_urls,
+                prior_claim_floor=prior_claim_floor,
             )
             elapsed = time.time() - start_time
 

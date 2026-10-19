@@ -101,7 +101,7 @@ You are updating an evolving research report.
 Integrate the new findings into the existing report. Produce an updated, well-organized \
 report that answers the original question as completely as possible given all evidence so far. \
 Remove redundancy, resolve contradictions, and maintain logical flow. \
-Keep source URLs as inline citations where relevant.
+Keep source URLs as inline citations where relevant.{claim_labels}
 
 Write only the updated report — no preamble or meta-commentary.
 """
@@ -130,6 +130,22 @@ Example: "YES — The report covers all major aspects with evidence from multipl
 Example: "NO — We still lack information about the economic impact."
 """
 
+CLAIM_LABEL_KEEP_RULE = (
+    " Every finding carries a claim label such as [C3]; keep each label next to its source "
+    "wherever that source is cited, exactly as given, so later steps can still tell which "
+    "claim belongs to which source."
+)
+
+CLAIM_CITATION_RULES = """\
+- This run has a claim registry. Each supplied claim id (for example [C3]) belongs to exactly one finding in the evidence above.
+- Cite the supporting claim id inline, immediately next to its source link, e.g. [C3] [source title](url).
+- Cite ONLY claim ids from the list below. Never invent a claim id, and never cite an id next to another source's claim.
+- If no supplied claim id supports a statement, cite its source URL alone.
+
+**Supplied claim ids (do not invent any others):**
+{claims}
+"""
+
 FINAL_REPORT_PROMPT = """\
 Write a **long, detailed, comprehensive** research report answering this question:
 
@@ -145,6 +161,7 @@ Requirements:
 - Synthesize and analyze the information — explain WHY things matter, draw comparisons, provide context
 - Include specific data points, numbers, and statistics from the evidence
 - Include source URLs as inline citations [like this](url)
+{claim_citations}
 - Note where sources agree and where they disagree
 - Add a brief executive summary at the top
 - End with a clear conclusion that directly answers the question
@@ -350,6 +367,7 @@ class DeepResearcher:
         prior_report: str = "",
         prior_findings: Optional[List[Dict]] = None,
         prior_urls: Optional[Set[str]] = None,
+        prior_claim_floor: int = 0,
     ) -> str:
         """Run iterative research and return a final report.
 
@@ -358,10 +376,22 @@ class DeepResearcher:
             prior_report: Previous report to continue from (for follow-up research).
             prior_findings: Previous findings to build on.
             prior_urls: URLs already visited (won't be re-fetched).
+            prior_claim_floor: highest claim id minted by the earlier run.
         """
         self._start_time = time.time()
         findings: List[Dict] = list(prior_findings) if prior_findings else []
         report = prior_report or ""
+        if self.run_recorder is not None:
+            # Claim ids restart at C1 in a fresh recorder, so a carried-over
+            # report that already cites [C1]..[Cn] could clash with ids minted
+            # now.  The caller passes the highest id the earlier run's saved
+            # record minted (trusted: never parsed from report text, which a
+            # page can influence); this run's ids start after it.
+            if prior_claim_floor:
+                self.run_recorder.reserve_claim_ids(prior_claim_floor)
+            # Any claim_id on carried-over findings belongs to the earlier run.
+            findings = [{k: v for k, v in f.items() if k != "claim_id"}
+                        if isinstance(f, dict) else f for f in findings]
 
         # PLAN: Analyze the question and create a research strategy
         if not prior_report:
@@ -826,6 +856,8 @@ class DeepResearcher:
             question=question,
             report=current_report or "(First round — no report yet.)",
             new_findings=findings_text,
+            claim_labels=(CLAIM_LABEL_KEEP_RULE
+                          if any(self._registry_claim_id(f) for f in window) else ""),
         )
 
         try:
@@ -880,12 +912,39 @@ class DeepResearcher:
     # ------------------------------------------------------------------
     # FINAL REPORT
     # ------------------------------------------------------------------
+    def _registry_claim_id(self, finding) -> str:
+        """The finding's claim id, only if this run's record registry stamped it.
+
+        Extractor output can carry arbitrary extra keys, so a claim id is
+        trusted only when the run recorder is on and the id has the shape the
+        registry mints."""
+        if getattr(self, "run_recorder", None) is None or not isinstance(finding, dict):
+            return ""
+        claim_id = finding.get("claim_id")
+        if isinstance(claim_id, str) and re.fullmatch(r"C\d{1,6}", claim_id):
+            return claim_id
+        return ""
+
+    def _claim_citations(self) -> str:
+        """Prompt block listing this run's supplied claim ids.
+
+        Empty when the run record is off (or no finding is tied to a source),
+        so the final-report prompt stays as it was before claim ids existed.
+        Only the registry-minted ids go in: titles, URLs and summaries are
+        page-controlled and stay in the evidence block, not in these rules."""
+        ids = [cid for cid in (self._registry_claim_id(f)
+                               for f in getattr(self, "findings", None) or []) if cid]
+        if not ids:
+            return ""
+        return CLAIM_CITATION_RULES.format(claims="\n".join(f"- [{cid}]" for cid in ids))
+
     async def _final_report(self, question: str, report: str) -> str:
         """LLM writes a polished final report, retrying if too short."""
         _LLM_PURPOSE.set(("final_report", None))
         prompt = FINAL_REPORT_PROMPT.format(
             question=question,
             report=report,
+            claim_citations=self._claim_citations(),
         )
         cat_extra = CATEGORY_PROMPTS.get(self.category or "", "")
         if cat_extra:
@@ -1042,7 +1101,9 @@ class DeepResearcher:
             evidence = f.get("evidence", "")
             # Use summary if available, fall back to truncated evidence
             content = summary if summary else (evidence[:1000] if evidence else "(no content)")
-            parts.append(f"**Finding {i}** — [{title}]({url})\n{content}")
+            claim_id = self._registry_claim_id(f)
+            label = f"Finding {i} [{claim_id}]" if claim_id else f"Finding {i}"
+            parts.append(f"**{label}** — [{title}]({url})\n{content}")
         return "\n\n".join(parts)
 
     def _fallback_report(self, question: str, findings: List[Dict]) -> str:
