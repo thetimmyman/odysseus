@@ -130,6 +130,16 @@ Example: "YES — The report covers all major aspects with evidence from multipl
 Example: "NO — We still lack information about the economic impact."
 """
 
+CLAIM_CITATION_RULES = """\
+- This run has a claim registry. Each supplied claim id (for example [C3]) belongs to exactly one finding in the evidence above.
+- Cite the supporting claim id inline, immediately next to its source link, e.g. [C3] [source title](url).
+- Cite ONLY claim ids from the list below. Never invent a claim id, and never cite an id next to another source's claim.
+- If no supplied claim id supports a statement, cite its source URL alone.
+
+**Supplied claim ids (do not invent any others):**
+{claims}
+"""
+
 FINAL_REPORT_PROMPT = """\
 Write a **long, detailed, comprehensive** research report answering this question:
 
@@ -145,6 +155,7 @@ Requirements:
 - Synthesize and analyze the information — explain WHY things matter, draw comparisons, provide context
 - Include specific data points, numbers, and statistics from the evidence
 - Include source URLs as inline citations [like this](url)
+{claim_citations}
 - Note where sources agree and where they disagree
 - Add a brief executive summary at the top
 - End with a clear conclusion that directly answers the question
@@ -793,12 +804,35 @@ class DeepResearcher:
     # ------------------------------------------------------------------
     # FINAL REPORT
     # ------------------------------------------------------------------
+    def _claim_citations(self) -> str:
+        """Prompt block listing this run's supplied claim ids.
+
+        Empty when the run record is off (or no finding is tied to a source),
+        so the final-report prompt stays as it was before claim ids existed."""
+        entries = []
+        for finding in getattr(self, "findings", None) or []:
+            if not isinstance(finding, dict):
+                continue
+            claim_id = finding.get("claim_id")
+            if not claim_id:
+                continue
+            title = finding.get("title") or "Untitled"
+            url = finding.get("url") or ""
+            summary = finding.get("summary") or finding.get("evidence") or ""
+            if not isinstance(summary, str):
+                summary = ""
+            entries.append(f"- [{claim_id}] {title} ({url}): {summary[:300]}")
+        if not entries:
+            return ""
+        return CLAIM_CITATION_RULES.format(claims="\n".join(entries))
+
     async def _final_report(self, question: str, report: str) -> str:
         """LLM writes a polished final report, retrying if too short."""
         _LLM_PURPOSE.set(("final_report", None))
         prompt = FINAL_REPORT_PROMPT.format(
             question=question,
             report=report,
+            claim_citations=self._claim_citations(),
         )
         cat_extra = CATEGORY_PROMPTS.get(self.category or "", "")
         if cat_extra:
@@ -955,7 +989,9 @@ class DeepResearcher:
             evidence = f.get("evidence", "")
             # Use summary if available, fall back to truncated evidence
             content = summary if summary else (evidence[:1000] if evidence else "(no content)")
-            parts.append(f"**Finding {i}** — [{title}]({url})\n{content}")
+            claim_id = f.get("claim_id")
+            label = f"Finding {i} [{claim_id}]" if claim_id else f"Finding {i}"
+            parts.append(f"**{label}** — [{title}]({url})\n{content}")
         return "\n\n".join(parts)
 
     def _fallback_report(self, question: str, findings: List[Dict]) -> str:

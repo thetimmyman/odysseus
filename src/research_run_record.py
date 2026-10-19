@@ -10,8 +10,13 @@ RoutingModelRun rows so per-run tokens/cost/latency show up in routing stats.
 
 ``grounding_view`` turns a saved record into the shape a citation grounding
 checker reads: {run_id, sources:[{source_id,url,text,content_sha256}],
-claims:[{claim_id,text,citations:[{source_id,quote}]}]}. Until reports carry
-claim ids, each finding is one claim whose citations are its evidence quotes.
+claims:[{claim_id,text,citations:[{source_id,quote}]}]}. Each finding is one
+claim whose citations are the extractor's exact quotes.
+
+Citations prefer the extractor's ``quotes`` field (exact spans) and fall back
+to its ``evidence`` for old replies and old records. ``quote_grounding_stats``
+measures, without a model, how many quoted spans occur verbatim in their
+source; ``build`` records that summary under ``totals``.
 
 Page text is untrusted data. It is stored and hashed, never interpreted here.
 """
@@ -58,6 +63,82 @@ def evidence_quotes(evidence) -> List[str]:
     return []
 
 
+def normalize_quotes(quotes) -> List[str]:
+    """The extractor's ``quotes`` value as a flat list of non-empty strings.
+
+    The prompt asks for an array of exact spans; weak models return a bare
+    string, nested lists, or unrelated objects. Strings are kept exactly as
+    sent (grounding needs the characters); non-strings and blank strings are
+    dropped rather than coerced."""
+    found: List[str] = []
+
+    def walk(value, depth: int) -> None:
+        if depth > 4:
+            return
+        if isinstance(value, str):
+            if value.strip():
+                found.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, depth + 1)
+
+    walk(quotes, 0)
+    return found
+
+
+def _collapse_whitespace(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _texts_by_source(texts) -> Dict[str, str]:
+    """Source texts as {source_id: text}; accepts the recorder's map or
+    grounding_view's ``sources`` list."""
+    if isinstance(texts, dict):
+        return {sid: text for sid, text in texts.items()
+                if isinstance(sid, str) and isinstance(text, str)}
+    out: Dict[str, str] = {}
+    for src in texts or []:
+        if (isinstance(src, dict) and isinstance(src.get("source_id"), str)
+                and isinstance(src.get("text"), str)):
+            out[src["source_id"]] = src["text"]
+    return out
+
+
+def quote_grounding_stats(record: Dict, texts) -> Dict:
+    """Measure citation quotes that occur verbatim in their source text.
+
+    Comparison is case-sensitive and collapses runs of whitespace on both
+    sides, so re-wrapped excerpts still ground while a changed word does not.
+    ``texts`` is a {source_id: text} mapping or a list of source dicts with
+    ``source_id``/``text``. No model is involved and nothing is repaired: a
+    quote whose source text is unavailable counts as not found."""
+    by_source = {sid: _collapse_whitespace(text)
+                 for sid, text in _texts_by_source(texts).items()}
+    quotes = grounded = 0
+    for claim in record.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        for citation in claim.get("citations") or []:
+            if not isinstance(citation, dict):
+                continue
+            quote = citation.get("quote")
+            if not isinstance(quote, str) or not quote.strip():
+                continue
+            quotes += 1
+            source_text = by_source.get(citation.get("source_id"))
+            if source_text is not None and _collapse_whitespace(quote) in source_text:
+                grounded += 1
+    not_found = quotes - grounded
+    return {
+        "quotes": quotes,
+        "grounded": grounded,
+        "not_found": not_found,
+        # 0.0 when there is nothing to measure; never claim a rate the run
+        # did not earn.
+        "rate": round(grounded / quotes, 4) if quotes else 0.0,
+    }
+
+
 class ResearchRunRecorder:
     """Collects sources, findings and LLM calls for one research run."""
 
@@ -66,6 +147,7 @@ class ResearchRunRecorder:
         self.sources: List[Dict] = []
         self._texts: Dict[str, str] = {}
         self.findings: List[Dict] = []
+        self._claim_ids = 0
         self.llm_calls: List[Dict] = []
         self._call_endpoints: List[str] = []
         self.routing_run_id: Optional[str] = None
@@ -85,6 +167,14 @@ class ResearchRunRecorder:
         return source_id
 
     def add_finding(self, finding: Dict) -> None:
+        """Append a finding and stamp its claim id when its source is known.
+
+        Ids are assigned here, in the same order ``build`` used to, so the
+        prompts can cite ``[C3]`` before the record is built."""
+        known = {src["source_id"] for src in self.sources}
+        if isinstance(finding, dict) and finding.get("source_id") in known:
+            self._claim_ids += 1
+            finding["claim_id"] = f"C{self._claim_ids}"
         self.findings.append(finding)
 
     def add_llm_call(self, *, purpose: str, model: str, started_at: str, latency_ms: int,
@@ -140,27 +230,45 @@ class ResearchRunRecorder:
             sid = f.get("source_id")
             if sid not in known:
                 continue
+            claim_id = f.get("claim_id")
+            if not claim_id:
+                # Finding added without add_finding (or before its source was
+                # known): assign the next id, preserving add_finding's order.
+                self._claim_ids += 1
+                claim_id = f"C{self._claim_ids}"
+                f["claim_id"] = claim_id
+            quotes = normalize_quotes(f.get("quotes"))
+            if not quotes:
+                # Old replies/records have no ``quotes`` field.
+                quotes = evidence_quotes(f.get("evidence"))
             claims.append({
-                "claim_id": f"C{len(claims) + 1}",
+                "claim_id": claim_id,
                 "text": f.get("summary", "") if isinstance(f.get("summary"), str) else "",
-                "citations": [{"source_id": sid, "quote": q} for q in evidence_quotes(f.get("evidence"))],
+                "citations": [{"source_id": sid, "quote": q} for q in quotes],
             })
 
         calls = self.llm_calls
+        totals = {
+            "llm_calls": len(calls),
+            "llm_errors": sum(1 for c in calls if c["error"]),
+            "input_tokens": sum(c["input_tokens"] or 0 for c in calls),
+            "output_tokens": sum(c["output_tokens"] or 0 for c in calls),
+            "tokens_estimated_calls": sum(1 for c in calls if c["tokens_estimated"]),
+            "latency_ms": sum(c["latency_ms"] or 0 for c in calls),
+        }
+        totals["quote_grounding"] = quote_grounding_stats({"claims": claims}, self._texts)
+        logger.info(
+            "Research run %s quote grounding: %d/%d quotes verbatim (rate %.4f)",
+            self.run_id, totals["quote_grounding"]["grounded"],
+            totals["quote_grounding"]["quotes"], totals["quote_grounding"]["rate"],
+        )
         return {
             "schema": RECORD_SCHEMA,
             "run_id": self.run_id,
             "sources": sources,
             "claims": claims,
             "llm_calls": calls,
-            "totals": {
-                "llm_calls": len(calls),
-                "llm_errors": sum(1 for c in calls if c["error"]),
-                "input_tokens": sum(c["input_tokens"] or 0 for c in calls),
-                "output_tokens": sum(c["output_tokens"] or 0 for c in calls),
-                "tokens_estimated_calls": sum(1 for c in calls if c["tokens_estimated"]),
-                "latency_ms": sum(c["latency_ms"] or 0 for c in calls),
-            },
+            "totals": totals,
             "routing_run_id": self.routing_run_id,
         }
 
