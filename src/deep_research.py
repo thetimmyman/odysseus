@@ -297,11 +297,14 @@ class DeepResearcher:
         self._start_time = time.time()
         findings: List[Dict] = list(prior_findings) if prior_findings else []
         report = prior_report or ""
-        if self.run_recorder is not None:
-            # Claim ids restart at C1 in every run: labels carried over from an
-            # earlier run would collide with this run's ids and misattribute
-            # old claims to new sources, so drop them (copying, not mutating,
-            # the caller's saved findings).
+        if self.run_recorder is not None and any(
+                isinstance(f, dict) and f.get("claim_id") for f in findings):
+            # Claim ids restart at C1 in every run, so labels carried over from
+            # an earlier recorded run would collide with this run's ids and
+            # misattribute old claims to new sources.  The prior findings that
+            # still carry a claim_id are the provenance for that earlier run;
+            # without it, bracketed text in the report is the user's own and is
+            # left alone.  Copy, never mutate, the caller's saved findings.
             report = _PRIOR_CLAIM_LABEL_RE.sub("", report)
             findings = [{k: v for k, v in f.items() if k != "claim_id"}
                         if isinstance(f, dict) else f for f in findings]

@@ -308,3 +308,30 @@ async def test_continuation_does_not_reuse_prior_run_claim_labels(fake_page):
 
 async def _async_value(value):
     return value
+
+
+@pytest.mark.asyncio
+async def test_continuation_keeps_bracketed_text_without_prior_claim_provenance(fake_page):
+    researcher = DeepResearcher(llm_endpoint="http://local.test/v1/chat/completions",
+                                llm_model="local-model", run_record=True)
+    prompts = []
+
+    async def fake_llm(messages, **kwargs):
+        prompts.append(messages[-1]["content"])
+        return "word " * 600
+
+    researcher._llm = fake_llm
+    researcher._create_plan = lambda q: _async_value("plan")
+    researcher._generate_queries = lambda *a, **k: _async_value([])
+    await researcher.research("q", prior_report="Config key [C1] is documented.",
+                              prior_findings=[{"url": "https://old.test", "summary": "old"}])
+    assert any("[C1]" in p for p in prompts)
+
+
+@pytest.mark.asyncio
+async def test_unstored_source_text_counts_as_ungrounded(fake_page, tmp_path, monkeypatch):
+    researcher, _ = await _extract(_reply(["Retrieval happens before extraction"]))
+    monkeypatch.setattr("src.research_run_record.DEEP_RESEARCH_BLOB_MAX_BYTES", 1)
+    record = researcher.run_recorder.build(blob_dir=tmp_path / "blobs")
+    stats = record["totals"]["quote_grounding"]
+    assert stats["quotes"] == 1 and stats["grounded"] == 0 and stats["rate"] == 0.0

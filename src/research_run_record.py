@@ -263,7 +263,12 @@ class ResearchRunRecorder:
             "tokens_estimated_calls": sum(1 for c in calls if c["tokens_estimated"]),
             "latency_ms": sum(c["latency_ms"] or 0 for c in calls),
         }
-        totals["quote_grounding"] = quote_grounding_stats({"claims": claims}, self._texts)
+        # Measure against what the saved record can actually be checked with:
+        # a source whose blob was not stored (over the cap, write failed) has
+        # no text to verify a quote against, so its quotes count as not found.
+        persisted = {src["source_id"]: self._texts[src["source_id"]]
+                     for src in sources if src.get("blob")}
+        totals["quote_grounding"] = quote_grounding_stats({"claims": claims}, persisted)
         logger.info(
             "Research run %s quote grounding: %d/%d quotes verbatim (rate %.4f)",
             self.run_id, totals["quote_grounding"]["grounded"],
