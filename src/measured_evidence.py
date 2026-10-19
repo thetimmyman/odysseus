@@ -46,6 +46,8 @@ MEASURED_RANK = 1
 TRUST_CLASS = "authoritative"
 SOURCE_KIND = "measured"
 MAX_TEXT_BYTES = 65536
+_MAX_FILES_SCANNED = 5000
+_MAX_BYTES_SCANNED = 256 * 1024 * 1024
 
 OK = "OK"
 NONE = "NONE"
@@ -71,6 +73,8 @@ class MeasuredSource:
     truncated: bool
     size_bytes: int
     score: int
+    # Parsed from the whole file when it is JSON, so a document cut at MAX_TEXT_BYTES keeps them.
+    measurements: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -104,6 +108,7 @@ class Conflict:
     claim_id: str
     subject: str
     metric: str
+    claimed_origin: str
     claimed: float
     measured: float
     claimed_unit: str
@@ -160,19 +165,30 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         limit_n = 5
     limit_n = max(1, min(20, limit_n))
 
-    scored: list[MeasuredSource] = []
-    for rel, abs_path in _iter_candidate_files(root_path):
+    # Work is bounded before the result limit applies: a fixed number of files and bytes per lookup,
+    # and only the best ``limit_n`` candidates are kept in memory.
+    best: list[MeasuredSource] = []
+    matched = scanned = total_bytes = 0
+    capped = False
+    for rel in _iter_candidate_files(root_path):
         if rel.suffix.casefold() not in _CANDIDATE_SUFFIXES:
             continue
-        data = _read_regular_file(abs_path)
+        if scanned >= _MAX_FILES_SCANNED or total_bytes >= _MAX_BYTES_SCANNED:
+            capped = True
+            break
+        scanned += 1
+        data = _read_regular_file(root_path, rel)
         if data is None:
             continue
-        text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="replace")
+        total_bytes += len(data)
+        # Cut by bytes; dropping invalid sequences keeps the text within the byte cap.
+        text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
         path_str = rel.as_posix()
         score = _score(path_str, text, tokens)
         if score <= 0:
             continue
-        scored.append(MeasuredSource(
+        matched += 1
+        best.append(MeasuredSource(
             path=path_str,
             url="measured:" + path_str,
             kind=SOURCE_KIND,
@@ -184,18 +200,20 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             truncated=len(data) > MAX_TEXT_BYTES,
             size_bytes=len(data),
             score=score,
+            measurements=_parse_measurements(data, path_str) if rel.suffix.casefold() == ".json" else (),
         ))
+        best.sort(key=lambda source: (-source.score, source.path))
+        del best[limit_n:]
 
-    if not scored:
+    note = f"; scan stopped at the per-lookup limit after {scanned} files" if capped else ""
+    if not best:
         return LookupResult(
             status=NONE, sources=(),
-            reason="no measured sources matched the query",
+            reason="no measured sources matched the query" + note,
         )
-    scored.sort(key=lambda source: (-source.score, source.path))
-    selected = tuple(scored[:limit_n])
     return LookupResult(
-        status=OK, sources=selected,
-        reason=f"{len(selected)} of {len(scored)} measured sources matched",
+        status=OK, sources=tuple(best),
+        reason=f"{len(best)} of {matched} measured sources matched" + note,
     )
 
 
@@ -230,47 +248,57 @@ def as_run_record_sources(sources, start_index=1) -> list:
 
 
 def extract_measurements(source) -> list:
-    """Read the ``"measurements"`` convention from a source's text.
+    """Read the ``"measurements"`` convention from a source.
 
-    Malformed JSON, a non-list container, non-dict items, booleans, non-finite
-    numbers and missing or wrongly-typed fields are skipped silently.
+    Uses the measurements parsed from the whole file when the lookup provided them, otherwise
+    the source's text. Malformed JSON, a non-list container, non-dict items, booleans,
+    non-finite or overflowing numbers and missing or wrongly-typed fields are skipped silently.
     """
+    prepared = getattr(source, "measurements", ())
+    if prepared:
+        return list(prepared)
+    return list(_parse_measurements(source.text, source.path))
+
+
+def _parse_measurements(raw, path) -> tuple:
     try:
-        data = json.loads(source.text)
-    except (ValueError, TypeError):
-        return []
+        data = json.loads(raw)
+    except (ValueError, TypeError, RecursionError):
+        return ()
     if not isinstance(data, dict):
-        return []
-    raw = data.get("measurements")
-    if not isinstance(raw, list):
-        return []
+        return ()
+    items = data.get("measurements")
+    if not isinstance(items, list):
+        return ()
     measurements = []
-    for item in raw:
+    for item in items:
         if not isinstance(item, dict):
             continue
         subject = item.get("subject")
         metric = item.get("metric")
         unit = item.get("unit")
-        value = item.get("value")
+        value = _finite_number(item.get("value"))
         if not isinstance(subject, str) or not subject.strip():
             continue
         if not isinstance(metric, str) or not metric.strip():
             continue
         if not isinstance(unit, str) or not unit.strip():
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if value is None:
             continue
-        try:
-            value = float(value)
-        except OverflowError:
-            continue
-        if not math.isfinite(value):
-            continue
-        measurements.append(Measurement(
-            subject=subject, metric=metric, value=value,
-            unit=unit, path=source.path,
-        ))
-    return measurements
+        measurements.append(Measurement(subject=subject, metric=metric, value=value, unit=unit, path=path))
+    return tuple(measurements)
+
+
+def _finite_number(value):
+    """``value`` as a finite float, or None for booleans, non-numbers and overflowing integers."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictReport:
@@ -291,14 +319,17 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
     agreements: list[Conflict] = []
     uncomparable: list[Conflict] = []
     for assertion in assertions:
+        claimed = _finite_number(getattr(assertion, "value", None))
+        if claimed is None:
+            continue  # an invalid claim value cannot be compared; it is neither a conflict nor an agreement
         matches = index.get(_match_key(assertion.subject, assertion.metric))
         if not matches:
             continue
         for measurement in matches:
             if measurement.value == 0:
-                relative = 0.0 if assertion.value == 0 else None
+                relative = 0.0 if claimed == 0 else None
             else:
-                relative = abs(assertion.value - measurement.value) / abs(measurement.value)
+                relative = abs(claimed - measurement.value) / abs(measurement.value)
             if _normalize(assertion.unit) == _normalize(measurement.unit):
                 if relative is not None and relative <= rel_tolerance:
                     agreements.append(_comparison(
@@ -326,28 +357,46 @@ def measured_evidence_root():
     return str(value) if value else None
 
 
-def _read_regular_file(path):
-    """Read a candidate through one no-follow descriptor, or None.
+def _read_regular_file(root, rel):
+    """Read ``root/rel`` through descriptors anchored at ``root``, or None.
 
-    The size check and the read use the same open descriptor, so a path swapped for a symlink
-    after the confinement check cannot redirect the read, and a file that grows is still capped.
+    Each directory component is opened relative to the previous descriptor with no-follow, and
+    the file itself the same way, so no path component can be swapped for a symlink between the
+    listing and the read. The size is taken from the open descriptor, and a file that changed
+    while it was read (size or modification time) is rejected rather than returned half-old.
     """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    try:
-        fd = os.open(path, flags)
-    except OSError:
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    parts = Path(rel).parts
+    if not parts or ".." in parts:
         return None
+    fds = []
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_CANDIDATE_BYTES:
+        current = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        fds.append(current)
+        for part in parts[:-1]:
+            current = os.open(part, dir_flags, dir_fd=current)
+            fds.append(current)
+        fd = os.open(parts[-1], file_flags, dir_fd=current)
+        fds.append(fd)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_CANDIDATE_BYTES:
             return None
-        with os.fdopen(fd, "rb", closefd=False) as handle:
+        with os.fdopen(os.dup(fd), "rb") as handle:
             data = handle.read(_MAX_CANDIDATE_BYTES + 1)
-        return None if len(data) > _MAX_CANDIDATE_BYTES else data
+        after = os.fstat(fd)
+        if (len(data) != before.st_size or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns):
+            return None
+        return data
     except OSError:
         return None
     finally:
-        os.close(fd)
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _comparison(assertion, measurement, relative, note) -> Conflict:
@@ -355,7 +404,8 @@ def _comparison(assertion, measurement, relative, note) -> Conflict:
         claim_id=assertion.claim_id,
         subject=assertion.subject,
         metric=assertion.metric,
-        claimed=assertion.value,
+        claimed_origin=assertion.origin,
+        claimed=_finite_number(assertion.value),
         measured=measurement.value,
         claimed_unit=assertion.unit,
         measured_unit=measurement.unit,
@@ -404,51 +454,21 @@ def _score(path_str, text, tokens) -> int:
 
 
 def _iter_candidate_files(root):
-    for abs_path in _walk_files(root / "evidence"):
-        rel = _relative_path(abs_path, root)
-        if rel is None or rel.parts[0] != "evidence":
+    """Relative paths under ``evidence/`` and ``benchmark/<name>/results/``, symlinked dirs skipped.
+
+    This only lists; ``_read_regular_file`` re-validates every component when it opens a path.
+    """
+    for top in ("evidence", "benchmark"):
+        base = root / top
+        if not base.is_dir() or base.is_symlink():
             continue
-        yield rel, Path(abs_path)
-    for abs_path in _walk_files(root / "benchmark"):
-        rel = _relative_path(abs_path, root)
-        if rel is None:
-            continue
-        parts = rel.parts
-        if len(parts) >= 4 and parts[0] == "benchmark" and parts[2] == "results":
-            yield rel, Path(abs_path)
-
-
-def _walk_files(base):
-    if not base.is_dir():
-        return
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-        dirnames[:] = [name for name in dirnames
-                       if not os.path.islink(os.path.join(dirpath, name))]
-        for name in filenames:
-            yield os.path.join(dirpath, name)
-
-
-def _relative_path(abs_path, root):
-    try:
-        rel = Path(os.path.relpath(abs_path, root))
-    except (ValueError, TypeError):
-        return None
-    if ".." in rel.parts:
-        return None
-    try:
-        if os.path.islink(abs_path):
-            return None
-    except OSError:
-        return None
-    if not _within_root(abs_path, root):
-        return None
-    return rel
-
-
-def _within_root(path, root) -> bool:
-    try:
-        real = os.path.realpath(path)
-        root_real = os.path.realpath(root)
-    except OSError:
-        return False
-    return real == root_real or real.startswith(root_real + os.sep)
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            dirnames[:] = sorted(name for name in dirnames if not os.path.islink(os.path.join(dirpath, name)))
+            for name in sorted(filenames):
+                rel = Path(os.path.relpath(os.path.join(dirpath, name), root))
+                parts = rel.parts
+                if ".." in parts:
+                    continue
+                if top == "benchmark" and not (len(parts) >= 4 and parts[2] == "results"):
+                    continue
+                yield rel

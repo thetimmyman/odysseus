@@ -5,6 +5,8 @@ benchmark/<name>/results/**, ranks them first, and reports (never resolves) a
 vendor claim that disagrees with a measurement.
 """
 import hashlib
+import os
+import stat
 import json
 from pathlib import Path
 
@@ -104,18 +106,20 @@ def test_symlinks_and_escapes_are_not_returned(tmp_path):
     assert {s.path for s in result.sources} == {"evidence/run1/real.md"}
 
 
-def test_relative_path_rejects_escapes(tmp_path):
+def test_reads_reject_escapes_and_listing_stays_inside_the_roots(tmp_path):
     root = tmp_path / "root"
     (root / "evidence").mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.md").write_text("x", encoding="utf-8")
-    inside = root / "evidence" / "ok.md"
-    inside.write_text("x", encoding="utf-8")
+    (root / "evidence" / "ok.md").write_text("x", encoding="utf-8")
+    (root / "docs").mkdir()
+    (root / "docs" / "skip.md").write_text("x", encoding="utf-8")
 
-    assert me._relative_path(str(inside), root) == Path("evidence/ok.md")
-    assert me._relative_path(str(outside / "secret.md"), root) is None
-    assert me._relative_path(str(root / ".." / "outside" / "secret.md"), root) is None
+    assert me._read_regular_file(root, Path("evidence/ok.md")) == b"x"
+    assert me._read_regular_file(root, Path("../outside/secret.md")) is None
+    assert me._read_regular_file(root, Path("evidence/../../outside/secret.md")) is None
+    assert list(me._iter_candidate_files(root)) == [Path("evidence/ok.md")]
 
 
 def test_large_file_is_hashed_fully_and_marked_truncated(tmp_path):
@@ -319,13 +323,92 @@ def test_text_returned_never_exceeds_the_byte_cap(tmp_path):
 
 
 def test_symlink_swapped_in_after_listing_is_not_followed(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
     secret = tmp_path / "secret.txt"
     secret.write_text("needle outside the root")
-    link = tmp_path / "evidence_link.txt"
-    link.symlink_to(secret)
-    assert me._read_regular_file(link) is None
-    assert me._read_regular_file(secret) == b"needle outside the root"
-    assert me._read_regular_file(tmp_path) is None  # directories are not regular files
+    (root / "evidence" / "link.txt").symlink_to(secret)
+    assert me._read_regular_file(root, Path("evidence/link.txt")) is None
+    (root / "evidence" / "real.txt").write_text("needle inside")
+    assert me._read_regular_file(root, Path("evidence/real.txt")) == b"needle inside"
+    assert me._read_regular_file(root, Path("evidence")) is None  # a directory is not a regular file
+
+
+def test_a_parent_directory_swapped_for_a_symlink_is_not_followed(tmp_path):
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    (root / "evidence").mkdir(parents=True)
+    outside.mkdir()
+    (outside / "x.txt").write_text("needle outside the root")
+    (root / "evidence" / "run").symlink_to(outside, target_is_directory=True)
+    assert me._read_regular_file(root, Path("evidence/run/x.txt")) is None
+
+
+def test_a_file_that_changes_while_it_is_read_is_rejected(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "f.txt").write_text("needle")
+    real = os.fstat
+    calls = []
+
+    def changing(fd):
+        info = real(fd)
+        calls.append(fd)
+        if len(calls) >= 2 and stat.S_ISREG(info.st_mode):
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink, info.st_uid,
+                                   info.st_gid, info.st_size, int(info.st_atime), int(info.st_mtime) + 5,
+                                   int(info.st_ctime), info.st_atime_ns, info.st_mtime_ns + 5_000_000_000,
+                                   info.st_ctime_ns))
+        return info
+
+    monkeypatch.setattr(os, "fstat", changing)
+    assert me._read_regular_file(root, Path("evidence/f.txt")) is None
+
+
+def test_invalid_utf8_cannot_expand_past_the_byte_cap(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "bad.txt").write_bytes(b"needle " + b"\xff" * me.MAX_TEXT_BYTES)
+    [source] = me.find_measured_sources("needle", root=root, enabled=True).sources
+    assert len(source.text.encode("utf-8")) <= me.MAX_TEXT_BYTES
+
+
+def test_lookup_work_is_bounded_and_keeps_only_the_best(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    for index in range(30):
+        (root / "evidence" / f"f{index:02d}.txt").write_text("needle " * (index + 1))
+    monkeypatch.setattr(me, "_MAX_FILES_SCANNED", 10)
+    result = me.find_measured_sources("needle", root=root, enabled=True, limit=2)
+    assert result.status == me.OK and len(result.sources) == 2
+    assert "scan stopped" in result.reason
+    monkeypatch.setattr(me, "_MAX_FILES_SCANNED", 5000)
+    full = me.find_measured_sources("needle", root=root, enabled=True, limit=2)
+    assert "scan stopped" not in full.reason and len(full.sources) == 2
+
+
+def test_measurements_survive_a_json_file_cut_at_the_text_cap(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    doc = {"measurements": [{"subject": "GPU decode", "metric": "throughput", "value": 12, "unit": "tok/s"}],
+           "samples": [0.5] * 40000}
+    (root / "evidence" / "bench.json").write_text(json.dumps(doc))
+    [source] = me.find_measured_sources("throughput", root=root, enabled=True).sources
+    assert source.truncated is True
+    assert [m.value for m in me.extract_measurements(source)] == [12.0]
+
+
+def test_an_overflowing_claim_is_skipped_not_fatal():
+    bad = me.Assertion("C0", "GPU decode", "throughput", 10 ** 400, "tok/s", "vendor")
+    good = me.Assertion("C1", "GPU decode", "throughput", 40.0, "tok/s", "vendor")
+    report = me.find_conflicts([bad, good], [_bench_measurement(12.0)])
+    assert [c.claim_id for c in report.conflicts] == ["C1"]
+
+
+def test_conflicts_name_where_the_claim_came_from():
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 40.0, "tok/s", "https://vendor.example/claim")
+    [conflict] = me.find_conflicts([assertion], [_bench_measurement(12.0)]).conflicts
+    assert conflict.claimed_origin == "https://vendor.example/claim"
 
 
 def test_non_latin_query_finds_matching_evidence(tmp_path):
