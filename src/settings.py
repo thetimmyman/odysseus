@@ -95,6 +95,11 @@ DEFAULT_SETTINGS = {
     # retrieved text (content-addressed blobs), sha256, extractor evidence
     # per finding, and a RoutingModelRun row per LLM call. Off by default.
     "research_run_record": False,
+    # Let deep research cite our own benchmark/receipt files as measured sources
+    # (src/measured_evidence.py). Off by default; the root is the directory that
+    # holds evidence/ and benchmark/<name>/results/.
+    "research_measured_evidence": False,
+    "research_measured_evidence_root": "",
     # Hard wall-clock cap on a single deep-research run. The previous 600s
     # (10 min) default cut off slow local / edge LLMs mid-synthesis; 1800s
     # (30 min) is comfortable for most local setups while still bounding

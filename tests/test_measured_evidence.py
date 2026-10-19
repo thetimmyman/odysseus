@@ -448,3 +448,11 @@ def test_uncomparable_result_keeps_both_units():
     report = me.find_conflicts([assertion], [_bench_measurement(12.0, unit="ms")])
     [item] = report.uncomparable
     assert (item.claimed_unit, item.measured_unit) == ("tok/s", "ms")
+
+
+def test_settings_keys_are_registered_and_off_by_default():
+    from src.settings import DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["research_measured_evidence"] is False
+    assert DEFAULT_SETTINGS["research_measured_evidence_root"] == ""
+    assert me.measured_evidence_enabled() is False
+    assert me.measured_evidence_root() is None
