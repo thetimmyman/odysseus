@@ -11,6 +11,7 @@ streaming endpoint, so it's not exposed here.
     odysseus-research report RP_ID --raw    # just the markdown report
     odysseus-research search "query text"
     odysseus-research delete RP_ID
+    odysseus-research grounding RP_ID       # run record as grounding-checker input
 """
 
 from __future__ import annotations
@@ -153,6 +154,22 @@ def cmd_delete(args):
     emit({"ok": True, "deleted": snap_summary}, args)
 
 
+def cmd_grounding(args):
+    # The app writes sessions and blobs under DEEP_RESEARCH_DIR, which follows
+    # ODYSSEUS_DATA_DIR; resolve through it (and its session-id validation).
+    from src.research_handler import RESEARCH_DATA_DIR, _research_json_path
+    from src.research_run_record import grounding_view
+    path = _research_json_path(args.id)
+    data = _load_path(path) if path is not None and path.exists() else None
+    if data is None:
+        fail(f"no research session {args.id!r}")
+    record = data.get("run_record")
+    if not isinstance(record, dict):
+        fail(f"research session {args.id!r} has no run_record "
+             "(saved with the research_run_record setting off)")
+    emit(grounding_view(record, blob_root=RESEARCH_DATA_DIR), args)
+
+
 def _build_parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--pretty", action="store_true")
@@ -181,6 +198,10 @@ def _build_parser():
     pd = sub.add_parser("delete", parents=[common])
     pd.add_argument("id")
     pd.set_defaults(func=cmd_delete)
+
+    pg = sub.add_parser("grounding", parents=[common])
+    pg.add_argument("id")
+    pg.set_defaults(func=cmd_grounding)
 
     return p
 

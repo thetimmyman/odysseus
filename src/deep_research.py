@@ -11,7 +11,8 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set
 
 from src.research_utils import strip_thinking, is_low_quality
@@ -20,6 +21,11 @@ from src.goal_based_extractor import EXTRACTOR_SYSTEM
 from src.prompt_security import untrusted_context_message
 
 logger = logging.getLogger(__name__)
+
+# What the current _llm call is for, read only when a run record is kept.
+# Each step sets it before calling; extraction tasks run in their own asyncio
+# context, so concurrent extractions keep their own source_id.
+_LLM_PURPOSE: ContextVar[tuple] = ContextVar("deep_research_llm_purpose", default=("other", None))
 
 
 def current_date_context() -> str:
@@ -209,6 +215,7 @@ class DeepResearcher:
         progress_callback: Optional[Callable] = None,
         search_provider: Optional[str] = None,
         category: Optional[str] = None,
+        run_record: bool = False,
     ):
         self.llm_endpoint = llm_endpoint
         self.llm_model = llm_model
@@ -240,6 +247,11 @@ class DeepResearcher:
         self.findings: List[Dict] = []
         self.evolving_report: str = ""
         self.research_plan: str = ""
+        # Checkable run record (setting research_run_record); None when off.
+        self.run_recorder = None
+        if run_record:
+            from src.research_run_record import ResearchRunRecorder
+            self.run_recorder = ResearchRunRecorder()
 
     def cancel(self):
         """Request cooperative cancellation of the research loop."""
@@ -381,22 +393,55 @@ class DeepResearcher:
                    max_tokens: int = 4096, timeout: int = 60) -> str:
         """Call the LLM asynchronously and strip thinking tags."""
         from src.llm_core import llm_call_async
-        response = await llm_call_async(
-            url=self.llm_endpoint,
-            model=self.llm_model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            headers=self.llm_headers,
-            timeout=timeout,
-        )
+        recorder = getattr(self, "run_recorder", None)
+        started = time.monotonic()
+        started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            response = await llm_call_async(
+                url=self.llm_endpoint,
+                model=self.llm_model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                headers=self.llm_headers,
+                timeout=timeout,
+            )
+        except (Exception, asyncio.CancelledError) as e:
+            # CancelledError is how the hard research timeout interrupts an
+            # in-flight call; record it before it propagates.
+            if recorder is not None:
+                self._record_llm_call(recorder, started, started_at, messages, "", e)
+            raise
+        if recorder is not None:
+            self._record_llm_call(recorder, started, started_at, messages, response, None)
         return strip_thinking(response)
+
+    def _record_llm_call(self, recorder, started: float, started_at: str, messages: List[Dict],
+                         response: str, error: Optional[BaseException]) -> None:
+        from src.llm_core import last_async_usage
+        from src.routing_context import estimate_tokens
+        purpose, source_id = _LLM_PURPOSE.get()
+        usage = last_async_usage() if error is None else None
+        prompt_text = "\n".join(str(m.get("content") or "") for m in messages)
+        recorder.add_llm_call(
+            purpose=purpose,
+            model=self.llm_model,
+            endpoint=self.llm_endpoint,
+            started_at=started_at,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            input_tokens=usage["input_tokens"] if usage else estimate_tokens(prompt_text),
+            output_tokens=usage["output_tokens"] if usage else estimate_tokens(response or ""),
+            tokens_estimated=usage is None,
+            error=None if error is None else f"{type(error).__name__}: {getattr(error, 'detail', error)}"[:500],
+            source_id=source_id,
+        )
 
     # ------------------------------------------------------------------
     # PLAN: create research strategy
     # ------------------------------------------------------------------
     async def _create_plan(self, question: str) -> str:
         """LLM analyzes the question and creates a research plan."""
+        _LLM_PURPOSE.set(("plan", None))
         prompt = current_date_context() + RESEARCH_PLAN_PROMPT.format(question=question)
         try:
             response = await self._llm(
@@ -424,6 +469,7 @@ class DeepResearcher:
 
     async def _classify_category(self, question: str) -> Optional[str]:
         """Fast LLM call to classify the research question into a category."""
+        _LLM_PURPOSE.set(("classify", None))
         valid = ", ".join(CATEGORY_PROMPTS.keys())
         prompt = (
             f"Classify this research question into exactly ONE category.\n"
@@ -459,6 +505,7 @@ class DeepResearcher:
     # ------------------------------------------------------------------
     async def _generate_queries(self, question: str, report: str,
                                 round_num: int) -> List[str]:
+        _LLM_PURPOSE.set(("queries", None))
         if round_num == 1:
             num_queries = 4
             round_instruction = (
@@ -627,6 +674,13 @@ class DeepResearcher:
             else:
                 content = truncated
 
+        recorder = getattr(self, "run_recorder", None)
+        source_id = None
+        if recorder is not None:
+            # Exactly the text handed to the extractor below.
+            source_id = recorder.add_source(url, title or page.get("title", ""), content)
+        _LLM_PURPOSE.set(("extract", source_id))
+
         try:
             response = await self._llm(
                 [
@@ -646,19 +700,27 @@ class DeepResearcher:
                 if is_low_quality(parsed.get("summary", "")):
                     logger.info(f"Skipping low-quality extraction from {url}")
                     return None
-                return parsed
+                return self._recorded_finding(parsed, source_id)
             # If JSON parsing fails, treat entire response as evidence
-            return {
+            return self._recorded_finding({
                 "url": url,
                 "title": title or page.get("title", ""),
                 "og_image": page.get("og_image", ""),
                 "rational": "LLM extraction (raw)",
                 "evidence": response[:3000],
                 "summary": response[:500],
-            }
+            }, source_id)
         except Exception as e:
             logger.warning(f"LLM extraction failed for {url}: {e}")
             return None
+
+    def _recorded_finding(self, finding: Dict, source_id: Optional[str]) -> Dict:
+        """Tie a finding to its source in the run record (no-op when off)."""
+        recorder = getattr(self, "run_recorder", None)
+        if recorder is not None and source_id is not None:
+            finding["source_id"] = source_id
+            recorder.add_finding(finding)
+        return finding
 
     # ------------------------------------------------------------------
     # SYNTHESIZE
@@ -666,6 +728,7 @@ class DeepResearcher:
     async def _synthesize(self, question: str, findings: List[Dict],
                           current_report: str) -> str:
         """LLM synthesizes all findings into an updated report."""
+        _LLM_PURPOSE.set(("synthesize", None))
         # Format findings for the prompt
         window = findings[-self.synthesis_window:]
         if len(findings) > self.synthesis_window:
@@ -700,6 +763,7 @@ class DeepResearcher:
     async def _should_stop(self, question: str, report: str,
                            round_num: int) -> bool:
         """Let the LLM decide whether the report is comprehensive enough."""
+        _LLM_PURPOSE.set(("stop", None))
         prompt = STOP_PROMPT.format(
             question=question,
             report=report,
@@ -731,6 +795,7 @@ class DeepResearcher:
     # ------------------------------------------------------------------
     async def _final_report(self, question: str, report: str) -> str:
         """LLM writes a polished final report, retrying if too short."""
+        _LLM_PURPOSE.set(("final_report", None))
         prompt = FINAL_REPORT_PROMPT.format(
             question=question,
             report=report,
@@ -751,6 +816,7 @@ class DeepResearcher:
             if len(result.split()) < 400:
                 logger.info(f"Final report too short ({len(result.split())} words), requesting expansion")
                 self._emit(phase="writing", message="Expanding report...")
+                _LLM_PURPOSE.set(("final_report_expand", None))
                 expanded = await self._llm(
                     [
                         {"role": "user", "content": prompt},

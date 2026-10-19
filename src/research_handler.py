@@ -530,8 +530,11 @@ class ResearchHandler:
         return sources
 
     @staticmethod
-    def _extract_raw_findings(findings: list) -> list:
-        """Extract [{url, title, summary}] for per-source findings display, filtering junk."""
+    def _extract_raw_findings(findings: list, with_evidence: bool = False) -> list:
+        """Extract [{url, title, summary}] for per-source findings display, filtering junk.
+
+        with_evidence (run record on) adds the extractor's verbatim
+        ``evidence`` and the ``source_id`` it was extracted from."""
         try:
             items = []
             for f in findings:
@@ -543,7 +546,11 @@ class ResearchHandler:
                 evidence = f.get("evidence", "")
                 content = summary if summary else (evidence[:2000] if evidence else "")
                 if url and content and not is_low_quality(content):
-                    items.append({"url": url, "title": title, "summary": content})
+                    item = {"url": url, "title": title, "summary": content}
+                    if with_evidence and f.get("source_id"):
+                        item["source_id"] = f["source_id"]
+                        item["evidence"] = evidence
+                    items.append(item)
             return items
         except Exception as e:
             logger.warning(f"Failed to extract raw findings: {e}")
@@ -661,9 +668,11 @@ class ResearchHandler:
             sources = []
             raw_findings = []
             researcher = entry.get("researcher")
+            recorder = getattr(researcher, "run_recorder", None) if researcher else None
             if researcher and researcher.findings:
                 sources = self._extract_sources(researcher.findings)
-                raw_findings = self._extract_raw_findings(researcher.findings)
+                raw_findings = self._extract_raw_findings(
+                    researcher.findings, with_evidence=recorder is not None)
             entry["sources"] = sources
 
             data = {
@@ -680,6 +689,8 @@ class ResearchHandler:
                 # SECURITY: stamp owner so route handlers can filter by user.
                 "owner": entry.get("owner", ""),
             }
+            if recorder is not None:
+                data["run_record"] = self._build_run_record(recorder, entry)
             path.write_text(json.dumps(data), encoding="utf-8")
             logger.info(f"Research result saved to {path}")
             try:
@@ -689,6 +700,18 @@ class ResearchHandler:
                 logger.debug("research_completed event dispatch failed", exc_info=True)
         except Exception as e:
             logger.error(f"Failed to save research result: {e}")
+
+    @staticmethod
+    def _build_run_record(recorder, entry: dict) -> Optional[dict]:
+        """Blobs + RoutingModelRun rows + the record; never fails the save."""
+        try:
+            recorder.persist_model_runs(
+                query=entry.get("query", ""), owner=entry.get("owner", ""),
+                status=entry.get("status", ""))
+            return recorder.build()
+        except Exception as e:
+            logger.error(f"Failed to build research run record: {e}")
+            return None
 
     def _get_session_json(self, session_id: str) -> Optional[dict]:
         """Load the saved research JSON for a session, if it exists."""
@@ -838,6 +861,7 @@ class ResearchHandler:
 
         try:
             from src.deep_research import DeepResearcher
+            from src.research_run_record import run_record_enabled
 
             from src.settings import get_setting
             _max_report_tokens = int(get_setting("research_max_tokens", 16384))
@@ -881,6 +905,7 @@ class ResearchHandler:
                 progress_callback=progress_callback,
                 search_provider=search_provider,
                 category=category,
+                run_record=run_record_enabled(),
             )
             if _task_entry is not None:
                 _task_entry["researcher"] = researcher
