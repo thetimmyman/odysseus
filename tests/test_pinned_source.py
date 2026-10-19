@@ -951,6 +951,7 @@ def test_shallow_detection_asks_git(git_repo, tmp_path):
     assert pinned_source._is_shallow(str(git_repo)) is True
     plain = _make_repo(tmp_path, "plainrepo")
     assert pinned_source._is_shallow(str(plain)) is False
+    assert pinned_source._is_shallow(str(tmp_path / "missing")) is None
 
 
 def test_hex_named_branch_that_is_also_a_tag_is_unpinned(git_repo, root):
@@ -958,3 +959,46 @@ def test_hex_named_branch_that_is_also_a_tag_is_unpinned(git_repo, root):
     _git(git_repo, "tag", "abcdef1", "main")
     result = resolve_pin(_repo_file(ref="abcdef1", path="read.txt"), local_repos_root=root)
     assert result.status == TRUE and UNPINNED in result.flags
+
+
+def test_failed_shallow_probe_is_unresolvable_not_false(git_repo, root, monkeypatch):
+    real = pinned_source._run_git
+
+    def fake(args, cwd):
+        if "--is-shallow-repository" in args:
+            return 128, b"", b"fatal"
+        return real(args, cwd)
+
+    monkeypatch.setattr(pinned_source, "_run_git", fake)
+    result = resolve_pin(_repo_file(ref="deadbeefcafe", path="read.txt"), local_repos_root=root)
+    assert result.status == UNRESOLVABLE
+
+
+def test_hex_name_shared_by_tag_and_remote_tracking_ref_is_unpinned(git_repo, root):
+    _git(git_repo, "update-ref", "refs/remotes/abcdef2", "main")
+    _git(git_repo, "tag", "abcdef2", "main")
+    result = resolve_pin(_repo_file(ref="abcdef2", path="read.txt"), local_repos_root=root)
+    assert result.status == TRUE and UNPINNED in result.flags
+
+
+@pytest.mark.parametrize("fetcher", [None, lambda *a: (_ for _ in ()).throw(RuntimeError("boom")),
+                                     lambda *a: "malformed"])
+def test_unresolvable_remote_refs_still_carry_the_unpinned_flag(fetcher):
+    result = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="feature/release",
+                                path="x.md"), fetcher=fetcher)
+    assert result.status == UNRESOLVABLE and UNPINNED in result.flags
+
+
+def test_local_tag_proof_survives_the_provider_fallback(tmp_path):
+    repo = tmp_path / "tagrepo"
+    subprocess.run(["git", "init", "-q", "-b", "trunk", str(repo)], check=True)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-qm", "c")
+    _git(repo, "tag", "stable")
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="tagrepo", ref="stable"),
+        local_repos_root=tmp_path,
+        fetcher=lambda kind, repo, ref, path: (True, "notes"),
+    )
+    assert result.status == TRUE and UNPINNED not in result.flags

@@ -218,18 +218,37 @@ def _is_git_repo(directory: str) -> bool:
     ) and os.path.isdir(os.path.join(directory, "objects"))
 
 
-def _is_shallow(repo_dir: str) -> bool:
+def _is_shallow(repo_dir: str) -> Optional[bool]:
     """Ask git whether the clone is shallow (follows gitfile worktrees and
-    submodules; any failure to answer counts as not shallow)."""
+    submodules).  None when git could not answer."""
     rc, out, _err = _run_git(["git", "rev-parse", "--is-shallow-repository"], cwd=repo_dir)
-    return rc == 0 and out.decode("utf-8", "replace").strip() == "true"
+    if rc != 0:
+        return None
+    return out.decode("utf-8", "replace").strip() == "true"
 
 
-def _branch_exists(repo_dir: str, name: str) -> bool:
-    rc, _out, _err = _run_git(
-        ["git", "show-ref", "--verify", "--quiet", "refs/heads/" + name], cwd=repo_dir
-    )
-    return rc == 0
+def _movable_ref_exists(repo_dir: str, name: str) -> bool:
+    """True when ``name`` is also a branch or remote-tracking ref (the other
+    namespaces git's short-name rules can pick instead of a tag)."""
+    for prefix in ("refs/heads/", "refs/remotes/"):
+        rc, _out, _err = _run_git(
+            ["git", "show-ref", "--verify", "--quiet", prefix + name], cwd=repo_dir
+        )
+        if rc == 0:
+            return True
+    return False
+
+
+def _apply_remote_flags(flags: List[str], ref: str, ref_kind, locally_proven: bool) -> None:
+    """Remote answers (or no answer) carry no ref-kind metadata unless the
+    provider states it.  Only a commit-shaped ref, a ref the provider reports
+    as a tag/commit, or one local git already proved stable counts as pinned;
+    anything else (a branch named like a version included) is flagged."""
+    if ref_kind in ("tag", "commit"):
+        if UNPINNED in flags:
+            flags.remove(UNPINNED)
+    elif not locally_proven and UNPINNED not in flags and classify_ref(ref) != "commit":
+        flags.append(UNPINNED)
 
 
 def _git_env() -> dict:
@@ -316,6 +335,7 @@ def _resolve_local(
     path: Optional[str],
     repo_dir: str,
     flags: List[str],
+    proof: Optional[dict] = None,
 ) -> Optional[PinResult]:
     """Resolve a pin against a local git repository.
 
@@ -339,10 +359,12 @@ def _resolve_local(
             "local git lookup could not run (git missing or timeout)",
         )
     if rc == 1:
-        if _is_shallow(repo_dir):
-            # A shallow clone omits history on purpose: a miss only proves this
-            # clone cannot answer, not that the upstream pin is absent.
-            return PinResult(UNRESOLVABLE, flags, "shallow clone does not contain the ref")
+        shallow = _is_shallow(repo_dir)
+        if shallow is not False:
+            # A shallow clone omits history on purpose, so a miss only proves
+            # this clone cannot answer; if git cannot even say whether it is
+            # shallow, that is no answer either.
+            return PinResult(UNRESOLVABLE, flags, "local clone cannot prove the ref is absent")
         # ``--verify --quiet`` exits 1 for "no such revision" and nothing else;
         # a fatal error (corrupt repo, unreadable objects) exits higher.
         return PinResult(
@@ -383,6 +405,8 @@ def _resolve_local(
     # branch sharing one name) is treated as movable.
     selected = out_b.decode("utf-8", "replace").strip() if rc_b == 0 else ""
     if selected.startswith("refs/tags/"):
+        if proof is not None:
+            proof["stable"] = True
         if UNPINNED in flags:
             flags.remove(UNPINNED)
     elif selected.startswith(("refs/heads/", "refs/remotes/")):
@@ -391,10 +415,13 @@ def _resolve_local(
     elif classify_ref(ref) != "commit":
         if UNPINNED not in flags:
             flags.append(UNPINNED)
-    elif not selected and _branch_exists(repo_dir, ref) and UNPINNED not in flags:
-        # Hex-shaped name that is both a branch and a tag: git cannot place
-        # it, and it could drift if either is removed.
-        flags.append(UNPINNED)
+    elif not selected and _movable_ref_exists(repo_dir, ref):
+        # Hex-shaped name that is also a branch/remote-tracking ref: git cannot
+        # place it, and it could drift if either is removed.
+        if UNPINNED not in flags:
+            flags.append(UNPINNED)
+    elif proof is not None:
+        proof["stable"] = True  # a plain commit
 
     if path is None:
         if pin.kind == "release_notes" or (pin.quote is not None and pin.quote.strip()):
@@ -517,17 +544,20 @@ def resolve_pin(
             FALSE, flags, "repo rejected: not a plain name or owner/name"
         )
 
+    proof: dict = {}  # set by local git when it proves the ref cannot move
+
     # --- 1) Local git first: authoritative for a locally cloned repo. ---
     if local_repos_root is not None and repo_ok_local:
         repo_dir = os.path.join(os.fspath(local_repos_root), repo)
         if _is_git_repo(repo_dir):
-            local = _resolve_local(pin, ref, path, repo_dir, flags)
+            local = _resolve_local(pin, ref, path, repo_dir, flags, proof)
             # A local "could not answer" is not an answer: the fetcher may still.
             if local is not None and not (local.status == UNRESOLVABLE and fetcher is not None):
                 return local
 
     # --- 2) Otherwise the injected fetcher (never a first-party client).
     if fetcher is not None:
+        _apply_remote_flags(flags, ref, None, bool(proof))
         try:
             result = fetcher(pin.kind, repo, ref, path)
         except Exception:
@@ -538,16 +568,7 @@ def resolve_pin(
             )
         found, text = result[0], result[1]
         ref_kind = result[2] if len(result) == 3 else None
-        # A remote answer says nothing about whether the ref can move unless the
-        # provider states it.  Only a commit-shaped ref, or one the provider
-        # reports as a tag, is treated as stable; anything else (a branch named
-        # like a version included) is flagged, found or not.
-        if ref_kind in ("tag", "commit"):
-            # The provider's statement replaces the name heuristic.
-            if UNPINNED in flags:
-                flags.remove(UNPINNED)
-        elif UNPINNED not in flags and classify_ref(ref) != "commit":
-            flags.append(UNPINNED)
+        _apply_remote_flags(flags, ref, ref_kind, bool(proof))
         if type(found) is not bool:
             return PinResult(UNRESOLVABLE, flags, "fetcher returned a non-boolean found flag")
         if not found:
@@ -567,6 +588,7 @@ def resolve_pin(
         return _finish_with_text(pin, text, flags)
 
     # --- 3) No source could answer.
+    _apply_remote_flags(flags, ref, None, bool(proof))
     return PinResult(
         UNRESOLVABLE,
         flags,
