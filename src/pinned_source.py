@@ -218,6 +218,14 @@ def _is_git_repo(directory: str) -> bool:
     ) and os.path.isdir(os.path.join(directory, "objects"))
 
 
+def _is_shallow(repo_dir: str) -> bool:
+    """Filesystem-only shallow-clone check (no subprocess)."""
+    return any(
+        os.path.isfile(os.path.join(repo_dir, *parts))
+        for parts in ((".git", "shallow"), ("shallow",))
+    )
+
+
 def _git_env() -> dict:
     """Minimal, config-isolated environment for git child processes.
 
@@ -325,6 +333,10 @@ def _resolve_local(
             "local git lookup could not run (git missing or timeout)",
         )
     if rc == 1:
+        if _is_shallow(repo_dir):
+            # A shallow clone omits history on purpose: a miss only proves this
+            # clone cannot answer, not that the upstream pin is absent.
+            return PinResult(UNRESOLVABLE, flags, "shallow clone does not contain the ref")
         # ``--verify --quiet`` exits 1 for "no such revision" and nothing else;
         # a fatal error (corrupt repo, unreadable objects) exits higher.
         return PinResult(
@@ -430,8 +442,9 @@ def resolve_pin(
 
     ``local_repos_root``: directory containing local clones, addressed by
     plain repo name.  ``fetcher``: callable ``fetcher(kind, repo, ref,
-    path) -> (found: bool, text: str | None)`` for anything a local repo
-    cannot answer.  ``enabled``: provider switch; when False no lookup of
+    path) -> (found: bool, text: str | None)`` or ``(found, text, ref_kind)``
+    with ``ref_kind`` ``"tag"`` / ``"commit"`` when the provider knows the ref
+    cannot move, for anything a local repo cannot answer.  ``enabled``: provider switch; when False no lookup of
     any kind is performed.
 
     Order: validate inputs (any violation rejects the citation before any
@@ -504,21 +517,23 @@ def resolve_pin(
 
     # --- 2) Otherwise the injected fetcher (never a first-party client).
     if fetcher is not None:
-        if (UNPINNED not in flags and classify_ref(ref) != "commit"
-                and not _VERSION_RE.fullmatch(ref)):
-            # A remote answer carries no ref-kind metadata: anything not shaped
-            # like a commit or a version might be a moving branch, whatever the
-            # provider answers (a "not found" does not make it immutable).
-            flags.append(UNPINNED)
         try:
             result = fetcher(pin.kind, repo, ref, path)
         except Exception:
             return PinResult(UNRESOLVABLE, flags, "fetcher raised an exception")
-        if not (isinstance(result, tuple) and len(result) == 2):
+        if not (isinstance(result, tuple) and len(result) in (2, 3)):
             return PinResult(
                 UNRESOLVABLE, flags, "fetcher returned a malformed result"
             )
-        found, text = result
+        found, text = result[0], result[1]
+        ref_kind = result[2] if len(result) == 3 else None
+        # A remote answer says nothing about whether the ref can move unless the
+        # provider states it.  Only a commit-shaped ref, or one the provider
+        # reports as a tag, is treated as stable; anything else (a branch named
+        # like a version included) is flagged, found or not.
+        if (UNPINNED not in flags and classify_ref(ref) != "commit"
+                and ref_kind not in ("tag", "commit")):
+            flags.append(UNPINNED)
         if type(found) is not bool:
             return PinResult(UNRESOLVABLE, flags, "fetcher returned a non-boolean found flag")
         if not found:

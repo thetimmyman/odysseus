@@ -857,18 +857,29 @@ def test_docs_version_quote_without_a_path_is_not_confirmed_locally(git_repo, ro
     assert result.matched_quote is None
 
 
-def test_remote_branch_shaped_ref_is_flagged_unpinned():
-    def fetcher(kind, repo, ref, path):
+def test_remote_refs_are_unpinned_unless_commit_shaped_or_reported_as_a_tag():
+    def plain(kind, repo, ref, path):
         return (True, "text")
 
-    branch = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="feature/release",
-                                path="x.md"), fetcher=fetcher)
-    tag = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="v1.2.3", path="x.md"),
-                      fetcher=fetcher)
-    commit = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="abc1234", path="x.md"),
-                         fetcher=fetcher)
-    assert UNPINNED in branch.flags
-    assert UNPINNED not in tag.flags and UNPINNED not in commit.flags
+    def reports_tag(kind, repo, ref, path):
+        return (True, "text", "tag")
+
+    def pin(ref):
+        return PinRef(kind="repo_file", repo="a/b", ref=ref, path="x.md")
+
+    assert UNPINNED in resolve_pin(pin("feature/release"), fetcher=plain).flags
+    assert UNPINNED in resolve_pin(pin("v1.2.3"), fetcher=plain).flags  # may be a branch
+    assert UNPINNED not in resolve_pin(pin("v1.2.3"), fetcher=reports_tag).flags
+    assert UNPINNED not in resolve_pin(pin("abc1234"), fetcher=plain).flags
+
+
+def test_shallow_clone_miss_is_unresolvable_and_falls_to_the_fetcher(git_repo, root):
+    (git_repo / ".git" / "shallow").write_text("", encoding="utf-8")
+    pin = _repo_file(ref="deadbeefcafe", path="read.txt")
+    assert resolve_pin(pin, local_repos_root=root).status == UNRESOLVABLE
+    answered = resolve_pin(pin, local_repos_root=root,
+                           fetcher=lambda kind, repo, ref, path: (True, "alpha"))
+    assert answered.status == TRUE
 
 
 def test_hex_named_branch_is_flagged_unpinned(git_repo, root):
