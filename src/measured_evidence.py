@@ -158,7 +158,14 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         root_path = Path(root).resolve(strict=True)
     except (OSError, RuntimeError):
         root_path = Path(root)
-    if not root_path.is_dir():
+    try:
+        root_is_dir = root_path.is_dir()
+    except OSError as err:
+        return LookupResult(
+            status=UNAVAILABLE, sources=(),
+            reason=f"measured-evidence root could not be read: {root_path}: {err.strerror or err.errno}",
+        )
+    if not root_is_dir:
         return LookupResult(
             status=UNAVAILABLE, sources=(),
             reason=f"measured-evidence root is not a directory: {root_path}",
@@ -230,6 +237,12 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             reason=f"measured-evidence directory could not be read: {walk['walk_error']}",
         )
     note = f"; scan stopped at the per-lookup limit after {scanned} files" if capped else ""
+    if not best and capped:
+        # The scan ended at a ceiling before it could say there is nothing: that is not "none".
+        return LookupResult(
+            status=UNAVAILABLE, sources=(),
+            reason="measured-evidence scan was incomplete; it stopped before finding a match" + note,
+        )
     if not best:
         return LookupResult(
             status=NONE, sources=(),
@@ -319,14 +332,20 @@ def _parse_measurements(raw, path) -> tuple:
 
 
 def _finite_number(value):
-    """``value`` as a finite float, or None for booleans, non-numbers and overflowing integers."""
+    """``value`` if it is a finite number, else None (booleans, non-numbers, overflowing integers).
+
+    An integer keeps its exact value: coercing a count above 2**53 to a float would merge distinct
+    values, and Python integer arithmetic is exact. Only the float range is checked.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
         number = float(value)
     except OverflowError:
         return None
-    return number if math.isfinite(number) else None
+    if not math.isfinite(number):
+        return None
+    return value if isinstance(value, int) else number
 
 
 def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictReport:
@@ -512,7 +531,13 @@ def _iter_candidate_files(root, state=None):
     entries = 0
     for top in ("evidence", "benchmark"):
         base = root / top
-        if not base.is_dir() or base.is_symlink():
+        try:
+            if not base.is_dir() or base.is_symlink():
+                continue
+        except OSError as err:
+            # A subtree that cannot even be probed is a traversal error, not an absent one.
+            if state is not None:
+                state["walk_error"] = f"{top}: {err.strerror or err.errno}"
             continue
         def _walk_error(err, _state=state):
             if _state is not None:

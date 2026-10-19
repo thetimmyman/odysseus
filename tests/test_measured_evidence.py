@@ -589,3 +589,40 @@ def test_structured_measurements_per_file_are_bounded(tmp_path, monkeypatch):
     (root / "benchmark" / "gpu" / "results" / "run.json").write_text(json.dumps({"measurements": entries}))
     [source] = me.find_measured_sources("run", root=root, enabled=True).sources
     assert len(source.measurements) == 5 and source.measurements_capped is True
+
+
+def test_a_capped_scan_with_no_match_is_unavailable_not_none(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    for index in range(10):
+        (root / "evidence" / f"a{index}.txt").write_text("nothing here")
+    (root / "evidence" / "z.txt").write_text("needle")
+    monkeypatch.setattr(me, "_MAX_FILES_SCANNED", 3)
+    capped = me.find_measured_sources("needle", root=root, enabled=True)
+    assert capped.status == me.UNAVAILABLE and "incomplete" in capped.reason
+    monkeypatch.setattr(me, "_MAX_FILES_SCANNED", 5000)
+    assert me.find_measured_sources("needle", root=root, enabled=True).status == me.OK
+    # Negative control: a complete scan with no match stays NONE.
+    assert me.find_measured_sources("absent", root=root, enabled=True).status == me.NONE
+
+
+def test_a_root_without_search_permission_is_unavailable_not_an_error(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    root.chmod(0o444)
+    try:
+        result = me.find_measured_sources("needle", root=root, enabled=True)
+    finally:
+        root.chmod(0o755)
+    assert result.status == me.UNAVAILABLE
+
+
+def test_large_integers_are_compared_exactly():
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 9007199254740993, "tok/s", "vendor")
+    report = me.find_conflicts([assertion], [_bench_measurement(9007199254740992)], rel_tolerance=0)
+    assert not report.agreements and len(report.conflicts) == 1
+    # Negative control: identical integers agree even at zero tolerance.
+    same = me.find_conflicts([assertion], [_bench_measurement(9007199254740993)], rel_tolerance=0)
+    assert len(same.agreements) == 1
