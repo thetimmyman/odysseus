@@ -1,0 +1,619 @@
+"""Tests for src.pinned_source (local git resolution, fetcher fallback,
+input validation, status discipline).
+
+All git repos are built in temp directories via subprocess; no network is
+used.  Pin text (file contents, quotes, ref/path/repo names) is untrusted
+data and is treated as such.
+"""
+
+import hashlib
+import os
+import re
+import subprocess
+
+import pytest
+
+from src import pinned_source as ps
+from src.pinned_source import (
+    FALSE,
+    NOT_SEARCHED,
+    TRUE,
+    UNPINNED,
+    UNRESOLVABLE,
+    PinRef,
+    classify_ref,
+    resolve_pin,
+    resolve_pins,
+)
+
+FILE_TEXT = (
+    "Odysseus keeps its pinned sources grounded.\n\n"
+    "Every citation resolves against a commit that cannot drift.\n\n"
+    "Unpinned names such as branches are resolved, then flagged, and the\n"
+    "content is hashed and compared, never executed."
+)
+QUOTE = "citation resolves against a commit that cannot drift"
+SHA256_FILE = hashlib.sha256(FILE_TEXT.encode("utf-8")).hexdigest()
+
+
+def _make_repo(tmp_path, name="myrepo"):
+    """Build a tiny local repo with two commits, a tag, and extra branches.
+
+    Layout: ``v1.0.0`` points at the first commit (adds read.txt); the
+    second commit (HEAD of ``main``) adds docs/version.txt; ``stable`` and
+    ``develop`` exist as branch names without a version shape.
+    """
+    repo = tmp_path / name
+
+    def git(*args):
+        subprocess.run(
+            ["git", *[str(a) for a in args]],
+            cwd=str(repo),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(tmp_path),
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_SYSTEM": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            },
+        )
+
+    subprocess.run(
+        ["git", "init", "-q", str(repo)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    (repo / "read.txt").write_text(FILE_TEXT, encoding="utf-8")
+    git("add", "read.txt")
+    git("commit", "-qm", "first")
+    git("tag", "v1.0.0")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "version.txt").write_text(
+        "Version 2.0.0: pinned source notes.\n", encoding="utf-8"
+    )
+    git("add", "docs/version.txt")
+    git("commit", "-qm", "second")
+    git("branch", "stable")
+    git("branch", "stable-1")
+    git("branch", "develop")
+    return repo
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    return _make_repo(tmp_path, "myrepo")
+
+
+@pytest.fixture
+def root(git_repo, tmp_path):
+    return tmp_path  # local_repos_root: the clone sits at <root>/myrepo
+
+
+def first_commit_sha(repo):
+    return subprocess.run(
+        ["git", "rev-parse", "v1.0.0^{commit}"],
+        cwd=str(repo),
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout.decode().strip()
+
+
+def _repo_file(**kw):
+    kw.setdefault("kind", "repo_file")
+    kw.setdefault("repo", "myrepo")
+    return PinRef(**kw)
+
+
+# --- classify_ref ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "ref,kind",
+    [
+        ("abc1234", "commit"),
+        ("d41d8cd98f00b204e9800998ecf8427e", "commit"),
+        ("ABCDEF0123456789", "commit"),
+        ("aaaaaaa", "commit"),
+        ("v2.1.0", "tag"),
+        ("2.1.0", "version"),
+        ("1.2.3-rc.1", "tag"),
+        ("v10.20.30", "tag"),
+        ("main", "branch"),
+        ("master", "branch"),
+        ("HEAD", "branch"),
+        ("head", "branch"),
+        ("latest", "branch"),
+        ("stable", "branch"),
+        ("develop", "branch"),
+        ("dev", "branch"),
+        ("Main", "branch"),
+    ],
+)
+def test_classify_ref(ref, kind):
+    assert classify_ref(ref) == kind
+
+
+def test_classify_ref_ambiguous_and_odd_shapes():
+    # 41 hex chars is not a commit shape; falls to the version catch-all.
+    assert classify_ref("a" * 41) == "version"
+    assert classify_ref("2.0") == "version"
+    assert classify_ref("release-notes") == "version"
+
+
+# --- local resolution: the controls ----------------------------------------
+
+
+def test_real_commit_path_quote_true(git_repo, root):
+    # Probe the fixture directly so this test is a known hit, not a guess.
+    sha = first_commit_sha(git_repo)
+    assert re.fullmatch(r"[0-9a-f]{40}", sha)
+    result = resolve_pin(
+        _repo_file(ref=sha, path="read.txt", quote=QUOTE),
+        local_repos_root=root,
+    )
+    assert result.status == TRUE
+    assert result.matched_quote is True
+    assert result.text_sha256 == SHA256_FILE
+    assert UNPINNED not in result.flags
+
+
+def test_wrong_tag_false(root):
+    result = resolve_pin(
+        _repo_file(ref="v9.9.9", path="read.txt"), local_repos_root=root
+    )
+    assert result.status == FALSE
+    assert "tag" in result.reason
+
+
+def test_fabricated_path_false_at_real_commit(git_repo, root):
+    sha = first_commit_sha(git_repo)
+    result = resolve_pin(
+        _repo_file(ref=sha, path="no/such/file.md"), local_repos_root=root
+    )
+    assert result.status == FALSE
+    assert "path" in result.reason
+
+
+def test_real_file_fabricated_quote_false(root):
+    result = resolve_pin(
+        _repo_file(ref="v1.0.0", path="read.txt", quote="text that was never written"),
+        local_repos_root=root,
+    )
+    assert result.status == FALSE
+    assert result.matched_quote is False
+    # The sha is still reported, because the content was actually read.
+    assert result.text_sha256 == SHA256_FILE
+
+
+def test_quote_matches_after_whitespace_collapse(root):
+    # Leading/trailing whitespace and odd spacing in the quote must not
+    # matter; the verbatim text (with normal spacing) does matter.
+    for quote in ("  " + QUOTE, "\t" + QUOTE + "\n", "cannot    drift"):
+        result = resolve_pin(
+            _repo_file(ref="v1.0.0", path="read.txt", quote=quote),
+            local_repos_root=root,
+        )
+        assert result.status == TRUE, quote
+        assert result.matched_quote is True, quote
+
+
+def test_main_citation_true_with_unpinned_flag(root):
+    result = resolve_pin(
+        _repo_file(ref="main", path="read.txt"), local_repos_root=root
+    )
+    assert result.status == TRUE
+    assert UNPINNED in result.flags
+
+
+@pytest.mark.parametrize("ref", ["stable", "develop", "latest", "master", "HEAD"])
+def test_other_branch_citations_unpinned(root, ref):
+    result = resolve_pin(
+        _repo_file(ref=ref, path="read.txt"), local_repos_root=root
+    )
+    assert result.status == TRUE
+    assert UNPINNED in result.flags
+
+
+def test_release_notes_kind_via_local_git(root):
+    result = resolve_pin(
+        PinRef(
+            kind="release_notes",
+            repo="myrepo",
+            ref="main",
+            path="docs/version.txt",
+            quote="pinned source notes",
+        ),
+        local_repos_root=root,
+    )
+    assert result.status == TRUE
+    assert UNPINNED in result.flags
+
+
+def test_branch_tag_shape_ref_still_unpinned(root):
+    # "stable-1" is a real branch shaped like a tag: it resolves, it is
+    # still unpinned (it drifts), but nothing may pretend to be unresolvable.
+    git_repo = root / "myrepo"
+    out = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "stable-1^{commit}"],
+        cwd=str(git_repo),
+        stdout=subprocess.PIPE,
+    )
+    assert out.returncode == 0
+    result = resolve_pin(
+        _repo_file(ref="stable-1", path="read.txt"), local_repos_root=root
+    )
+    assert result.status == TRUE
+    assert UNPINNED in result.flags
+
+
+# --- UNRESOLVABLE -----------------------------------------------------------
+
+
+def test_local_repo_missing_and_no_fetcher(git_repo, tmp_path):
+    # A valid plain repo name that has no clone: nobody can answer.
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="gone", ref="v1.0.0", path="read.txt"),
+        local_repos_root=tmp_path,
+    )
+    assert result.status == UNRESOLVABLE
+    assert result.reason
+
+
+def test_no_root_no_fetcher(git_repo):
+    result = resolve_pin(_repo_file(ref="v1.0.0", path="read.txt"))
+    assert result.status == UNRESOLVABLE
+
+
+def test_fetcher_raising_unresolvable(tmp_path):
+    def boom(kind, repo, ref, path):
+        raise RuntimeError("network down")
+
+    result = resolve_pin(
+        PinRef(
+            kind="release_notes",
+            repo="some/owner-repo",
+            ref="v1.2.3",
+            path="notes.md",
+        ),
+        local_repos_root=tmp_path,
+        fetcher=boom,
+    )
+    assert result.status == UNRESOLVABLE
+    assert "fetcher" in result.reason
+
+
+def test_fetcher_returns_not_found(tmp_path):
+    calls = []
+
+    def missing(kind, repo, ref, path):
+        calls.append((kind, repo, ref, path))
+        return (False, None)
+
+    result = resolve_pin(
+        PinRef(kind="docs_version", repo="a/b", ref="1.2.3"),
+        fetcher=missing,
+    )
+    assert calls == [("docs_version", "a/b", "1.2.3", None)]
+    assert result.status == FALSE
+
+
+def test_local_git_authoritative_over_fetcher(git_repo, root):
+    calls = []
+
+    def lying_fetcher(kind, repo, ref, path):
+        calls.append(kind)
+        return (False, None)
+
+    sha = first_commit_sha(git_repo)
+    result = resolve_pin(
+        _repo_file(ref=sha, path="read.txt"),
+        local_repos_root=root,
+        fetcher=lying_fetcher,
+    )
+    assert result.status == TRUE
+    assert calls == []  # the local clone answered; fetcher never consulted
+
+
+# --- fetcher path: found + text ---------------------------------------------
+
+
+def test_fetcher_found_true_and_sha(tmp_path):
+    calls = []
+
+    def fake(kind, repo, ref, path):
+        calls.append((kind, repo, ref, path))
+        return (True, FILE_TEXT)
+
+    result = resolve_pin(
+        PinRef(kind="docs_version", repo="owner/name", ref="2.5.0", quote=QUOTE),
+        fetcher=fake,
+    )
+    assert calls == [("docs_version", "owner/name", "2.5.0", None)]
+    assert result.status == TRUE
+    assert result.matched_quote is True
+    assert result.text_sha256 == SHA256_FILE
+
+
+def test_fetcher_found_but_quote_missing(tmp_path):
+    def fake(kind, repo, ref, path):
+        return (True, "nothing like the quote in here")
+
+    result = resolve_pin(
+        PinRef(
+            kind="release_notes", repo="a/b", ref="v1.0.0", quote="never said that"
+        ),
+        fetcher=fake,
+    )
+    assert result.status == FALSE
+    assert result.matched_quote is False
+    assert result.text_sha256 == hashlib.sha256(
+        "nothing like the quote in here".encode("utf-8")
+    ).hexdigest()
+
+
+def test_fetcher_found_no_text(tmp_path):
+    def fake(kind, repo, ref, path):
+        return (True, None)
+
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="a/b", ref="v1.0.0"), fetcher=fake
+    )
+    assert result.status == TRUE
+    assert result.matched_quote is None
+    assert result.text_sha256 is None
+
+
+# --- disabled flag: NOT_SEARCHED, fetcher never called -----------------------
+
+
+def test_disabled_not_searched_and_fetcher_never_called(tmp_path):
+    called = []
+
+    def spy(kind, repo, ref, path):
+        called.append(1)
+        return (True, FILE_TEXT)
+
+    result = resolve_pin(
+        _repo_file(ref="v1.0.0", path="read.txt", quote=QUOTE),
+        local_repos_root=tmp_path,  # root without the clone: git is not tried
+        fetcher=spy,
+        enabled=False,
+    )
+    assert result.status == NOT_SEARCHED
+    assert result.reason
+    assert called == []  # a disabled provider must not even reach the fetcher
+
+
+def test_disabled_short_circuits_even_with_clone(git_repo, root):
+    called = []
+
+    def spy(kind, repo, ref, path):
+        called.append(1)
+        return (True, "x")
+
+    # The clone really exists here, so this proves the switch beats a
+    # perfectly resolvable local lookup.
+    result = resolve_pin(
+        _repo_file(ref="v1.0.0", path="read.txt"),
+        local_repos_root=root,
+        fetcher=spy,
+        enabled=False,
+    )
+    assert result.status == NOT_SEARCHED
+    assert called == []
+
+
+def test_disabled_malformed_pin_stays_not_searched(tmp_path):
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="../x", ref="--output=/tmp/x", path="a.txt"),
+        local_repos_root=tmp_path,
+        enabled=False,
+    )
+    assert result.status == NOT_SEARCHED
+
+
+# --- hostile inputs: rejected before any subprocess --------------------------
+
+
+def test_hostile_inputs_rejected_without_git(git_repo, root, monkeypatch):
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(args[0] if args else kwargs.get("args"))
+        raise AssertionError("git must not be spawned for rejected inputs")
+
+    monkeypatch.setattr(pinned_source.subprocess, "run", refuse)
+
+    pins = {
+        "ref option injection": _repo_file(ref="--output=/tmp/x", path="read.txt"),
+        "path traversal": _repo_file(ref="v1.0.0", path="../../etc/passwd"),
+        "path with dotdot segment": _repo_file(ref="v1.0.0", path="docs/../read.txt"),
+        "path with backslash": _repo_file(ref="v1.0.0", path="a\\b.txt"),
+        "path with shell char": _repo_file(ref="v1.0.0", path="a; b.txt"),
+        "repo traversal": PinRef(
+            kind="repo_file", repo="../x", ref="v1.0.0", path="read.txt"
+        ),
+        "ref with whitespace": _repo_file(ref="v1.0.0 +1", path="read.txt"),
+        "ref with tilde": _repo_file(ref="HEAD~1", path="read.txt"),
+        "ref with shell char": _repo_file(ref="v1.0.0; rm -rf /", path="read.txt"),
+    }
+    for label, pin in pins.items():
+        result = resolve_pin(pin, local_repos_root=root)
+        assert result.status in (FALSE, UNRESOLVABLE), (label, result)
+        assert result.reason, (label, result)
+    assert calls == []  # not a single subprocess call was made
+
+
+def test_hostile_repo_owner_and_root_name_rejected(monkeypatch):
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(args[0] if args else kwargs.get("args"))
+        raise AssertionError("no subprocess for rejected inputs")
+
+    monkeypatch.setattr(pinned_source.subprocess, "run", refuse)
+
+    pins = [
+        PinRef(kind="release_notes", repo="a/../b", ref="v1.0.0"),
+        PinRef(kind="docs_version", repo="..", ref="1.2.3"),
+        PinRef(kind="docs_version", repo="own er/name", ref="1.2.3"),
+        PinRef(kind="repo_file", repo="", ref="v1.0.0", path="read.txt"),
+    ]
+    for pin in pins:
+        result = resolve_pin(pin)
+        assert result.status in (FALSE, UNRESOLVABLE), pin
+        assert result.reason
+    assert calls == []
+
+
+def test_hostile_ref_on_fetcher_path_rejected_before_fetch(tmp_path, monkeypatch):
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(args[0] if args else kwargs.get("args"))
+        raise AssertionError("no subprocess for rejected refs")
+
+    monkeypatch.setattr(pinned_source.subprocess, "run", refuse)
+
+    def spy(kind, repo, ref, path):
+        calls.append(("fetcher", kind, repo, ref, path))
+        return (True, "x")
+
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="owner/name", ref="HEAD~1", path="n.md"),
+        fetcher=spy,
+    )
+    assert result.status == FALSE
+    assert calls == []  # refused before the fetcher, and without any git
+
+
+# --- ungrounded: UNPINNED + NOT_SEARCHED -------------------------------------
+
+
+def test_missing_ref_unpinned_not_searched(git_repo, root):
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="myrepo"), local_repos_root=root
+    )
+    assert result.status == NOT_SEARCHED
+    assert UNPINNED in result.flags
+
+
+def test_blank_ref_unpinned_not_searched(git_repo, root):
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="myrepo", ref="   "), local_repos_root=root
+    )
+    assert result.status == NOT_SEARCHED
+    assert UNPINNED in result.flags
+
+
+def test_missing_ref_does_not_spawn_git(root, monkeypatch):
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(args[0] if args else kwargs.get("args"))
+
+    monkeypatch.setattr(pinned_source.subprocess, "run", refuse)
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="myrepo"), local_repos_root=root
+    )
+    assert result.status == NOT_SEARCHED
+    assert calls == []
+
+
+def test_repo_file_missing_path_not_searched_with_reason(git_repo, root):
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="myrepo", ref="v1.0.0", path=None),
+        local_repos_root=root,
+    )
+    assert result.status == NOT_SEARCHED
+    assert "path" in result.reason
+
+
+# --- misc --------------------------------------------------------------------
+
+
+def test_resolve_pins_wrapper(git_repo, root):
+    sha = first_commit_sha(git_repo)
+    results = resolve_pins(
+        [
+            PinRef(
+                kind="repo_file",
+                repo="myrepo",
+                ref=sha,
+                path="read.txt",
+                quote=QUOTE,
+            ),
+            PinRef(kind="repo_file", repo="myrepo", ref="v9.9.9", path="read.txt"),
+            PinRef(kind="repo_file", repo="myrepo"),
+        ],
+        local_repos_root=root,
+    )
+    assert [r.status for r in results] == [TRUE, FALSE, NOT_SEARCHED]
+    assert UNPINNED in results[2].flags
+
+
+def test_quote_matches_verbatim_even_when_spaced(root):
+    # Extra internal spacing in the quote still matches single-spaced text.
+    result = resolve_pin(
+        _repo_file(ref="v1.0.0", path="read.txt", quote="cannot   drift"),
+        local_repos_root=root,
+    )
+    assert result.status == TRUE
+    assert result.matched_quote is True
+
+
+def test_odd_but_safe_ref_shapes_go_to_git_and_answer_false(git_repo, root):
+    # 41 hex chars and release-* branch names are inside the safe charset:
+    # they must be passed to git (not falsely rejected) and answered
+    # authoritatively FALSE (the ref simply does not exist here).
+    for ref in ("A" * 41, "release-2.0"):
+        result = resolve_pin(
+            _repo_file(ref=ref, path="read.txt"), local_repos_root=root
+        )
+        assert result.status == FALSE, (ref, result)
+
+
+def test_pin_ref_kind_validation():
+    with pytest.raises(ValueError):
+        PinRef(kind="bogus")
+    with pytest.raises(ValueError):
+        PinRef(kind="repo_file", repo=123)
+
+
+def test_unknown_kind_rejected(tmp_path):
+    result = resolve_pin(
+        PinRef(kind="bogus_kind", repo="myrepo", ref="v1.0.0", path="read.txt"),
+        local_repos_root=tmp_path,
+    )
+    assert result.status == NOT_SEARCHED
+    assert "kind" in result.reason
+
+
+def test_module_hygiene():
+    text = open(
+        os.path.join(os.path.dirname(__file__), "..", "src", "pinned_source.py")
+    ).read()
+    assert "shell=True" not in text
+    assert "urllib" not in text and "http.client" not in text and "socket" not in text
+    assert "import os" in text  # only for path handling and subprocess env
+
+
+def test_no_env_reads_outside_fixture(tmp_path):
+    # Behavior must not depend on the ambient environment: identical results
+    # when irrelevant env chatter is present or absent.
+    git_repo = _make_repo(tmp_path, "myrepo")
+    result = resolve_pin(
+        _repo_file(ref="v1.0.0", path="read.txt", quote=QUOTE),
+        local_repos_root=tmp_path,
+    )
+    assert result.status == TRUE

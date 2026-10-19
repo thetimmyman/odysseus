@@ -1,0 +1,421 @@
+"""Pinned source resolver.
+
+Answers, for a pinned source citation (a :class:`PinRef`): does the pinned
+reference (commit / tag / version / branch) exist, and does the file content
+cited at that pin really exist there, optionally containing a quoted passage
+verbatim (after whitespace collapse)?
+
+Stdlib only.  Remote resolution goes through a caller-injected ``fetcher``
+callable -- this module never imports a network client, reads no environment
+variables for behavior, and keeps no global state.  Pin text is untrusted
+data: it is hashed and compared, never executed or interpreted.
+
+Statuses (see :class:`PinResult`):
+
+* ``TRUE``         a lookup was actually performed and authoritatively
+                   confirmed the pin (and the quote, if any).
+* ``FALSE``        a source authoritatively answered "no" (ref, path or
+                   quote does not exist), or the citation input was
+                   malformed and rejected before any lookup.
+* ``UNRESOLVABLE`` no source could answer (no local repo, no fetcher,
+                   the fetcher failed, or a lookup timed out).  A no-answer
+                   is never reported as FALSE.
+* ``NOT_SEARCHED`` no lookup was performed at all (provider disabled, or
+                   the citation is ungrounded because there is nothing to
+                   search).  Ungrounded is never TRUE.
+
+Unpinned citations carry the ``UNPINNED`` flag.  Branch-class refs
+(``main``, ``latest``, ...) are resolved and may be TRUE for existence, but
+always flag that the citation can drift; a citation with no ref at all is
+``UNPINNED`` + ``NOT_SEARCHED``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import subprocess
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional
+
+__all__ = [
+    "TRUE",
+    "FALSE",
+    "UNRESOLVABLE",
+    "NOT_SEARCHED",
+    "UNPINNED",
+    "PinRef",
+    "PinResult",
+    "classify_ref",
+    "resolve_pin",
+    "resolve_pins",
+]
+
+# --- Result statuses -------------------------------------------------------
+TRUE = "TRUE"
+FALSE = "FALSE"
+UNRESOLVABLE = "UNRESOLVABLE"
+NOT_SEARCHED = "NOT_SEARCHED"
+
+# --- Flags -------------------------------------------------------------------
+UNPINNED = "UNPINNED"
+
+_PIN_KINDS = ("repo_file", "release_notes", "docs_version")
+
+# Branch names that exist in almost every repo and therefore never pin.
+_KNOWN_BRANCHES = frozenset(
+    {"main", "master", "head", "latest", "stable", "develop", "dev"}
+)
+
+# --- Conservative allow-lists (refs, repos, paths) ---------------------------
+# Commit: 7-40 bare hex chars.
+_COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,40}")
+# Tag/version: 1.2.3, v1.2.3, with an optional -rc1 / +build suffix.
+_VERSION_RE = re.compile(
+    r"v?\d{1,9}(?:\.\d{1,9}){1,9}(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?"
+)
+# A plain local directory name (no separators, no leading dot).
+_REPO_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*")
+# An owner/name form acceptable to a fetcher.
+_REPO_OWNER_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._\-]*/[A-Za-z0-9][A-Za-z0-9._\-]*"
+)
+# Path segments: alnum plus dot/underscore/hyphen.
+_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9._\-]+")
+# Ref segments: same conservative character set (no whitespace, no shell
+# metacharacters, no ``~^:+=!``); ``/`` may separate ref segments.
+_REF_ALLOWED_RE = re.compile(r"[A-Za-z0-9._\-]+")
+_WS_RE = re.compile(r"\s+")
+
+# subprocess discipline: bound every call, cap every byte we will keep.
+GIT_TIMEOUT = 15.0
+MAX_OUTPUT = 1 << 20  # 1 MiB
+
+
+@dataclass(frozen=True)
+class PinRef:
+    """A pinned source citation (untrusted input; validated on resolve).
+
+    ``kind``: ``repo_file`` | ``release_notes`` | ``docs_version``.
+    ``repo``: a plain local directory name (local resolution) or an
+    ``owner/name`` form (fetcher resolution).
+    ``ref``: a commit sha, tag, version string, or branch name.  A missing
+    ref makes the citation unpinned and ungrounded.
+    ``path``: relative file path, required to mean anything for
+    ``repo_file`` pins; other kinds may carry one for disambiguation.
+    ``quote``: optional passage that must be found verbatim (after
+    whitespace collapse) in the file at the pin.
+    """
+
+    kind: str = "repo_file"
+    repo: str = ""
+    ref: Optional[str] = None
+    path: Optional[str] = None
+    quote: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # ``kind`` is validated by :func:`resolve_pin` (it may receive
+        # untrusted input and must not raise); fields must be strings.
+        for name in ("kind", "repo", "ref", "path", "quote"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{name} must be a string or None")
+
+
+@dataclass
+class PinResult:
+    """Outcome of resolving one pin.
+
+    ``text_sha256`` hashes the UTF-8 encoding of the resolved text (for
+    local git reads, undecodable bytes are replacement characters).
+    ``matched_quote`` is None when there is no quote, True/False when one
+    was checked.
+    """
+
+    status: str
+    flags: List[str] = field(default_factory=list)
+    reason: str = ""
+    text_sha256: Optional[str] = None
+    matched_quote: Optional[bool] = None
+
+
+def classify_ref(ref: str) -> str:
+    """Classify a ref string (heuristic).
+
+    ``commit`` for 7-40 hex chars; ``branch`` for the well-known unpinned
+    branch names (case-insensitive); ``tag`` for ``v``-prefixed dotted
+    versions; ``version`` for bare dotted versions -- which is also the
+    catch-all for anything else.
+    """
+    if not isinstance(ref, str) or not ref:
+        raise ValueError("ref must be a non-empty string")
+    if ref.lower() in _KNOWN_BRANCHES:
+        return "branch"
+    if _COMMIT_RE.fullmatch(ref):
+        return "commit"
+    if _VERSION_RE.fullmatch(ref):
+        return "tag" if ref[0] in "vV" else "version"
+    return "version"
+
+
+def _valid_ref(ref: str) -> bool:
+    """Conservative ref shape: letters, digits, dot, underscore, hyphen,
+    and ``/`` between segments; no leading ``-`` (option injection), no
+    ``..`` or empty segments, no whitespace or any shell/meta character."""
+    if not ref or ref[0] == "-":
+        return False
+    for segment in ref.split("/"):
+        if segment == ".." or not _REF_ALLOWED_RE.fullmatch(segment):
+            return False
+    return True
+
+
+def _valid_path(path: str) -> bool:
+    """Conservative relative path: no leading ``-``/``/``, no ``.``/``..``
+    segments, no empty or out-of-charset segments, no ``\\``, no ``://``,
+    no NUL bytes."""
+    if not path or path[0] in "-/":
+        return False
+    if "\x00" in path or "\\" in path or "://" in path:
+        return False
+    for segment in path.split("/"):
+        if segment in (".", ".."):
+            return False
+        if not _PATH_SEGMENT_RE.fullmatch(segment):
+            return False
+    return True
+
+
+def _is_git_repo(directory: str) -> bool:
+    """Filesystem-only git repo check (no subprocess)."""
+    if not os.path.isdir(directory):
+        return False
+    if os.path.isdir(os.path.join(directory, ".git")) or os.path.isfile(
+        os.path.join(directory, ".git")
+    ):
+        return True
+    # Bare repository.
+    return os.path.isfile(
+        os.path.join(directory, "HEAD")
+    ) and os.path.isdir(os.path.join(directory, "objects"))
+
+
+def _git_env() -> dict:
+    """Minimal, config-isolated environment for git child processes.
+
+    Suppresses system and global git config (no user hooks, aliases,
+    fsmonitor, or pager) and opts every path into ``safe.ownership:
+    disabled`` -- the operator has already trusted this repo tree by
+    exposing it as the local repos root.
+    """
+    devnull = os.path.devnull
+    return {
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": devnull,
+        "GIT_CONFIG_SYSTEM": devnull,
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "*",
+    }
+
+
+def _run_git(args: list, cwd: str):
+    """Run ``git <args>`` (argument list, never a shell) with a timeout and
+    an output cap.
+
+    Returns ``(rc, stdout, stderr)``.  ``rc`` is None when the process
+    could not be started or the timeout fired -- i.e. no answer was
+    obtained, which callers must report as UNRESOLVABLE, never FALSE.
+    """
+    try:
+        proc = subprocess.run(
+            list(args),
+            cwd=cwd,
+            env=_git_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None, b"", b""
+    return proc.returncode, proc.stdout[:MAX_OUTPUT], proc.stderr[:MAX_OUTPUT]
+
+
+def _collapsed_contains(text: str, quote: str) -> bool:
+    """Quote search: verbatim, after collapsing whitespace runs to single
+    spaces in both the content and the quote."""
+    return _WS_RE.sub(" ", quote) in _WS_RE.sub(" ", text)
+
+
+def _finish_with_text(pin: PinRef, text: str, flags: List[str]) -> PinResult:
+    """Build the result for content that was successfully read."""
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    quote = pin.quote
+    if quote is None or not quote.strip():
+        return PinResult(TRUE, flags, "pin resolved and content read", digest, None)
+    if _collapsed_contains(text, quote):
+        return PinResult(
+            TRUE,
+            flags,
+            "pin resolved; quote found after whitespace collapse",
+            digest,
+            True,
+        )
+    return PinResult(FALSE, flags, "quote not found at pin", digest, False)
+
+
+def _resolve_local(pin: PinRef, ref: str, repo_dir: str, flags: List[str]) -> PinResult:
+    """Resolve a repo_file pin against a local git repository.
+
+    The ref and path have already been validated against the allow-lists,
+    and the commit sha passed to ``git show`` is re-validated as hex, so no
+    untrusted input reaches the child process unbounded.
+    """
+    rc, out, _err = _run_git(
+        ["git", "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
+        cwd=repo_dir,
+    )
+    if rc is None:
+        return PinResult(
+            UNRESOLVABLE,
+            flags,
+            "local git lookup could not run (git missing or timeout)",
+        )
+    if rc != 0:
+        return PinResult(FALSE, flags, f"ref {ref} does not resolve in local repo")
+    sha = out.decode("utf-8", "replace").strip()
+    if not re.fullmatch(r"[0-9a-f]{4,40}", sha):
+        return PinResult(UNRESOLVABLE, flags, "unexpected rev-parse output")
+    rc, out, _err = _run_git(["git", "show", sha + ":" + pin.path], cwd=repo_dir)
+    if rc is None:
+        return PinResult(
+            UNRESOLVABLE,
+            flags,
+            "local git read could not run (git missing or timeout)",
+        )
+    if rc != 0:
+        return PinResult(FALSE, flags, f"path {pin.path} does not exist at that pin")
+    text = out.decode("utf-8", "replace")
+    return _finish_with_text(pin, text, flags)
+
+
+def resolve_pin(
+    pin: PinRef,
+    *,
+    local_repos_root=None,
+    fetcher: Optional[Callable] = None,
+    enabled: bool = True,
+) -> PinResult:
+    """Resolve one pinned citation.
+
+    ``local_repos_root``: directory containing local clones, addressed by
+    plain repo name.  ``fetcher``: callable ``fetcher(kind, repo, ref,
+    path) -> (found: bool, text: str | None)`` for anything a local repo
+    cannot answer.  ``enabled``: provider switch; when False no lookup of
+    any kind is performed.
+
+    Order: validate inputs (any violation rejects the citation before any
+    subprocess or fetcher call), then local git when the pin is a
+    repo_file with a plain repo name and a local clone exists (local git
+    is authoritative for that repo), then the fetcher, then UNRESOLVABLE.
+    """
+    flags: List[str] = []
+    raw_ref = pin.ref if isinstance(pin.ref, str) else None
+    has_ref = raw_ref is not None and bool(raw_ref.strip())
+    if has_ref:
+        if classify_ref(raw_ref.strip()) == "branch":
+            flags.append(UNPINNED)
+    else:
+        flags.append(UNPINNED)
+
+    if pin.kind not in _PIN_KINDS:
+        return PinResult(
+            NOT_SEARCHED,
+            flags,
+            f"unknown pin kind {pin.kind!r}; nothing to search",
+        )
+    if not enabled:
+        return PinResult(
+            NOT_SEARCHED,
+            flags,
+            "pinned-source provider disabled; no lookups performed",
+        )
+    if not has_ref:
+        return PinResult(NOT_SEARCHED, flags, "citation has no ref (unpinned)")
+
+    ref = raw_ref.strip()
+
+    # --- Validate every input before any subprocess or fetcher call. ----
+    if ref.startswith("-"):
+        return PinResult(FALSE, flags, "ref rejected: must not start with '-'")
+    if not _valid_ref(ref):
+        return PinResult(FALSE, flags, "ref rejected: not a safe ref string")
+
+    path = pin.path
+    if pin.kind == "repo_file":
+        if path is None or not path.strip():
+            return PinResult(
+                NOT_SEARCHED,
+                flags,
+                "repo_file citation has no path; nothing to search",
+            )
+        if not _valid_path(path):
+            return PinResult(FALSE, flags, "path rejected: not a safe relative path")
+    elif path is not None and path.strip() and not _valid_path(path):
+        return PinResult(FALSE, flags, "path rejected: not a safe relative path")
+
+    repo = pin.repo if isinstance(pin.repo, str) else ""
+    repo_ok_local = bool(_REPO_NAME_RE.fullmatch(repo))
+    if not repo_ok_local and not bool(_REPO_OWNER_RE.fullmatch(repo)):
+        return PinResult(
+            FALSE, flags, "repo rejected: not a plain name or owner/name"
+        )
+
+    # --- 1) Local git first: authoritative for a locally cloned repo. ---
+    if (
+        pin.kind == "repo_file"
+        and local_repos_root is not None
+        and repo_ok_local
+    ):
+        repo_dir = os.path.join(os.fspath(local_repos_root), repo)
+        if _is_git_repo(repo_dir):
+            return _resolve_local(pin, ref, repo_dir, flags)
+
+    # --- 2) Otherwise the injected fetcher (never a first-party client).
+    if fetcher is not None:
+        try:
+            result = fetcher(pin.kind, repo, ref, path)
+        except Exception:
+            return PinResult(UNRESOLVABLE, flags, "fetcher raised an exception")
+        if not (isinstance(result, tuple) and len(result) == 2):
+            return PinResult(
+                UNRESOLVABLE, flags, "fetcher returned a malformed result"
+            )
+        found, text = result
+        if not found:
+            return PinResult(FALSE, flags, "provider reports the pin was not found")
+        if not isinstance(text, (str, type(None))):
+            return PinResult(UNRESOLVABLE, flags, "fetcher returned non-string text")
+        if text is None:
+            return PinResult(
+                TRUE,
+                flags,
+                "provider found the pin; no text available to verify",
+            )
+        return _finish_with_text(pin, text, flags)
+
+    # --- 3) No source could answer.
+    return PinResult(
+        UNRESOLVABLE,
+        flags,
+        "no local repo and no fetcher available to answer",
+    )
+
+
+def resolve_pins(pins: list, **kwargs) -> list:
+    """Resolve many pins; keyword arguments pass through to
+    :func:`resolve_pin` unchanged."""
+    return [resolve_pin(pin, **kwargs) for pin in pins]
