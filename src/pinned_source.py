@@ -219,11 +219,17 @@ def _is_git_repo(directory: str) -> bool:
 
 
 def _is_shallow(repo_dir: str) -> bool:
-    """Filesystem-only shallow-clone check (no subprocess)."""
-    return any(
-        os.path.isfile(os.path.join(repo_dir, *parts))
-        for parts in ((".git", "shallow"), ("shallow",))
+    """Ask git whether the clone is shallow (follows gitfile worktrees and
+    submodules; any failure to answer counts as not shallow)."""
+    rc, out, _err = _run_git(["git", "rev-parse", "--is-shallow-repository"], cwd=repo_dir)
+    return rc == 0 and out.decode("utf-8", "replace").strip() == "true"
+
+
+def _branch_exists(repo_dir: str, name: str) -> bool:
+    rc, _out, _err = _run_git(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/" + name], cwd=repo_dir
     )
+    return rc == 0
 
 
 def _git_env() -> dict:
@@ -382,7 +388,12 @@ def _resolve_local(
     elif selected.startswith(("refs/heads/", "refs/remotes/")):
         if UNPINNED not in flags:
             flags.append(UNPINNED)
-    elif classify_ref(ref) != "commit" and UNPINNED not in flags:
+    elif classify_ref(ref) != "commit":
+        if UNPINNED not in flags:
+            flags.append(UNPINNED)
+    elif not selected and _branch_exists(repo_dir, ref) and UNPINNED not in flags:
+        # Hex-shaped name that is both a branch and a tag: git cannot place
+        # it, and it could drift if either is removed.
         flags.append(UNPINNED)
 
     if path is None:
@@ -531,8 +542,11 @@ def resolve_pin(
         # provider states it.  Only a commit-shaped ref, or one the provider
         # reports as a tag, is treated as stable; anything else (a branch named
         # like a version included) is flagged, found or not.
-        if (UNPINNED not in flags and classify_ref(ref) != "commit"
-                and ref_kind not in ("tag", "commit")):
+        if ref_kind in ("tag", "commit"):
+            # The provider's statement replaces the name heuristic.
+            if UNPINNED in flags:
+                flags.remove(UNPINNED)
+        elif UNPINNED not in flags and classify_ref(ref) != "commit":
             flags.append(UNPINNED)
         if type(found) is not bool:
             return PinResult(UNRESOLVABLE, flags, "fetcher returned a non-boolean found flag")

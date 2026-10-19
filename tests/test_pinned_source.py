@@ -871,10 +871,13 @@ def test_remote_refs_are_unpinned_unless_commit_shaped_or_reported_as_a_tag():
     assert UNPINNED in resolve_pin(pin("v1.2.3"), fetcher=plain).flags  # may be a branch
     assert UNPINNED not in resolve_pin(pin("v1.2.3"), fetcher=reports_tag).flags
     assert UNPINNED not in resolve_pin(pin("abc1234"), fetcher=plain).flags
+    # the provider's word overrides the name heuristic for branch-looking names
+    assert UNPINNED not in resolve_pin(pin("stable"), fetcher=reports_tag).flags
 
 
 def test_shallow_clone_miss_is_unresolvable_and_falls_to_the_fetcher(git_repo, root):
-    (git_repo / ".git" / "shallow").write_text("", encoding="utf-8")
+    (git_repo / ".git" / "shallow").write_text(
+        _git(git_repo, "rev-parse", "HEAD") + "\n", encoding="utf-8")
     pin = _repo_file(ref="deadbeefcafe", path="read.txt")
     assert resolve_pin(pin, local_repos_root=root).status == UNRESOLVABLE
     answered = resolve_pin(pin, local_repos_root=root,
@@ -940,3 +943,18 @@ def test_malformed_git_refnames_are_rejected_before_any_lookup(ref):
 
     result = resolve_pin(PinRef(kind="release_notes", repo="a/b", ref=ref), fetcher=fetcher)
     assert result.status == FALSE and not calls
+
+
+def test_shallow_detection_asks_git(git_repo, tmp_path):
+    (git_repo / ".git" / "shallow").write_text(
+        _git(git_repo, "rev-parse", "HEAD") + "\n", encoding="utf-8")
+    assert pinned_source._is_shallow(str(git_repo)) is True
+    plain = _make_repo(tmp_path, "plainrepo")
+    assert pinned_source._is_shallow(str(plain)) is False
+
+
+def test_hex_named_branch_that_is_also_a_tag_is_unpinned(git_repo, root):
+    _git(git_repo, "branch", "abcdef1", "main")
+    _git(git_repo, "tag", "abcdef1", "main")
+    result = resolve_pin(_repo_file(ref="abcdef1", path="read.txt"), local_repos_root=root)
+    assert result.status == TRUE and UNPINNED in result.flags
