@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
