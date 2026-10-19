@@ -146,8 +146,10 @@ def test_classify_ref(ref, kind):
 
 
 def test_classify_ref_ambiguous_and_odd_shapes():
-    # 41 hex chars is not a commit shape; falls to the version catch-all.
-    assert classify_ref("a" * 41) == "version"
+    # 40 (sha1) and 64 (sha256) hex chars are commits; 65 is not a commit shape.
+    assert classify_ref("a" * 40) == "commit"
+    assert classify_ref("a" * 64) == "commit"
+    assert classify_ref("a" * 65) == "version"
     assert classify_ref("2.0") == "version"
     assert classify_ref("release-notes") == "version"
 
@@ -684,3 +686,123 @@ def test_no_env_reads_outside_fixture(tmp_path):
         local_repos_root=tmp_path,
     )
     assert result.status == TRUE
+
+
+# --- review hardening: object kinds, replace refs, remote refs, formats ------
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+def _git(repo, *args):
+    return subprocess.run(
+        ["git", *args], cwd=str(repo), check=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={"PATH": os.environ.get("PATH", ""), **_GIT_ENV},
+    ).stdout.decode().strip()
+
+
+def test_a_directory_path_is_not_a_file(git_repo, root):
+    result = resolve_pin(_repo_file(ref="main", path="docs"), local_repos_root=root)
+    assert result.status == FALSE
+    assert "not a file" in result.reason
+
+
+def test_replace_refs_cannot_swap_the_pinned_commit(git_repo, root):
+    first = first_commit_sha(git_repo)
+    second = _git(git_repo, "rev-parse", "main")
+    # Make the first commit "look like" the second one to any git that honours it.
+    _git(git_repo, "replace", "-f", first, second)
+    result = resolve_pin(
+        _repo_file(ref=first, path="docs/version.txt"), local_repos_root=root
+    )
+    assert result.status == FALSE  # docs/version.txt does not exist in the real first commit
+
+
+def test_remote_tracking_branch_is_flagged_unpinned(git_repo, root):
+    _git(git_repo, "update-ref", "refs/remotes/origin/main", "main")
+    result = resolve_pin(
+        _repo_file(ref="origin/main", path="read.txt"), local_repos_root=root
+    )
+    assert result.status == TRUE
+    assert UNPINNED in result.flags
+
+
+def test_git_read_failure_is_unresolvable_not_false(git_repo, root, monkeypatch):
+    real = pinned_source._run_git
+
+    def flaky(args, cwd):
+        if "cat-file" in args and "-t" in args:
+            return 128, b"", b"fatal: unable to read object (corrupt)"
+        return real(args, cwd)
+
+    monkeypatch.setattr(pinned_source, "_run_git", flaky)
+    result = resolve_pin(_repo_file(ref="main", path="read.txt"), local_repos_root=root)
+    assert result.status == UNRESOLVABLE
+
+
+def test_oversized_blob_is_refused_before_it_is_read(git_repo, root, monkeypatch):
+    monkeypatch.setattr(pinned_source, "MAX_OUTPUT", 8)
+    calls = []
+    real = pinned_source._run_git
+
+    def spy(args, cwd):
+        calls.append(list(args))
+        return real(args, cwd)
+
+    monkeypatch.setattr(pinned_source, "_run_git", spy)
+    result = resolve_pin(_repo_file(ref="main", path="read.txt", quote=QUOTE),
+                         local_repos_root=root)
+    assert result.status == UNRESOLVABLE
+    assert not any(a[:3] == ["git", "cat-file", "blob"] for a in calls)
+
+
+def test_sha256_object_format_repository(tmp_path):
+    repo = tmp_path / "sha2"
+    subprocess.run(["git", "init", "-q", "--object-format=sha256", str(repo)], check=True)
+    (repo / "f.txt").write_text("alpha beta gamma\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-qm", "c")
+    full = _git(repo, "rev-parse", "HEAD")
+    assert len(full) == 64
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="sha2", ref=full, path="f.txt", quote="beta"),
+        local_repos_root=tmp_path,
+    )
+    assert result.status == TRUE
+    assert UNPINNED not in result.flags
+
+
+def test_semver_build_metadata_ref_is_accepted():
+    seen = []
+
+    def fake(kind, repo, ref, path):
+        seen.append(ref)
+        return (True, "notes")
+
+    result = resolve_pin(PinRef(kind="release_notes", repo="a/b", ref="v1.2.3+build.1"),
+                         fetcher=fake)
+    assert result.status == TRUE and seen == ["v1.2.3+build.1"]
+
+
+def test_leading_plus_ref_is_rejected():
+    result = resolve_pin(PinRef(kind="release_notes", repo="a/b", ref="+v1"),
+                         fetcher=lambda *a: (True, "x"))
+    assert result.status == FALSE
+
+
+@pytest.mark.parametrize("found", [None, 0, 1, "false", "yes"])
+def test_non_boolean_found_flag_is_unresolvable(found):
+    result = resolve_pin(PinRef(kind="release_notes", repo="a/b", ref="v1.0.0"),
+                         fetcher=lambda *a: (found, "text"))
+    assert result.status == UNRESOLVABLE
+
+
+def test_unencodable_provider_text_is_unresolvable_not_an_exception():
+    result = resolve_pin(PinRef(kind="release_notes", repo="a/b", ref="v1.0.0",
+                                quote="x"),
+                         fetcher=lambda *a: (True, "bad \udc80 text"))
+    assert result.status == UNRESOLVABLE

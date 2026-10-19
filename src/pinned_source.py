@@ -70,7 +70,7 @@ _KNOWN_BRANCHES = frozenset(
 
 # --- Conservative allow-lists (refs, repos, paths) ---------------------------
 # Commit: 7-40 bare hex chars.
-_COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,40}")
+_COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,64}")  # sha1 (40) or sha256 (64) object ids
 # Tag/version: 1.2.3, v1.2.3, with an optional -rc1 / +build suffix.
 _VERSION_RE = re.compile(
     r"v?\d{1,9}(?:\.\d{1,9}){1,9}(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?"
@@ -85,7 +85,7 @@ _REPO_OWNER_RE = re.compile(
 _PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9._\-]+")
 # Ref segments: same conservative character set (no whitespace, no shell
 # metacharacters, no ``~^:+=!``); ``/`` may separate ref segments.
-_REF_ALLOWED_RE = re.compile(r"[A-Za-z0-9._\-]+")
+_REF_ALLOWED_RE = re.compile(r"[A-Za-z0-9._\-+]+")  # "+" for semver build metadata
 _WS_RE = re.compile(r"\s+")
 
 # subprocess discipline: bound every call, cap every byte we will keep.
@@ -176,7 +176,7 @@ def _valid_ref(ref: str) -> bool:
     """Conservative ref shape: letters, digits, dot, underscore, hyphen,
     and ``/`` between segments; no leading ``-`` (option injection), no
     ``..`` or empty segments, no whitespace or any shell/meta character."""
-    if not ref or ref[0] == "-":
+    if not ref or ref[0] in "-+":
         return False
     for segment in ref.split("/"):
         if segment == ".." or not _REF_ALLOWED_RE.fullmatch(segment):
@@ -225,6 +225,8 @@ def _git_env() -> dict:
     devnull = os.path.devnull
     return {
         "LC_ALL": "C",
+        # A refs/replace/<sha> entry must not swap the object a pin names.
+        "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": devnull,
         "GIT_CONFIG_SYSTEM": devnull,
@@ -267,7 +269,10 @@ def _collapsed_contains(text: str, quote: str) -> bool:
 
 def _finish_with_text(pin: PinRef, text: str, flags: List[str]) -> PinResult:
     """Build the result for content that was successfully read."""
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    try:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        return PinResult(UNRESOLVABLE, flags, "text is not valid Unicode; cannot verify")
     quote = pin.quote
     if quote is None or not quote.strip():
         return PinResult(TRUE, flags, "pin resolved and content read", digest, None)
@@ -317,7 +322,7 @@ def _resolve_local(
             f"{classify_ref(ref)} {ref!r} does not resolve in local repo",
         )
     sha = out.decode("utf-8", "replace").strip()
-    if not re.fullmatch(r"[0-9a-f]{4,40}", sha):
+    if not re.fullmatch(r"[0-9a-f]{4,64}", sha):
         return PinResult(UNRESOLVABLE, flags, "unexpected rev-parse output")
 
     # A ref that resolves is not necessarily pinned: a branch can hide
@@ -342,7 +347,7 @@ def _resolve_local(
                 "local ref classification could not run (git missing or timeout)",
             )
         if rc_b == 0 and out_b.decode("utf-8", "replace").strip().startswith(
-            "refs/heads/"
+            ("refs/heads/", "refs/remotes/")
         ):
             flags.append(UNPINNED)
 
@@ -356,7 +361,8 @@ def _resolve_local(
             "ref resolved in local repo; no path to read",
         )
 
-    rc, out, _err = _run_git(["git", "show", sha + ":" + path], cwd=repo_dir)
+    spec = sha + ":" + path
+    rc, out, err = _run_git(["git", "cat-file", "-t", spec], cwd=repo_dir)
     if rc is None:
         return PinResult(
             UNRESOLVABLE,
@@ -364,9 +370,25 @@ def _resolve_local(
             "local git read could not run (git missing or timeout)",
         )
     if rc != 0:
-        return PinResult(FALSE, flags, f"path {path} does not exist at that pin")
+        # Only git's own "no such path" answers are an authoritative no; a
+        # corrupt repo or an offline partial clone is no answer at all.
+        message = err.decode("utf-8", "replace").lower()
+        if any(m in message for m in ("does not exist", "exists on disk, but not in", "not a valid object name")):
+            return PinResult(FALSE, flags, f"path {path} does not exist at that pin")
+        return PinResult(UNRESOLVABLE, flags, "local git could not read the object")
+    if out.decode("utf-8", "replace").strip() != "blob":
+        return PinResult(FALSE, flags, f"path {path} is not a file at that pin")
+    rc, out, _err = _run_git(["git", "cat-file", "-s", spec], cwd=repo_dir)
+    size = out.decode("utf-8", "replace").strip()
+    if rc != 0 or not size.isdigit():
+        return PinResult(UNRESOLVABLE, flags, "local git could not size the file")
+    if int(size) > MAX_OUTPUT:
+        # Refuse before reading: a truncated read cannot prove a quote absent.
+        return PinResult(UNRESOLVABLE, flags, "file larger than the read cap; cannot verify")
+    rc, out, _err = _run_git(["git", "cat-file", "blob", spec], cwd=repo_dir)
+    if rc != 0:
+        return PinResult(UNRESOLVABLE, flags, "local git could not read the file")
     if len(out) > MAX_OUTPUT:
-        # A truncated read cannot prove a quote is absent: no answer, not FALSE.
         return PinResult(UNRESOLVABLE, flags, "file larger than the read cap; cannot verify")
     text = out.decode("utf-8", "replace")
     return _finish_with_text(pin, text, flags)
@@ -466,6 +488,8 @@ def resolve_pin(
                 UNRESOLVABLE, flags, "fetcher returned a malformed result"
             )
         found, text = result
+        if type(found) is not bool:
+            return PinResult(UNRESOLVABLE, flags, "fetcher returned a non-boolean found flag")
         if not found:
             return PinResult(FALSE, flags, "provider reports the pin was not found")
         if not isinstance(text, (str, type(None))):
