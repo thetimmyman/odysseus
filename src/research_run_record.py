@@ -67,6 +67,7 @@ class ResearchRunRecorder:
         self._texts: Dict[str, str] = {}
         self.findings: List[Dict] = []
         self.llm_calls: List[Dict] = []
+        self._call_endpoints: List[str] = []
         self.routing_run_id: Optional[str] = None
 
     def add_source(self, url: str, title: str, text: str) -> str:
@@ -86,13 +87,17 @@ class ResearchRunRecorder:
     def add_finding(self, finding: Dict) -> None:
         self.findings.append(finding)
 
-    def add_llm_call(self, *, purpose: str, model: str, latency_ms: int,
+    def add_llm_call(self, *, purpose: str, model: str, started_at: str, latency_ms: int,
                      input_tokens: int, output_tokens: int, tokens_estimated: bool,
-                     error: Optional[str] = None, source_id: Optional[str] = None) -> None:
+                     error: Optional[str] = None, source_id: Optional[str] = None,
+                     endpoint: str = "") -> None:
+        # The endpoint only selects the routing profile; it is not written to
+        # the record, which may leave this host.
+        self._call_endpoints.append(endpoint)
         self.llm_calls.append({
             "purpose": purpose,
             "model": model,
-            "started_at": _now_iso(),
+            "started_at": started_at,
             "latency_ms": latency_ms,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -167,7 +172,7 @@ class ResearchRunRecorder:
             return self.routing_run_id
         try:
             from core.database import (SessionLocal, RoutingTask, RoutingRun,
-                                       RoutingModelRun, RoutingModelProfile)
+                                       RoutingModelRun, RoutingModelProfile, ModelEndpoint)
             from src.routing_budget import estimate_cost_usd
         except Exception as e:
             logger.warning("Research run record: routing tables unavailable: %s", e)
@@ -176,16 +181,24 @@ class ResearchRunRecorder:
         task_id, run_id = str(uuid.uuid4()), str(uuid.uuid4())
         db = SessionLocal()
         try:
-            profiles: Dict[str, Optional[object]] = {}
-            for model in {c["model"] for c in self.llm_calls}:
-                matches = db.query(RoutingModelProfile).filter(RoutingModelProfile.model == model).all()
-                # Ambiguous (same slug on several endpoints) means no known price.
-                profiles[model] = matches[0] if len(matches) == 1 else None
-            rows, spend = [], 0.0
-            for call in self.llm_calls:
-                profile = profiles.get(call["model"])
+            profiles: Dict[tuple, Optional[object]] = {}
+            for key in set(zip(self._call_endpoints, (c["model"] for c in self.llm_calls))):
+                endpoint, model = key
+                matches = (db.query(RoutingModelProfile)
+                           .join(ModelEndpoint, RoutingModelProfile.model_endpoint_id == ModelEndpoint.id)
+                           .filter(ModelEndpoint.base_url.in_(_endpoint_base_keys(endpoint)),
+                                   RoutingModelProfile.model == model)
+                           .all())
+                # A profile is keyed by (endpoint, model): one on another
+                # endpoint, or an ambiguous match, means no known price.
+                profiles[key] = matches[0] if len(matches) == 1 else None
+            rows, spend, premium = [], 0.0, 0.0
+            for endpoint, call in zip(self._call_endpoints, self.llm_calls):
+                profile = profiles.get((endpoint, call["model"]))
                 cost = estimate_cost_usd(profile, call["input_tokens"], call["output_tokens"]) if profile else 0.0
                 spend += cost
+                if profile is not None and profile.is_premium:
+                    premium += cost
                 error = call["error"]
                 rows.append(RoutingModelRun(
                     id=str(uuid.uuid4()), run_id=run_id,
@@ -208,7 +221,7 @@ class ResearchRunRecorder:
             ))
             db.flush()  # no ORM relationship orders the inserts; FKs need the parent first
             db.add(RoutingRun(id=run_id, task_id=task_id, status=run_status,
-                              spend_total_usd=spend, spend_premium_usd=0.0,
+                              spend_total_usd=spend, spend_premium_usd=premium,
                               summary=f"deep research run {self.run_id}: {len(rows)} LLM calls"))
             db.flush()
             db.add_all(rows)
@@ -221,6 +234,17 @@ class ResearchRunRecorder:
             return None
         finally:
             db.close()
+
+
+def _endpoint_base_keys(endpoint: str) -> List[str]:
+    """ModelEndpoint.base_url spellings that name this runtime chat URL."""
+    from src.endpoint_resolver import normalize_base
+    keys = []
+    for value in (endpoint or "", normalize_base(endpoint or "")):
+        value = value.strip().rstrip("/")
+        if value:
+            keys += [value, value + "/"]
+    return keys
 
 
 def grounding_view(record: Dict, blob_root: Optional[Path] = None) -> Dict:

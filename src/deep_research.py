@@ -12,7 +12,7 @@ import logging
 import re
 import time
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set
 
 from src.research_utils import strip_thinking, is_low_quality
@@ -395,6 +395,7 @@ class DeepResearcher:
         from src.llm_core import llm_call_async
         recorder = getattr(self, "run_recorder", None)
         started = time.monotonic()
+        started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
             response = await llm_call_async(
                 url=self.llm_endpoint,
@@ -405,16 +406,18 @@ class DeepResearcher:
                 headers=self.llm_headers,
                 timeout=timeout,
             )
-        except Exception as e:
+        except (Exception, asyncio.CancelledError) as e:
+            # CancelledError is how the hard research timeout interrupts an
+            # in-flight call; record it before it propagates.
             if recorder is not None:
-                self._record_llm_call(recorder, started, messages, "", e)
+                self._record_llm_call(recorder, started, started_at, messages, "", e)
             raise
         if recorder is not None:
-            self._record_llm_call(recorder, started, messages, response, None)
+            self._record_llm_call(recorder, started, started_at, messages, response, None)
         return strip_thinking(response)
 
-    def _record_llm_call(self, recorder, started: float, messages: List[Dict],
-                         response: str, error: Optional[Exception]) -> None:
+    def _record_llm_call(self, recorder, started: float, started_at: str, messages: List[Dict],
+                         response: str, error: Optional[BaseException]) -> None:
         from src.llm_core import last_async_usage
         from src.routing_context import estimate_tokens
         purpose, source_id = _LLM_PURPOSE.get()
@@ -423,6 +426,8 @@ class DeepResearcher:
         recorder.add_llm_call(
             purpose=purpose,
             model=self.llm_model,
+            endpoint=self.llm_endpoint,
+            started_at=started_at,
             latency_ms=int((time.monotonic() - started) * 1000),
             input_tokens=usage["input_tokens"] if usage else estimate_tokens(prompt_text),
             output_tokens=usage["output_tokens"] if usage else estimate_tokens(response or ""),

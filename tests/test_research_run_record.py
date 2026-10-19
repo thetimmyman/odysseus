@@ -231,3 +231,118 @@ async def test_last_async_usage_is_per_task(fake_web):
 
     assert usages == [{"input_tokens": 120, "output_tokens": 30}] * 2
     assert llm_core.last_async_usage() is None
+
+
+def _profile(db, endpoint_id, base_url, model, premium=False):
+    db.add(cdb.ModelEndpoint(id=endpoint_id, name=endpoint_id, base_url=base_url))
+    db.add(cdb.RoutingModelProfile(id=f"p-{endpoint_id}", model_endpoint_id=endpoint_id, model=model,
+                                   roles="[]", input_cost_per_mtok=1_000_000.0,
+                                   output_cost_per_mtok=0.0, is_premium=premium))
+
+
+def _persisted_run(factory, recorder):
+    run_id = recorder.persist_model_runs(query="q", owner="alice", status="done")
+    db = factory()
+    try:
+        run = db.get(cdb.RoutingRun, run_id)
+        rows = db.query(cdb.RoutingModelRun).filter(cdb.RoutingModelRun.run_id == run_id).all()
+        return run.spend_total_usd, run.spend_premium_usd, [r.model_profile_id for r in rows]
+    finally:
+        db.close()
+
+
+def _one_call(endpoint, model="m"):
+    recorder = ResearchRunRecorder()
+    recorder.add_llm_call(purpose="extract", model=model, endpoint=endpoint,
+                          started_at="2026-10-19T00:00:00+00:00", latency_ms=5,
+                          input_tokens=2, output_tokens=0, tokens_estimated=False)
+    return recorder
+
+
+def test_profile_on_another_endpoint_is_not_charged(routing_db):
+    db = routing_db()
+    _profile(db, "other", "http://other.test/v1", "m")
+    db.commit()
+    db.close()
+
+    total, premium, profile_ids = _persisted_run(
+        routing_db, _one_call("http://local.test/v1/chat/completions"))
+
+    assert (total, premium, profile_ids) == (0.0, 0.0, [None])
+
+
+def test_premium_profile_on_the_research_endpoint_counts_as_premium(routing_db):
+    db = routing_db()
+    _profile(db, "local", "http://local.test/v1", "m", premium=True)
+    _profile(db, "other", "http://other.test/v1", "m")
+    db.commit()
+    db.close()
+
+    total, premium, profile_ids = _persisted_run(
+        routing_db, _one_call("http://local.test/v1/chat/completions"))
+
+    assert (total, premium, profile_ids) == (2.0, 2.0, ["p-local"])
+
+
+@pytest.mark.asyncio
+async def test_started_at_is_taken_before_the_call(fake_web, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    real_client = llm_core._get_http_client()
+
+    class _SlowClient:
+        async def post(self, *a, **kw):
+            await asyncio.sleep(1.2)
+            return await real_client.post(*a, **kw)
+
+    monkeypatch.setattr(llm_core, "_get_http_client", lambda: _SlowClient())
+    fake_web.append("ok")
+    researcher = _researcher(run_record=True)
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+
+    await researcher._llm([{"role": "user", "content": "x"}])
+
+    started = datetime.fromisoformat(researcher.run_recorder.llm_calls[0]["started_at"])
+    assert started < before + timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_llm_call_is_recorded(monkeypatch):
+    class _HangingClient:
+        async def post(self, *a, **kw):
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(llm_core, "_get_http_client", lambda: _HangingClient())
+    monkeypatch.setattr(llm_core, "_get_cached_response", lambda key: None)
+    monkeypatch.setattr(llm_core, "note_model_activity", lambda *a, **kw: None)
+    researcher = _researcher(run_record=True)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(researcher._llm([{"role": "user", "content": "x"}]), timeout=0.05)
+
+    [call] = researcher.run_recorder.llm_calls
+    assert call["error"].startswith("CancelledError")
+
+
+def test_grounding_cli_reads_the_configured_data_dir(tmp_path):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    research_dir = tmp_path / "data" / "deep_research"
+    recorder = ResearchRunRecorder(run_id="run-cli")
+    sid = recorder.add_source("https://example.test/a", "A", PAGE)
+    recorder.add_finding({"source_id": sid, "summary": "s", "evidence": EVIDENCE})
+    record = recorder.build(blob_dir=research_dir / "blobs")
+    (research_dir / "rp-cli1.json").write_text(json.dumps({"query": "q", "run_record": record}))
+    repo = Path(__file__).resolve().parent.parent
+
+    out = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "odysseus-research"), "grounding", "rp-cli1"],
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "ODYSSEUS_DATA_DIR": str(tmp_path / "data")})
+
+    assert out.returncode == 0, out.stderr
+    view = json.loads(out.stdout)
+    assert view["sources"][0]["text"] == PAGE
+    assert view["claims"][0]["citations"] == [{"source_id": "S1", "quote": EVIDENCE}]

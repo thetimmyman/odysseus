@@ -155,15 +155,19 @@ def cmd_delete(args):
 
 
 def cmd_grounding(args):
-    data = _load(args.id)
+    # The app writes sessions and blobs under DEEP_RESEARCH_DIR, which follows
+    # ODYSSEUS_DATA_DIR; resolve through it (and its session-id validation).
+    from src.research_handler import RESEARCH_DATA_DIR, _research_json_path
+    from src.research_run_record import grounding_view
+    path = _research_json_path(args.id)
+    data = _load_path(path) if path is not None and path.exists() else None
     if data is None:
         fail(f"no research session {args.id!r}")
     record = data.get("run_record")
     if not isinstance(record, dict):
         fail(f"research session {args.id!r} has no run_record "
              "(saved with the research_run_record setting off)")
-    from src.research_run_record import grounding_view
-    emit(grounding_view(record, blob_root=_DATA_DIR), args)
+    emit(grounding_view(record, blob_root=RESEARCH_DATA_DIR), args)
 
 
 def _build_parser():
