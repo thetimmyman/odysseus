@@ -815,3 +815,45 @@ def test_listing_follows_the_opened_root_not_the_path_that_replaced_it(tmp_path,
     monkeypatch.setattr(os, "open", swap_after_root_open)
     result = me.find_measured_sources("needle", root=root, enabled=True)
     assert swapped and [s.path for s in result.sources] == ["evidence/a.json"]
+
+
+def test_benchmark_subtrees_other_than_results_are_never_entered(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "benchmark" / "gpu" / "results").mkdir(parents=True)
+    (root / "benchmark" / "gpu" / "results" / "run.json").write_text('{"needle": 1}')
+    (root / "benchmark" / "gpu" / "other").mkdir()
+    for index in range(50):
+        (root / "benchmark" / "gpu" / "other" / f"f{index}.json").write_text("x")
+    monkeypatch.setattr(me, "_MAX_ENTRIES_WALKED", 10)
+
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+
+    assert [s.path for s in result.sources] == ["benchmark/gpu/results/run.json"]
+
+
+def test_canonically_equivalent_unicode_spellings_match(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "note.md").write_text("caf" + "é" + " latency")
+
+    result = me.find_measured_sources("café", root=root, enabled=True)
+
+    assert [s.path for s in result.sources] == ["evidence/note.md"]
+
+
+def test_bytes_read_by_a_rejected_read_still_count_against_the_budget(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    for index in range(5):
+        (root / "evidence" / f"f{index}.md").write_text("needle " * 10)
+
+    def rejecting(fd, rel, used=None):
+        if used is not None:
+            used.append(100)
+        return None
+
+    monkeypatch.setattr(me, "_read_regular_file", rejecting)
+    monkeypatch.setattr(me, "_MAX_BYTES_SCANNED", 250)
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    # Every rejected read cost 100 bytes, so the 250-byte budget ran out: incomplete, not "no evidence".
+    assert result.status == me.UNAVAILABLE

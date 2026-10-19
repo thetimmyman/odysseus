@@ -230,14 +230,16 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
                 capped = True
                 break
             scanned += 1
+            used: list[int] = []
             try:
-                data = _read_regular_file(root_fd, rel)
+                data = _read_regular_file(root_fd, rel, used)
             except _Unreadable as err:
+                total_bytes += sum(used)
                 walk.setdefault("walk_error", str(err))
                 continue
+            total_bytes += sum(used)
             if data is None:
                 continue
-            total_bytes += len(data)
             # Cut by bytes; dropping invalid sequences keeps the text within the byte cap.
             text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
             path_str = rel.as_posix()
@@ -472,7 +474,7 @@ class _Unreadable(Exception):
     """A candidate that exists but could not be read (permissions or I/O)."""
 
 
-def _read_regular_file(root_fd, rel):
+def _read_regular_file(root_fd, rel, used=None):
     """Read ``root/rel`` through descriptors anchored at ``root``, or None.
 
     Each directory component is opened relative to the previous descriptor with no-follow, and
@@ -498,6 +500,8 @@ def _read_regular_file(root_fd, rel):
             return None
         with os.fdopen(os.dup(fd), "rb") as handle:
             data = handle.read(_MAX_CANDIDATE_BYTES + 1)
+        if used is not None:
+            used.append(len(data))  # charged to the byte budget even if the read is rejected below
         after = os.fstat(fd)
         if (len(data) != before.st_size or after.st_size != before.st_size
                 or after.st_mtime_ns != before.st_mtime_ns):
@@ -552,6 +556,11 @@ def _entry_kind(source):
     return getattr(source, "kind", None)
 
 
+def _fold(text: str) -> str:
+    """Canonical-composition normalise then case-fold, so NFC and NFD spellings compare equal."""
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", text).casefold())
+
+
 def _query_tokens(query) -> list[str]:
     if not isinstance(query, str):
         return []
@@ -559,7 +568,7 @@ def _query_tokens(query) -> list[str]:
     seen: set[str] = set()
     # Bound the work a query can cause: only the head of an oversized query is read, and only the
     # first few distinct tokens are scored against every candidate.
-    for part in _split_words(query[:_MAX_QUERY_CHARS].casefold()):
+    for part in _split_words(_fold(query[:_MAX_QUERY_CHARS])):
         # Three characters for ASCII words; scripts written without spaces (CJK and others) have
         # shorter meaningful tokens.
         if (len(part) >= 3 or (len(part) >= 2 and not part.isascii())) and part not in seen:
@@ -571,8 +580,8 @@ def _query_tokens(query) -> list[str]:
 
 
 def _score(path_str, text, tokens) -> int:
-    path_lower = path_str.casefold()
-    text_lower = text.casefold()
+    path_lower = _fold(path_str)
+    text_lower = _fold(text)
     total = 0
     for token in tokens:
         if token in path_lower:
@@ -641,6 +650,50 @@ def _scan_tree(dir_fd, rel, state, budget, depth):
             os.close(child_fd)
 
 
+def _scan_benchmark_results(bench_fd, state, budget, flags):
+    names: list[str] = []
+    try:
+        with os.scandir(bench_fd) as it:
+            for entry in it:
+                budget[0] += 1
+                if budget[0] > _MAX_ENTRIES_WALKED:
+                    if state is not None:
+                        state["walk_capped"] = True
+                    return
+                try:
+                    if not entry.is_symlink() and entry.is_dir(follow_symlinks=False):
+                        names.append(entry.name)
+                except OSError as err:
+                    if state is not None:
+                        state["walk_error"] = str(getattr(err, "filename", None) or entry.name)
+    except OSError as err:
+        if state is not None:
+            state["walk_error"] = str(getattr(err, "filename", None) or err.strerror or err.errno)
+        return
+    for name in sorted(names):
+        if state is not None and state.get("walk_capped"):
+            return
+        try:
+            name_fd = os.open(name, flags, dir_fd=bench_fd)
+        except OSError as err:
+            if err.errno not in _SKIP_ERRNOS and state is not None:
+                state["walk_error"] = f"benchmark/{name}: {err.strerror or err.errno}"
+            continue
+        try:
+            try:
+                results_fd = os.open("results", flags, dir_fd=name_fd)
+            except OSError as err:
+                if err.errno not in _SKIP_ERRNOS and state is not None:
+                    state["walk_error"] = f"benchmark/{name}/results: {err.strerror or err.errno}"
+                continue
+            try:
+                yield from _scan_tree(results_fd, Path("benchmark") / name / "results", state, budget, 0)
+            finally:
+                os.close(results_fd)
+        finally:
+            os.close(name_fd)
+
+
 def _iter_candidate_files(root, state=None):
     """Relative paths under ``evidence/`` and ``benchmark/<name>/results/``, symlinked dirs skipped.
 
@@ -668,11 +721,12 @@ def _iter_candidate_files(root, state=None):
                 continue
             try:
                 budget = [entries]
-                for rel in _scan_tree(top_fd, Path(top), state, budget, 0):
-                    parts = rel.parts
-                    if top == "benchmark" and not (len(parts) >= 4 and parts[2] == "results"):
-                        continue
-                    yield rel
+                if top == "evidence":
+                    yield from _scan_tree(top_fd, Path(top), state, budget, 0)
+                else:
+                    # Only benchmark/<name>/results is eligible: other subtrees are never entered, so
+                    # they can neither use up the walk budget nor cause a traversal error.
+                    yield from _scan_benchmark_results(top_fd, state, budget, flags)
                 entries = budget[0]
             finally:
                 os.close(top_fd)
