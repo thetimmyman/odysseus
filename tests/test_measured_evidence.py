@@ -34,6 +34,15 @@ def _source(path, text):
     )
 
 
+def _read(root, rel):
+    """Read ``rel`` the way the lookup does: relative to one descriptor opened on ``root``."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        return me._read_regular_file(fd, rel)
+    finally:
+        os.close(fd)
+
+
 def _bench_measurement(value, unit="tok/s"):
     return me.Measurement(subject="GPU decode", metric="throughput",
                           value=value, unit=unit, path=BENCH_PATH)
@@ -116,9 +125,9 @@ def test_reads_reject_escapes_and_listing_stays_inside_the_roots(tmp_path):
     (root / "docs").mkdir()
     (root / "docs" / "skip.md").write_text("x", encoding="utf-8")
 
-    assert me._read_regular_file(root, Path("evidence/ok.md")) == b"x"
-    assert me._read_regular_file(root, Path("../outside/secret.md")) is None
-    assert me._read_regular_file(root, Path("evidence/../../outside/secret.md")) is None
+    assert _read(root, Path("evidence/ok.md")) == b"x"
+    assert _read(root, Path("../outside/secret.md")) is None
+    assert _read(root, Path("evidence/../../outside/secret.md")) is None
     assert list(me._iter_candidate_files(root)) == [Path("evidence/ok.md")]
 
 
@@ -328,10 +337,10 @@ def test_symlink_swapped_in_after_listing_is_not_followed(tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("needle outside the root")
     (root / "evidence" / "link.txt").symlink_to(secret)
-    assert me._read_regular_file(root, Path("evidence/link.txt")) is None
+    assert _read(root, Path("evidence/link.txt")) is None
     (root / "evidence" / "real.txt").write_text("needle inside")
-    assert me._read_regular_file(root, Path("evidence/real.txt")) == b"needle inside"
-    assert me._read_regular_file(root, Path("evidence")) is None  # a directory is not a regular file
+    assert _read(root, Path("evidence/real.txt")) == b"needle inside"
+    assert _read(root, Path("evidence")) is None  # a directory is not a regular file
 
 
 def test_a_parent_directory_swapped_for_a_symlink_is_not_followed(tmp_path):
@@ -341,7 +350,7 @@ def test_a_parent_directory_swapped_for_a_symlink_is_not_followed(tmp_path):
     outside.mkdir()
     (outside / "x.txt").write_text("needle outside the root")
     (root / "evidence" / "run").symlink_to(outside, target_is_directory=True)
-    assert me._read_regular_file(root, Path("evidence/run/x.txt")) is None
+    assert _read(root, Path("evidence/run/x.txt")) is None
 
 
 def test_a_file_that_changes_while_it_is_read_is_rejected(tmp_path, monkeypatch):
@@ -362,7 +371,7 @@ def test_a_file_that_changes_while_it_is_read_is_rejected(tmp_path, monkeypatch)
         return info
 
     monkeypatch.setattr(os, "fstat", changing)
-    assert me._read_regular_file(root, Path("evidence/f.txt")) is None
+    assert _read(root, Path("evidence/f.txt")) is None
 
 
 def test_invalid_utf8_cannot_expand_past_the_byte_cap(tmp_path):
@@ -568,17 +577,24 @@ def test_an_unreadable_candidate_file_is_unavailable_not_none(tmp_path):
     assert me.find_measured_sources("needle", root=other, enabled=True).status == me.NONE
 
 
-def test_a_root_that_is_a_symlink_swapped_in_after_resolution_is_not_followed(tmp_path):
+def test_a_root_replaced_after_it_was_opened_is_not_reopened_by_name(tmp_path):
     real = tmp_path / "real"
     (real / "evidence").mkdir(parents=True)
     (real / "evidence" / "a.txt").write_text("needle")
     outside = tmp_path / "outside"
     (outside / "evidence").mkdir(parents=True)
     (outside / "evidence" / "a.txt").write_text("secret needle")
-    resolved = real.resolve()
-    real.rename(tmp_path / "moved")
-    real.symlink_to(outside)
-    assert me._read_regular_file(resolved, Path("evidence/a.txt")) is None
+    fd = os.open(real, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        real.rename(tmp_path / "moved")
+        real.symlink_to(outside)
+        # Anchored on the descriptor: the original tree is read, never the swapped-in outside tree.
+        assert me._read_regular_file(fd, Path("evidence/a.txt")) == b"needle"
+    finally:
+        os.close(fd)
+    # And opening the swapped-in symlink by name is refused.
+    with pytest.raises(OSError):
+        os.open(real, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
 
 def test_structured_measurements_per_file_are_bounded(tmp_path, monkeypatch):
@@ -626,3 +642,41 @@ def test_large_integers_are_compared_exactly():
     # Negative control: identical integers agree even at zero tolerance.
     same = me.find_conflicts([assertion], [_bench_measurement(9007199254740993)], rel_tolerance=0)
     assert len(same.agreements) == 1
+
+
+def test_combining_marks_stay_with_their_word():
+    tokens = me._query_tokens("سُرْعَة GPU")
+    assert "سُرْعَة".casefold() in tokens and "gpu" in tokens
+
+
+def test_measurements_capped_only_when_an_entry_was_left_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(me, "_MAX_MEASUREMENTS_PER_FILE", 5)
+    root = tmp_path / "root"
+    (root / "benchmark" / "gpu" / "results").mkdir(parents=True)
+
+    def write(count):
+        entries = [{"subject": f"s{i}", "metric": "m", "value": float(i), "unit": "u"} for i in range(count)]
+        (root / "benchmark" / "gpu" / "results" / "run.json").write_text(json.dumps({"measurements": entries}))
+        [source] = me.find_measured_sources("run", root=root, enabled=True).sources
+        return source
+
+    exact = write(5)
+    assert len(exact.measurements) == 5 and exact.measurements_capped is False
+    over = write(6)
+    assert len(over.measurements) == 5 and over.measurements_capped is True
+
+
+def test_unexpected_open_failures_are_unavailable_not_skipped(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "a.txt").write_text("needle")
+    real_open = os.open
+
+    def failing(path, flags, *args, **kwargs):
+        if path == "a.txt":
+            raise OSError(24, "Too many open files")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", failing)
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    assert result.status == me.UNAVAILABLE

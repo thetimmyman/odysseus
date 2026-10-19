@@ -39,6 +39,7 @@ import math
 import os
 import re
 import stat
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,7 +61,23 @@ UNAVAILABLE = "UNAVAILABLE"
 
 _CANDIDATE_SUFFIXES = frozenset({".json", ".jsonl", ".md", ".txt", ".csv"})
 _MAX_CANDIDATE_BYTES = 8 * 1024 * 1024
-_TOKEN_SPLIT = re.compile(r"[\W_]+")
+
+
+def _split_words(text: str) -> list[str]:
+    """Words of ``text``: runs of letters and digits, with combining marks kept on their base letter."""
+    words: list[str] = []
+    current: list[str] = []
+    for ch in text:
+        if ch.isalnum() or unicodedata.category(ch).startswith("M"):
+            current.append(ch)
+        elif current:
+            words.append("".join(current))
+            current = []
+    if current:
+        words.append("".join(current))
+    return words
+
+
 _CONFLICT_NOTE = "conflict: the measurement is authoritative; the vendor claim is reported, not resolved or averaged"
 
 
@@ -182,77 +199,87 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         limit_n = 5
     limit_n = max(1, min(20, limit_n))
 
-    # Work is bounded before the result limit applies: a fixed number of files and bytes per lookup,
-    # and only the best ``limit_n`` candidates are kept in memory.
-    best: list[MeasuredSource] = []
-    matched = scanned = total_bytes = 0
-    capped = False
-    walk: dict[str, Any] = {}
-    for rel in _iter_candidate_files(root_path, walk):
-        if rel.suffix.casefold() not in _CANDIDATE_SUFFIXES:
-            continue
-        if scanned >= _MAX_FILES_SCANNED or total_bytes >= _MAX_BYTES_SCANNED:
-            capped = True
-            break
-        scanned += 1
-        try:
-            data = _read_regular_file(root_path, rel)
-        except _Unreadable as err:
-            walk.setdefault("walk_error", str(err))
-            continue
-        if data is None:
-            continue
-        total_bytes += len(data)
-        # Cut by bytes; dropping invalid sequences keeps the text within the byte cap.
-        text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
-        path_str = rel.as_posix()
-        score = _score(path_str, text, tokens)
-        if score <= 0:
-            continue
-        matched += 1
-        parsed = _parse_measurements(data, path_str) if rel.suffix.casefold() == ".json" else None
-        best.append(MeasuredSource(
-            path=path_str,
-            url="measured:" + path_str,
-            kind=SOURCE_KIND,
-            trust_class=TRUST_CLASS,
-            rank=MEASURED_RANK,
-            content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            file_sha256=hashlib.sha256(data).hexdigest(),
-            text=text,
-            truncated=len(data) > MAX_TEXT_BYTES,
-            size_bytes=len(data),
-            score=score,
-            measurements=parsed,
-            measurements_capped=parsed is not None and len(parsed) >= _MAX_MEASUREMENTS_PER_FILE,
-        ))
-        best.sort(key=lambda source: (-source.score, source.path))
-        del best[limit_n:]
-
-    capped = capped or walk.get("walk_capped", False)
-    if walk.get("walk_error") and not best:
-        # Nothing was found and part of the tree could not be read: that is not "no evidence".
+    try:
+        root_fd = os.open(root_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as err:
         return LookupResult(
             status=UNAVAILABLE, sources=(),
-            reason=f"measured-evidence directory could not be read: {walk['walk_error']}",
+            reason=f"measured-evidence root could not be opened: {root_path}: {err.strerror or err.errno}",
         )
-    note = f"; scan stopped at the per-lookup limit after {scanned} files" if capped else ""
-    if not best and capped:
-        # The scan ended at a ceiling before it could say there is nothing: that is not "none".
-        return LookupResult(
-            status=UNAVAILABLE, sources=(),
-            reason="measured-evidence scan was incomplete; it stopped before finding a match" + note,
-        )
-    if not best:
-        return LookupResult(
-            status=NONE, sources=(),
-            reason="no measured sources matched the query" + note,
-        )
-    return LookupResult(
-        status=OK, sources=tuple(best),
-        reason=f"{len(best)} of {matched} measured sources matched" + note,
-    )
+    try:
+        # Work is bounded before the result limit applies: a fixed number of files and bytes per lookup,
+        # and only the best ``limit_n`` candidates are kept in memory.
+        best: list[MeasuredSource] = []
+        matched = scanned = total_bytes = 0
+        capped = False
+        walk: dict[str, Any] = {}
+        for rel in _iter_candidate_files(root_path, walk):
+            if rel.suffix.casefold() not in _CANDIDATE_SUFFIXES:
+                continue
+            if scanned >= _MAX_FILES_SCANNED or total_bytes >= _MAX_BYTES_SCANNED:
+                capped = True
+                break
+            scanned += 1
+            try:
+                data = _read_regular_file(root_fd, rel)
+            except _Unreadable as err:
+                walk.setdefault("walk_error", str(err))
+                continue
+            if data is None:
+                continue
+            total_bytes += len(data)
+            # Cut by bytes; dropping invalid sequences keeps the text within the byte cap.
+            text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+            path_str = rel.as_posix()
+            score = _score(path_str, text, tokens)
+            if score <= 0:
+                continue
+            matched += 1
+            parsed, parsed_capped = (_parse_measurements_capped(data, path_str)
+                                     if rel.suffix.casefold() == ".json" else (None, False))
+            best.append(MeasuredSource(
+                path=path_str,
+                url="measured:" + path_str,
+                kind=SOURCE_KIND,
+                trust_class=TRUST_CLASS,
+                rank=MEASURED_RANK,
+                content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                file_sha256=hashlib.sha256(data).hexdigest(),
+                text=text,
+                truncated=len(data) > MAX_TEXT_BYTES,
+                size_bytes=len(data),
+                score=score,
+                measurements=parsed,
+                measurements_capped=parsed_capped,
+            ))
+            best.sort(key=lambda source: (-source.score, source.path))
+            del best[limit_n:]
 
+        capped = capped or walk.get("walk_capped", False)
+        if walk.get("walk_error") and not best:
+            # Nothing was found and part of the tree could not be read: that is not "no evidence".
+            return LookupResult(
+                status=UNAVAILABLE, sources=(),
+                reason=f"measured-evidence directory could not be read: {walk['walk_error']}",
+            )
+        note = f"; scan stopped at the per-lookup limit after {scanned} files" if capped else ""
+        if not best and capped:
+            # The scan ended at a ceiling before it could say there is nothing: that is not "none".
+            return LookupResult(
+                status=UNAVAILABLE, sources=(),
+                reason="measured-evidence scan was incomplete; it stopped before finding a match" + note,
+            )
+        if not best:
+            return LookupResult(
+                status=NONE, sources=(),
+                reason="no measured sources matched the query" + note,
+            )
+        return LookupResult(
+            status=OK, sources=tuple(best),
+            reason=f"{len(best)} of {matched} measured sources matched" + note,
+        )
+    finally:
+        os.close(root_fd)
 
 def rank_sources(sources) -> list:
     """Stable sort placing ``kind == "measured"`` entries ahead of the rest.
@@ -300,15 +327,20 @@ def extract_measurements(source) -> list:
 
 
 def _parse_measurements(raw, path) -> tuple:
+    return _parse_measurements_capped(raw, path)[0]
+
+
+def _parse_measurements_capped(raw, path) -> tuple:
+    """(measurements, capped): ``capped`` only when a valid entry beyond the cap was left out."""
     try:
         data = json.loads(raw)
     except (ValueError, TypeError, RecursionError):
-        return ()
+        return (), False
     if not isinstance(data, dict):
-        return ()
+        return (), False
     items = data.get("measurements")
     if not isinstance(items, list):
-        return ()
+        return (), False
     measurements = []
     for item in items:
         if not isinstance(item, dict):
@@ -326,9 +358,10 @@ def _parse_measurements(raw, path) -> tuple:
         if value is None:
             continue
         measurements.append(Measurement(subject=subject, metric=metric, value=value, unit=unit, path=path))
-        if len(measurements) >= _MAX_MEASUREMENTS_PER_FILE:
-            break  # bounded: a compact file must not expand into an unbounded object graph
-    return tuple(measurements)
+        if len(measurements) > _MAX_MEASUREMENTS_PER_FILE:
+            # Bounded: a compact file must not expand into an unbounded object graph.
+            return tuple(measurements[:_MAX_MEASUREMENTS_PER_FILE]), True
+    return tuple(measurements), False
 
 
 def _finite_number(value):
@@ -416,11 +449,14 @@ def measured_evidence_root():
     return str(value) if value else None
 
 
+_SKIP_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO})
+
+
 class _Unreadable(Exception):
     """A candidate that exists but could not be read (permissions or I/O)."""
 
 
-def _read_regular_file(root, rel):
+def _read_regular_file(root_fd, rel):
     """Read ``root/rel`` through descriptors anchored at ``root``, or None.
 
     Each directory component is opened relative to the previous descriptor with no-follow, and
@@ -435,8 +471,7 @@ def _read_regular_file(root, rel):
         return None
     fds = []
     try:
-        current = os.open(root, dir_flags)
-        fds.append(current)
+        current = root_fd  # one verified descriptor for the whole lookup; never reopened by name
         for part in parts[:-1]:
             current = os.open(part, dir_flags, dir_fd=current)
             fds.append(current)
@@ -453,11 +488,11 @@ def _read_regular_file(root, rel):
             return None
         return data
     except OSError as err:
-        if err.errno in (errno.EACCES, errno.EPERM, errno.EIO):
-            # An operational failure, not an intentional skip (symlink, vanished file, not a
-            # regular file): the evidence exists but could not be checked.
-            raise _Unreadable(f"{Path(rel).as_posix()}: {err.strerror or err.errno}") from err
-        return None
+        if err.errno in _SKIP_ERRNOS:
+            return None  # an intentional skip: a symlink, a vanished entry, not a directory or file
+        # Anything else (permissions, EMFILE, ESTALE, I/O) is an operational failure: the evidence
+        # may exist but could not be checked.
+        raise _Unreadable(f"{Path(rel).as_posix()}: {err.strerror or err.errno}") from err
     finally:
         for fd in fds:
             try:
@@ -500,7 +535,7 @@ def _query_tokens(query) -> list[str]:
     if not isinstance(query, str):
         return []
     tokens: list[str] = []
-    for part in _TOKEN_SPLIT.split(query.casefold()):
+    for part in _split_words(query.casefold()):
         # Three characters for ASCII words; scripts written without spaces (CJK and others) have
         # shorter meaningful tokens.
         if (len(part) >= 3 or (len(part) >= 2 and not part.isascii())) and part not in tokens:
