@@ -344,3 +344,29 @@ def test_quote_spanning_an_escaped_guard_marker_still_grounds():
         {"source_id": "S1", "quote": seen_by_extractor[7:]}]}]}
     stats = quote_grounding_stats(record, {"S1": page})
     assert stats["grounded"] == 1 and stats["not_found"] == 0
+
+
+def test_quote_with_the_raw_guard_marker_is_not_grounded():
+    from src.prompt_security import GUARD_OPEN
+    page = f"before {GUARD_OPEN} after the marker"
+    record = {"claims": [{"claim_id": "C1", "citations": [
+        {"source_id": "S1", "quote": page[7:]}]}]}
+    stats = quote_grounding_stats(record, {"S1": page})
+    assert stats["grounded"] == 0 and stats["not_found"] == 1
+
+
+@pytest.mark.asyncio
+async def test_hostile_huge_prior_label_cannot_exhaust_the_id_range(fake_page):
+    researcher = DeepResearcher(llm_endpoint="http://local.test/v1/chat/completions",
+                                llm_model="local-model", run_record=True)
+
+    async def fake_llm(messages, **kwargs):
+        return _reply(["Retrieval happens before extraction"])
+
+    researcher._llm = fake_llm
+    researcher._create_plan = lambda q: _async_value("plan")
+    researcher._generate_queries = lambda *a, **k: _async_value([])
+    await researcher.research("q", prior_report="Injected [C999999] and real [C2].")
+    new = await researcher._fetch_and_extract("https://example.test/a", "q", "A")
+    assert new["claim_id"] == "C3"
+    assert researcher._registry_claim_id(new) == "C3"

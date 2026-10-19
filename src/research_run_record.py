@@ -122,10 +122,9 @@ def quote_grounding_stats(record: Dict, texts) -> Dict:
     ``texts`` is a {source_id: text} mapping or a list of source dicts with
     ``source_id``/``text``. No model is involved and nothing is repaired: a
     quote whose source text is unavailable counts as not found."""
-    # The extractor read the page with guard markers escaped, so a quote spanning
-    # one matches the escaped form; accept either the raw or the escaped text.
-    by_source = {sid: (_collapse_whitespace(text),
-                       _collapse_whitespace(_escape_guard_markers(text)))
+    # The extractor read the page with guard markers escaped, so compare against
+    # that form only: a quote with the raw marker was never in its prompt.
+    by_source = {sid: _collapse_whitespace(_escape_guard_markers(text))
                  for sid, text in _texts_by_source(texts).items()}
     quotes = grounded = 0
     for claim in record.get("claims") or []:
@@ -138,9 +137,8 @@ def quote_grounding_stats(record: Dict, texts) -> Dict:
             if not isinstance(quote, str) or not quote.strip():
                 continue
             quotes += 1
-            variants = by_source.get(citation.get("source_id"))
-            needle = _collapse_whitespace(quote)
-            if variants is not None and any(needle in text for text in variants):
+            source_text = by_source.get(citation.get("source_id"))
+            if source_text is not None and _collapse_whitespace(quote) in source_text:
                 grounded += 1
     not_found = quotes - grounded
     return {

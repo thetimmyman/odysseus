@@ -130,6 +130,9 @@ Example: "YES — The report covers all major aspects with evidence from multipl
 Example: "NO — We still lack information about the economic impact."
 """
 
+# A run mints far fewer claims than this; the bound keeps minted ids inside the
+# six digits _registry_claim_id accepts.
+MAX_CLAIM_ID_RESERVED = 9999
 _PRIOR_CLAIM_LABEL_RE = re.compile(r"\[C(\d{1,6})\]")
 
 CLAIM_LABEL_KEEP_RULE = (
@@ -302,7 +305,11 @@ class DeepResearcher:
             # report that already cites [C1]..[Cn] could clash with ids minted
             # now.  Rather than edit the report (its bracketed text may be the
             # user's own), start this run's ids after the highest one it cites.
-            cited = [int(n) for n in _PRIOR_CLAIM_LABEL_RE.findall(report)]
+            # Labels beyond MAX_CLAIM_ID_RESERVED are not ids this system minted
+            # (a hostile page title can print [C999999]); ignore them so they
+            # cannot push new ids out of the accepted range.
+            cited = [n for n in (int(m) for m in _PRIOR_CLAIM_LABEL_RE.findall(report))
+                     if n <= MAX_CLAIM_ID_RESERVED]
             if cited:
                 self.run_recorder.reserve_claim_ids(max(cited))
             # Any claim_id on carried-over findings belongs to the earlier run.
