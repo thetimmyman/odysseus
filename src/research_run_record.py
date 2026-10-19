@@ -237,9 +237,14 @@ class ResearchRunRecorder:
                 self._claim_ids += 1
                 claim_id = f"C{self._claim_ids}"
                 f["claim_id"] = claim_id
-            quotes = normalize_quotes(f.get("quotes"))
-            if not quotes:
-                # Old replies/records have no ``quotes`` field.
+            raw_quotes = f.get("quotes")
+            if isinstance(raw_quotes, (list, str)):
+                # An explicit (even empty) list is the extractor's answer: an
+                # empty one means no exact span supports the finding, so
+                # paraphrased ``evidence`` must not be promoted to a quote.
+                quotes = normalize_quotes(raw_quotes)
+            else:
+                # Old replies/records have no ``quotes`` field, or it is malformed.
                 quotes = evidence_quotes(f.get("evidence"))
             claims.append({
                 "claim_id": claim_id,

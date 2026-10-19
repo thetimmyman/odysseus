@@ -114,7 +114,8 @@ def test_normalize_quotes_never_raises_on_garbage():
     ([["Nested one"], ["Nested two", ["Nested three"]]],
      ["Nested one", "Nested two", "Nested three"]),
     ({"quote": "not a container"}, [EVIDENCE]),
-], ids=["absent", "string", "nested-list", "garbage"])
+    ([], []),
+], ids=["absent", "string", "nested-list", "garbage", "explicit-empty"])
 async def test_recorder_prefers_quotes_and_falls_back_to_evidence(
         fake_page, tmp_path, quotes, expected):
     researcher, _ = await _extract(_reply(quotes))
