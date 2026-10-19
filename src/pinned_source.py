@@ -365,10 +365,16 @@ def _resolve_local(
         )
     if rc == 1 and path is None:
         # With no file to read, any object a tag names (a blob too) is enough.
-        rc, out, _err = _run_git(
-            ["git", "rev-parse", "--verify", "--quiet", ref + "^{}"],
+        # Only a tag may stand for one: a bare blob id is not a source version.
+        rc_t, out_t, _err_t = _run_git(
+            ["git", "rev-parse", "--symbolic-full-name", "--verify", "--quiet", ref],
             cwd=repo_dir,
         )
+        if rc_t == 0 and out_t.decode("utf-8", "replace").strip().startswith("refs/tags/"):
+            rc, out, _err = _run_git(
+                ["git", "rev-parse", "--verify", "--quiet", ref + "^{}"],
+                cwd=repo_dir,
+            )
     if rc is None:
         return PinResult(
             UNRESOLVABLE,

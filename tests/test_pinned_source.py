@@ -1095,3 +1095,12 @@ def test_a_tracked_symlink_is_not_read_as_its_target(git_repo, root):
     )
     assert result.status == UNRESOLVABLE
     assert "symlink" in result.reason
+
+
+def test_a_bare_blob_id_is_not_a_source_version(git_repo, root):
+    blob = _git(git_repo, "rev-parse", "main:read.txt")
+    result = resolve_pin(
+        PinRef(kind="docs_version", repo=git_repo.name, ref=blob),
+        local_repos_root=root,
+    )
+    assert result.status != TRUE
