@@ -159,8 +159,8 @@ async def test_quick_depth_adds_zero_model_calls():
     r1 = make_researcher("depth_quick", depth="quick")
     r2 = make_researcher("explicit_limits", max_rounds=2, max_time=90, max_urls_per_round=3)
 
-    out1 = await r1.research("What is quantum computing?")
-    out2 = await r2.research("What is quantum computing?")
+    await r1.research("What is quantum computing?")
+    await r2.research("What is quantum computing?")
 
     assert call_counts["depth_quick"] > 0
     assert call_counts["depth_quick"] == call_counts["explicit_limits"]
