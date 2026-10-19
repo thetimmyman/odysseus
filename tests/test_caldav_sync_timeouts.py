@@ -390,3 +390,51 @@ def test_a_thread_stuck_past_its_grace_stays_counted_and_caps_new_requests(monke
         assert caldav_sync._call_within(5, 1, lambda: "ok") == "ok"
     finally:
         release.set()
+
+
+def test_a_stop_request_that_lands_as_the_call_ends_is_a_timeout_not_a_base_exception():
+    def ends_with_the_sentinel():
+        raise caldav_sync._RequestOutOfTime()
+
+    with pytest.raises(TimeoutError):
+        caldav_sync._call_within(5, 1, ends_with_the_sentinel)
+
+
+def test_a_pull_that_leaves_a_request_overdue_keeps_the_owner_locked_until_it_ends(monkeypatch):
+    async def go():
+        release = threading.Event()
+        thread = threading.Thread(target=release.wait, daemon=True)
+        thread.start()
+
+        async def locked_pull(owner):
+            caldav_sync._note_overdue(thread)
+            return {"calendars": 0, "events": 0, "deleted": 0, "errors": ["timed out"]}
+
+        monkeypatch.setattr(caldav_sync, "_sync_caldav_locked", locked_pull)
+        monkeypatch.setattr(caldav_sync, "_overdue_threads", set())
+        try:
+            assert (await caldav_sync.sync_caldav("alice"))["errors"] == ["timed out"]
+            assert caldav_sync._owner_lock("alice").locked(), "the stuck request still counts against the owner"
+            release.set()
+            thread.join(2)
+            for _ in range(100):
+                if not caldav_sync._owner_lock("alice").locked():
+                    break
+                await asyncio.sleep(0.05)
+            assert not caldav_sync._owner_lock("alice").locked()
+        finally:
+            release.set()
+
+    asyncio.run(go())
+
+
+def test_a_pull_without_overdue_requests_releases_the_owner_at_once(monkeypatch):
+    async def go():
+        async def clean_pull(owner):
+            return {"calendars": 1, "events": 0, "deleted": 0, "errors": []}
+
+        monkeypatch.setattr(caldav_sync, "_sync_caldav_locked", clean_pull)
+        await caldav_sync.sync_caldav("bob")
+        assert not caldav_sync._owner_lock("bob").locked()
+
+    asyncio.run(go())

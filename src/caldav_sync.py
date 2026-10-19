@@ -333,6 +333,29 @@ _overdue_threads: "set[threading.Thread]" = set()
 _overdue_lock = threading.Lock()
 
 
+# Where the request threads left overdue by the current pull or write-back are
+# reported, so that the caller can keep the owner's custody until they end. A
+# caller sets it to a list around its work; contexts copied for its worker
+# threads share that list.
+_OVERDUE_SINK: "contextvars.ContextVar[Optional[list]]" = contextvars.ContextVar(
+    "caldav_overdue_sink", default=None,
+)
+
+
+def _note_overdue(thread: threading.Thread) -> None:
+    with _overdue_lock:
+        _overdue_threads.add(thread)
+    sink = _OVERDUE_SINK.get()
+    if sink is not None:
+        sink.append(thread)
+
+
+async def wait_overdue_ended(threads, poll: float = 0.05) -> None:
+    """Return once none of ``threads`` is running any more."""
+    while any(t.is_alive() for t in threads):
+        await asyncio.sleep(poll)
+
+
 def _overdue_count() -> int:
     """How many abandoned request threads are still running (ended ones are dropped)."""
     with _overdue_lock:
@@ -408,12 +431,18 @@ def _call_within(seconds: float, grace: float, fn, /, *args, **kwargs):
             if thread.is_alive():
                 # Still inside a blocking call: keep it counted so that later
                 # pulls cannot pile more requests onto it without bound.
-                with _overdue_lock:
-                    _overdue_threads.add(thread)
+                _note_overdue(thread)
             raise TimeoutError(f"a CalDAV request did not finish within the {seconds:g}s left of its time budget")
     thread.join()
     if "error" in box:
-        raise box["error"]
+        error = box["error"]
+        if isinstance(error, _RequestOutOfTime):
+            # The stop request landed just as the call ended: that is a timeout
+            # like any other, not an internal BaseException for the callers.
+            raise TimeoutError(
+                f"a CalDAV request did not finish within the {seconds:g}s left of its time budget"
+            ) from None
+        raise error
     return box["value"]
 
 
@@ -935,8 +964,36 @@ def _owner_lock(owner: str) -> asyncio.Lock:
 async def sync_caldav(owner: str) -> dict:
     """Pull CalDAV state into local DB for `owner` across all configured accounts.
     Returns aggregated counts + per-account errors. Serialized per owner."""
-    async with _owner_lock(owner):
+    lock = _owner_lock(owner)
+    await lock.acquire()
+    overdue: list = []
+    token = _OVERDUE_SINK.set(overdue)
+    try:
         return await _sync_caldav_locked(owner)
+    finally:
+        _OVERDUE_SINK.reset(token)
+        if any(t.is_alive() for t in overdue):
+            # A request of this pull is still running in a call that cannot be
+            # interrupted: the owner stays locked until it ends, so no second
+            # pull piles on, but this one answers now.
+            _hold_until_ended(lock, overdue)
+        else:
+            lock.release()
+
+
+_HOLDERS: "set[asyncio.Task]" = set()
+
+
+def _hold_until_ended(lock: asyncio.Lock, threads: list) -> None:
+    async def release_later():
+        try:
+            await wait_overdue_ended(threads)
+        finally:
+            lock.release()
+
+    task = asyncio.ensure_future(release_later())
+    _HOLDERS.add(task)
+    task.add_done_callback(_HOLDERS.discard)
 
 
 async def _sync_caldav_locked(owner: str) -> dict:

@@ -508,3 +508,35 @@ async def test_a_calendar_that_is_not_caldav_never_reaches_the_gate(monkeypatch,
     worker = _Worker(monkeypatch)
     assert await wb.writeback_event("alice", "local", "loc-1", {"uid": "u"}) == {"skipped": "not a caldav calendar"}
     assert worker.calls == []
+
+
+async def test_an_overdue_request_thread_keeps_the_owner_blocked_after_the_answer(monkeypatch, account):
+    """The write-back answers when its call ran out of time, but a request thread
+    still stuck in an uninterruptible call keeps the owner's turn (and the pool
+    slot) until it has really ended."""
+    stuck = threading.Event()
+    thread = threading.Thread(target=stuck.wait, daemon=True)
+    thread.start()
+
+    def overdue_then_raise(*args, **kwargs):
+        caldav_sync._note_overdue(thread)
+        raise TimeoutError("a CalDAV request did not finish")
+
+    monkeypatch.setattr(wb, "_writeback_blocking", overdue_then_raise)
+    monkeypatch.setenv(wb.ENV_WRITEBACK_TIMEOUT, "0.5")
+    monkeypatch.setattr(caldav_sync, "_overdue_threads", set())
+    try:
+        first = await _ask("alice")
+        assert first["ok"] is False
+        again = await _ask("alice")
+        assert again["ok"] is False and "still running" in again["error"]
+
+        stuck.set()
+        thread.join(2)
+        for _ in range(100):
+            if not wb._gate().owner_lock("alice").locked():
+                break
+            await asyncio.sleep(0.05)
+        assert not wb._gate().owner_lock("alice").locked()
+    finally:
+        stuck.set()

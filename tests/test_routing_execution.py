@@ -8,6 +8,7 @@ import hashlib
 import os
 import signal
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -471,3 +472,24 @@ def test_remove_worktree_refuses_outside_jail(repo, tmp_path, data_dir):
     os.makedirs(worktrees_root(), exist_ok=True)
     with pytest.raises(ValueError, match="worktree jail"):
         remove_worktree(str(repo), worktrees_root())
+
+
+def test_cleanup_still_runs_after_the_execution_deadline_is_spent(tmp_path, data_dir, monkeypatch):
+    """The container of a run that used up its wall clock must still be removed:
+    cleanup has a budget of its own and does not depend on what is left."""
+    docker, wt = sandbox_fixture(tmp_path, monkeypatch)
+    inner = docker
+
+    def slow_start(argv, **options):
+        result = inner(argv, **options)
+        if argv[1:3] == ['start', '--attach']:
+            time.sleep(1.2)  # the run consumed the whole 1s wall clock
+            result['timed_out'] = True
+        return result
+
+    monkeypatch.setattr(rs, '_bounded_docker', slow_start)
+    result = run_in_sandbox(str(wt), 'pytest -q', policy=SB_POLICY, timeout_s=1, artifacts_dir=str(docker.artifacts))
+    removed = [argv for argv, _ in docker.calls if argv[1] == 'rm']
+    assert removed == [['docker', 'rm', '--force', '--', docker.cid]]
+    assert result['timed_out'] and result['cleanup_confirmed'] is True
+    assert result['cleanup_state'] == 'OBSERVED_REMOVED'
