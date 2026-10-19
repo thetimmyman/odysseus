@@ -32,6 +32,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from src.constants import DEEP_RESEARCH_BLOB_DIR, DEEP_RESEARCH_BLOB_MAX_BYTES
+from src.prompt_security import _escape_guard_markers
+
+# The extractor prompt asks for at most this many exact spans of at most this
+# many characters; weak models ignore it, so the recorder enforces it.
+MAX_QUOTES_PER_FINDING = 5
+MAX_QUOTE_CHARS = 400
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +81,13 @@ def normalize_quotes(quotes) -> List[str]:
     def walk(value, depth: int) -> None:
         if depth > 4:
             return
+        if len(found) >= MAX_QUOTES_PER_FINDING:
+            return
         if isinstance(value, str):
             if value.strip():
-                found.append(value)
+                # A verbatim prefix still grounds; an unbounded span would let
+                # one finding dominate the run-level rate.
+                found.append(value[:MAX_QUOTE_CHARS])
         elif isinstance(value, list):
             for item in value:
                 walk(item, depth + 1)
@@ -112,7 +122,10 @@ def quote_grounding_stats(record: Dict, texts) -> Dict:
     ``texts`` is a {source_id: text} mapping or a list of source dicts with
     ``source_id``/``text``. No model is involved and nothing is repaired: a
     quote whose source text is unavailable counts as not found."""
-    by_source = {sid: _collapse_whitespace(text)
+    # The extractor read the page with guard markers escaped, so a quote spanning
+    # one matches the escaped form; accept either the raw or the escaped text.
+    by_source = {sid: (_collapse_whitespace(text),
+                       _collapse_whitespace(_escape_guard_markers(text)))
                  for sid, text in _texts_by_source(texts).items()}
     quotes = grounded = 0
     for claim in record.get("claims") or []:
@@ -125,8 +138,9 @@ def quote_grounding_stats(record: Dict, texts) -> Dict:
             if not isinstance(quote, str) or not quote.strip():
                 continue
             quotes += 1
-            source_text = by_source.get(citation.get("source_id"))
-            if source_text is not None and _collapse_whitespace(quote) in source_text:
+            variants = by_source.get(citation.get("source_id"))
+            needle = _collapse_whitespace(quote)
+            if variants is not None and any(needle in text for text in variants):
                 grounded += 1
     not_found = quotes - grounded
     return {

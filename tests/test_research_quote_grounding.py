@@ -325,3 +325,22 @@ async def test_unstored_source_text_counts_as_ungrounded(fake_page, tmp_path, mo
     record = researcher.run_recorder.build(blob_dir=tmp_path / "blobs")
     stats = record["totals"]["quote_grounding"]
     assert stats["quotes"] == 1 and stats["grounded"] == 0 and stats["rate"] == 0.0
+
+
+def test_quotes_are_capped_in_count_and_length():
+    from src.research_run_record import (MAX_QUOTE_CHARS, MAX_QUOTES_PER_FINDING,
+                                         normalize_quotes)
+    many = [f"span {i}" for i in range(20)]
+    assert normalize_quotes(many) == many[:MAX_QUOTES_PER_FINDING]
+    [long_quote] = normalize_quotes(["x" * (MAX_QUOTE_CHARS + 50)])
+    assert len(long_quote) == MAX_QUOTE_CHARS
+
+
+def test_quote_spanning_an_escaped_guard_marker_still_grounds():
+    from src.prompt_security import GUARD_OPEN, _escape_guard_markers
+    page = f"before {GUARD_OPEN} after the marker"
+    seen_by_extractor = _escape_guard_markers(page)
+    record = {"claims": [{"claim_id": "C1", "citations": [
+        {"source_id": "S1", "quote": seen_by_extractor[7:]}]}]}
+    stats = quote_grounding_stats(record, {"S1": page})
+    assert stats["grounded"] == 1 and stats["not_found"] == 0
