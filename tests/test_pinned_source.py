@@ -1064,3 +1064,34 @@ def test_a_tag_that_names_a_tree_resolves_file_pins(git_repo, root):
         _repo_file(ref="tree-release", path="read.txt"), local_repos_root=root
     )
     assert result.status == TRUE
+
+
+def test_a_tag_naming_a_blob_resolves_a_pathless_pin(git_repo, root):
+    blob = _git(git_repo, "rev-parse", "main:read.txt")
+    _git(git_repo, "tag", "blob-release", blob)
+    result = resolve_pin(
+        PinRef(kind="docs_version", repo=git_repo.name, ref="blob-release"),
+        local_repos_root=root,
+    )
+    assert result.status == TRUE
+
+
+def test_provider_metadata_cannot_clear_a_locally_proven_branch(git_repo, root):
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo=git_repo.name, ref="main"),
+        local_repos_root=root,
+        fetcher=lambda *a: (True, "notes", "tag"),
+    )
+    assert UNPINNED in result.flags
+
+
+def test_a_tracked_symlink_is_not_read_as_its_target(git_repo, root):
+    os.symlink("read.txt", git_repo / "link.txt")
+    _git(git_repo, "add", "link.txt")
+    _git(git_repo, "commit", "-m", "link")
+    result = resolve_pin(
+        _repo_file(ref="main", path="link.txt", quote="read.txt"),
+        local_repos_root=root,
+    )
+    assert result.status == UNRESOLVABLE
+    assert "symlink" in result.reason

@@ -239,15 +239,20 @@ def _movable_ref_exists(repo_dir: str, name: str) -> bool:
     return False
 
 
-def _apply_remote_flags(flags: List[str], ref: str, ref_kind, locally_proven: bool) -> None:
+def _apply_remote_flags(flags: List[str], ref: str, ref_kind, proof: Optional[dict]) -> None:
     """Remote answers (or no answer) carry no ref-kind metadata unless the
     provider states it.  Only a commit-shaped ref, a ref the provider reports
     as a tag/commit, or one local git already proved stable counts as pinned;
-    anything else (a branch named like a version included) is flagged."""
-    if ref_kind in ("tag", "commit"):
+    anything else (a branch named like a version included) is flagged.  A
+    local clone that proved the ref movable is never overruled by metadata."""
+    proof = proof or {}
+    if proof.get("movable"):
+        if UNPINNED not in flags:
+            flags.append(UNPINNED)
+    elif ref_kind in ("tag", "commit"):
         if UNPINNED in flags:
             flags.remove(UNPINNED)
-    elif not locally_proven and UNPINNED not in flags and classify_ref(ref) != "commit":
+    elif not proof.get("stable") and UNPINNED not in flags and classify_ref(ref) != "commit":
         flags.append(UNPINNED)
 
 
@@ -358,6 +363,12 @@ def _resolve_local(
             ["git", "rev-parse", "--verify", "--quiet", ref + "^{tree}"],
             cwd=repo_dir,
         )
+    if rc == 1 and path is None:
+        # With no file to read, any object a tag names (a blob too) is enough.
+        rc, out, _err = _run_git(
+            ["git", "rev-parse", "--verify", "--quiet", ref + "^{}"],
+            cwd=repo_dir,
+        )
     if rc is None:
         return PinResult(
             UNRESOLVABLE,
@@ -445,6 +456,9 @@ def _resolve_local(
         # a branch/tag clash, or a probe that could not run) can drift.
         flags.append(UNPINNED)
 
+    if UNPINNED in flags and proof is not None:
+        proof["movable"] = True
+
     if path is None:
         if pin.kind == "release_notes" or (pin.quote is not None and pin.quote.strip()):
             # The ref exists, but with no path there is no text to read: notes
@@ -474,6 +488,12 @@ def _resolve_local(
         return PinResult(UNRESOLVABLE, flags, "local git could not read the object")
     if out.decode("utf-8", "replace").strip() != "blob":
         return PinResult(FALSE, flags, f"path {path} is not a file at that pin")
+    rc, out, _err = _run_git(["git", "ls-tree", sha, "--", path], cwd=repo_dir)
+    if rc != 0:
+        return PinResult(UNRESOLVABLE, flags, "local git could not read the tree entry")
+    if out.decode("utf-8", "replace").split(" ", 1)[0] == "120000":
+        # The blob of a symlink is its target string, not the target's content.
+        return PinResult(UNRESOLVABLE, flags, f"path {path} is a symlink; its target is not followed")
     rc, out, _err = _run_git(["git", "cat-file", "-s", spec], cwd=repo_dir)
     size = out.decode("utf-8", "replace").strip()
     if rc != 0 or not size.isdigit():
@@ -581,7 +601,7 @@ def resolve_pin(
 
     # --- 2) Otherwise the injected fetcher (never a first-party client).
     if fetcher is not None:
-        _apply_remote_flags(flags, ref, None, bool(proof))
+        _apply_remote_flags(flags, ref, None, proof)
         try:
             result = fetcher(pin.kind, repo, ref, path)
         except Exception:
@@ -594,7 +614,7 @@ def resolve_pin(
         ref_kind = result[2] if len(result) == 3 else None
         if type(found) is not bool:
             return PinResult(UNRESOLVABLE, flags, "fetcher returned a non-boolean found flag")
-        _apply_remote_flags(flags, ref, ref_kind, bool(proof))
+        _apply_remote_flags(flags, ref, ref_kind, proof)
         if not found:
             return PinResult(FALSE, flags, "provider reports the pin was not found")
         if not isinstance(text, (str, type(None))):
@@ -612,7 +632,7 @@ def resolve_pin(
         return _finish_with_text(pin, text, flags)
 
     # --- 3) No source could answer.
-    _apply_remote_flags(flags, ref, None, bool(proof))
+    _apply_remote_flags(flags, ref, None, proof)
     return PinResult(
         UNRESOLVABLE,
         flags,
