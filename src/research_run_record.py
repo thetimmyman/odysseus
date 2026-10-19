@@ -166,6 +166,10 @@ class ResearchRunRecorder:
         self._texts[source_id] = text
         return source_id
 
+    def reserve_claim_ids(self, highest: int) -> None:
+        """Mint later claim ids only above ``highest`` (ids cited by an earlier run)."""
+        self._claim_ids = max(self._claim_ids, int(highest))
+
     def add_finding(self, finding: Dict) -> None:
         """Append a finding and stamp its claim id when its source is known.
 

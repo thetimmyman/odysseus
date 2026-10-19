@@ -285,25 +285,27 @@ async def test_synthesis_prompt_unchanged_when_record_is_off(fake_page):
 
 
 @pytest.mark.asyncio
-async def test_continuation_does_not_reuse_prior_run_claim_labels(fake_page):
+async def test_continuation_mints_claim_ids_above_those_the_prior_report_cites(fake_page):
     researcher = DeepResearcher(llm_endpoint="http://local.test/v1/chat/completions",
                                 llm_model="local-model", run_record=True)
     prompts = []
 
     async def fake_llm(messages, **kwargs):
         prompts.append(messages[-1]["content"])
-        return "word " * 600
+        return _reply(["Retrieval happens before extraction"])
 
     researcher._llm = fake_llm
     researcher._create_plan = lambda q: _async_value("plan")
     researcher._generate_queries = lambda *a, **k: _async_value([])
     prior_findings = [{"url": "https://old.test", "claim_id": "C1", "summary": "old"}]
-    await researcher.research("q", prior_report="Old claim [C1] stands.",
+    await researcher.research("q", prior_report="Old claim [C1] and [C2] stand.",
                               prior_findings=prior_findings, prior_urls=None)
     assert "claim_id" not in researcher.findings[0]
     assert prior_findings[0]["claim_id"] == "C1"  # caller's saved data untouched
-    assert researcher._claim_citations() == ""
-    assert prompts and all("[C1]" not in p for p in prompts)
+    assert any("Old claim [C1] and [C2] stand." in p for p in prompts)  # text left alone
+    new = await researcher._fetch_and_extract("https://example.test/a", "q", "A")
+    researcher.findings.append(new)
+    assert new["claim_id"] == "C3"
 
 
 async def _async_value(value):
@@ -311,21 +313,9 @@ async def _async_value(value):
 
 
 @pytest.mark.asyncio
-async def test_continuation_keeps_bracketed_text_without_prior_claim_provenance(fake_page):
-    researcher = DeepResearcher(llm_endpoint="http://local.test/v1/chat/completions",
-                                llm_model="local-model", run_record=True)
-    prompts = []
-
-    async def fake_llm(messages, **kwargs):
-        prompts.append(messages[-1]["content"])
-        return "word " * 600
-
-    researcher._llm = fake_llm
-    researcher._create_plan = lambda q: _async_value("plan")
-    researcher._generate_queries = lambda *a, **k: _async_value([])
-    await researcher.research("q", prior_report="Config key [C1] is documented.",
-                              prior_findings=[{"url": "https://old.test", "summary": "old"}])
-    assert any("[C1]" in p for p in prompts)
+async def test_continuation_without_cited_labels_starts_at_c1(fake_page):
+    researcher, finding = await _extract(_reply(["Retrieval happens before extraction"]))
+    assert finding["claim_id"] == "C1"
 
 
 @pytest.mark.asyncio
