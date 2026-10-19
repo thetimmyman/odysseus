@@ -39,6 +39,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
 from src.recurrence import encode_keys, override_uid, recurrence_key, tzid_for
