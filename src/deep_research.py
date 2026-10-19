@@ -202,6 +202,79 @@ CATEGORY_PROMPTS = {
 }
 
 # ---------------------------------------------------------------------------
+# Depth Modes
+# ---------------------------------------------------------------------------
+DEPTH_MODES = {
+    "quick": {
+        "max_rounds": 2,
+        "max_time": 90,
+        "max_urls_per_round": 3,
+    },
+    "standard": {
+        "max_rounds": 4,
+        "max_time": 180,
+        "max_urls_per_round": 3,
+    },
+    "deep": {
+        "max_rounds": 8,
+        "max_time": 300,
+        "max_urls_per_round": 4,
+    },
+    "critical": {
+        "max_rounds": 8,
+        "max_time": 600,
+        "max_urls_per_round": 4,
+    },
+}
+
+
+# Limits used when no depth mode is given: today's DeepResearcher defaults.
+LEGACY_LIMITS = {"max_rounds": 8, "max_time": 300, "max_urls_per_round": 3}
+
+
+def resolve_depth(mode: Optional[str], overrides: Optional[Dict[str, Optional[int]]] = None) -> Dict[str, int]:
+    """Resolve limits from a named depth mode preset and optional explicit overrides.
+
+    Explicit limit arguments always win over the preset. With no mode the
+    legacy limits apply (max_rounds=8, max_time=300, max_urls_per_round=3).
+    An unknown mode raises ValueError rather than being silently ignored.
+    """
+    if mode is None:
+        base = dict(LEGACY_LIMITS)
+    elif mode in DEPTH_MODES:
+        base = dict(DEPTH_MODES[mode])
+    else:
+        raise ValueError(
+            f"Unknown depth mode {mode!r}; expected one of: {', '.join(sorted(DEPTH_MODES))}"
+        )
+    for k, v in (overrides or {}).items():
+        if v is not None and k in base:
+            base[k] = v
+    return base
+
+
+def select_default_depth(category: Optional[str], sensitivity: Optional[str] = None) -> str:
+    """Pure, deterministic lookup from request category to a default depth mode.
+
+    Used when depth == "auto". No model call, no randomness, no I/O.
+    Category mappings:
+    - "product": "standard" (broad comparison of products with moderate depth)
+    - "comparison": "standard" (evaluating trade-offs across options)
+    - "howto": "standard" (actionable steps and prerequisites)
+    - "factcheck": "deep" (rigorous evidence verification)
+    - None / other: "standard" (default depth for general topics)
+    """
+    mapping = {
+        "product": "standard",
+        "comparison": "standard",
+        "howto": "standard",
+        "factcheck": "deep",
+    }
+    cat = (category or "").strip().lower()
+    return mapping.get(cat, "standard")
+
+
+# ---------------------------------------------------------------------------
 # DeepResearcher
 # ---------------------------------------------------------------------------
 class DeepResearcher:
@@ -217,38 +290,49 @@ class DeepResearcher:
         llm_endpoint: str,
         llm_model: str,
         llm_headers: Optional[Dict] = None,
-        max_rounds: int = 8,
-        max_time: int = 300,
-        max_urls_per_round: int = 3,
+        max_rounds: Optional[int] = None,
+        max_time: Optional[int] = None,
+        max_urls_per_round: Optional[int] = None,
         max_content_chars: int = 15000,
         max_report_tokens: int = 8192,
         extraction_timeout: int = 90,
         planning_timeout: int = 90,
         query_timeout: int = 120,
         extraction_concurrency: int = 3,
-        min_rounds: int = 2,
+        min_rounds: Optional[int] = None,
         max_empty_rounds: int = 2,
         synthesis_window: int = 10,
         progress_callback: Optional[Callable] = None,
         search_provider: Optional[str] = None,
         category: Optional[str] = None,
         run_record: bool = False,
+        depth: Optional[str] = None,
     ):
         self.llm_endpoint = llm_endpoint
         self.llm_model = llm_model
         self.llm_headers = llm_headers
         self.search_provider_override = search_provider
         self.category = category
-        self.max_rounds = max_rounds
-        self.max_time = max_time
-        self.max_urls_per_round = max_urls_per_round
+        self.depth = depth
+
+        resolved_limits = resolve_depth(depth, overrides={
+            "max_rounds": max_rounds,
+            "max_time": max_time,
+            "max_urls_per_round": max_urls_per_round,
+        })
+        self.max_rounds = resolved_limits["max_rounds"]
+        self.max_time = resolved_limits["max_time"]
+        self.max_urls_per_round = resolved_limits["max_urls_per_round"]
         self.max_content_chars = max_content_chars
         self.max_report_tokens = max_report_tokens
         self.extraction_timeout = min(3600, max(15, int(extraction_timeout or 90)))
         self.planning_timeout = min(3600, max(15, int(planning_timeout or 90)))
         self.query_timeout = min(3600, max(15, int(query_timeout or 120)))
         self.extraction_concurrency = min(12, max(1, int(extraction_concurrency or 3)))
-        self.min_rounds = min_rounds
+        if min_rounds is None:
+            self.min_rounds = min(2, self.max_rounds)
+        else:
+            self.min_rounds = min(min_rounds, self.max_rounds)
         self.max_empty_rounds = max_empty_rounds
         self.synthesis_window = synthesis_window
         self._progress = progress_callback
@@ -591,7 +675,10 @@ class DeepResearcher:
 
         # Collect URLs to fetch from all search results
         urls_to_fetch = []
+        url_cap = self.max_urls_per_round * len(queries)
         for result in search_results:
+            if len(urls_to_fetch) >= url_cap:
+                break
             if isinstance(result, Exception):
                 logger.warning(f"Search error: {result}")
                 continue
@@ -602,7 +689,7 @@ class DeepResearcher:
                 if url and url not in self.urls_fetched:
                     urls_to_fetch.append(r)
                     self.urls_fetched.add(url)
-                if len(urls_to_fetch) >= self.max_urls_per_round * len(queries):
+                if len(urls_to_fetch) >= url_cap:
                     break
 
         if self._cancelled or self._time_exceeded():
