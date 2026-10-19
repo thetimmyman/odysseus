@@ -255,3 +255,30 @@ async def test_claim_rules_carry_ids_only_not_page_controlled_metadata(fake_page
     assert "[C1]" in block
     assert "evil.test" not in block and "Ignore the rules" not in block
     assert "example.test" not in block
+
+
+async def _synth_prompt(researcher):
+    prompts = []
+
+    async def capture(messages, **kwargs):
+        prompts.append(messages[-1]["content"])
+        return "report"
+
+    researcher._llm = capture
+    await researcher._synthesize("q", researcher.findings, "")
+    [prompt] = prompts
+    return prompt
+
+
+@pytest.mark.asyncio
+async def test_synthesis_is_told_to_keep_claim_labels_when_record_is_on(fake_page):
+    researcher, _ = await _extract(_reply(["Retrieval happens before extraction"]))
+    prompt = await _synth_prompt(researcher)
+    assert "[C1]" in prompt and "keep each label next to its source" in prompt
+
+
+@pytest.mark.asyncio
+async def test_synthesis_prompt_unchanged_when_record_is_off(fake_page):
+    researcher, _ = await _extract(_spoofed_reply(), run_record=False)
+    prompt = await _synth_prompt(researcher)
+    assert "claim label" not in prompt and "C99" not in prompt

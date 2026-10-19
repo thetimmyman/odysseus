@@ -101,7 +101,7 @@ You are updating an evolving research report.
 Integrate the new findings into the existing report. Produce an updated, well-organized \
 report that answers the original question as completely as possible given all evidence so far. \
 Remove redundancy, resolve contradictions, and maintain logical flow. \
-Keep source URLs as inline citations where relevant.
+Keep source URLs as inline citations where relevant.{claim_labels}
 
 Write only the updated report — no preamble or meta-commentary.
 """
@@ -129,6 +129,12 @@ Reply with ONLY "YES" or "NO" followed by a brief one-sentence reason.
 Example: "YES — The report covers all major aspects with evidence from multiple sources."
 Example: "NO — We still lack information about the economic impact."
 """
+
+CLAIM_LABEL_KEEP_RULE = (
+    " Every finding carries a claim label such as [C3]; keep each label next to its source "
+    "wherever that source is cited, exactly as given, so later steps can still tell which "
+    "claim belongs to which source."
+)
 
 CLAIM_CITATION_RULES = """\
 - This run has a claim registry. Each supplied claim id (for example [C3]) belongs to exactly one finding in the evidence above.
@@ -750,6 +756,8 @@ class DeepResearcher:
             question=question,
             report=current_report or "(First round — no report yet.)",
             new_findings=findings_text,
+            claim_labels=(CLAIM_LABEL_KEEP_RULE
+                          if any(self._registry_claim_id(f) for f in window) else ""),
         )
 
         try:
