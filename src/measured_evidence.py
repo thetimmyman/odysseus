@@ -50,6 +50,8 @@ TRUST_CLASS = "authoritative"
 SOURCE_KIND = "measured"
 MAX_TEXT_BYTES = 65536
 _MAX_FILES_SCANNED = 5000
+_MAX_QUERY_CHARS = 2000
+_MAX_QUERY_TOKENS = 32
 _MAX_MEASUREMENTS_PER_FILE = 1000  # structured entries kept per source
 _MAX_ENTRIES_WALKED = 20000  # files and directories listed, whatever their type
 _MAX_BYTES_SCANNED = 256 * 1024 * 1024
@@ -419,18 +421,22 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
                     f"different units ({assertion.unit!r} vs {measurement.unit!r}): no conversion attempted",
                 ))
                 continue
+            ratio = None
             if measured == 0:
                 relative = 0.0 if claimed == 0 else None
             else:
                 # Exact arithmetic: an integer and a float that differ by one count must not be
                 # rounded into agreement, whichever way each side was written in the JSON.
+                ratio = abs(Fraction(claimed) - Fraction(measured)) / abs(Fraction(measured))
                 try:
-                    relative = float(abs(Fraction(claimed) - Fraction(measured)) / abs(Fraction(measured)))
+                    relative = float(ratio)
                 except OverflowError:
                     relative = None
                 if relative is not None and not math.isfinite(relative):
                     relative = None  # a ratio outside the float range is reported as incomputable
-            if relative is not None and relative <= tolerance:
+            # Classify on the exact ratio so rounding to float cannot turn a conflict into an agreement.
+            within = (relative == 0.0) if measured == 0 else (ratio <= Fraction(tolerance))
+            if relative is not None and within:
                 agreements.append(_comparison(
                     assertion, measurement, relative,
                     "within tolerance: the measurement agrees with the claim",
@@ -542,11 +548,17 @@ def _query_tokens(query) -> list[str]:
     if not isinstance(query, str):
         return []
     tokens: list[str] = []
-    for part in _split_words(query.casefold()):
+    seen: set[str] = set()
+    # Bound the work a query can cause: only the head of an oversized query is read, and only the
+    # first few distinct tokens are scored against every candidate.
+    for part in _split_words(query[:_MAX_QUERY_CHARS].casefold()):
         # Three characters for ASCII words; scripts written without spaces (CJK and others) have
         # shorter meaningful tokens.
-        if (len(part) >= 3 or (len(part) >= 2 and not part.isascii())) and part not in tokens:
+        if (len(part) >= 3 or (len(part) >= 2 and not part.isascii())) and part not in seen:
+            seen.add(part)
             tokens.append(part)
+            if len(tokens) >= _MAX_QUERY_TOKENS:
+                break
     return tokens
 
 
@@ -570,6 +582,8 @@ def _scan_tree(path, state, budget, depth):
     yielded; a directory that cannot be read is recorded in ``state["walk_error"]``.
     """
     if depth > 32:
+        if state is not None:
+            state["walk_error"] = "directory nesting deeper than 32 levels"
         return
     dirs: list[str] = []
     files: list[str] = []
@@ -588,7 +602,10 @@ def _scan_tree(path, state, budget, depth):
                         dirs.append(entry.name)
                     elif entry.is_file(follow_symlinks=False):
                         files.append(entry.name)
-                except OSError:
+                except OSError as err:
+                    # A failed metadata lookup is not proof the entry is absent.
+                    if state is not None:
+                        state["walk_error"] = str(getattr(err, "filename", None) or entry.name)
                     continue
     except OSError as err:
         if state is not None:

@@ -732,3 +732,61 @@ def test_a_very_wide_directory_stops_at_the_entry_cap_while_it_is_read(tmp_path,
 def test_an_empty_root_is_unconfigured_not_the_working_directory(empty):
     result = me.find_measured_sources("needle", root=empty, enabled=True)
     assert result.status == me.UNAVAILABLE and "no measured-evidence root" in result.reason
+
+
+def test_a_ratio_just_above_tolerance_is_a_conflict_even_if_it_rounds_to_the_float(tmp_path):
+    measurement = me.Measurement(subject="s", metric="m", value=10**20, unit="u", path="p")
+    assertion = me.Assertion("C1", "s", "m", 10**20 + 20000000000000001111, "u", "doc")
+
+    report = me.find_conflicts([assertion], [measurement], rel_tolerance=0.2)
+
+    assert len(report.conflicts) == 1 and report.agreements == ()
+
+
+def test_nesting_deeper_than_the_depth_limit_is_incomplete_not_empty(tmp_path):
+    root = tmp_path / "root"
+    deep = root / "evidence"
+    for index in range(40):
+        deep = deep / f"d{index}"
+    deep.mkdir(parents=True)
+    (deep / "run.json").write_text('{"needle": 1}')
+
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+
+    assert result.status == me.UNAVAILABLE
+
+
+def test_an_entry_metadata_failure_is_a_traversal_error_not_an_absent_entry(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "a.json").write_text('{"needle": 1}')
+    real_scandir = os.scandir
+
+    class Failing:
+        def __init__(self, path):
+            self.inner = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.inner.close()
+
+        def __iter__(self):
+            for entry in self.inner:
+                class Broken:
+                    name = entry.name
+
+                    def is_symlink(self):
+                        raise OSError(116, "stale")
+                yield Broken()
+
+    monkeypatch.setattr(os, "scandir", lambda path: Failing(path))
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    assert result.status == me.UNAVAILABLE
+
+
+def test_query_tokens_are_deduplicated_and_capped():
+    query = " ".join(f"word{index:06d}" for index in range(100000)) + " word000001"
+    tokens = me._query_tokens(query)
+    assert len(tokens) == me._MAX_QUERY_TOKENS == len(set(tokens))
