@@ -5,15 +5,23 @@ capabilities dropped, resource and time limits, truncated output. Commands run
 without a shell and must match the allowlist. Every attempt, including denied
 ones, is recorded as a ToolCallRecord."""
 import hashlib
+import json
 import os
+from pathlib import Path
+import re
+import selectors
 import shlex
+import signal
 import subprocess
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from src import routing_policy
 from src.routing_workdir import data_root
+from src.constants import ROUTING_SANDBOX_ARTIFACT_DIRNAME, ROUTING_SANDBOX_OWNERSHIP_SUFFIX
 
 DEFAULT_SANDBOX = {
     "image": "python:3.12-slim",
@@ -42,6 +50,15 @@ DEFAULT_SANDBOX = {
 
 # No shell expands these, but rejecting them keeps hostile input failing closed.
 _SHELL_METACHARACTERS = (";", "|", "&", "`", "$(", ">", "<", "\n", "\r")
+
+
+_CLEANUP_CALL_SECONDS = 3
+
+
+class _ClientCleanupUnresolved(RuntimeError):
+    def __init__(self, primary_error):
+        super().__init__('owned sandbox client cleanup unresolved')
+        self.primary_error = primary_error
 
 
 def _utcnow() -> datetime:
@@ -150,6 +167,7 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
     argv = [
         "docker", "run", "--rm",
         "--name", container_name,
+        "--entrypoint", "",
         "--network", "none",
         "--cpus", str(cfg["cpus"]),
         "--memory", f"{cfg['memoryGb']}g",
@@ -168,48 +186,123 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         *shlex.split(cmd),
     ]
 
-    stdout_bytes = b""
-    stderr_bytes = b""
+    max_bytes = int(cfg["maxOutputBytes"])
+    if not 0 < max_bytes <= 1048576:
+        raise ValueError("sandbox output budget unavailable")
+    if artifacts_dir is None:
+        artifacts_dir = os.path.join(data_root(), "routing", "runs", ROUTING_SANDBOX_ARTIFACT_DIRNAME)
+    os.makedirs(artifacts_dir, mode=0o700, exist_ok=True)
+    ownership = Path(artifacts_dir) / (container_name + ROUTING_SANDBOX_OWNERSHIP_SUFFIX)
+    result.update(container_id=None, image_id=None, cleanup_confirmed=False,
+                  cleanup_state="NOT_CREATED", ownership_path=str(ownership))
+    deadline = time.monotonic() + cfg["wallClockSeconds"]
+    stdout_bytes, stderr_bytes = b"", b""
+    cid = None
+    created = False
+    observed = None
+    client_cleanup_unknown = False
+    nonce = uuid.uuid4().hex
+    labels = {"odysseus.sandbox.nonce": nonce, "odysseus.sandbox.run": run_id or "unbound"}
+
+    def remaining():
+        value = deadline - time.monotonic()
+        if value <= 0:
+            raise subprocess.TimeoutExpired("sandbox", cfg["wallClockSeconds"])
+        return value
+
+    def call(arguments, *, limit=65536, cleanup=False):
+        # Cleanup runs after the execution deadline by design (that is why it
+        # exists), so it gets a bounded budget of its own instead of what is left.
+        budget = min(_CLEANUP_CALL_SECONDS, cfg["wallClockSeconds"]) if cleanup else min(3, remaining())
+        capture = _bounded_docker(["docker", *arguments], timeout=budget, limit=limit)
+        if capture["timed_out"]:
+            raise subprocess.TimeoutExpired(arguments, cfg["wallClockSeconds"])
+        if capture["stdout_truncated"] or capture["stderr_truncated"]:
+            raise ValueError("sandbox control output exceeded budget")
+        return capture
+
     try:
-        proc = subprocess.run(argv, capture_output=True, timeout=cfg["wallClockSeconds"])
-        result["exit_code"] = proc.returncode
-        stdout_bytes = proc.stdout or b""
-        stderr_bytes = proc.stderr or b""
-    except subprocess.TimeoutExpired as e:
-        # A timeout kills only the docker client; the container must be killed by name.
-        result["timed_out"] = True
-        result["error"] = f"wall clock limit of {cfg['wallClockSeconds']}s exceeded"
-        stdout_bytes = e.stdout or b""
-        stderr_bytes = e.stderr or b""
-        try:
-            subprocess.run(["docker", "kill", container_name], capture_output=True, timeout=30)
-        except Exception:
-            pass  # best effort; --rm reaps it once the daemon notices
+        # Resolve an already installed image first: create never pulls or
+        # silently substitutes a new mutable tag after the observation.
+        image = call(["image", "inspect", "--format", "{{.Id}}", cfg["image"]])
+        image_id = image["stdout"].decode().strip()
+        if image["code"] != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            raise ValueError("sandbox image unavailable")
+        result["image_id"] = image_id
+        image_index = argv.index(cfg["image"])
+        argv[image_index] = image_id
+        argv[1:3] = ["create"]
+        argv[2:2] = [item for key, value in labels.items() for item in ("--label", key + "=" + value)]
+        # Intent is durable BEFORE create. A lost create acknowledgement stays
+        # unknown: no start, retry, name lookup or name-based destruction.
+        intent = {"schema": "sandbox-ownership-v1", "name": container_name,
+                  "labels": labels, "image_id": image_id, "create_argv": argv,
+                  "worktree": os.path.realpath(worktree_path), "state": "CREATE_REQUESTED"}
+        _ownership_record(ownership, intent)
+        created = True
+        create = call(argv[1:])
+        candidate = create["stdout"].decode().strip()
+        if create["code"] != 0 or re.fullmatch(r"[0-9a-f]{64}", candidate) is None:
+            raise ValueError("sandbox create acknowledgement unavailable")
+        cid = result["container_id"] = candidate
+        observed = _inspect_owned(call, cid, intent)
+        _ownership_record(ownership.with_name(ownership.stem + ".created.json"),
+                          {"container_id": cid, "inspection": observed})
+        attached = _bounded_docker(["docker", "start", "--attach", "--", cid],
+                                   timeout=max(0.001, remaining() - min(5, cfg['wallClockSeconds'] / 2)), limit=max_bytes)
+        stdout_bytes, stderr_bytes = attached["stdout"], attached["stderr"]
+        result["stdout_truncated"] = attached["stdout_truncated"]
+        result["stderr_truncated"] = attached["stderr_truncated"]
+        result["timed_out"] = attached["timed_out"]
+        if attached["timed_out"]:
+            result["error"] = f"wall clock limit of {cfg['wallClockSeconds']}s exceeded"
+        elif attached["stdout_truncated"] or attached["stderr_truncated"]:
+            result["error"] = "sandbox output limit exceeded"
+        else:
+            state = _inspect_owned(call, cid, intent)
+            if state["State"].get("Running") is not False or type(state["State"].get("ExitCode")) is not int:
+                raise ValueError("sandbox completion unavailable")
+            result["exit_code"] = state["State"]["ExitCode"]
+            if attached["code"] != result["exit_code"]:
+                raise ValueError("sandbox client/container exit mismatch")
+    except _ClientCleanupUnresolved:
+        client_cleanup_unknown = True
+        result['error'] = 'sandbox client cleanup unresolved'
     except FileNotFoundError:
         result["error"] = "docker_unavailable"
-        result["tool_call_record_id"] = _record_tool_call(
-            db, run_id=run_id, cmd=cmd, worktree_path=worktree_path,
-            allowed=True, started_at=started_at, completed_at=_utcnow(),
-            exit_code=None, stdout_path=None, stderr_path=None,
-            policy_decision_id=policy_decision_id,
-        )
-        return result
+    except subprocess.TimeoutExpired:
+        result["timed_out"] = True
+        result["error"] = f"wall clock limit of {cfg['wallClockSeconds']}s exceeded"
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        result["error"] = "sandbox ownership or execution unavailable"
+    finally:
+        if cid is not None and observed is not None and not client_cleanup_unknown:
+            try:
+                # Recheck all ownership/isolation facts before destructive
+                # controls. Never address a name, guessed or replaced CID.
+                _inspect_owned(lambda args: call(args, cleanup=True), cid, intent)
+                removed = call(["rm", "--force", "--", cid], cleanup=True)
+                absent = call(["container", "ls", "--all", "--no-trunc", "--filter", "id=" + cid,
+                               "--format", "{{.ID}}"], cleanup=True)
+                result["cleanup_confirmed"] = removed["code"] == 0 and absent["code"] == 0 and absent["stdout"] == b""
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.TimeoutExpired):
+                result["cleanup_confirmed"] = False
+            result["cleanup_state"] = "OBSERVED_REMOVED" if result["cleanup_confirmed"] else "UNKNOWN"
+        elif created or client_cleanup_unknown:
+            result["cleanup_state"] = "UNKNOWN"
+        if result["cleanup_confirmed"]:
+            _ownership_record(ownership.with_name(ownership.stem + ".closed.json"),
+                              {"container_id": cid, "cleanup_state": result["cleanup_state"]})
+        elif created and result['error'] is None:
+            result['error'] = 'sandbox cleanup unresolved'
 
-    max_bytes = int(cfg["maxOutputBytes"])
-    result["stdout_truncated"] = len(stdout_bytes) > max_bytes
-    result["stderr_truncated"] = len(stderr_bytes) > max_bytes
-
-    if artifacts_dir is None:
-        artifacts_dir = os.path.join(data_root(), "routing", "runs", "_sandbox")
-    os.makedirs(artifacts_dir, exist_ok=True)
     stdout_path = os.path.join(artifacts_dir, f"{container_name}.stdout.log")
     stderr_path = os.path.join(artifacts_dir, f"{container_name}.stderr.log")
-    with open(stdout_path, "wb") as f:
-        f.write(stdout_bytes[:max_bytes])
-    with open(stderr_path, "wb") as f:
-        f.write(stderr_bytes[:max_bytes])
-    result["stdout_path"] = stdout_path
-    result["stderr_path"] = stderr_path
+    for path, raw in ((stdout_path, stdout_bytes), (stderr_path, stderr_bytes)):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+    result["stdout_path"], result["stderr_path"] = stdout_path, stderr_path
 
     result["tool_call_record_id"] = _record_tool_call(
         db, run_id=run_id, cmd=cmd, worktree_path=worktree_path,
@@ -218,3 +311,161 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         stderr_path=stderr_path, policy_decision_id=policy_decision_id,
     )
     return result
+
+
+def _ownership_record(path, value):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(value, stream, sort_keys=True, allow_nan=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _inspect_owned(call, cid, intent):
+    capture = call(['inspect', '--', cid])
+    rows = json.loads(capture['stdout'])
+    if capture['code'] != 0 or type(rows) is not list or len(rows) != 1:
+        raise ValueError('sandbox inspection unavailable')
+    row = rows[0]
+    host, config = row['HostConfig'], row['Config']
+    mounts = row['Mounts']
+    argv = intent['create_argv']
+    image_index = argv.index(intent['image_id'])
+    user = argv[argv.index('--user') + 1] if '--user' in argv else ''
+    if (row['Id'] != cid or row['Name'] != '/' + intent['name'] or row['Image'] != intent['image_id']
+            or any(config.get('Labels', {}).get(key) != value for key, value in intent['labels'].items())
+            or config.get('Cmd') != argv[image_index+1:]
+            or config.get('Entrypoint') not in (None, []) or config.get('User', '') != user
+            or host.get('NetworkMode') != 'none' or host.get('Privileged') is not False
+            or host.get('AutoRemove') is not False or host.get('CapDrop') != ['ALL']
+            or 'no-new-privileges' not in host.get('SecurityOpt', [])
+            or host.get('PidsLimit') != int(argv[argv.index('--pids-limit')+1])
+            or host.get('Memory') != int(float(argv[argv.index('--memory')+1][:-1]) * 1024**3)
+            or host.get('NanoCpus') != int(float(argv[argv.index('--cpus')+1]) * 1e9)
+            or host.get('Tmpfs') != {'/tmp': ''} or host.get('Binds') != [argv[argv.index('-v')+1]]
+            or config.get('WorkingDir') != '/work'
+            or len([mount for mount in mounts if mount.get('Type') == 'bind']) != 1
+            or any(not (mount.get('Type') == 'bind' and mount.get('Source') == intent['worktree']
+                        and mount.get('Destination') == '/work' and mount.get('RW') is True)
+                   and not (mount.get('Type') == 'tmpfs' and mount.get('Destination') == '/tmp') for mount in mounts)):
+        raise ValueError('sandbox ownership or isolation mismatch')
+    return row
+
+
+def _bounded_docker(argv, *, timeout, limit):
+    """Cap before buffering; close owned pipes and reap independently of EOF.
+
+    The client has its own session. Keep its leader unreaped until the owned
+    group is stopped, so its PID cannot be reused for a different group.
+    Container termination remains the separate exact-CID protocol above.
+    """
+    deadline = time.monotonic() + timeout
+    capture_deadline = deadline - min(1, timeout / 2)
+    streams, truncated = [bytearray(), bytearray()], [False, False]
+    process, selector = None, None
+    timed_out = False
+    interrupted, previous = [], {}
+    primary_error = None
+    cleanup_unknown = False
+
+    def defer(signum, _frame):
+        interrupted.append(signum)
+
+    try:
+        # Worker threads cannot receive Python signal handlers; their owner
+        # controls cancellation. Defer main-thread interrupts through custody.
+        if threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous[signum] = signal.signal(signum, defer)
+        if interrupted:
+            raise InterruptedError('owned sandbox client interrupted')
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, start_new_session=True, bufsize=0,
+            env={key: value for key, value in os.environ.items() if key in ('HOME', 'XDG_RUNTIME_DIR')}
+                | {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+        selector = selectors.DefaultSelector()
+        for index, stream in enumerate((process.stdout, process.stderr)):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, index)
+        while True:
+            if interrupted:
+                raise InterruptedError('owned sandbox client interrupted')
+            ended = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if ended is not None and not selector.get_map():
+                break
+            remaining = capture_deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            if not selector.get_map():
+                time.sleep(min(0.01, remaining))
+            for key, _event in selector.select(min(0.05, remaining)):
+                index = key.data
+                chunk = os.read(key.fd, min(8192, limit + 1 - len(streams[index])))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                available = limit - len(streams[index])
+                streams[index].extend(chunk[:available])
+                if len(chunk) > available:
+                    truncated[index] = True
+            if any(truncated):
+                break
+    except BaseException as failure:
+        primary_error = failure
+    finally:
+        try:
+            try:
+                if selector is not None:
+                    try:
+                        selector.close()
+                    except BaseException as failure:
+                        primary_error = primary_error or failure
+                        cleanup_unknown = True
+            finally:
+                if process is not None:
+                    try:
+                        # Attempt each close independently. A failure retains
+                        # HOLD but cannot skip owned group termination/reaping.
+                        for stream in (process.stdout, process.stderr):
+                            if stream is not None:
+                                try:
+                                    stream.close()
+                                except BaseException as failure:
+                                    primary_error = primary_error or failure
+                                    cleanup_unknown = True
+                    finally:
+                        try:
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            except BaseException as failure:
+                                primary_error = primary_error or failure
+                                cleanup_unknown = True
+                        finally:
+                            try:
+                                process.wait(timeout=max(0.001, deadline - time.monotonic()))
+                            except BaseException as failure:
+                                primary_error = primary_error or failure
+                                cleanup_unknown = True
+        finally:
+            for signum, handler in previous.items():
+                try:
+                    signal.signal(signum, handler)
+                except BaseException as failure:
+                    primary_error = primary_error or failure
+                    cleanup_unknown = True
+    if cleanup_unknown:
+        raise _ClientCleanupUnresolved(primary_error) from primary_error
+    if primary_error is not None:
+        raise primary_error
+    if interrupted:
+        raise InterruptedError('owned sandbox client interrupted')
+    return {'code': process.returncode, 'stdout': bytes(streams[0]), 'stderr': bytes(streams[1]),
+            'stdout_truncated': truncated[0], 'stderr_truncated': truncated[1], 'timed_out': timed_out}

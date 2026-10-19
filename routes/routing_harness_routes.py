@@ -280,6 +280,82 @@ from src.canonical_inspector_admission import InspectorUnavailable, UnknownInspe
 from src.canonical_inspector_service import request_principal
 from src.canonical_pilot_adapter import PilotLimit, read_idempotency_key
 
+
+@router.get("/inspector/setup")
+def inspector_setup_status(request: Request):
+    owner = request_principal(request)
+    from src.canonical_inspector_setup import InspectorSchemaSetup
+    try:
+        return InspectorSchemaSetup(SessionLocal, app_state=request.app.state).status(
+            owner, lambda: request_principal(request))
+    except InspectorUnavailable:
+        raise HTTPException(503, "Inspector setup unavailable") from None
+
+
+@router.post("/inspector/setup/schema")
+async def inspector_setup_schema(request: Request):
+    owner = request_principal(request)
+    from starlette.concurrency import run_in_threadpool
+    from src.canonical_inspector_setup import InspectorSchemaSetup, SetupConflict
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+    try:
+        raw = await collect_bytes(request.stream(), limit=4096, seconds=5)
+        body = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+        if type(body) is not dict or set(body) != {"expected_schema_hash"}:
+            raise ValueError("invalid request")
+    except (PilotLimit, ValueError, TypeError, RecursionError):
+        raise HTTPException(400, "Invalid inspector setup request") from None
+    try:
+        setup = InspectorSchemaSetup(SessionLocal, app_state=request.app.state)
+        return await run_in_threadpool(setup.initialize, owner, body["expected_schema_hash"],
+                                       lambda: request_principal(request))
+    except SetupConflict as error:
+        raise HTTPException(409, str(error)) from None
+    except InspectorUnavailable:
+        raise HTTPException(503, "Inspector setup unavailable") from None
+
+
+@router.post("/inspector/setup/transport")
+async def inspector_setup_transport(request: Request):
+    owner = request_principal(request)
+    from urllib.parse import urlsplit
+    from src.dev_preview_proxy import _same_site
+    from starlette.concurrency import run_in_threadpool
+    from src.canonical_inspector_setup import InspectorSchemaSetup, SetupConflict
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+    site = (request.headers.get("sec-fetch-site") or "").lower()
+    origin = request.headers.get("origin")
+    try:
+        if (not _same_site(request.headers, request.headers.get("host"))
+                or site not in ("", "same-origin", "none")):
+            raise HTTPException(403, "Same-origin admin request required")
+        if origin:
+            parsed = urlsplit(origin)
+            if (len(origin) > 2048 or any(ord(c) <= 32 for c in origin)
+                    or parsed.scheme != request.url.scheme
+                    or parsed.netloc.lower() != request.headers.get("host", "").lower()):
+                raise HTTPException(403, "Same-origin admin request required")
+    except ValueError:
+        raise HTTPException(403, "Same-origin admin request required") from None
+    try:
+        raw = await collect_bytes(request.stream(), limit=4096, seconds=5)
+        body = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+        if (type(body) is not dict or set(body) != {"expected_manifest_digest"}
+                or type(body["expected_manifest_digest"]) is not str
+                or len(body["expected_manifest_digest"]) != 64
+                or any(character not in "0123456789abcdef" for character in body["expected_manifest_digest"])):
+            raise ValueError("invalid request")
+    except (PilotLimit, ValueError, TypeError, RecursionError):
+        raise HTTPException(400, "Invalid inspector transport request") from None
+    try:
+        return await run_in_threadpool(InspectorSchemaSetup(SessionLocal, app_state=request.app.state).qualify_transport,
+            owner, body["expected_manifest_digest"], lambda: request_principal(request))
+    except SetupConflict as error:
+        raise HTTPException(409, str(error)) from None
+    except InspectorUnavailable:
+        raise HTTPException(503, "Inspector transport unavailable") from None
+
+
 @router.post("/inspector/pilots/{pilot_id}")
 async def inspector_pilot(pilot_id: str, request: Request):
     owner = request_principal(request)

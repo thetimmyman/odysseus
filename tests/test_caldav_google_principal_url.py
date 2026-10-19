@@ -81,8 +81,9 @@ class _FakePrincipal:
 
 
 class _FakeClient:
-    def __init__(self, url=None, username=None, password=None):
+    def __init__(self, url=None, username=None, password=None, timeout=None):
         self.url = url
+        self.timeout = timeout
         # Mirror the real DAVClient: _build_dav_client sets
         # session.max_redirects = 0 right after construction.
         self.session = types.SimpleNamespace(max_redirects=30)

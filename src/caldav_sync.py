@@ -32,10 +32,14 @@ import contextvars
 import hashlib
 import ipaddress
 import logging
+import math
 import os
 import socket
+import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
 from src.recurrence import encode_keys, override_uid, recurrence_key, tzid_for
@@ -47,6 +51,91 @@ logger = logging.getLogger(__name__)
 # events still come through via RRULE expansion on the frontend.
 _LOOKBACK_DAYS = 90
 _LOOKAHEAD_DAYS = 365
+
+# python-caldav's DAVClient has no network timeout unless it is given one, so a
+# server that accepts a connection and then says nothing would hold a sync (and
+# the owner's lock, and a worker thread) for good. Every client is built with
+# CALDAV_REQUEST_TIMEOUT_SECONDS, which the HTTP library applies to the connect
+# and to each socket read. A read that keeps being answered, a byte at a time,
+# never times out that way, so a request is also capped as a whole: it may use no
+# more than what is left of the pull's budget, CALDAV_SYNC_TIMEOUT_SECONDS (see
+# `_cap_request_time`), and the pull stops starting new work once that has passed.
+# A slow server therefore holds a pull for at most the budget plus the time one
+# blocked read needs to give up. Both must be positive numbers: anything else
+# (zero, negative, infinite, not a number) means "no limit" and falls back to the
+# default instead.
+ENV_REQUEST_TIMEOUT = "CALDAV_REQUEST_TIMEOUT_SECONDS"
+ENV_SYNC_TIMEOUT = "CALDAV_SYNC_TIMEOUT_SECONDS"
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_SYNC_TIMEOUT_SECONDS = 300
+
+# Most CalDAV accounts one owner may keep, and so the most a pull walks. An
+# owner's accounts are pulled one after another, each with a budget of its own,
+# so the time a pull can hold the periodic loop (see `src/caldav_sync_loop.py`) is
+# this many budgets at most. Without a limit that time grew with a number the
+# owner types in, and one user adding accounts that pointed at slow servers could
+# keep every later owner from being pulled for hours. Saving a further account is
+# refused (`POST /api/calendar/config/accounts`); accounts saved beyond it before
+# the limit existed are not pulled and the pull says so.
+MAX_CALDAV_ACCOUNTS = 10
+
+# Monotonic clock for the pull's time budget; a name of its own so tests can move it.
+_clock = time.monotonic
+
+# Where the previous pull of an account stopped. A pull that spends its budget
+# leaves the calendars it did not reach for the next one, and walking the server's
+# list from the top again would spend the budget on the same leading calendars
+# every time, so the tail would never be pulled (nor pruned). Instead the next
+# pull starts at the first calendar the last one never began, and wraps round, so
+# each calendar gets its turn even when one is too slow to finish. Keyed by owner
+# and account, valued by calendar URL (the order on the server may change); cleared
+# when a pull reaches the end of its calendars. In memory only: a restart starts
+# over at the top of the list. Each key is only written by that account's pull,
+# which runs one at a time per owner (see `_owner_lock`).
+_RESUME_AT: dict = {}
+
+
+def _resume_key(owner: str, account_id: str, url: str) -> tuple:
+    return (owner, account_id or url)
+
+
+def _from_resume_point(calendars: list, resume_url) -> list:
+    """``calendars`` rotated to begin at the one whose URL is ``resume_url``; as
+    given when there is no such calendar (nothing to resume, or it is gone)."""
+    calendars = list(calendars)
+    if resume_url:
+        for index, remote_cal in enumerate(calendars):
+            if str(remote_cal.url) == resume_url:
+                return calendars[index:] + calendars[:index]
+    return calendars
+
+
+def _positive_seconds(environ, name: str, default: float) -> float:
+    env = os.environ if environ is None else environ
+    raw = str(env.get(name, "")).strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        logger.warning("%s=%r is not a positive number of seconds; using %ss", name, raw, default)
+        return float(default)
+    return value
+
+
+def request_timeout_seconds(environ=None) -> float:
+    """Network timeout of one CalDAV request: the connect and each read, not the
+    request as a whole (see `_cap_request_time` for that)."""
+    return _positive_seconds(environ, ENV_REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT_SECONDS)
+
+
+def sync_timeout_seconds(environ=None) -> float:
+    """Wall-clock budget of one account's pull. No single request outlasts it."""
+    return _positive_seconds(environ, ENV_SYNC_TIMEOUT, DEFAULT_SYNC_TIMEOUT_SECONDS)
+
+
 _BLOCKED_HOSTS = {
     "localhost",
     "localhost.",
@@ -224,7 +313,170 @@ def _open_url_as_calendar(client, url: str):
     return client.calendar(url=target)
 
 
-def _build_dav_client(url: str, username: str, password: str):
+class _RequestOutOfTime(BaseException):
+    """Raised inside a request thread whose time is up, to end it.
+
+    A BaseException so that the ``except Exception`` clauses of the HTTP stack
+    cannot swallow it half way. It is only ever raised in the thread that
+    `_call_within` started for the request and never leaves that thread.
+    """
+
+
+_REQUEST_THREAD_NAME = "caldav-request"
+
+# Request threads whose call ran out of time but have not exited yet (typically
+# blocked in a C call such as DNS resolution, which no socket timeout bounds).
+# They are kept so that a pull cannot pile new requests on top of a stuck
+# resolver without limit: past MAX_OVERDUE_REQUESTS no further request starts
+# until some of them have ended.
+MAX_OVERDUE_REQUESTS = 4
+_overdue_threads: "set[threading.Thread]" = set()
+_overdue_lock = threading.Lock()
+
+
+# Where the request threads left overdue by the current pull or write-back are
+# reported, so that the caller can keep the owner's custody until they end. A
+# caller sets it to a list around its work; contexts copied for its worker
+# threads share that list.
+_OVERDUE_SINK: "contextvars.ContextVar[Optional[list]]" = contextvars.ContextVar(
+    "caldav_overdue_sink", default=None,
+)
+
+
+def _note_overdue(thread: threading.Thread) -> None:
+    with _overdue_lock:
+        _overdue_threads.add(thread)
+    sink = _OVERDUE_SINK.get()
+    if sink is not None:
+        sink.append(thread)
+
+
+async def wait_overdue_ended(threads, poll: float = 0.05) -> None:
+    """Return once none of ``threads`` is running any more."""
+    while any(t.is_alive() for t in threads):
+        await asyncio.sleep(poll)
+
+
+def _overdue_count() -> int:
+    """How many abandoned request threads are still running (ended ones are dropped)."""
+    with _overdue_lock:
+        for thread in [t for t in _overdue_threads if not t.is_alive()]:
+            _overdue_threads.discard(thread)
+        return len(_overdue_threads)
+
+
+def _stop_thread(thread: threading.Thread) -> bool:
+    """Make ``thread`` raise `_RequestOutOfTime` the next time it runs Python code.
+
+    A thread blocked in a socket read only gets there when the read returns, which
+    the request timeout bounds, or when the next byte arrives. Returns whether the
+    request was delivered; on an interpreter that cannot do it the thread simply
+    runs on until its own read timeout ends it.
+    """
+    try:
+        import ctypes
+
+        return ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(thread.ident), ctypes.py_object(_RequestOutOfTime),
+        ) == 1
+    except Exception:
+        logger.warning("could not stop an overdue CalDAV request thread", exc_info=True)
+        return False
+
+
+def _call_within(seconds: float, grace: float, fn, /, *args, **kwargs):
+    """Return ``fn(*args, **kwargs)``, or raise TimeoutError once ``seconds`` have passed.
+
+    The call runs in a thread of its own so that it can be ended: HTTP timeouts
+    apply to each socket operation, so a server that keeps trickling bytes in
+    would otherwise keep the calling (sync) thread, and the owner's lock that
+    thread stands for, for as long as it likes. When time is up the call's
+    thread is told to stop (see `_stop_thread`) and given up to ``grace`` seconds
+    to do so; the caller does not go on using whatever state the call touched.
+    A thread that is still running after the grace stays on a bounded list of
+    overdue requests (``MAX_OVERDUE_REQUESTS``), and no new request starts while
+    that list is full.
+    Nothing is started when no time is left. What the call raises is raised here
+    unchanged, and it runs in a copy of the caller's context.
+    """
+    if seconds <= 0:
+        raise TimeoutError("the time budget of the CalDAV pull is spent")
+    if _overdue_count() >= MAX_OVERDUE_REQUESTS:
+        raise TimeoutError("earlier CalDAV requests are still stuck; not starting another")
+    box: dict = {}
+    settled = threading.Lock()
+    finished = threading.Event()
+    context = contextvars.copy_context()
+
+    def run():
+        try:
+            try:
+                box["value"] = context.run(fn, *args, **kwargs)
+            except BaseException as exc:  # handed to the caller below
+                box["error"] = exc
+            with settled:
+                box["done"] = True
+            finished.set()
+        except _RequestOutOfTime:
+            pass  # the caller gave up on this call and is not waiting for it
+
+    thread = threading.Thread(target=run, name=_REQUEST_THREAD_NAME, daemon=True)
+    thread.start()
+    if not finished.wait(seconds):
+        with settled:  # a call that finishes right now is a result, not an overrun
+            overdue = not box.get("done")
+            stopped = overdue and _stop_thread(thread)
+        if overdue:
+            if stopped:
+                thread.join(grace)
+            if thread.is_alive():
+                # Still inside a blocking call: keep it counted so that later
+                # pulls cannot pile more requests onto it without bound.
+                _note_overdue(thread)
+            raise TimeoutError(f"a CalDAV request did not finish within the {seconds:g}s left of its time budget")
+    thread.join()
+    if "error" in box:
+        error = box["error"]
+        if isinstance(error, _RequestOutOfTime):
+            # The stop request landed just as the call ended: that is a timeout
+            # like any other, not an internal BaseException for the callers.
+            raise TimeoutError(
+                f"a CalDAV request did not finish within the {seconds:g}s left of its time budget"
+            ) from None
+        raise error
+    return box["value"]
+
+
+def _cap_request_time(client, deadline) -> None:
+    """Give every HTTP exchange of ``client`` a time cap of its own.
+
+    The client's network timeout bounds the connect and each socket read, so a
+    server that answers a byte at a time (or a link that is merely very slow)
+    never trips it, and the request goes on for as long as bytes keep arriving.
+    With a ``deadline`` (a `_clock` time) a request may use what is left of it,
+    and none is started after it; without one each request gets the whole pull
+    budget. Both end in TimeoutError, which every caller already treats like any
+    other failed request.
+
+    The cap sits on the session, the one place every request passes through (the
+    client's own methods, the calendar objects, the write-back), and is skipped
+    for a client without a session, which only a test's stand-in lacks.
+    """
+    session = getattr(client, "session", None)
+    send = getattr(session, "request", None)
+    if not callable(send):
+        return
+    budget = sync_timeout_seconds()
+    grace = request_timeout_seconds()
+
+    def capped(*args, **kwargs):
+        left = budget if deadline is None else deadline - _clock()
+        return _call_within(left, grace, send, *args, **kwargs)
+
+    session.request = capped
+
+
+def _build_dav_client(url: str, username: str, password: str, deadline=None):
     """Construct a CalDAV client with automatic redirects disabled.
 
     ``validate_caldav_url`` resolves and vets the *initial* host, but caldav's
@@ -238,15 +490,25 @@ def _build_dav_client(url: str, username: str, password: str):
 
     DAVClient exposes no per-request redirect flag, so we set it on the session
     after construction (the session is created in ``__init__``).
+
+    The client also gets a finite network timeout (see ``request_timeout_seconds``):
+    DAVClient defaults to none, which lets a silent server block a request for good.
+    That timeout does not bound a server that keeps trickling data, so each request
+    is capped as a whole too (see ``_cap_request_time``): by ``deadline``, the
+    `_clock` time at which the caller's budget ends (the pull's, or the write-back's
+    own), or by the whole pull budget when the caller has none.
     """
     import caldav
 
-    client = caldav.DAVClient(url=url, username=username, password=password)
+    client = caldav.DAVClient(
+        url=url, username=username, password=password, timeout=request_timeout_seconds(),
+    )
     # Unconditional: a redirect-disable that only sometimes applies is not a
     # control. The session exists right after __init__ on every real client;
     # test_build_dav_client_disables_redirects asserts it against installed
     # caldav in CI.
     client.session.max_redirects = 0
+    _cap_request_time(client, deadline)
     return client
 
 
@@ -351,8 +613,9 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
     from sqlalchemy import and_, or_
 
     result = {"calendars": 0, "events": 0, "deleted": 0, "errors": []}
+    deadline = _clock() + sync_timeout_seconds()
 
-    client = _build_dav_client(url, username, password)
+    client = _build_dav_client(url, username, password, deadline=deadline)
 
     # Discovery: try principal → calendars first; if the server doesn't
     # support discovery (or the URL points directly at a calendar), fall
@@ -382,9 +645,22 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
     start = datetime.utcnow() - timedelta(days=_LOOKBACK_DAYS)
     end = datetime.utcnow() + timedelta(days=_LOOKAHEAD_DAYS)
 
+    resume_key = _resume_key(owner, account_id, url)
+    calendars = _from_resume_point(calendars, _RESUME_AT.get(resume_key))
+    _RESUME_AT.pop(resume_key, None)
+
     db = SessionLocal()
     try:
         for remote_cal in calendars:
+            if _clock() >= deadline:
+                # The next pull picks up here, at the first calendar this one
+                # never began, rather than starting over at the top.
+                _RESUME_AT[resume_key] = str(remote_cal.url)
+                result["errors"].append(
+                    "time budget exhausted; the remaining calendars were not pulled "
+                    "(the next pass starts with them)"
+                )
+                break
             try:
                 remote_url = str(remote_cal.url)
                 cal_id = _stable_cal_id(remote_url, owner=owner, account_id=account_id)
@@ -492,9 +768,11 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
                 # `seen_uids` holds ROW uids: a series master's UID and the
                 # derived uid of each RECURRENCE-ID override, so an override
                 # reverted upstream is pruned like any other vanished event.
-                # An old recurring master is also a deletion candidate, but a
-                # bounded search may legitimately omit an ended or sparse
-                # series. Confirm its remote absence by UID before deleting it.
+                # A recurring master is also a deletion candidate, but a
+                # bounded search may legitimately omit a series that still
+                # exists: one that ended or is sparse, or whose occurrences in
+                # the window are all excluded, wherever its DTSTART lies.
+                # Confirm its remote absence by UID before deleting it.
                 # An override of a series that WAS pulled is eligible wherever
                 # it sits (it may have been moved far from the window): the
                 # server sends every override with its master, so one that is
@@ -517,19 +795,33 @@ def _sync_blocking(owner: str, url: str, username: str, password: str, account_i
                         ~CalendarEvent.uid.in_(seen_uids) if seen_uids else CalendarEvent.uid.isnot(None),
                     ).all()
                     deleted = 0
+                    masters = []
                     for ev in stale:
-                        if ev.dtstart < start and ev.rrule:
-                            try:
-                                remote_cal.event_by_uid(ev.uid)
-                            except NotFoundError:
-                                pass  # Authoritative absence, not merely outside the window.
-                            except Exception as e:
-                                result["errors"].append(
-                                    f"{display_name}: could not confirm missing recurring resource ({type(e).__name__})"
-                                )
-                                continue
-                            else:
-                                continue
+                        if ev.rrule:
+                            masters.append(ev)
+                        else:
+                            db.delete(ev)
+                            deleted += 1
+                    # One lookup per candidate, so a slow server must not be
+                    # allowed to stretch them past the pull's time budget; what
+                    # is not confirmed stays and is judged on the next pull.
+                    for ev in masters:
+                        if _clock() >= deadline:
+                            result["errors"].append(
+                                f"{display_name}: time budget exhausted before every missing recurring resource was confirmed"
+                            )
+                            break
+                        try:
+                            remote_cal.event_by_uid(ev.uid)
+                        except NotFoundError:
+                            pass  # Authoritative absence, not merely outside the window.
+                        except Exception as e:
+                            result["errors"].append(
+                                f"{display_name}: could not confirm missing recurring resource ({type(e).__name__})"
+                            )
+                            continue
+                        else:
+                            continue
                         db.delete(ev)
                         deleted += 1
                     result["deleted"] += deleted
@@ -673,8 +965,36 @@ def _owner_lock(owner: str) -> asyncio.Lock:
 async def sync_caldav(owner: str) -> dict:
     """Pull CalDAV state into local DB for `owner` across all configured accounts.
     Returns aggregated counts + per-account errors. Serialized per owner."""
-    async with _owner_lock(owner):
+    lock = _owner_lock(owner)
+    await lock.acquire()
+    overdue: list = []
+    token = _OVERDUE_SINK.set(overdue)
+    try:
         return await _sync_caldav_locked(owner)
+    finally:
+        _OVERDUE_SINK.reset(token)
+        if any(t.is_alive() for t in overdue):
+            # A request of this pull is still running in a call that cannot be
+            # interrupted: the owner stays locked until it ends, so no second
+            # pull piles on, but this one answers now.
+            _hold_until_ended(lock, overdue)
+        else:
+            lock.release()
+
+
+_HOLDERS: "set[asyncio.Task]" = set()
+
+
+def _hold_until_ended(lock: asyncio.Lock, threads: list) -> None:
+    async def release_later():
+        try:
+            await wait_overdue_ended(threads)
+        finally:
+            lock.release()
+
+    task = asyncio.ensure_future(release_later())
+    _HOLDERS.add(task)
+    task.add_done_callback(_HOLDERS.discard)
 
 
 async def _sync_caldav_locked(owner: str) -> dict:
@@ -688,6 +1008,12 @@ async def _sync_caldav_locked(owner: str) -> dict:
         }
 
     totals: dict = {"calendars": 0, "events": 0, "deleted": 0, "errors": []}
+    if len(accounts) > MAX_CALDAV_ACCOUNTS:
+        totals["errors"].append(
+            f"{len(accounts) - MAX_CALDAV_ACCOUNTS} CalDAV account(s) beyond the limit of "
+            f"{MAX_CALDAV_ACCOUNTS} were not pulled; remove accounts to get back under the limit"
+        )
+        accounts = accounts[:MAX_CALDAV_ACCOUNTS]
     for acc in accounts:
         url = (acc.get("url") or "").strip()
         user = (acc.get("username") or "").strip()

@@ -227,6 +227,33 @@ def _ensure_default_calendar(db, owner: str = None) -> CalendarCal:
     return cal
 
 
+def list_owner_calendars(owner: str, *, create_default: bool = True) -> dict:
+    """The ``{"calendars": [...]}`` payload for ``owner``.
+
+    ``create_default`` makes sure the owner has a calendar first, which writes a
+    "Personal" row on a first call. A caller that must stay read-only (a
+    ``calendar:read`` token) passes False and gets an empty list instead; the
+    default is then created by the first write, which falls back to it when no
+    ``calendar_href`` is given.
+    """
+    db = SessionLocal()
+    try:
+        if create_default:
+            _ensure_default_calendar(db, owner)
+        cals = db.query(CalendarCal).filter(CalendarCal.owner == owner).all()
+        return {"calendars": [
+            {"name": c.name, "href": c.id, "color": c.color, "source": c.source}
+            for c in cals
+        ]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list calendars: %s", e)
+        raise HTTPException(500, "Failed to list calendars")
+    finally:
+        db.close()
+
+
 # Per-request user time context. chat_routes sets this from browser timezone
 # headers so natural-language times the LLM emits ("today at 9pm") are parsed
 # in the user's timezone, not the server's clock. None = unknown, fall back to
@@ -827,6 +854,15 @@ def setup_calendar_routes() -> APIRouter:
             raise HTTPException(400, str(e))
         if not body.get("password"):
             raise HTTPException(400, "Password is required")
+        accounts = _get_caldav_accounts(owner)
+        # Accounts are pulled one after another, so the number an owner keeps
+        # bounds how long their pull can hold the periodic sync loop.
+        from src.caldav_sync import MAX_CALDAV_ACCOUNTS
+        if len(accounts) >= MAX_CALDAV_ACCOUNTS:
+            raise HTTPException(
+                400,
+                f"At most {MAX_CALDAV_ACCOUNTS} CalDAV accounts can be saved; remove one first",
+            )
         from src.secret_storage import encrypt
         new_acc = {
             "id": str(_uuid.uuid4()),
@@ -835,7 +871,6 @@ def setup_calendar_routes() -> APIRouter:
             "username": (body.get("username") or "").strip(),
             "password": encrypt(body["password"]),
         }
-        accounts = _get_caldav_accounts(owner)
         accounts.append(new_acc)
         _save_caldav_accounts(owner, accounts)
         return {"ok": True, "id": new_acc["id"]}
@@ -1001,21 +1036,7 @@ def setup_calendar_routes() -> APIRouter:
     @router.get("/calendars")
     async def list_calendars(request: Request):
         owner = _require_user(request)
-        db = SessionLocal()
-        try:
-            _ensure_default_calendar(db, owner)
-            cals = db.query(CalendarCal).filter(CalendarCal.owner == owner).all()
-            return {"calendars": [
-                {"name": c.name, "href": c.id, "color": c.color, "source": c.source}
-                for c in cals
-            ]}
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("Failed to list calendars: %s", e)
-            raise HTTPException(500, "Failed to list calendars")
-        finally:
-            db.close()
+        return list_owner_calendars(owner)
 
     @router.get("/events")
     async def list_events(request: Request, start: str, end: str, calendar: str = ""):

@@ -78,8 +78,9 @@ class _FakePrincipal:
 
 
 class _FakeClient:
-    def __init__(self, url=None, username=None, password=None):
+    def __init__(self, url=None, username=None, password=None, timeout=None):
         self.url = url
+        self.timeout = timeout
         self.session = types.SimpleNamespace(max_redirects=30)
 
     def principal(self):
@@ -103,6 +104,7 @@ def _server(monkeypatch):
     monkeypatch.setitem(sys.modules, "caldav.lib", lib)
     monkeypatch.setitem(sys.modules, "caldav.lib.error", err)
     monkeypatch.setattr(cdb, "SessionLocal", _TS, raising=False)
+    monkeypatch.setattr(caldav_sync, "_RESUME_AT", {})
     _Remote.resources = []
     db = _TS()
     try:
@@ -399,6 +401,245 @@ def test_old_series_is_retained_when_its_remote_absence_cannot_be_confirmed(monk
     assert result["deleted"] == 0
     assert any("could not confirm" in error for error in result["errors"])
     assert _row_fingerprints() == before
+
+
+def test_series_inside_the_window_is_confirmed_before_it_is_deleted(monkeypatch):
+    """A time-range query also omits a series whose every occurrence in the window
+    is excluded, so a master that starts inside the window needs the same proof of
+    absence as an old one."""
+    first = datetime.utcnow() + timedelta(days=10)
+    days = [first + timedelta(days=n) for n in range(2)]
+    _Remote.resources = [_ics(_vevent(
+        "all-excluded@test", f"DTSTART:{first:%Y%m%dT%H%M%S}Z",
+        f"DTEND:{first + timedelta(hours=1):%Y%m%dT%H%M%S}Z", "RRULE:FREQ=DAILY;COUNT=2",
+        *[f"EXDATE:{d:%Y%m%dT%H%M%S}Z" for d in days], "SUMMARY:All excluded",
+    ))]
+    _sync()
+    before = _row_fingerprints()
+    assert set(before) == {"all-excluded@test"}
+    monkeypatch.setattr(_FakeCalendar, "date_search", lambda self, start, end, expand=False: [])
+
+    result = _public_sync(monkeypatch)
+
+    assert result["errors"] == [] and result["deleted"] == 0
+    assert _row_fingerprints() == before
+
+    _Remote.resources = []
+    assert _public_sync(monkeypatch)["deleted"] == 1
+    assert _rows() == {}
+
+
+# ── a pull has a time budget ──────────────────────────────────────────────────
+
+def _fake_clock(monkeypatch, seconds_per_step=0.0):
+    """Replace the pull's clock; every call to ``tick()`` moves it on."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(caldav_sync, "_clock", lambda: clock["now"])
+
+    def tick(seconds):
+        clock["now"] += seconds
+
+    return tick
+
+
+def test_a_pull_that_runs_out_of_time_stops_confirming_and_keeps_what_is_left(monkeypatch):
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    old = datetime.utcnow() - timedelta(days=700)
+    _Remote.resources = [
+        _ics(_vevent(f"slow-{n}@test", f"DTSTART:{old:%Y%m%dT%H%M%S}Z", "RRULE:FREQ=WEEKLY;COUNT=3", "SUMMARY:Slow"))
+        for n in range(3)
+    ]
+    _sync()
+    assert len(_rows()) == 3
+    tick = _fake_clock(monkeypatch)
+    lookups = []
+
+    def slow_absent(self, uid):
+        from caldav.lib.error import NotFoundError
+        lookups.append(uid)
+        tick(100)  # each lookup takes 100s; the budget is 150s
+        raise NotFoundError("absent")
+
+    monkeypatch.setattr(_FakeCalendar, "date_search", lambda self, start, end, expand=False: [])
+    monkeypatch.setattr(_FakeCalendar, "event_by_uid", slow_absent)
+
+    result = _sync()
+
+    assert len(lookups) == 2, "no lookup may start once the budget is spent"
+    assert result["deleted"] == 2 and len(_rows()) == 1
+    assert any("time budget" in error for error in result["errors"])
+    assert not any(uid in _rows() for uid in lookups)
+
+
+def test_a_pull_that_runs_out_of_time_does_not_start_the_next_calendar(monkeypatch):
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    tick = _fake_clock(monkeypatch)
+    pulled = []
+
+    def date_search(self, start, end, expand=False):
+        pulled.append(self.url)
+        tick(200)
+        return []
+
+    monkeypatch.setattr(_FakeCalendar, "date_search", date_search)
+    monkeypatch.setattr(
+        _FakePrincipal, "calendars",
+        lambda self: [_FakeCalendar(CAL_URL), _FakeCalendar(CAL_URL + "-second")],
+    )
+
+    result = _sync()
+
+    assert pulled == [CAL_URL]
+    assert result["calendars"] == 1
+    assert any("time budget" in error for error in result["errors"])
+
+
+class _SlowServer:
+    """Two calendars, one fake clock. Each calendar's ``date_search`` costs
+    ``seconds`` on the clock and serves ``events[url]``; ``pulled`` records which
+    calendars a pass reached, in order."""
+
+    SECOND = CAL_URL + "-second"
+    THIRD = CAL_URL + "-third"
+
+    def __init__(self, monkeypatch, urls, seconds=200.0):
+        self.tick = _fake_clock(monkeypatch)
+        self.seconds = seconds
+        self.events = {url: [] for url in urls}
+        self.pulled = []
+        server = self
+
+        def date_search(cal, start, end, expand=False):
+            server.pulled.append(cal.url)
+            server.tick(server.seconds)
+            return [_Obj(r) for r in server.events[cal.url]]
+
+        monkeypatch.setattr(_FakeCalendar, "date_search", date_search)
+        monkeypatch.setattr(
+            _FakePrincipal, "calendars", lambda self: [_FakeCalendar(url) for url in urls],
+        )
+
+    def pass_(self, owner="alice", account_id="acct-1"):
+        """One pull of the account; the calendars it reached, in order."""
+        self.pulled.clear()
+        result = caldav_sync._sync_blocking(owner, "https://caldav.example.test", "u", "p", account_id)
+        return list(self.pulled), result
+
+
+def test_the_next_pass_starts_with_the_calendar_the_last_one_did_not_reach(monkeypatch):
+    """A slow server used up the budget on the first calendar in every pass, so the
+    tail was never pulled; the pass has to pick up where the previous one stopped."""
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    server = _SlowServer(monkeypatch, [CAL_URL, _SlowServer.SECOND, _SlowServer.THIRD])
+
+    reached = [server.pass_()[0] for _ in range(6)]
+
+    assert reached == [
+        [CAL_URL], [_SlowServer.SECOND], [_SlowServer.THIRD],
+        [CAL_URL], [_SlowServer.SECOND], [_SlowServer.THIRD],
+    ]
+
+
+def test_a_calendar_the_budget_never_reached_is_pruned_on_a_later_pass(monkeypatch):
+    """The skipped tail kept events deleted upstream: its stale-row prune is part
+    of its pull, so it has to get a pull."""
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    server = _SlowServer(monkeypatch, [CAL_URL, _SlowServer.SECOND], seconds=0.0)
+    soon = datetime.utcnow() + timedelta(days=3)
+    server.events[_SlowServer.SECOND] = [_ics(_vevent(
+        "tail@test", f"DTSTART:{soon:%Y%m%dT%H%M%S}Z", "SUMMARY:Tail",
+    ))]
+    reached, _ = server.pass_()
+    assert reached == [CAL_URL, _SlowServer.SECOND] and "tail@test" in _rows()
+
+    server.events[_SlowServer.SECOND] = []  # deleted upstream
+    server.seconds = 200.0  # and the server turns slow
+    first, first_result = server.pass_()
+    assert first == [CAL_URL] and first_result["deleted"] == 0 and "tail@test" in _rows()
+
+    second, second_result = server.pass_()
+    assert second == [_SlowServer.SECOND] and second_result["deleted"] == 1
+    assert "tail@test" not in _rows()
+    assert any("time budget" in error for error in second_result["errors"])
+
+
+def test_a_pass_that_gets_through_every_calendar_starts_at_the_top_again(monkeypatch):
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    server = _SlowServer(monkeypatch, [CAL_URL, _SlowServer.SECOND])
+
+    assert server.pass_()[0] == [CAL_URL]  # budget spent after the first
+    server.seconds = 1.0
+    finished, result = server.pass_()  # resumes at the second, wraps round to the first
+    assert finished == [_SlowServer.SECOND, CAL_URL]
+    assert result["errors"] == []
+
+    assert server.pass_()[0] == [CAL_URL, _SlowServer.SECOND]  # back in server order
+
+
+def test_a_pass_that_ends_on_its_last_calendar_has_nothing_to_resume(monkeypatch):
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    server = _SlowServer(monkeypatch, [CAL_URL, _SlowServer.SECOND], seconds=100.0)
+
+    first, first_result = server.pass_()  # 100s each against 150s: both begin, the last one ends over budget
+
+    assert first == [CAL_URL, _SlowServer.SECOND]
+    assert first_result["errors"] == []
+    assert caldav_sync._RESUME_AT == {}
+    assert server.pass_()[0] == [CAL_URL, _SlowServer.SECOND]
+
+
+def test_the_resume_point_follows_the_calendar_not_its_position(monkeypatch):
+    """The server may reorder or drop calendars between passes."""
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    urls = [CAL_URL, _SlowServer.SECOND, _SlowServer.THIRD]
+    server = _SlowServer(monkeypatch, urls)
+    assert server.pass_()[0] == [CAL_URL]  # next up: the second
+
+    urls[:] = [_SlowServer.THIRD, _SlowServer.SECOND, CAL_URL]  # reordered
+    assert server.pass_()[0] == [_SlowServer.SECOND]
+
+    urls[:] = [CAL_URL, _SlowServer.THIRD]  # the calendar it was heading for is gone
+    assert server.pass_()[0] == [CAL_URL]
+
+
+def test_the_resume_point_belongs_to_one_account(monkeypatch):
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    server = _SlowServer(monkeypatch, [CAL_URL, _SlowServer.SECOND])
+
+    assert server.pass_("alice", "acct-1")[0] == [CAL_URL]
+    assert server.pass_("alice", "acct-2")[0] == [CAL_URL]  # its own account: starts at the top
+    assert server.pass_("bob", "acct-1")[0] == [CAL_URL]  # another owner's: starts at the top
+    assert server.pass_("alice", "acct-1")[0] == [_SlowServer.SECOND]  # the first one resumes
+
+
+def test_a_failed_discovery_keeps_the_resume_point(monkeypatch):
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    server = _SlowServer(monkeypatch, [CAL_URL, _SlowServer.SECOND])
+    assert server.pass_()[0] == [CAL_URL]
+
+    def down(*args, **kwargs):
+        raise OSError("server down")
+
+    with monkeypatch.context() as outage:
+        outage.setattr(_FakeClient, "principal", down)
+        outage.setattr(_FakeClient, "calendar", down)
+        reached, result = server.pass_()
+    assert reached == [] and result["errors"]
+
+    assert server.pass_()[0] == [_SlowServer.SECOND]
+
+
+def test_an_unspent_budget_changes_nothing(monkeypatch):
+    monkeypatch.setenv("CALDAV_SYNC_TIMEOUT_SECONDS", "150")
+    _fake_clock(monkeypatch)
+    old = datetime.utcnow() - timedelta(days=700)
+    _Remote.resources = [_ics(_vevent(
+        "fast@test", f"DTSTART:{old:%Y%m%dT%H%M%S}Z", "RRULE:FREQ=WEEKLY;COUNT=3", "SUMMARY:Fast",
+    ))]
+    assert _sync()["errors"] == []
+    _Remote.resources = []
+    result = _sync()
+    assert result["errors"] == [] and result["deleted"] == 1
 
 
 def test_override_without_master_is_a_single_event_row():
