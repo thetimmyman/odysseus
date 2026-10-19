@@ -506,3 +506,43 @@ def test_infinite_limit_falls_back_to_the_default(tmp_path):
     (root / "evidence" / "a.txt").write_text("needle")
     result = me.find_measured_sources("needle", root=root, enabled=True, limit=float("inf"))
     assert result.status == me.OK and len(result.sources) == 1
+
+
+def test_a_file_that_does_not_parse_whole_does_not_fall_back_to_its_truncated_prefix(tmp_path):
+    root = tmp_path / "root"
+    (root / "benchmark" / "gpu" / "results").mkdir(parents=True)
+    valid = json.dumps({"measurements": [{"subject": "GPU decode", "metric": "throughput",
+                                          "value": 12.0, "unit": "tok/s"}]})
+    padding = " " * (me.MAX_TEXT_BYTES + 10)
+    (root / "benchmark" / "gpu" / "results" / "run.json").write_text(valid + padding + "garbage")
+    [source] = me.find_measured_sources("throughput", root=root, enabled=True).sources
+    assert source.truncated and source.measurements == ()
+    assert me.extract_measurements(source) == []
+    # Negative control: a source with no prepared parse reads its own text.
+    bare = _source("benchmark/gpu/results/x.json", valid)
+    assert len(me.extract_measurements(bare)) == 1
+
+
+def test_a_ratio_outside_the_float_range_is_reported_as_incomputable():
+    assertion = me.Assertion("C1", "GPU decode", "throughput", 1e308, "tok/s", "vendor")
+    report = me.find_conflicts([assertion], [_bench_measurement(1e-308)])
+    [item] = report.conflicts
+    assert item.relative_difference is None
+    json.dumps(report.conflicts[0].__dict__, allow_nan=False)
+
+
+def test_an_unreadable_evidence_directory_is_unavailable_not_none(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    root = tmp_path / "root"
+    locked = root / "evidence"
+    locked.mkdir(parents=True)
+    (locked / "a.txt").write_text("needle")
+    locked.chmod(0)
+    try:
+        result = me.find_measured_sources("needle", root=root, enabled=True)
+    finally:
+        locked.chmod(0o755)
+    assert result.status == me.UNAVAILABLE and "could not be read" in result.reason
+    # Negative control: once readable, the same tree finds the file.
+    assert me.find_measured_sources("needle", root=root, enabled=True).status == me.OK

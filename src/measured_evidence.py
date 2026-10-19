@@ -41,6 +41,7 @@ import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 MEASURED_RANK = 1
 TRUST_CLASS = "authoritative"
@@ -75,7 +76,7 @@ class MeasuredSource:
     size_bytes: int
     score: int
     # Parsed from the whole file when it is JSON, so a document cut at MAX_TEXT_BYTES keeps them.
-    measurements: tuple = ()
+    measurements: tuple | None = None  # None: not parsed from the whole file; () : parsed, none found
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ class Conflict:
     claimed_unit: str
     measured_unit: str
     measured_path: str
-    relative_difference: float | None  # None: the measurement is exactly zero and the claim is not
+    relative_difference: float | None  # None: no finite ratio (zero measurement, overflow, or different units)
     note: str
 
 
@@ -171,7 +172,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
     best: list[MeasuredSource] = []
     matched = scanned = total_bytes = 0
     capped = False
-    walk: dict[str, bool] = {}
+    walk: dict[str, Any] = {}
     for rel in _iter_candidate_files(root_path, walk):
         if rel.suffix.casefold() not in _CANDIDATE_SUFFIXES:
             continue
@@ -202,12 +203,18 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             truncated=len(data) > MAX_TEXT_BYTES,
             size_bytes=len(data),
             score=score,
-            measurements=_parse_measurements(data, path_str) if rel.suffix.casefold() == ".json" else (),
+            measurements=_parse_measurements(data, path_str) if rel.suffix.casefold() == ".json" else None,
         ))
         best.sort(key=lambda source: (-source.score, source.path))
         del best[limit_n:]
 
     capped = capped or walk.get("walk_capped", False)
+    if walk.get("walk_error") and not best:
+        # Nothing was found and part of the tree could not be read: that is not "no evidence".
+        return LookupResult(
+            status=UNAVAILABLE, sources=(),
+            reason=f"measured-evidence directory could not be read: {walk['walk_error']}",
+        )
     note = f"; scan stopped at the per-lookup limit after {scanned} files" if capped else ""
     if not best:
         return LookupResult(
@@ -257,8 +264,10 @@ def extract_measurements(source) -> list:
     the source's text. Malformed JSON, a non-list container, non-dict items, booleans,
     non-finite or overflowing numbers and missing or wrongly-typed fields are skipped silently.
     """
-    prepared = getattr(source, "measurements", ())
-    if prepared:
+    prepared = getattr(source, "measurements", None)
+    if prepared is not None:
+        # An empty tuple is an answer (the whole file parsed, or failed to, with nothing usable);
+        # re-parsing a truncated prefix would promote data from a file that did not parse whole.
         return list(prepared)
     return list(_parse_measurements(source.text, source.path))
 
@@ -345,7 +354,12 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
             if measured == 0:
                 relative = 0.0 if claimed == 0 else None
             else:
-                relative = abs(claimed - measured) / abs(measured)
+                try:
+                    relative = abs(claimed - measured) / abs(measured)
+                except OverflowError:
+                    relative = None
+                if relative is not None and not math.isfinite(relative):
+                    relative = None  # a ratio outside the float range is reported as incomputable
             if relative is not None and relative <= tolerance:
                 agreements.append(_comparison(
                     assertion, measurement, relative,
@@ -476,7 +490,11 @@ def _iter_candidate_files(root, state=None):
         base = root / top
         if not base.is_dir() or base.is_symlink():
             continue
-        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        def _walk_error(err, _state=state):
+            if _state is not None:
+                _state["walk_error"] = str(err.filename or err)
+
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=_walk_error):
             entries += len(dirnames) + len(filenames)
             if entries > _MAX_ENTRIES_WALKED:
                 if state is not None:
