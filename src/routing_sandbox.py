@@ -52,6 +52,9 @@ DEFAULT_SANDBOX = {
 _SHELL_METACHARACTERS = (";", "|", "&", "`", "$(", ">", "<", "\n", "\r")
 
 
+_CLEANUP_CALL_SECONDS = 3
+
+
 class _ClientCleanupUnresolved(RuntimeError):
     def __init__(self, primary_error):
         super().__init__('owned sandbox client cleanup unresolved')
@@ -208,7 +211,10 @@ def run_in_sandbox(worktree_path: str, cmd: str, policy: Optional[dict] = None,
         return value
 
     def call(arguments, *, limit=65536, cleanup=False):
-        capture = _bounded_docker(["docker", *arguments], timeout=min(3, remaining()), limit=limit)
+        # Cleanup runs after the execution deadline by design (that is why it
+        # exists), so it gets a bounded budget of its own instead of what is left.
+        budget = min(_CLEANUP_CALL_SECONDS, cfg["wallClockSeconds"]) if cleanup else min(3, remaining())
+        capture = _bounded_docker(["docker", *arguments], timeout=budget, limit=limit)
         if capture["timed_out"]:
             raise subprocess.TimeoutExpired(arguments, cfg["wallClockSeconds"])
         if capture["stdout_truncated"] or capture["stderr_truncated"]:

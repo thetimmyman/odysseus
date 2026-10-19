@@ -287,6 +287,18 @@ def _run_writeback(deadline, *args) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
 
+async def _run_holding_overdue(deadline: float, overdue: list, *args) -> dict:
+    """Run the write-back on a worker thread and, if one of its requests was left
+    running past its time, keep the task (and so the owner's lock and the pool
+    slot, which are given back when it ends) until that request has ended."""
+    from src import caldav_sync
+
+    try:
+        return await asyncio.to_thread(_run_writeback, deadline, *args)
+    finally:
+        await caldav_sync.wait_overdue_ended(overdue)
+
+
 def _retrieve(task: "asyncio.Future") -> None:
     # Nobody may be awaiting the task any more (the caller gave up on it); take its
     # outcome so the loop does not complain about a result nobody read.
@@ -319,7 +331,12 @@ async def _run_bounded(owner: str, deadline: float, *args) -> dict:
             return {"ok": False, "error": "too many CalDAV write-backs are running; try again shortly"}
         permit.take(gate.slots)
 
-        task = asyncio.ensure_future(asyncio.to_thread(_run_writeback, deadline, *args))
+        overdue: list = []
+        token = caldav_sync._OVERDUE_SINK.set(overdue)
+        try:
+            task = asyncio.ensure_future(_run_holding_overdue(deadline, overdue, *args))
+        finally:
+            caldav_sync._OVERDUE_SINK.reset(token)
         handed_over = True
         task.add_done_callback(lambda _task: permit.release())
         task.add_done_callback(_retrieve)
