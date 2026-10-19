@@ -295,6 +295,7 @@ class ResearchHandler:
             "category": category,
             # SECURITY: track ownership so all reads / saves can filter by user.
             "owner": owner or "",
+            "claim_id_floor": prior_claim_floor,
         }
         self._active_tasks[session_id] = entry
 
@@ -612,7 +613,7 @@ class ResearchHandler:
             path = _research_json_path(session_id)
             if path is None:
                 return
-            path.write_text(json.dumps({
+            marker = {
                 "query": entry.get("query", ""),
                 "status": "running",
                 "result": None,
@@ -624,7 +625,12 @@ class ResearchHandler:
                 "started_at": entry.get("started_at", 0),
                 "completed_at": None,
                 "owner": entry.get("owner", ""),
-            }), encoding="utf-8")
+            }
+            if entry.get("claim_id_floor"):
+                # Keep the floor readable while the run is in flight, so an
+                # overlapping continuation still starts after it.
+                marker["claim_id_floor"] = entry["claim_id_floor"]
+            path.write_text(json.dumps(marker), encoding="utf-8")
         except Exception as e:
             logger.warning(f"Could not write running marker for {session_id}: {e}")
 
@@ -729,7 +735,9 @@ class ResearchHandler:
         cannot influence it."""
         saved = self._get_session_json(session_id) or {}
         record = saved.get("run_record")
-        floor = record.get("claim_id_floor") if isinstance(record, dict) else 0
+        floor = record.get("claim_id_floor") if isinstance(record, dict) else None
+        if floor is None:
+            floor = saved.get("claim_id_floor")  # running marker / record-off save
         if isinstance(floor, bool) or not isinstance(floor, int):
             return 0
         return max(0, min(floor, 100000))

@@ -384,3 +384,11 @@ def test_saved_claim_id_floor_comes_from_the_saved_record_only(monkeypatch):
     assert handler._saved_claim_id_floor("s") == 0
     monkeypatch.setattr(handler, "_get_session_json", lambda sid: None)
     assert handler._saved_claim_id_floor("s") == 0
+
+
+def test_saved_claim_id_floor_survives_the_running_marker(monkeypatch):
+    from src.research_handler import ResearchHandler
+    handler = ResearchHandler.__new__(ResearchHandler)
+    marker = {"status": "running", "raw_report": "", "claim_id_floor": 4}
+    monkeypatch.setattr(handler, "_get_session_json", lambda sid: marker)
+    assert handler._saved_claim_id_floor("s") == 4
