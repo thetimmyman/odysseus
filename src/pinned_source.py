@@ -175,11 +175,15 @@ def classify_ref(ref: str) -> str:
 def _valid_ref(ref: str) -> bool:
     """Conservative ref shape: letters, digits, dot, underscore, hyphen,
     and ``/`` between segments; no leading ``-`` (option injection), no
-    ``..`` or empty segments, no whitespace or any shell/meta character."""
-    if not ref or ref[0] in "-+":
+    ``..`` or empty segments, no whitespace or any shell/meta character,
+    and git's own refname rules for dots (no ``..``, no segment that starts
+    with ``.`` or ends with ``.`` or ``.lock``)."""
+    if not ref or ref[0] in "-+" or ".." in ref:
         return False
     for segment in ref.split("/"):
-        if segment == ".." or not _REF_ALLOWED_RE.fullmatch(segment):
+        if not _REF_ALLOWED_RE.fullmatch(segment):
+            return False
+        if segment[0] == "." or segment.endswith((".", ".lock")):
             return False
     return True
 
@@ -500,6 +504,12 @@ def resolve_pin(
 
     # --- 2) Otherwise the injected fetcher (never a first-party client).
     if fetcher is not None:
+        if (UNPINNED not in flags and classify_ref(ref) != "commit"
+                and not _VERSION_RE.fullmatch(ref)):
+            # A remote answer carries no ref-kind metadata: anything not shaped
+            # like a commit or a version might be a moving branch, whatever the
+            # provider answers (a "not found" does not make it immutable).
+            flags.append(UNPINNED)
         try:
             result = fetcher(pin.kind, repo, ref, path)
         except Exception:
@@ -515,11 +525,6 @@ def resolve_pin(
             return PinResult(FALSE, flags, "provider reports the pin was not found")
         if not isinstance(text, (str, type(None))):
             return PinResult(UNRESOLVABLE, flags, "fetcher returned non-string text")
-        if (UNPINNED not in flags and classify_ref(ref) != "commit"
-                and not _VERSION_RE.fullmatch(ref)):
-            # A remote answer carries no ref-kind metadata: anything not shaped
-            # like a commit or a version might be a moving branch.
-            flags.append(UNPINNED)
         if text is None and pin.quote is not None and pin.quote.strip():
             return PinResult(
                 UNRESOLVABLE, flags, "provider returned no text; quote cannot be verified"

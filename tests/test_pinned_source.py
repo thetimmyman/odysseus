@@ -858,7 +858,9 @@ def test_docs_version_quote_without_a_path_is_not_confirmed_locally(git_repo, ro
 
 
 def test_remote_branch_shaped_ref_is_flagged_unpinned():
-    fetcher = lambda *a: (True, "text")  # noqa: E731
+    def fetcher(kind, repo, ref, path):
+        return (True, "text")
+
     branch = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="feature/release",
                                 path="x.md"), fetcher=fetcher)
     tag = resolve_pin(PinRef(kind="repo_file", repo="a/b", ref="v1.2.3", path="x.md"),
@@ -907,3 +909,23 @@ def test_git_found_through_the_callers_path(git_repo, root, monkeypatch):
     monkeypatch.setenv("PATH", os.environ["PATH"])
     resolve_pin(_repo_file(ref="main", path="read.txt"), local_repos_root=root)
     assert seen["path"] == os.environ["PATH"]
+
+
+def test_remote_not_found_for_a_branch_shaped_ref_is_still_unpinned():
+    result = resolve_pin(
+        PinRef(kind="repo_file", repo="a/b", ref="feature/release", path="x.md"),
+        fetcher=lambda kind, repo, ref, path: (False, None),
+    )
+    assert result.status == FALSE and UNPINNED in result.flags
+
+
+@pytest.mark.parametrize("ref", ["a..b", "v1.", "a.lock", "feat/x.lock", ".hidden", "a/.b", "x/"])
+def test_malformed_git_refnames_are_rejected_before_any_lookup(ref):
+    calls = []
+
+    def fetcher(kind, repo, ref, path):
+        calls.append(ref)
+        return (True, "text")
+
+    result = resolve_pin(PinRef(kind="release_notes", repo="a/b", ref=ref), fetcher=fetcher)
+    assert result.status == FALSE and not calls
