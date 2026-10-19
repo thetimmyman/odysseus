@@ -790,3 +790,28 @@ def test_query_tokens_are_deduplicated_and_capped():
     query = " ".join(f"word{index:06d}" for index in range(100000)) + " word000001"
     tokens = me._query_tokens(query)
     assert len(tokens) == me._MAX_QUERY_TOKENS == len(set(tokens))
+
+
+def test_a_root_path_with_a_nul_is_unavailable_not_an_error():
+    result = me.find_measured_sources("needle", root="/tmp/bad\x00root", enabled=True)
+    assert result.status == me.UNAVAILABLE
+
+
+def test_listing_follows_the_opened_root_not_the_path_that_replaced_it(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "a.json").write_text('{"needle": 1}')
+    real_open = os.open
+    swapped = []
+
+    def swap_after_root_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if not swapped and Path(path) == root.resolve():
+            swapped.append(True)
+            root.rename(tmp_path / "moved")
+            (root / "evidence").mkdir(parents=True)  # an empty replacement tree at the same path
+        return fd
+
+    monkeypatch.setattr(os, "open", swap_after_root_open)
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    assert swapped and [s.path for s in result.sources] == ["evidence/a.json"]

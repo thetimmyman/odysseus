@@ -175,8 +175,16 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         # Resolve the configured root once; every later open is no-follow from this real path, so
         # a swap of the root for a symlink after this point is refused rather than followed.
         root_path = Path(root).resolve(strict=True)
-    except (OSError, RuntimeError):
-        root_path = Path(root)
+    except (OSError, RuntimeError, ValueError):
+        try:
+            root_path = Path(root)
+        except (TypeError, ValueError):
+            root_path = None
+    if root_path is None or "\x00" in str(root_path):
+        return LookupResult(
+            status=UNAVAILABLE, sources=(),
+            reason="measured-evidence root is not a valid path",
+        )
     try:
         root_is_dir = root_path.is_dir()
     except OSError as err:
@@ -215,7 +223,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         matched = scanned = total_bytes = 0
         capped = False
         walk: dict[str, Any] = {}
-        for rel in _iter_candidate_files(root_path, walk):
+        for rel in _iter_candidate_files(root_fd, walk):
             if rel.suffix.casefold() not in _CANDIDATE_SUFFIXES:
                 continue
             if scanned >= _MAX_FILES_SCANNED or total_bytes >= _MAX_BYTES_SCANNED:
@@ -574,12 +582,14 @@ def _score(path_str, text, tokens) -> int:
     return total
 
 
-def _scan_tree(path, state, budget, depth):
-    """Yield ``(directory, file name)`` below ``path``, files before subdirectories, both sorted.
+def _scan_tree(dir_fd, rel, state, budget, depth):
+    """Yield relative file paths below the directory ``dir_fd``, files before subdirectories, sorted.
 
-    Entries are counted while the directory is read, so one very wide directory stops at
-    ``_MAX_ENTRIES_WALKED`` instead of being listed whole first. Symlinks are never followed or
-    yielded; a directory that cannot be read is recorded in ``state["walk_error"]``.
+    Everything is enumerated relative to descriptors (``os.scandir(fd)``, ``os.open(dir_fd=...)``),
+    never by name from the configured root, so replacing or renaming the root's path while the
+    lookup runs cannot redirect the listing to another tree. Entries are counted while a directory
+    is read, so one very wide directory stops at ``_MAX_ENTRIES_WALKED``. Symlinks are never
+    followed or yielded; anything that could not be read is recorded in ``state["walk_error"]``.
     """
     if depth > 32:
         if state is not None:
@@ -588,7 +598,7 @@ def _scan_tree(path, state, budget, depth):
     dirs: list[str] = []
     files: list[str] = []
     try:
-        with os.scandir(path) as it:
+        with os.scandir(dir_fd) as it:
             for entry in it:
                 budget[0] += 1
                 if budget[0] > _MAX_ENTRIES_WALKED:
@@ -609,44 +619,65 @@ def _scan_tree(path, state, budget, depth):
                     continue
     except OSError as err:
         if state is not None:
-            state["walk_error"] = str(getattr(err, "filename", None) or err)
+            state["walk_error"] = str(getattr(err, "filename", None) or err.strerror or err.errno)
         return
     for name in sorted(files):
-        yield str(path), name
+        yield rel / name
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     for name in sorted(dirs):
         if state is not None and state.get("walk_capped"):
             return
-        yield from _scan_tree(os.path.join(path, name), state, budget, depth + 1)
+        try:
+            child_fd = os.open(name, flags, dir_fd=dir_fd)
+        except OSError as err:
+            if err.errno in _SKIP_ERRNOS:
+                continue  # swapped for a symlink or removed since it was listed
+            if state is not None:
+                state["walk_error"] = f"{(rel / name).as_posix()}: {err.strerror or err.errno}"
+            continue
+        try:
+            yield from _scan_tree(child_fd, rel / name, state, budget, depth + 1)
+        finally:
+            os.close(child_fd)
 
 
 def _iter_candidate_files(root, state=None):
     """Relative paths under ``evidence/`` and ``benchmark/<name>/results/``, symlinked dirs skipped.
 
+    ``root`` is the verified root descriptor (a path is accepted for convenience and opened here).
     This only lists; ``_read_regular_file`` re-validates every component when it opens a path.
     Every directory and file the walk looks at counts toward ``_MAX_ENTRIES_WALKED`` whether or not
     it is a candidate, so a tree of unsupported artifacts cannot make a lookup run unbounded; the
     walk then stops and ``state["walk_capped"]`` is set.
     """
-    entries = 0
-    for top in ("evidence", "benchmark"):
-        base = root / top
-        try:
-            if not base.is_dir() or base.is_symlink():
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    own_fd = None
+    if isinstance(root, int):
+        root_fd = root
+    else:
+        own_fd = root_fd = os.open(root, flags)
+    try:
+        entries = 0
+        for top in ("evidence", "benchmark"):
+            try:
+                top_fd = os.open(top, flags, dir_fd=root_fd)
+            except OSError as err:
+                if err.errno not in _SKIP_ERRNOS and state is not None:
+                    # A subtree that cannot even be opened is a traversal error, not an absent one.
+                    state["walk_error"] = f"{top}: {err.strerror or err.errno}"
                 continue
-        except OSError as err:
-            # A subtree that cannot even be probed is a traversal error, not an absent one.
-            if state is not None:
-                state["walk_error"] = f"{top}: {err.strerror or err.errno}"
-            continue
-        budget = [entries]
-        for dirpath, name in _scan_tree(base, state, budget, 0):
-            rel = Path(os.path.relpath(os.path.join(dirpath, name), root))
-            parts = rel.parts
-            if ".." in parts:
-                continue
-            if top == "benchmark" and not (len(parts) >= 4 and parts[2] == "results"):
-                continue
-            yield rel
-        entries = budget[0]
-        if state is not None and state.get("walk_capped"):
-            return
+            try:
+                budget = [entries]
+                for rel in _scan_tree(top_fd, Path(top), state, budget, 0):
+                    parts = rel.parts
+                    if top == "benchmark" and not (len(parts) >= 4 and parts[2] == "results"):
+                        continue
+                    yield rel
+                entries = budget[0]
+            finally:
+                os.close(top_fd)
+            if state is not None and state.get("walk_capped"):
+                return
+    finally:
+        if own_fd is not None:
+            os.close(own_fd)
