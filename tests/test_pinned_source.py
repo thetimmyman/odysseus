@@ -1104,3 +1104,29 @@ def test_a_bare_blob_id_is_not_a_source_version(git_repo, root):
         local_repos_root=root,
     )
     assert result.status != TRUE
+
+
+def test_explicit_tag_namespace_stays_pinned_for_a_two_field_fetcher():
+    result = resolve_pin(
+        PinRef(kind="release_notes", repo="a/b", ref="refs/tags/v1.2.3"),
+        fetcher=lambda *a: (True, "notes"),
+    )
+    assert result.status == TRUE
+    assert UNPINNED not in result.flags
+
+
+def test_a_failed_tag_probe_is_no_answer_not_a_miss(git_repo, root, monkeypatch):
+    import src.pinned_source as ps
+    real = ps._run_git
+
+    def flaky(args, cwd=None):
+        if "--symbolic-full-name" in args:
+            return None, b"", b""
+        return real(args, cwd=cwd)
+
+    monkeypatch.setattr(ps, "_run_git", flaky)
+    result = resolve_pin(
+        PinRef(kind="docs_version", repo=git_repo.name, ref="nosuchref"),
+        local_repos_root=root,
+    )
+    assert result.status == UNRESOLVABLE

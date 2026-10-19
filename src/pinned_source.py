@@ -249,7 +249,8 @@ def _apply_remote_flags(flags: List[str], ref: str, ref_kind, proof: Optional[di
     if proof.get("movable"):
         if UNPINNED not in flags:
             flags.append(UNPINNED)
-    elif ref_kind in ("tag", "commit"):
+    elif ref_kind in ("tag", "commit") or ref.startswith("refs/tags/"):
+        # An explicit tag namespace already says which kind of ref this is.
         if UNPINNED in flags:
             flags.remove(UNPINNED)
     elif not proof.get("stable") and UNPINNED not in flags and classify_ref(ref) != "commit":
@@ -375,6 +376,8 @@ def _resolve_local(
                 ["git", "rev-parse", "--verify", "--quiet", ref + "^{}"],
                 cwd=repo_dir,
             )
+        elif rc_t != 1:
+            rc = rc_t  # the probe itself failed: that is no answer, not a miss
     if rc is None:
         return PinResult(
             UNRESOLVABLE,
