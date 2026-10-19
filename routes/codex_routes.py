@@ -114,7 +114,6 @@ def setup_codex_routes(
     calendar_list_events = _find_endpoint(calendar_router, "GET", "/api/calendar/events")
     calendar_create_event = _find_endpoint(calendar_router, "POST", "/api/calendar/events")
     calendar_update_event = _find_endpoint(calendar_router, "PUT", "/api/calendar/events/{uid}")
-    calendar_list_calendars = _find_endpoint(calendar_router, "GET", "/api/calendar/calendars")
     calendar_sync = _find_endpoint(calendar_router, "POST", "/api/calendar/sync")
     documents_library_endpoint = _find_endpoint(document_router, "GET", "/api/documents/library")
     documents_get_endpoint = _find_endpoint(document_router, "GET", "/api/document/{doc_id}")
@@ -355,11 +354,22 @@ def setup_codex_routes(
 
     @router.get("/calendar/calendars")
     async def codex_calendar_calendars(request: Request):
-        """The caller's calendars (``href`` is the ``calendar_href`` to create into)."""
+        """The caller's calendars (``href`` is the ``calendar_href`` to create into).
+
+        A ``calendar:read`` token only reads: when its owner has no calendar yet it
+        gets an empty list, not the default calendar the cookie-session listing
+        would create. A write-capable caller still gets the default made.
+        """
         owner = _scope_owner(request, CALENDAR_READ_SCOPES)
-        if calendar_list_calendars is None:
+        if calendar_router is None:
             raise HTTPException(503, "Calendar integration is not available")
-        return await _as_owner(request, owner, calendar_list_calendars, request)
+        from routes.calendar_routes import list_owner_calendars
+
+        may_write = (
+            not getattr(request.state, "api_token", False)
+            or bool(CALENDAR_WRITE_SCOPES & set(getattr(request.state, "api_token_scopes", []) or []))
+        )
+        return list_owner_calendars(owner, create_default=may_write)
 
     @router.post("/calendar/sync")
     async def codex_calendar_sync(request: Request):

@@ -8,7 +8,7 @@ expansion are proven to agree. Names and times are synthetic.
 import asyncio
 import importlib
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -171,8 +171,45 @@ def test_tzid_for_ignores_utc_floating_and_unknown_zones():
     assert tzid_for(prop("20261013T153000", "America/New_York")) == "America/New_York"
     assert tzid_for(prop("20261013T153000Z")) is None
     assert tzid_for(prop("20261013T153000")) is None
-    assert tzid_for(datetime(2026, 10, 13, 15, 30, tzinfo=NY), {"TZID": "Not/AZone"}) is None
+    # An unknown name with no zone behind it (what a custom VTIMEZONE parses to).
+    assert tzid_for(datetime(2026, 10, 13, 15, 30, tzinfo=timezone(timedelta(hours=-4))), {"TZID": "Not/AZone"}) is None
     assert load_zone("Not/AZone") is None and load_zone(None) is None
+
+
+def test_tzid_for_falls_back_to_the_zone_the_parser_resolved():
+    """Exchange/Outlook send Windows zone names. icalendar maps them onto an IANA
+    zone, but ZoneInfo cannot load the TZID text, so the parameter alone loses it."""
+    aware = datetime(2026, 10, 13, 15, 30, tzinfo=NY)
+    assert tzid_for(aware, {"TZID": "Eastern Standard Time"}) == "America/New_York"
+    assert tzid_for(aware, {"TZID": "America/New_York"}) == "America/New_York"
+    assert tzid_for(aware) == "America/New_York"
+    # A parameter that names UTC stays a fixed instant, whatever else is attached.
+    assert tzid_for(datetime(2026, 10, 13, 15, 30, tzinfo=timezone.utc), {"TZID": "UTC"}) is None
+
+
+def test_windows_named_series_is_stored_with_its_zone_and_keeps_its_wall_clock(cal):
+    ics = _wrap(_vevent(
+        "series-a@test",
+        "DTSTART;TZID=Eastern Standard Time:20261013T153000",
+        "DTEND;TZID=Eastern Standard Time:20261013T163000",
+        "RRULE:FREQ=WEEKLY;BYDAY=TU",
+        "SUMMARY:Series A",
+    ))
+    start = next(c for c in Calendar.from_ical(ics).walk("VEVENT")).get("dtstart")
+    if getattr(start.dt.tzinfo, "key", None) != "America/New_York":
+        pytest.skip("installed icalendar does not map Windows zone names")
+    _load(ics)
+    db = _TS()
+    try:
+        assert db.query(CalendarEvent).filter_by(uid="series-a@test").one().tzid == "America/New_York"
+    finally:
+        db.close()
+    events = _list(cal, "2026-10-26T00:00:00", "2026-11-17T00:00:00")
+    assert [e["dtstart"] for e in events] == [
+        "2026-10-27T19:30:00Z",   # 15:30 EDT
+        "2026-11-03T20:30:00Z",   # 15:30 EST, not 14:30
+        "2026-11-10T20:30:00Z",
+    ]
 
 
 # ── EXDATE and overrides ──────────────────────────────────────────────────────
