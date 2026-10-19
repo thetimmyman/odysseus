@@ -228,19 +228,21 @@ class ResearchHandler:
         query: str,
         llm_endpoint: str,
         llm_model: str,
-        max_time: int = 300,
+        max_time: Optional[int] = None,
         hard_timeout: int = None,
         llm_headers: dict = None,
         on_complete: callable = None,
         prior_report: str = "",
         prior_findings: list = None,
         prior_urls: set = None,
-        max_rounds: int = 20,
+        max_rounds: Optional[int] = None,
         search_provider: str = None,
         category: str = None,
         extraction_timeout: int = None,
         extraction_concurrency: int = None,
         owner: str = "",
+        depth: str = None,
+        max_urls_per_round: int = None,
     ) -> dict:
         """Start research as a background task. Returns task info dict.
 
@@ -330,6 +332,8 @@ class ResearchHandler:
                         category=category,
                         extraction_timeout=extraction_timeout,
                         extraction_concurrency=extraction_concurrency,
+                        depth=depth,
+                        max_urls_per_round=max_urls_per_round,
                     ),
                     timeout=hard_timeout,
                 )
@@ -817,18 +821,20 @@ class ResearchHandler:
         query: str,
         llm_endpoint: str,
         llm_model: str,
-        max_time: int = 300,
+        max_time: Optional[int] = None,
         progress_callback=None,
         _task_entry: dict = None,
         llm_headers: dict = None,
         prior_report: str = "",
         prior_findings: list = None,
         prior_urls: set = None,
-        max_rounds: int = 20,
+        max_rounds: Optional[int] = None,
         search_provider: str = None,
         category: str = None,
         extraction_timeout: int = None,
         extraction_concurrency: int = None,
+        depth: str = None,
+        max_urls_per_round: int = None,
     ) -> str:
         """
         Run iterative deep research using the LLM-in-the-loop DeepResearcher.
@@ -860,7 +866,7 @@ class ResearchHandler:
         await self._probe_endpoint(llm_endpoint, llm_model, llm_headers)
 
         try:
-            from src.deep_research import DeepResearcher
+            from src.deep_research import DeepResearcher, resolve_depth, select_default_depth
             from src.research_run_record import run_record_enabled
 
             from src.settings import get_setting
@@ -890,13 +896,36 @@ class ResearchHandler:
                 maximum=3600,
             )
 
+            # When depth is "auto", select default depth deterministically
+            effective_depth = depth
+            if effective_depth == "auto":
+                effective_depth = select_default_depth(category)
+
+            # If depth mode is specified, its preset limits apply unless explicit overrides were provided.
+            # In legacy research, max_rounds default is 20 and max_time is 300.
+            # If depth is set, resolve preset and pass through to DeepResearcher.
+            if effective_depth:
+                resolved = resolve_depth(effective_depth, overrides={
+                    "max_rounds": max_rounds,
+                    "max_time": max_time,
+                    "max_urls_per_round": max_urls_per_round,
+                })
+                effective_max_rounds = resolved["max_rounds"]
+                effective_max_time = resolved["max_time"]
+                effective_max_urls = resolved["max_urls_per_round"]
+            else:
+                effective_max_rounds = max_rounds if max_rounds is not None else 20
+                effective_max_time = max_time if max_time is not None else 300
+                effective_max_urls = max_urls_per_round if max_urls_per_round is not None else 3
+
             researcher = DeepResearcher(
                 llm_endpoint=llm_endpoint,
                 llm_model=llm_model,
                 llm_headers=llm_headers,
-                max_rounds=max_rounds,
-                min_rounds=max(2, max_rounds - 2),
-                max_time=max_time,
+                max_rounds=effective_max_rounds,
+                min_rounds=max(2, effective_max_rounds - 2),
+                max_time=effective_max_time,
+                max_urls_per_round=effective_max_urls,
                 max_report_tokens=_max_report_tokens,
                 extraction_timeout=_extraction_timeout,
                 planning_timeout=_planning_timeout,
@@ -906,6 +935,7 @@ class ResearchHandler:
                 search_provider=search_provider,
                 category=category,
                 run_record=run_record_enabled(),
+                depth=effective_depth,
             )
             if _task_entry is not None:
                 _task_entry["researcher"] = researcher
@@ -933,7 +963,8 @@ class ResearchHandler:
 
         except Exception as e:
             logger.error(f"DeepResearcher failed: {e}", exc_info=True)
-            return await self._fallback_research(query, llm_endpoint, llm_model, max_time, str(e))
+            return await self._fallback_research(
+                query, llm_endpoint, llm_model, max_time if max_time is not None else 300, str(e))
 
     async def _fallback_research(
         self, query: str, llm_endpoint: str, llm_model: str,
