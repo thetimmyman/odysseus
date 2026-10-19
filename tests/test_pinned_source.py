@@ -1046,3 +1046,21 @@ def test_a_real_tag_cited_by_full_ref_name_stays_pinned(git_repo, root):
             _repo_file(ref=ref, path="read.txt"), local_repos_root=root
         )
         assert UNPINNED not in result.flags, ref
+
+
+def test_full_branch_name_aliasing_a_lookalike_tag_is_not_a_pin(git_repo, root):
+    _git(git_repo, "tag", "heads/moving", "main")
+    _git(git_repo, "symbolic-ref", "refs/heads/moving", "refs/tags/heads/moving")
+    result = resolve_pin(
+        _repo_file(ref="refs/heads/moving", path="read.txt"), local_repos_root=root
+    )
+    assert UNPINNED in result.flags
+
+
+def test_a_tag_that_names_a_tree_resolves_file_pins(git_repo, root):
+    tree = _git(git_repo, "rev-parse", "main^{tree}")
+    _git(git_repo, "tag", "tree-release", tree)
+    result = resolve_pin(
+        _repo_file(ref="tree-release", path="read.txt"), local_repos_root=root
+    )
+    assert result.status == TRUE

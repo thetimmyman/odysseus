@@ -352,6 +352,12 @@ def _resolve_local(
         ["git", "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
         cwd=repo_dir,
     )
+    if rc == 1:
+        # A tag may name a tree directly; a tree id reads files just as well.
+        rc, out, _err = _run_git(
+            ["git", "rev-parse", "--verify", "--quiet", ref + "^{tree}"],
+            cwd=repo_dir,
+        )
     if rc is None:
         return PinResult(
             UNRESOLVABLE,
@@ -407,8 +413,13 @@ def _resolve_local(
     # Git dereferences a symbolic ref (``refs/heads/moving`` -> a tag), so a
     # selected tag whose name is not the one cited is an alias that can be
     # re-pointed; it proves nothing.
-    cited = ref[len("refs/"):] if ref.startswith("refs/") else ref
-    cited = cited[len("tags/"):] if cited.startswith("tags/") else cited
+    # Only the syntactic tag forms are normalised: ``refs/heads/x`` must not
+    # collapse into a tag name that happens to be called ``heads/x``.
+    cited = ref
+    for prefix in ("refs/tags/", "tags/"):
+        if cited.startswith(prefix):
+            cited = cited[len(prefix):]
+            break
     if selected.startswith("refs/tags/") and selected != "refs/tags/" + cited:
         if UNPINNED not in flags:
             flags.append(UNPINNED)
