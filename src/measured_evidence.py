@@ -351,10 +351,20 @@ def _bounded_int(text: str):
     return int(text) if len(text) <= 400 else math.nan
 
 
+def _checked_float(text: str):
+    """A nonzero decimal that underflows to 0.0 is not a measured zero: it becomes NaN (skipped)."""
+    value = float(text)
+    if value == 0.0 and any(ch in "123456789" for ch in text.lower().split("e")[0]):
+        return math.nan
+    return value
+
+
 def _parse_measurements_capped(raw, path) -> tuple:
     """(measurements, capped): ``capped`` only when a valid entry beyond the cap was left out."""
     try:
-        data = json.loads(raw, parse_int=_bounded_int)
+        # Strict UTF-8 only: json.loads would auto-detect UTF-16/32, but the cited text is decoded as
+        # UTF-8, so measurements from another encoding would not be represented by that text.
+        data = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw, parse_int=_bounded_int, parse_float=_checked_float)
     except (ValueError, TypeError, RecursionError):
         return (), False
     if not isinstance(data, dict):
@@ -573,7 +583,7 @@ def _match_key(subject, metric) -> tuple[str, str]:
 
 def _unit_key(value) -> str:
     """Whitespace-normalised unit symbol; case is kept because MW and mW, MB and Mb differ."""
-    return " ".join(str(value).split())
+    return unicodedata.normalize("NFC", " ".join(str(value).split()))
 
 
 def _normalize(value) -> str:

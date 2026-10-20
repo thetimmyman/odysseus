@@ -899,3 +899,22 @@ def test_only_a_real_boolean_enables_the_provider(monkeypatch, value, expected):
     import src.settings as settings
     monkeypatch.setattr(settings, "get_setting", lambda key, default=None: value)
     assert me.measured_evidence_enabled() is expected
+
+
+def test_canonically_equivalent_unit_spellings_are_comparable():
+    measurement = me.Measurement(subject="s", metric="m", value=5.0, unit="Å", path="p")
+    assertion = me.Assertion("C1", "s", "m", 5.0, "Å", "doc")
+    report = me.find_conflicts([assertion], [measurement])
+    assert len(report.agreements) == 1 and report.uncomparable == ()
+
+
+def test_non_utf8_json_is_not_parsed_as_measurements():
+    raw = '{"measurements": [{"subject": "a", "metric": "m", "unit": "u", "value": 1}]}'.encode("utf-16")
+    assert me._parse_measurements_capped(raw, "p") == ((), False)
+
+
+def test_a_nonzero_literal_that_underflows_is_skipped_not_zero():
+    raw = ('{"measurements": [{"subject": "a", "metric": "m", "unit": "u", "value": 1e-400},'
+           ' {"subject": "b", "metric": "m", "unit": "u", "value": 0.0}]}').encode()
+    parsed, _ = me._parse_measurements_capped(raw, "p")
+    assert [m.subject for m in parsed] == ["b"]
