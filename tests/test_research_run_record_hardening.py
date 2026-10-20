@@ -182,6 +182,38 @@ def test_malformed_parent_record_is_ignored_piece_by_piece():
     assert rec.add_source("u", "t", "text") == "S2"
 
 
+@pytest.mark.parametrize("junk", [1, "x", None, {"a": 1}, [1, None, "s"]])
+def test_non_list_sections_of_a_parent_record_are_ignored(junk):
+    rec = ResearchRunRecorder()
+    rec.carry_forward({"run_id": "p", "sources": junk, "claims": junk, "totals": junk,
+                       "claim_id_floor": junk})
+    rec.carry_forward({"sources": [{"source_id": "S1"}],
+                       "claims": [{"claim_id": "C1", "citations": junk}], "totals": junk})
+    assert [c["claim_id"] for c in rec._carried_claims] == ["C1"]
+    assert rec._carried_claims[0]["citations"] == []
+
+
+@pytest.mark.asyncio
+async def test_carried_quotes_are_remeasured_against_the_blobs_that_exist(pages, tmp_path):
+    _, first = await _first_run(tmp_path)
+    assert first["totals"]["quote_grounding"]["grounded"] == 1
+    blob = tmp_path / first["sources"][0]["blob"]
+
+    async def continue_from(parent):
+        r = _researcher()
+        r._llm = _llm_returning(_reply())
+        await r.research("q", prior_report="x", prior_findings=[], prior_run_record=parent)
+        return r.run_recorder.build(blob_dir=tmp_path / "blobs")["totals"]["quote_grounding"]
+
+    assert (await continue_from(first))["grounded"] == 1
+    blob.write_text("changed after the parent was saved", encoding="utf-8")
+    stats = await continue_from(first)  # hash no longer matches
+    assert stats["quotes"] == 1 and stats["grounded"] == 0
+    blob.unlink()
+    stats = await continue_from(first)  # blob gone
+    assert stats["quotes"] == 1 and stats["grounded"] == 0 and stats["rate"] == 0.0
+
+
 # ---- claim metadata stays inside the untrusted boundary -------------------
 
 def _messages_capture(researcher):

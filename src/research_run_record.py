@@ -131,6 +131,11 @@ def normalize_quotes(quotes) -> List[str]:
     return found
 
 
+def _list_of_dicts(value) -> List[Dict]:
+    """The dict items of a list; anything else (scalar, None, junk) is empty."""
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def _collapse_whitespace(text: str) -> str:
     return " ".join(text.split())
 
@@ -201,7 +206,6 @@ class ResearchRunRecorder:
         self._claim_sources: Dict[str, str] = {}
         self._carried_sources: List[Dict] = []
         self._carried_claims: List[Dict] = []
-        self._carried_grounding: Optional[Dict] = None
         self.parent_run_id: Optional[str] = None
         self.llm_calls: List[Dict] = []
         self._call_endpoints: List[str] = []
@@ -237,8 +241,8 @@ class ResearchRunRecorder:
             return
         parent_id = record.get("run_id") if isinstance(record.get("run_id"), str) else None
         seen_sources, seen_claims = set(), set()
-        for src in record.get("sources") or []:
-            number = _source_id_number(src.get("source_id")) if isinstance(src, dict) else None
+        for src in _list_of_dicts(record.get("sources")):
+            number = _source_id_number(src.get("source_id"))
             if number is None or src["source_id"] in seen_sources:
                 continue
             seen_sources.add(src["source_id"])
@@ -246,13 +250,13 @@ class ResearchRunRecorder:
             kept.setdefault("run_id", parent_id)
             self._carried_sources.append(kept)
             self._source_seq = max(self._source_seq, number)
-        for claim in record.get("claims") or []:
-            number = claim_id_number(claim.get("claim_id")) if isinstance(claim, dict) else None
+        for claim in _list_of_dicts(record.get("claims")):
+            number = claim_id_number(claim.get("claim_id"))
             if number is None or claim["claim_id"] in seen_claims:
                 continue
             seen_claims.add(claim["claim_id"])
-            citations = [c for c in claim.get("citations") or []
-                         if isinstance(c, dict) and c.get("source_id") in seen_sources]
+            citations = [c for c in _list_of_dicts(claim.get("citations"))
+                         if c.get("source_id") in seen_sources]
             first = citations[0]["source_id"] if citations else None
             kept = dict(claim)
             kept["citations"] = citations
@@ -264,24 +268,6 @@ class ResearchRunRecorder:
             self._claim_ids = max(self._claim_ids, number)
         self.reserve_claim_ids(record.get("claim_id_floor"))
         self.parent_run_id = parent_id
-        self._carried_grounding = self._grounding_of(record)
-
-    @staticmethod
-    def _grounding_of(record: Dict) -> Dict:
-        stats = (record.get("totals") or {}).get("quote_grounding")
-        if (isinstance(stats, dict)
-                and all(isinstance(stats.get(k), int) and not isinstance(stats.get(k), bool)
-                        and stats[k] >= 0 for k in ("quotes", "grounded"))
-                and stats["grounded"] <= stats["quotes"]):
-            return {"quotes": stats["quotes"], "grounded": stats["grounded"]}
-        # Older record without a stored measurement: measure it from its blobs.
-        try:
-            view = grounding_view(record)
-            measured = quote_grounding_stats(view, view["sources"])
-            return {"quotes": measured["quotes"], "grounded": measured["grounded"]}
-        except Exception as e:  # never fail the run over a parent we cannot read
-            logger.warning("Could not measure parent record grounding: %s", e)
-            return {"quotes": 0, "grounded": 0}
 
     def owns_claim(self, claim_id, source_id) -> bool:
         """True when this record's registry issued ``claim_id`` for ``source_id``."""
@@ -368,6 +354,15 @@ class ResearchRunRecorder:
             os.replace(tmp, path)
         return f"{blob_dir.name}/{path.name}"
 
+    def _carried_grounding_stats(self, blob_root: Path) -> Dict:
+        view = grounding_view({"sources": self._carried_sources,
+                               "claims": self._carried_claims}, blob_root=blob_root)
+        expected = {s["source_id"]: s.get("content_sha256") for s in self._carried_sources}
+        for src in view["sources"]:
+            if "text" in src and content_sha256(src["text"]) != expected.get(src["source_id"]):
+                del src["text"]
+        return quote_grounding_stats(view, view["sources"])
+
     def build(self, blob_dir: Optional[Path] = None) -> Dict:
         """Write source blobs and return the JSON-serializable run record."""
         blob_dir = Path(blob_dir or DEEP_RESEARCH_BLOB_DIR)
@@ -430,12 +425,15 @@ class ResearchRunRecorder:
         persisted = {src["source_id"]: self._texts[src["source_id"]]
                      for src in sources if src.get("blob")}
         totals["quote_grounding"] = quote_grounding_stats({"claims": claims}, persisted)
-        if self._carried_grounding is not None:
-            # The parent's quotes were measured when it was saved; this record
-            # carries its claims, so its totals cover them too.
+        if self._carried_claims:
+            # The carried claims are part of this record, so its totals cover
+            # them. Measure them now, against the blobs as they are on disk
+            # (hash-checked): a parent blob that has since gone missing or
+            # changed counts as not found, never as the old measurement.
             own = totals["quote_grounding"]
-            quotes = own["quotes"] + self._carried_grounding["quotes"]
-            grounded = own["grounded"] + self._carried_grounding["grounded"]
+            carried = self._carried_grounding_stats(blob_dir.parent)
+            quotes = own["quotes"] + carried["quotes"]
+            grounded = own["grounded"] + carried["grounded"]
             totals["quote_grounding"] = {
                 "quotes": quotes, "grounded": grounded, "not_found": quotes - grounded,
                 "rate": round(grounded / quotes, 4) if quotes else 0.0,
