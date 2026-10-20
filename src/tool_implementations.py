@@ -4227,10 +4227,13 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
             return {"error": "Provide the research id to delete (from action='list')."}
         p = data_dir / f"{rid}.json"
         if p.exists():
+            deleted = _load(p)
             try:
                 p.unlink()
             except Exception as e:
                 return {"error": f"Failed to delete: {e}"}
+            from src.research_run_record import sweep_after_delete
+            sweep_after_delete(data_dir, deleted)
             return {"output": f"Deleted research '{rid}'.", "exit_code": 0}
         return {"error": f"Research '{rid}' not found."}
 

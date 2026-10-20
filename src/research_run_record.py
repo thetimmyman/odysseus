@@ -22,11 +22,13 @@ Page text is untrusted data. It is stored and hashed, never interpreted here.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -338,7 +340,7 @@ class ResearchRunRecorder:
     def add_llm_call(self, *, purpose: str, model: str, started_at: str, latency_ms: int,
                      input_tokens: int, output_tokens: int, tokens_estimated: bool,
                      error: Optional[str] = None, source_id: Optional[str] = None,
-                     endpoint: str = "") -> None:
+                     endpoint: str = "", cached: bool = False) -> None:
         # The endpoint only selects the routing profile; it is not written to
         # the record, which may leave this host.
         self._call_endpoints.append(endpoint)
@@ -352,6 +354,9 @@ class ResearchRunRecorder:
             "tokens_estimated": tokens_estimated,
             "error": error,
             "source_id": source_id,
+            # Served from the process response cache: no provider request
+            # happened, so there is nothing to charge.
+            **({"cached": True} if cached else {}),
         })
 
     def _write_blob(self, blob_dir: Path, sha: str, text: str) -> Optional[str]:
@@ -360,10 +365,20 @@ class ResearchRunRecorder:
             return None
         blob_dir.mkdir(parents=True, exist_ok=True)
         path = blob_dir / f"{sha}.txt"
-        if not path.exists():
-            tmp = blob_dir / f".{sha}.{os.getpid()}.tmp"
-            tmp.write_bytes(data)
-            os.replace(tmp, path)
+        with _blob_lock(blob_dir, exclusive=False):  # the orphan sweep cannot run meanwhile
+            if path.exists():
+                _touch(path)  # in use again: keep the orphan sweep's grace window fresh
+            else:
+                # A name unique to this write: two jobs persisting identical text
+                # (same process or not) must not share, and so not steal, a temp file.
+                tmp = blob_dir / f".{sha}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+                try:
+                    tmp.write_bytes(data)
+                    os.replace(tmp, path)
+                except OSError:
+                    tmp.unlink(missing_ok=True)
+                    if not path.exists():  # a concurrent writer already stored the same bytes
+                        raise
         return f"{blob_dir.name}/{path.name}"
 
     def _carried_grounding_stats(self, blob_root: Path) -> Dict:
@@ -494,18 +509,28 @@ class ResearchRunRecorder:
             profiles: Dict[tuple, Optional[object]] = {}
             for key in set(zip(self._call_endpoints, (c["model"] for c in self.llm_calls))):
                 endpoint, model = key
-                matches = (db.query(RoutingModelProfile)
-                           .join(ModelEndpoint, RoutingModelProfile.model_endpoint_id == ModelEndpoint.id)
-                           .filter(ModelEndpoint.base_url.in_(_endpoint_base_keys(endpoint)),
-                                   RoutingModelProfile.model == model)
-                           .all())
+                # Only the research owner's endpoints and shared ones: another
+                # user's private endpoint must never lend its profile (or its
+                # price) to this run. No owner means single-user mode.
+                found = (db.query(RoutingModelProfile, ModelEndpoint.owner)
+                         .join(ModelEndpoint, RoutingModelProfile.model_endpoint_id == ModelEndpoint.id)
+                         .filter(ModelEndpoint.base_url.in_(_endpoint_base_keys(endpoint)),
+                                 RoutingModelProfile.model == model))
+                if owner:
+                    from src.auth_helpers import owner_filter
+                    found = owner_filter(found, ModelEndpoint, owner)
+                matches = found.all()
+                if owner and any(ep_owner == owner for _, ep_owner in matches):
+                    matches = [m for m in matches if m[1] == owner]  # owned beats shared
                 # A profile is keyed by (endpoint, model): one on another
                 # endpoint, or an ambiguous match, means no known price.
-                profiles[key] = matches[0] if len(matches) == 1 else None
+                profiles[key] = matches[0][0] if len(matches) == 1 else None
             rows, spend, premium = [], 0.0, 0.0
             for endpoint, call in zip(self._call_endpoints, self.llm_calls):
                 profile = profiles.get((endpoint, call["model"]))
-                cost = estimate_cost_usd(profile, call["input_tokens"], call["output_tokens"]) if profile else 0.0
+                cached = bool(call.get("cached"))
+                cost = (estimate_cost_usd(profile, call["input_tokens"], call["output_tokens"])
+                        if profile and not cached else 0.0)
                 spend += cost
                 if profile is not None and profile.is_premium:
                     premium += cost
@@ -522,7 +547,8 @@ class ResearchRunRecorder:
                     notes=json.dumps({"purpose": call["purpose"], "model": call["model"],
                                       "source_id": call["source_id"],
                                       "started_at": call["started_at"],
-                                      "cost_basis": "routing_profile_rate" if profile else "no_profile_price"}),
+                                      "cost_basis": ("cache_hit" if cached else
+                                                    "routing_profile_rate" if profile else "no_profile_price")}),
                 ))
             db.add(RoutingTask(
                 id=task_id, title=f"Deep research: {query[:80]}", objective=query,
@@ -544,6 +570,110 @@ class ResearchRunRecorder:
             return None
         finally:
             db.close()
+
+
+def _touch(path: Path) -> None:
+    try:
+        os.utime(path)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _blob_lock(blob_dir: Path, exclusive: bool):
+    """Advisory lock over the blob directory, shared across processes.
+
+    Writers take it shared (many at once) around "reuse or store a blob"; the
+    orphan sweep takes it exclusive, so it can never delete a blob between a
+    writer finding it and the writer's session referencing it. Best effort: it
+    degrades to no lock where fcntl or the lock file is unavailable."""
+    handle = None
+    try:
+        import fcntl
+        handle = open(blob_dir / ".lock", "a")
+        fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    except (ImportError, OSError):
+        if handle is not None:
+            handle.close()
+            handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.close()  # closing releases the lock
+
+
+# A blob younger than this is never swept: a run that has stored (or reused)
+# its blobs but not yet saved the session JSON that references them.
+BLOB_SWEEP_GRACE_SECONDS = 3600
+_last_sweep = 0.0
+
+
+def sweep_orphan_blobs(research_dir: Optional[Path] = None,
+                       grace_seconds: float = BLOB_SWEEP_GRACE_SECONDS) -> int:
+    """Delete source blobs that no saved research session references.
+
+    Blobs are content-addressed and shared (the same page in two runs, or a
+    continuation carrying its parent's sources), so a blob can only go when no
+    remaining session names it. Call after deleting a session. Best effort and
+    conservative: if any session file cannot be read the references are
+    unknown and nothing is deleted. Never raises. Returns the number of files
+    removed."""
+    try:
+        root = Path(research_dir or Path(DEEP_RESEARCH_BLOB_DIR).parent)
+        blob_dir = root / Path(DEEP_RESEARCH_BLOB_DIR).name
+        if not blob_dir.is_dir():
+            return 0
+        with _blob_lock(blob_dir, exclusive=True):
+            referenced = set()
+            for path in root.glob("*.json"):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                record = data.get("run_record") if isinstance(data, dict) else None
+                for src in (record.get("sources") if isinstance(record, dict) else None) or []:
+                    blob = src.get("blob") if isinstance(src, dict) else None
+                    if isinstance(blob, str) and blob:
+                        referenced.add(Path(blob).name)
+            cutoff = time.time() - grace_seconds
+            removed = 0
+            for path in blob_dir.iterdir():
+                is_blob = path.suffix == ".txt" and path.name not in referenced
+                if not (is_blob or (path.name.startswith(".") and path.suffix == ".tmp")):
+                    continue
+                try:
+                    if path.is_file() and path.stat().st_mtime < cutoff:
+                        path.unlink()
+                        removed += 1
+                except OSError as e:
+                    logger.warning("Could not remove orphan research blob %s: %s", path.name, e)
+            return removed
+    except Exception as e:  # cleanup must never turn a delete or a save into a failure
+        logger.warning("Research blob sweep skipped: %s", e)
+        return 0
+
+
+def sweep_after_delete(research_dir: Optional[Path] = None, deleted: Optional[dict] = None) -> int:
+    """sweep_orphan_blobs for a delete path, given the session JSON just deleted.
+
+    A session still marked running was a live task: it is still carrying its
+    parent's blobs and will write the session back when it finishes, so its
+    blobs are kept (the sweep on that save revisits them)."""
+    if isinstance(deleted, dict) and deleted.get("status") == "running":
+        return 0
+    return sweep_orphan_blobs(research_dir)
+
+
+def sweep_orphan_blobs_if_due(research_dir: Optional[Path] = None,
+                              grace_seconds: float = BLOB_SWEEP_GRACE_SECONDS) -> int:
+    """sweep_orphan_blobs at most once per grace window per process.
+
+    Called when a run record is saved, so blobs a delete had to skip as too
+    fresh (deleted within the grace window of their run) are revisited."""
+    global _last_sweep
+    now = time.monotonic()
+    if _last_sweep and now - _last_sweep < grace_seconds:
+        return 0
+    _last_sweep = now
+    return sweep_orphan_blobs(research_dir, grace_seconds)
 
 
 def _endpoint_base_keys(endpoint: str) -> List[str]:

@@ -1122,6 +1122,16 @@ def normalize_model_id(
 _LAST_ASYNC_USAGE: ContextVar[Optional[Dict[str, int]]] = ContextVar("llm_last_async_usage", default=None)
 
 
+# True when the most recent llm_call_async in this context was answered from
+# the process response cache, i.e. no provider request was made.
+_LAST_ASYNC_CACHE_HIT: ContextVar[bool] = ContextVar("llm_last_async_cache_hit", default=False)
+
+
+def last_async_cache_hit() -> bool:
+    """Whether the last llm_call_async in this context was a cache hit."""
+    return _LAST_ASYNC_CACHE_HIT.get()
+
+
 def last_async_usage() -> Optional[Dict[str, int]]:
     """Provider-reported usage of the last llm_call_async in this context."""
     return _LAST_ASYNC_USAGE.get()
@@ -1387,6 +1397,7 @@ async def _llm_call_async_inner(
 ) -> str:
     """Body of :func:`llm_call_async`, run inside the resolved lane."""
     _LAST_ASYNC_USAGE.set(None)
+    _LAST_ASYNC_CACHE_HIT.set(False)
     provider = _detect_provider(url)
     messages_copy = _sanitize_llm_messages(messages)
 
@@ -1407,6 +1418,7 @@ async def _llm_call_async_inner(
     cached_response = _get_cached_response(cache_key)
     if cached_response:
         logger.debug(f"Returning cached response for key: {cache_key}")
+        _LAST_ASYNC_CACHE_HIT.set(True)
         return cached_response
 
     if provider == "chatgpt-subscription":
