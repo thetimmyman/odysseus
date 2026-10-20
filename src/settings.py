@@ -10,7 +10,9 @@ import time
 import logging
 from typing import Any
 
-from src.constants import SETTINGS_FILE, FEATURES_FILE
+from src.constants import (
+    SETTINGS_FILE, FEATURES_FILE, MEASURED_EVIDENCE_SETTING, MEASURED_EVIDENCE_ROOT_SETTING,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +100,8 @@ DEFAULT_SETTINGS = {
     # Let deep research cite our own benchmark/receipt files as measured sources
     # (src/measured_evidence.py). Off by default; the root is the directory that
     # holds evidence/ and benchmark/<name>/results/.
-    "research_measured_evidence": False,
-    "research_measured_evidence_root": "",
+    MEASURED_EVIDENCE_SETTING: False,
+    MEASURED_EVIDENCE_ROOT_SETTING: "",
     # Hard wall-clock cap on a single deep-research run. The previous 600s
     # (10 min) default cut off slow local / edge LLMs mid-synthesis; 1800s
     # (30 min) is comfortable for most local setups while still bounding

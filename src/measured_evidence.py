@@ -46,6 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.constants import MEASURED_EVIDENCE_ROOT_SETTING, MEASURED_EVIDENCE_SETTING
+
 MEASURED_RANK = 1
 TRUST_CLASS = "authoritative"
 SOURCE_KIND = "measured"
@@ -553,12 +555,12 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
 def measured_evidence_enabled() -> bool:
     from src.settings import get_setting
     # Only a real boolean enables the provider: the string "false" is truthy and must not switch it on.
-    return get_setting("research_measured_evidence", False) is True
+    return get_setting(MEASURED_EVIDENCE_SETTING, False) is True
 
 
 def measured_evidence_root():
     from src.settings import get_setting
-    value = get_setting("research_measured_evidence_root", None)
+    value = get_setting(MEASURED_EVIDENCE_ROOT_SETTING, None)
     # Only a string or path is a root; any other persisted JSON type is not a path (5 is not "5").
     return os.fspath(value) if isinstance(value, (str, os.PathLike)) and os.fspath(value) else None
 
