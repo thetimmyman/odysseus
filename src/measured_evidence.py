@@ -190,7 +190,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         # Resolve the configured root once; every later open is no-follow from this real path, so
         # a swap of the root for a symlink after this point is refused rather than followed.
         root_path = Path(root).resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError, TypeError):
         try:
             root_path = Path(root)
         except (TypeError, ValueError):
@@ -269,8 +269,12 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             total_bytes += sum(used)
             if data is None:
                 continue
-            # Cut by bytes; dropping invalid sequences keeps the text within the byte cap.
-            text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+            # Cut by bytes; an invalid sequence becomes U+FFFD, never silently joining its neighbours.
+            text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="replace")
+            encoded = text.encode("utf-8")
+            if len(encoded) > MAX_TEXT_BYTES:
+                # Replacement characters are longer than the bytes they stand for; trim the tail only.
+                text = encoded[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
             path_str = rel.as_posix()
             score = _score(path_str, text, tokens)
             if score <= 0:
@@ -647,6 +651,11 @@ def _entry_kind(source):
     return getattr(source, "kind", None)
 
 
+def _is_single_ideograph(part: str) -> bool:
+    """One CJK ideograph is a whole word in Chinese and Japanese, unlike one Latin letter."""
+    return len(part) == 1 and "CJK UNIFIED IDEOGRAPH" in unicodedata.name(part, "")
+
+
 def _fold(text: str) -> str:
     """Canonical-composition normalise then case-fold, so NFC and NFD spellings compare equal."""
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", text).casefold())
@@ -662,7 +671,8 @@ def _query_tokens(query) -> list[str]:
     for part in _split_words(_fold(query[:_MAX_QUERY_CHARS])):
         # Three characters for ASCII words; scripts written without spaces (CJK and others) have
         # shorter meaningful tokens.
-        if (len(part) >= 3 or (len(part) >= 2 and not part.isascii())) and part not in seen:
+        if (len(part) >= 3 or (len(part) >= 2 and not part.isascii()) or _is_single_ideograph(part)) \
+                and part not in seen:
             seen.add(part)
             tokens.append(part)
             if len(tokens) >= _MAX_QUERY_TOKENS:

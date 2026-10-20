@@ -1008,3 +1008,23 @@ def test_a_read_is_capped_at_the_remaining_allowance(tmp_path):
         assert used == []
     finally:
         os.close(fd)
+
+
+def test_a_single_cjk_ideograph_is_a_usable_query(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "note.md").write_text("癌 results", encoding="utf-8")
+    assert [s.path for s in me.find_measured_sources("癌", root=root, enabled=True).sources] == ["evidence/note.md"]
+    assert me._query_tokens("a") == []
+
+
+def test_invalid_bytes_do_not_join_their_neighbours_into_a_query_term(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "note.md").write_bytes(b"nee\xffdle")
+    assert me.find_measured_sources("needle", root=root, enabled=True).status == me.NONE
+
+
+@pytest.mark.parametrize("bad", [5, ["a"], {"a": 1}, 1.5])
+def test_a_non_path_root_is_unavailable_not_an_exception(bad):
+    assert me.find_measured_sources("needle", root=bad, enabled=True).status == me.UNAVAILABLE
