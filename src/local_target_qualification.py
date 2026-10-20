@@ -21,8 +21,17 @@ from src.local_targets import (CapabilityEvidence, CapabilityLimits, HEALTH_HEAL
     ROLE_INFERENCE, TOOLS_PROVEN, LocalTargetSpec, TargetCapabilityReceipt,
     _digest_of, make_target_capability_receipt, target_capability_receipt_hash_is_valid)
 
-PROBE_VERSION = 'ps632-4k-single-tool-v1'
-SAFE_CONTEXT = 4096
+PROBE_VERSION = 'ps632-single-tool-v2'
+CONTEXT_FLOOR_DEFAULT = 4096
+SAFE_CONTEXT = CONTEXT_FLOOR_DEFAULT
+# Upper bound keeps the probe prompt inside the bounded worker HTTP payload
+# (64 MiB would be needed above this once the JSON envelope is counted).
+CONTEXT_FLOOR_MAX = 131072
+# The prompt is sized on characters, which are countable here; the token count stays
+# the provider's word. PROBE_MIN_LINES keeps the historical 4K prompt from shrinking.
+PROBE_MIN_LINES = 650
+PROBE_LINE_CHARS = 75
+PROBE_CHARS_PER_FLOOR_UNIT = 5
 TRIALS = 2
 QUALIFICATION_TTL_S = 86400
 HEALTH_TTL_S = 300
@@ -109,14 +118,59 @@ def _binding(spec, receipt, now):
         raise QualificationError('registered specification does not bind this profile')
 
 
-def _probe(trial):
+def _servable_context(context):
+    """The largest prompt the profile can actually serve in one request.
+
+    A nonzero ``configured_served_context`` is the engine's per-request slot
+    limit and can be below the configured context; a floor above it can never
+    be evidenced, so it is the ceiling whenever it is present.
+    """
+    served = context.configured_served_context
+    if type(served) is int and 0 < served < context.configured_context:
+        return served
+    return context.configured_context
+
+
+def _validated_context_floor(context_floor):
+    """Refuse an unusable floor at every entry point, not only in the CLI.
+
+    A caller that invokes the qualification functions directly bypasses the CLI
+    parser, so the same bounds are enforced here: a positive multiple of 1024 at
+    or above the default floor and at or below the payload ceiling.
+    """
+    if (type(context_floor) is not int
+            or context_floor < CONTEXT_FLOOR_DEFAULT
+            or context_floor % 1024
+            or context_floor > CONTEXT_FLOOR_MAX):
+        raise QualificationError(
+            f'context floor must be a multiple of 1024 between {CONTEXT_FLOOR_DEFAULT} '
+            f'and {CONTEXT_FLOOR_MAX}')
+    return context_floor
+
+
+def _distractor_count(context_floor):
+    """Distractor lines needed so the prompt clears the floor with margin.
+
+    Sized on characters because tokenizers are not available to the caller and the
+    provider's reported prompt tokens are the only evidence that counts. Five
+    characters per context unit deliberately overshoots: a denser tokenizer costs
+    prefill time, a sparser one refuses, and neither can produce a false pass.
+    """
+    budget = max(context_floor * PROBE_CHARS_PER_FLOOR_UNIT,
+                 PROBE_MIN_LINES * (PROBE_LINE_CHARS + 1))
+    return max(PROBE_MIN_LINES, math.ceil(budget / (PROBE_LINE_CHARS + 1)))
+
+
+def _probe(trial, context_floor=CONTEXT_FLOOR_DEFAULT):
     values = {position: position + '-' + hashlib.sha256(
         f'PS632:{trial}:{position}'.encode()).hexdigest()[:12]
         for position in ('first', 'middle', 'last')}
+    count = _distractor_count(context_floor)
+    half = count // 2
     lines = [f'distractor record {i:04d}: scope remains read only; no value is authoritative.'
-             for i in range(650)]
-    prompt = (f"FIRST={values['first']}\n" + '\n'.join(lines[:325])
-        + f"\nMIDDLE={values['middle']}\n" + '\n'.join(lines[325:])
+             for i in range(count)]
+    prompt = (f"FIRST={values['first']}\n" + '\n'.join(lines[:half])
+        + f"\nMIDDLE={values['middle']}\n" + '\n'.join(lines[half:])
         + f"\nLAST={values['last']}\n"
         'Call write_file once for qualification.txt, search baseline-placeholder, '
         'replacement FIRST:MIDDLE:LAST using the exact three values above. No other tool or prose.')
@@ -148,7 +202,8 @@ def _request(spec, receipt, prompt):
     raise QualificationError('unsupported existing qualification provider')
 
 
-def _response(spec, result, expected):
+def _response(spec, result, expected, *, context_floor=CONTEXT_FLOOR_DEFAULT,
+        configured_context=None):
     if not isinstance(result, dict) or result.get('error'):
         raise QualificationError('provider returned no successful response')
     if result.get('model') != spec.model:
@@ -177,9 +232,12 @@ def _response(spec, result, expected):
             raise QualificationError('tool arguments are not valid JSON') from exc
     if function.get('name') != 'write_file' or arguments != expected:
         raise QualificationError('tool arguments did not preserve the exact probe values')
-    if (type(prompt_tokens) is not int or prompt_tokens < SAFE_CONTEXT
+    if (type(prompt_tokens) is not int or prompt_tokens < context_floor
             or type(output_tokens) is not int or not 0 < output_tokens <= 512):
-        raise QualificationError('complete measured 4K context/token evidence is required')
+        raise QualificationError(
+            f'complete measured {context_floor}-token context evidence is required')
+    if configured_context is not None and prompt_tokens > configured_context:
+        raise QualificationError('measured prompt exceeds the servable context')
     return prompt_tokens, output_tokens
 
 
@@ -248,15 +306,18 @@ def _measurement_folder(evidence_dir):
     return folder
 
 
-def _measure_trials(spec, receipt, folder, report, send):
+def _measure_trials(spec, receipt, folder, report, send, *,
+        context_floor=CONTEXT_FLOOR_DEFAULT):
     for trial in range(TRIALS):
-        prompt, expected = _probe(trial)
+        prompt, expected = _probe(trial, context_floor)
         url, request = _request(spec, receipt, prompt)
         _write(folder / LOCAL_QUALIFICATION_REQUEST_FILENAME.format(trial=trial), request)
         start = time.monotonic()
         response = send(url, request)
         _write(folder / LOCAL_QUALIFICATION_RESPONSE_FILENAME.format(trial=trial), response)
-        prompt_tokens, output_tokens = _response(spec, response, expected)
+        prompt_tokens, output_tokens = _response(spec, response, expected,
+            context_floor=context_floor,
+            configured_context=_servable_context(receipt.context))
         report['trials'].append({'trial': trial, 'semantic_pass': True,
             'prompt_tokens': prompt_tokens, 'output_tokens': output_tokens,
             'request_sha256': hashlib.sha256(_bytes(request)).hexdigest(),
@@ -264,10 +325,11 @@ def _measure_trials(spec, receipt, folder, report, send):
             'elapsed_s': time.monotonic() - start, 'calls': 1})
 
 
-def _measured_receipt(receipt, report, *, supersedes, qualification_ref):
+def _measured_receipt(receipt, report, *, supersedes, qualification_ref,
+        context_floor=CONTEXT_FLOOR_DEFAULT):
     address = 'sha256:' + hashlib.sha256(_bytes(report)).hexdigest()
     context = receipt.context.to_dict()
-    context.update(safe_working_context=SAFE_CONTEXT, semantic_verified_context=SAFE_CONTEXT,
+    context.update(safe_working_context=context_floor, semantic_verified_context=context_floor,
         engine_demonstrated_context=min(row['prompt_tokens'] + row['output_tokens'] for row in report['trials']),
         safe_context_source=address)
     return make_target_capability_receipt(**{**receipt.to_dict(),
@@ -279,14 +341,17 @@ def _measured_receipt(receipt, report, *, supersedes, qualification_ref):
             declared=receipt.capabilities.declared, tool_semantics=TOOLS_PROVEN, tool_calls_observed=TRIALS),
         'limits': CapabilityLimits(max_concurrency=1), 'ttl_s': QUALIFICATION_TTL_S,
         'health_ttl_s': HEALTH_TTL_S, 'supersedes': supersedes,
-        'notes': f'Fresh {PROBE_VERSION} measurement {address}; approximate 4K text and one native tool call only. '
+        'notes': f'Fresh {PROBE_VERSION} measurement {address}; approximate {context_floor}-token text and one native tool call only. '
             'No reference, streaming, cancellation, larger-context, concurrency or fresh load qualification.'})
 
 
 def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityReceipt,
         pre_identity: Mapping, capture_post: Callable[[], Mapping], evidence_dir: Path,
-        *, transport=None, now=None):
+        *, transport=None, now=None, context_floor=CONTEXT_FLOOR_DEFAULT):
     """Produce evidence, never modify the store or active authority."""
+    context_floor = _validated_context_floor(context_floor)
+    if context_floor > _servable_context(receipt.context):
+        raise QualificationError('context floor exceeds the servable context')
     started = _clock(now)
     _binding(spec, receipt, started)
     pre_at = _identity(pre_identity, receipt, started)
@@ -300,11 +365,11 @@ def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityRec
         'previous_receipt_hash': receipt.receipt_hash, 'identity_digest': receipt.identity_digest(),
         'pre_checked_at': pre_at.isoformat(),
         'pre_identity_sha256': hashlib.sha256(_bytes(pre_identity)).hexdigest(),
-        'safe_context': SAFE_CONTEXT, 'trials': [],
+        'safe_context': context_floor, 'context_floor': context_floor, 'trials': [],
         'unmeasured': ['exact_reference_semantics', 'maximum_safe_context', 'streaming',
                       'cancellation', 'parallel_tools', 'concurrency', 'load']}
     try:
-        _measure_trials(spec, receipt, folder, report, send)
+        _measure_trials(spec, receipt, folder, report, send, context_floor=context_floor)
         post = capture_post()
         post_at = _identity(post, receipt, _clock(now))
         if post_at < pre_at:
@@ -315,7 +380,8 @@ def qualify_existing_profile(spec: LocalTargetSpec, receipt: TargetCapabilityRec
             post_checked_at=post_at.isoformat(),
             post_identity_sha256=hashlib.sha256(_bytes(post)).hexdigest())
         renewed = _measured_receipt(receipt, report, supersedes=receipt.receipt_hash,
-                                    qualification_ref=receipt.qualification_ref)
+                                    qualification_ref=receipt.qualification_ref,
+                                    context_floor=context_floor)
         if (renewed.profile_id != receipt.profile_id or renewed.identity_digest() != receipt.identity_digest()
                 or renewed.qualification_state(now=_clock(now)) != 'valid'):
             raise QualificationError('renewal changed profile identity or is invalid')
@@ -358,14 +424,18 @@ def _changed_host_observation(envelope, previous, now, *, endpoint_url=None):
 
 def measure_changed_host_profile(spec: LocalTargetSpec, previous: TargetCapabilityReceipt,
         pre_identity: Mapping, capture_post: Callable[[], Mapping], evidence_dir: Path,
-        *, transport=None, now=None):
+        *, transport=None, now=None, context_floor=CONTEXT_FLOOR_DEFAULT):
     """Measure kernel/boot drift as a NEW profile; never renew, import or activate.
 
     Observations are collected against the old receipt's unchanged artifact and
     runtime catalog. Only kernel/boot fields may differ. The working descriptor
     is UNQUALIFIED; only completed new trials plus matching post-identity can
-    issue a new 4K approximate receipt with its own measurement anchor.
+    issue a new approximate receipt at the declared context floor with its own
+    measurement anchor.
     """
+    context_floor = _validated_context_floor(context_floor)
+    if context_floor > _servable_context(previous.context):
+        raise QualificationError('context floor exceeds the servable context')
     started = _clock(now)
     _binding(spec, previous, started)
     pre_at, material = _changed_host_observation(pre_identity, previous, started)
@@ -373,7 +443,7 @@ def measure_changed_host_profile(spec: LocalTargetSpec, previous: TargetCapabili
         raise QualificationError('SSH profiles require an explicit injected transport')
     return _measure_changed_profile(spec, previous, pre_identity, capture_post, evidence_dir,
         started=started, pre_at=pre_at, material=material, mode='CHANGED_HOST_NEW_PROFILE',
-        endpoint_url=None, transport=transport, now=now)
+        endpoint_url=None, transport=transport, now=now, context_floor=context_floor)
 
 
 def _route_specs(previous_spec, current_spec):
@@ -405,13 +475,17 @@ def _route_specs(previous_spec, current_spec):
 
 def measure_changed_route_profile(previous_spec: LocalTargetSpec, current_spec: LocalTargetSpec,
         previous: TargetCapabilityReceipt, pre_identity: Mapping,
-        capture_post: Callable[[], Mapping], evidence_dir: Path, *, transport, now=None):
+        capture_post: Callable[[], Mapping], evidence_dir: Path, *, transport, now=None,
+        context_floor=CONTEXT_FLOOR_DEFAULT):
     """Explicit NEW profile for a natively bound hostname and kernel/boot delta.
 
     Never assert alias equivalence or move historical authority. The observation
     must independently bind the actual current URL to the serving container;
     catalog facts are carried only across unchanged runtime/artifact identity.
     """
+    context_floor = _validated_context_floor(context_floor)
+    if context_floor > _servable_context(previous.context):
+        raise QualificationError('context floor exceeds the servable context')
     started = _clock(now)
     _binding(previous_spec, previous, started)
     _route_specs(previous_spec, current_spec)
@@ -421,18 +495,20 @@ def measure_changed_route_profile(previous_spec: LocalTargetSpec, current_spec: 
                                                 endpoint_url=current_spec.endpoint)
     return _measure_changed_profile(current_spec, previous, pre_identity, capture_post, evidence_dir,
         started=started, pre_at=pre_at, material=material, mode='CHANGED_ROUTE_NEW_PROFILE',
-        endpoint_url=current_spec.endpoint, transport=transport, now=now)
+        endpoint_url=current_spec.endpoint, transport=transport, now=now,
+        context_floor=context_floor)
 
 
 def measure_new_profile(spec: LocalTargetSpec, descriptor: TargetCapabilityReceipt,
         pre_identity: Mapping, capture_post: Callable[[], Mapping], evidence_dir: Path,
-        *, transport, now=None):
+        *, transport, now=None, context_floor=CONTEXT_FLOOR_DEFAULT):
     """Measure a separate UNQUALIFIED descriptor without historical authority.
 
     The descriptor's exact material, including deterministic request options,
     must be independently observed before and after the existing two trials.
     This never renews, supersedes, registers or activates a previous profile.
     """
+    context_floor = _validated_context_floor(context_floor)
     started = _clock(now)
     context = descriptor.context
     if (any(type(value) is not int or value != 0 for value in (
@@ -450,9 +526,10 @@ def measure_new_profile(spec: LocalTargetSpec, descriptor: TargetCapabilityRecei
     required = {'num_ctx', 'num_predict', 'temperature', 'think'} | metadata
     if (not isinstance(options, Mapping) or not required <= options.keys()
             or options.keys() - required - {'seed', 'top_p'}
-            or type(context.configured_context) is not int or context.configured_context < SAFE_CONTEXT
+            or type(context.configured_context) is not int or context.configured_context < context_floor
             or type(context.configured_served_context) is not int
             or not 0 <= context.configured_served_context <= context.configured_context
+            or (context.configured_served_context and context.configured_served_context < context_floor)
             or any(type(options[key]) is not int for key in ('num_ctx', 'num_predict'))
             or type(options['temperature']) not in (int, float)
             or options['temperature'] != 0
@@ -519,11 +596,12 @@ def measure_new_profile(spec: LocalTargetSpec, descriptor: TargetCapabilityRecei
         'descriptor_receipt_hash':descriptor.receipt_hash,
         'identity_digest':descriptor.identity_digest(), 'pre_checked_at':pre_at.isoformat(),
         'pre_identity_sha256':hashlib.sha256(_bytes(pre_identity)).hexdigest(),
-        'safe_context':SAFE_CONTEXT, 'trials':[],
+        'safe_context':context_floor, 'context_floor':context_floor, 'trials':[],
         'unmeasured':['exact_reference_semantics', 'maximum_safe_context', 'streaming',
                       'cancellation', 'parallel_tools', 'concurrency', 'load']}
     try:
-        _measure_trials(spec, descriptor, folder, report, transport)
+        _measure_trials(spec, descriptor, folder, report, transport,
+                        context_floor=context_floor)
         post = capture_post()
         post_at = _identity(post, descriptor, _clock(now))
         if post_at < pre_at or _digest_of(binding) != _digest_of(post.get('binding')):
@@ -531,7 +609,8 @@ def measure_new_profile(spec: LocalTargetSpec, descriptor: TargetCapabilityRecei
         report.update(status='PASS', observed_at=post_at.isoformat(),
             post_checked_at=post_at.isoformat(),
             post_identity_sha256=hashlib.sha256(_bytes(post)).hexdigest())
-        candidate = _measured_receipt(descriptor, report, supersedes='', qualification_ref='')
+        candidate = _measured_receipt(descriptor, report, supersedes='', qualification_ref='',
+                                      context_floor=context_floor)
         if (candidate.identity_digest() != descriptor.identity_digest()
                 or candidate.qualification_state(now=_clock(now)) != 'valid'):
             raise QualificationError('new profile measurement is invalid')
@@ -544,7 +623,11 @@ def measure_new_profile(spec: LocalTargetSpec, descriptor: TargetCapabilityRecei
 
 
 def _measure_changed_profile(spec, previous, pre_identity, capture_post, evidence_dir, *,
-        started, pre_at, material, mode, endpoint_url, transport, now):
+        started, pre_at, material, mode, endpoint_url, transport, now,
+        context_floor=CONTEXT_FLOOR_DEFAULT):
+    context_floor = _validated_context_floor(context_floor)
+    if context_floor > _servable_context(previous.context):
+        raise QualificationError('context floor exceeds the servable context')
     context = previous.context.to_dict()
     context.update(safe_working_context=0, semantic_verified_context=0,
                    engine_demonstrated_context=0, safe_context_source='')
@@ -561,12 +644,13 @@ def _measure_changed_profile(spec, previous, pre_identity, capture_post, evidenc
         'previous_profile_id': previous.profile_id, 'previous_receipt_hash': previous.receipt_hash,
         'identity_digest': descriptor.identity_digest(), 'pre_checked_at': pre_at.isoformat(),
         'pre_identity_sha256': hashlib.sha256(_bytes(pre_identity)).hexdigest(),
-        'safe_context': SAFE_CONTEXT, 'trials': [],
+        'safe_context': context_floor, 'context_floor': context_floor, 'trials': [],
         'unmeasured': ['exact_reference_semantics', 'maximum_safe_context', 'streaming',
                       'cancellation', 'parallel_tools', 'concurrency', 'load']}
     try:
         _measure_trials(spec, descriptor, folder, report,
-                        _http_transport if transport is None else transport)
+                        _http_transport if transport is None else transport,
+                        context_floor=context_floor)
         post = capture_post()
         post_at, post_material = _changed_host_observation(post, previous, _clock(now),
                                                          endpoint_url=endpoint_url)
@@ -576,7 +660,8 @@ def _measure_changed_profile(spec, previous, pre_identity, capture_post, evidenc
         report.update(status='PASS', observed_at=post_at.isoformat(),
             post_checked_at=post_at.isoformat(),
             post_identity_sha256=hashlib.sha256(_bytes(post)).hexdigest())
-        candidate = _measured_receipt(descriptor, report, supersedes='', qualification_ref='')
+        candidate = _measured_receipt(descriptor, report, supersedes='', qualification_ref='',
+                                      context_floor=context_floor)
         if (candidate.profile_id == previous.profile_id or candidate.identity_digest() != _digest_of(material)
                 or candidate.qualification_state(now=_clock(now)) != 'valid'):
             raise QualificationError('new profile measurement is invalid')
