@@ -575,6 +575,10 @@ def _open_dir_nofollow(path) -> int:
 
     ``O_NOFOLLOW`` alone only protects the last component; walking down from a trusted ancestor
     descriptor means an ancestor swapped for a symlink after the path was resolved is refused.
+
+    Trust boundary: the ancestors of the configured root belong to the operator. A pathname API cannot
+    exclude a rename of an ancestor by someone who can write to it; the caller re-resolves the path
+    and compares device and inode after this open to narrow, not remove, that window.
     """
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     parts = Path(os.path.abspath(os.fspath(path))).parts
