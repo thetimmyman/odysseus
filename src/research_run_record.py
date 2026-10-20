@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,40 @@ MAX_QUOTES_PER_FINDING = 5
 MAX_QUOTE_CHARS = 400
 
 logger = logging.getLogger(__name__)
+
+# One claim-id invariant for the whole feature: the registry mints "C<n>" with
+# 1 <= n <= MAX_CLAIM_ID, and everything that reads a claim id (prompts, saved
+# floors, carried registries) accepts exactly that shape and range.
+MAX_CLAIM_ID = 999_999
+_CLAIM_ID_RE = re.compile(r"C([1-9][0-9]{0,5})")
+_SOURCE_ID_RE = re.compile(r"S([1-9][0-9]{0,8})")
+
+
+def claim_id_number(value) -> Optional[int]:
+    """The number in a well-formed claim id, else None."""
+    if not isinstance(value, str):
+        return None
+    match = _CLAIM_ID_RE.fullmatch(value)
+    return int(match.group(1)) if match else None
+
+
+def is_claim_id(value) -> bool:
+    return claim_id_number(value) is not None
+
+
+def clamp_claim_floor(value) -> int:
+    """A saved claim-id floor as an int in 0..MAX_CLAIM_ID (0 if not a number)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, min(value, MAX_CLAIM_ID))
+
+
+def _source_id_number(value) -> Optional[int]:
+    if not isinstance(value, str):
+        return None
+    match = _SOURCE_ID_RE.fullmatch(value)
+    return int(match.group(1)) if match else None
+
 
 RECORD_SCHEMA = "odysseus.research_run_record/v1"
 ROUTING_TASK_TYPE = "deep_research"
@@ -160,13 +195,22 @@ class ResearchRunRecorder:
         self._texts: Dict[str, str] = {}
         self.findings: List[Dict] = []
         self._claim_ids = 0
+        self._source_seq = 0
+        # claim_id -> source_id for every claim this record vouches for
+        # (carried from a parent record or minted here).
+        self._claim_sources: Dict[str, str] = {}
+        self._carried_sources: List[Dict] = []
+        self._carried_claims: List[Dict] = []
+        self._carried_grounding: Optional[Dict] = None
+        self.parent_run_id: Optional[str] = None
         self.llm_calls: List[Dict] = []
         self._call_endpoints: List[str] = []
         self.routing_run_id: Optional[str] = None
 
     def add_source(self, url: str, title: str, text: str) -> str:
         """Record the exact text given to the extractor; returns its source_id."""
-        source_id = f"S{len(self.sources) + 1}"
+        self._source_seq += 1
+        source_id = f"S{self._source_seq}"
         self.sources.append({
             "source_id": source_id,
             "url": url,
@@ -180,7 +224,102 @@ class ResearchRunRecorder:
 
     def reserve_claim_ids(self, highest: int) -> None:
         """Mint later claim ids only above ``highest`` (ids cited by an earlier run)."""
-        self._claim_ids = max(self._claim_ids, int(highest))
+        self._claim_ids = max(self._claim_ids, clamp_claim_floor(highest))
+
+    def carry_forward(self, record) -> None:
+        """Start from an earlier run's saved record so its labels stay resolvable.
+
+        The parent's sources and claims are copied into this record unchanged
+        (their ``blob`` files already exist), new source and claim ids continue
+        after them, and the parent's quote grounding is added to this run's
+        totals. A malformed parent is ignored piece by piece, never trusted."""
+        if not isinstance(record, dict):
+            return
+        parent_id = record.get("run_id") if isinstance(record.get("run_id"), str) else None
+        seen_sources, seen_claims = set(), set()
+        for src in record.get("sources") or []:
+            number = _source_id_number(src.get("source_id")) if isinstance(src, dict) else None
+            if number is None or src["source_id"] in seen_sources:
+                continue
+            seen_sources.add(src["source_id"])
+            kept = dict(src)
+            kept.setdefault("run_id", parent_id)
+            self._carried_sources.append(kept)
+            self._source_seq = max(self._source_seq, number)
+        for claim in record.get("claims") or []:
+            number = claim_id_number(claim.get("claim_id")) if isinstance(claim, dict) else None
+            if number is None or claim["claim_id"] in seen_claims:
+                continue
+            seen_claims.add(claim["claim_id"])
+            citations = [c for c in claim.get("citations") or []
+                         if isinstance(c, dict) and c.get("source_id") in seen_sources]
+            first = citations[0]["source_id"] if citations else None
+            kept = dict(claim)
+            kept["citations"] = citations
+            kept.setdefault("run_id", parent_id)
+            kept.setdefault("source_id", first)
+            self._carried_claims.append(kept)
+            if isinstance(kept.get("source_id"), str):
+                self._claim_sources[claim["claim_id"]] = kept["source_id"]
+            self._claim_ids = max(self._claim_ids, number)
+        self.reserve_claim_ids(record.get("claim_id_floor"))
+        self.parent_run_id = parent_id
+        self._carried_grounding = self._grounding_of(record)
+
+    @staticmethod
+    def _grounding_of(record: Dict) -> Dict:
+        stats = (record.get("totals") or {}).get("quote_grounding")
+        if (isinstance(stats, dict)
+                and all(isinstance(stats.get(k), int) and not isinstance(stats.get(k), bool)
+                        and stats[k] >= 0 for k in ("quotes", "grounded"))
+                and stats["grounded"] <= stats["quotes"]):
+            return {"quotes": stats["quotes"], "grounded": stats["grounded"]}
+        # Older record without a stored measurement: measure it from its blobs.
+        try:
+            view = grounding_view(record)
+            measured = quote_grounding_stats(view, view["sources"])
+            return {"quotes": measured["quotes"], "grounded": measured["grounded"]}
+        except Exception as e:  # never fail the run over a parent we cannot read
+            logger.warning("Could not measure parent record grounding: %s", e)
+            return {"quotes": 0, "grounded": 0}
+
+    def owns_claim(self, claim_id, source_id) -> bool:
+        """True when this record's registry issued ``claim_id`` for ``source_id``."""
+        return (isinstance(claim_id, str) and isinstance(source_id, str)
+                and self._claim_sources.get(claim_id) == source_id)
+
+    def _mint_claim_id(self, source_id: str) -> Optional[str]:
+        if self._claim_ids >= MAX_CLAIM_ID:
+            logger.warning("Research run %s: claim id range exhausted", self.run_id)
+            return None
+        self._claim_ids += 1
+        claim_id = f"C{self._claim_ids}"
+        self._claim_sources[claim_id] = source_id
+        return claim_id
+
+    def registry(self, limit: Optional[int] = None) -> List[Dict]:
+        """Claims this record vouches for, oldest first: carried, then this run's.
+
+        Each entry is {claim_id, source_id, url, title, text}. Page-controlled
+        fields (url, title, text) are returned raw; the caller keeps them in an
+        untrusted block."""
+        sources = {s["source_id"]: s for s in self._carried_sources}
+        sources.update({s["source_id"]: s for s in self.sources})
+        entries = []
+        for claim in self._carried_claims:
+            entries.append((claim["claim_id"], claim.get("source_id"),
+                            claim.get("text") if isinstance(claim.get("text"), str) else ""))
+        for f in self.findings:
+            if isinstance(f, dict) and self.owns_claim(f.get("claim_id"), f.get("source_id")):
+                entries.append((f["claim_id"], f["source_id"],
+                                f["summary"] if isinstance(f.get("summary"), str) else ""))
+        out = []
+        for claim_id, source_id, text in entries:
+            src = sources.get(source_id) or {}
+            out.append({"claim_id": claim_id, "source_id": source_id,
+                        "url": str(src.get("url") or ""), "title": str(src.get("title") or ""),
+                        "text": text})
+        return out[-limit:] if limit else out
 
     def add_finding(self, finding: Dict) -> None:
         """Append a finding and stamp its claim id when its source is known.
@@ -188,11 +327,14 @@ class ResearchRunRecorder:
         Ids are assigned here, in the same order ``build`` used to, so the
         prompts can cite ``[C3]`` before the record is built."""
         known = {src["source_id"] for src in self.sources}
+        claim_id = None
         if isinstance(finding, dict) and finding.get("source_id") in known:
-            self._claim_ids += 1
-            finding["claim_id"] = f"C{self._claim_ids}"
-        elif isinstance(finding, dict):
-            finding.pop("claim_id", None)  # never keep an id the registry did not mint
+            claim_id = self._mint_claim_id(finding["source_id"])
+        if isinstance(finding, dict):
+            if claim_id:
+                finding["claim_id"] = claim_id
+            else:
+                finding.pop("claim_id", None)  # never keep an id the registry did not mint
         self.findings.append(finding)
 
     def add_llm_call(self, *, purpose: str, model: str, started_at: str, latency_ms: int,
@@ -249,11 +391,13 @@ class ResearchRunRecorder:
             if sid not in known:
                 continue
             claim_id = f.get("claim_id")
-            if not claim_id:
+            if not self.owns_claim(claim_id, sid):
                 # Finding added without add_finding (or before its source was
                 # known): assign the next id, preserving add_finding's order.
-                self._claim_ids += 1
-                claim_id = f"C{self._claim_ids}"
+                claim_id = self._mint_claim_id(sid)
+                if claim_id is None:
+                    f.pop("claim_id", None)
+                    continue
                 f["claim_id"] = claim_id
             raw_quotes = f.get("quotes")
             if isinstance(raw_quotes, (list, str)):
@@ -266,6 +410,7 @@ class ResearchRunRecorder:
                 quotes = evidence_quotes(f.get("evidence"))
             claims.append({
                 "claim_id": claim_id,
+                "source_id": sid,
                 "text": f.get("summary", "") if isinstance(f.get("summary"), str) else "",
                 "citations": [{"source_id": sid, "quote": q} for q in quotes],
             })
@@ -285,6 +430,16 @@ class ResearchRunRecorder:
         persisted = {src["source_id"]: self._texts[src["source_id"]]
                      for src in sources if src.get("blob")}
         totals["quote_grounding"] = quote_grounding_stats({"claims": claims}, persisted)
+        if self._carried_grounding is not None:
+            # The parent's quotes were measured when it was saved; this record
+            # carries its claims, so its totals cover them too.
+            own = totals["quote_grounding"]
+            quotes = own["quotes"] + self._carried_grounding["quotes"]
+            grounded = own["grounded"] + self._carried_grounding["grounded"]
+            totals["quote_grounding"] = {
+                "quotes": quotes, "grounded": grounded, "not_found": quotes - grounded,
+                "rate": round(grounded / quotes, 4) if quotes else 0.0,
+            }
         logger.info(
             "Research run %s quote grounding: %d/%d quotes verbatim (rate %.4f)",
             self.run_id, totals["quote_grounding"]["grounded"],
@@ -293,8 +448,9 @@ class ResearchRunRecorder:
         return {
             "schema": RECORD_SCHEMA,
             "run_id": self.run_id,
-            "sources": sources,
-            "claims": claims,
+            "parent_run_id": self.parent_run_id,
+            "sources": [dict(s) for s in self._carried_sources] + sources,
+            "claims": [dict(c) for c in self._carried_claims] + claims,
             "llm_calls": calls,
             "totals": totals,
             # Highest claim id minted; a continuation starts its ids after it.

@@ -242,6 +242,7 @@ class ResearchHandler:
         extraction_timeout: int = None,
         extraction_concurrency: int = None,
         owner: str = "",
+        prior_run_record: dict = None,
         depth: str = None,
         max_urls_per_round: int = None,
     ) -> dict:
@@ -253,8 +254,16 @@ class ResearchHandler:
         if _research_json_path(session_id) is None:
             raise ValueError("Invalid research session_id")
 
-        if not prior_claim_floor:
-            prior_claim_floor = self._continuation_claim_floor(session_id, prior_report)
+        from src.research_run_record import run_record_enabled
+        if run_record_enabled():
+            # Only a run that records carries an earlier record forward; with
+            # the setting off nothing about the run or its saved file changes.
+            if prior_run_record is None:
+                prior_run_record = self._continuation_run_record(session_id, prior_report)
+            if not prior_claim_floor:
+                prior_claim_floor = self._continuation_claim_floor(session_id, prior_report)
+        else:
+            prior_run_record, prior_claim_floor = None, 0
 
         # Resolve the hard wall-clock timeout from settings when the caller
         # didn't pin one. Local / edge models routinely need more than the
@@ -296,6 +305,7 @@ class ResearchHandler:
             # SECURITY: track ownership so all reads / saves can filter by user.
             "owner": owner or "",
             "claim_id_floor": prior_claim_floor,
+            "parent_run_record": prior_run_record,
         }
         self._active_tasks[session_id] = entry
 
@@ -333,6 +343,7 @@ class ResearchHandler:
                         prior_findings=prior_findings,
                         prior_urls=prior_urls,
                         prior_claim_floor=prior_claim_floor,
+                        prior_run_record=prior_run_record,
                         max_rounds=max_rounds,
                         search_provider=search_provider,
                         category=category,
@@ -560,6 +571,8 @@ class ResearchHandler:
                     if with_evidence and f.get("source_id"):
                         item["source_id"] = f["source_id"]
                         item["evidence"] = evidence
+                        if f.get("claim_id"):
+                            item["claim_id"] = f["claim_id"]
                     items.append(item)
             return items
         except Exception as e:
@@ -630,6 +643,10 @@ class ResearchHandler:
                 # Keep the floor readable while the run is in flight, so an
                 # overlapping continuation still starts after it.
                 marker["claim_id_floor"] = entry["claim_id_floor"]
+            if entry.get("parent_run_record"):
+                # ...and the record this run continues, so an overlapping
+                # continuation carries the same registry instead of none.
+                marker["run_record"] = entry["parent_run_record"]
             path.write_text(json.dumps(marker), encoding="utf-8")
         except Exception as e:
             logger.warning(f"Could not write running marker for {session_id}: {e}")
@@ -734,26 +751,38 @@ class ResearchHandler:
         A continuation with a report always counts. One started while the
         session's run is still in flight carries no report (the marker's is
         empty), but it still has to start after the ids that run minted."""
-        if prior_report:
-            return self._saved_claim_id_floor(session_id)
-        saved = self._get_session_json(session_id) or {}
-        if saved.get("status") == "running":
+        if prior_report or self._session_run_in_flight(session_id):
             return self._saved_claim_id_floor(session_id)
         return 0
+
+    def _session_run_in_flight(self, session_id: str) -> bool:
+        saved = self._get_session_json(session_id) or {}
+        return saved.get("status") == "running"
+
+    def _continuation_run_record(self, session_id: str, prior_report: str) -> Optional[dict]:
+        """The saved record a continuation of this session carries forward.
+
+        Same rule as the floor: a continuation with a report, or one that
+        starts while the session's run is in flight (the running marker keeps
+        the record that run continues). None for a fresh run."""
+        if not (prior_report or self._session_run_in_flight(session_id)):
+            return None
+        record = (self._get_session_json(session_id) or {}).get("run_record")
+        return record if isinstance(record, dict) else None
 
     def _saved_claim_id_floor(self, session_id: str) -> int:
         """Highest claim id the saved run for this session minted (0 if none).
 
         Read from our own saved run record, never from report text, so a page
-        cannot influence it."""
+        cannot influence it. The running marker's own floor counts too: it can
+        be higher than the record it carries."""
+        from src.research_run_record import clamp_claim_floor
         saved = self._get_session_json(session_id) or {}
         record = saved.get("run_record")
-        floor = record.get("claim_id_floor") if isinstance(record, dict) else None
-        if floor is None:
-            floor = saved.get("claim_id_floor")  # running marker / record-off save
-        if isinstance(floor, bool) or not isinstance(floor, int):
-            return 0
-        return max(0, min(floor, 100000))
+        floors = [saved.get("claim_id_floor")]  # running marker / record-off save
+        if isinstance(record, dict):
+            floors.append(record.get("claim_id_floor"))
+        return max(clamp_claim_floor(f) for f in floors)
 
     def _get_session_json(self, session_id: str) -> Optional[dict]:
         """Load the saved research JSON for a session, if it exists."""
@@ -867,6 +896,7 @@ class ResearchHandler:
         prior_findings: list = None,
         prior_urls: set = None,
         prior_claim_floor: int = 0,
+        prior_run_record: dict = None,
         max_rounds: Optional[int] = None,
         search_provider: str = None,
         category: str = None,
@@ -986,6 +1016,7 @@ class ResearchHandler:
                 prior_findings=prior_findings,
                 prior_urls=prior_urls,
                 prior_claim_floor=prior_claim_floor,
+                prior_run_record=prior_run_record,
             )
             elapsed = time.time() - start_time
 

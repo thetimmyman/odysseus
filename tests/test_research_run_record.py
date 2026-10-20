@@ -141,7 +141,7 @@ async def test_flag_on_records_text_evidence_and_model_runs(fake_web, data_dirs,
     assert src["content_sha256"] == _sha(PAGE)
     assert src["retrieved_at"].endswith("+00:00")
     assert (data_dirs / src["blob"]).read_text(encoding="utf-8") == PAGE
-    assert record["claims"] == [{"claim_id": "C1", "text": "Retrieval precedes extraction.",
+    assert record["claims"] == [{"claim_id": "C1", "source_id": "S1", "text": "Retrieval precedes extraction.",
                                  "citations": [{"source_id": "S1", "quote": EVIDENCE}]}]
     [call] = record["llm_calls"]
     assert call["purpose"] == "extract" and call["source_id"] == "S1"
