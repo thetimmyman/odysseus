@@ -1028,3 +1028,58 @@ def test_invalid_bytes_do_not_join_their_neighbours_into_a_query_term(tmp_path):
 @pytest.mark.parametrize("bad", [5, ["a"], {"a": 1}, 1.5])
 def test_a_non_path_root_is_unavailable_not_an_exception(bad):
     assert me.find_measured_sources("needle", root=bad, enabled=True).status == me.UNAVAILABLE
+
+
+def test_an_oversized_candidate_makes_the_lookup_incomplete_not_empty(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "needle.md").write_text("x" * 200)
+    monkeypatch.setattr(me, "_MAX_CANDIDATE_BYTES", 100)
+    assert me.find_measured_sources("needle", root=root, enabled=True).status == me.UNAVAILABLE
+
+
+def test_partial_results_are_flagged_incomplete_when_part_of_the_tree_failed(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence" / "sub").mkdir(parents=True)
+    (root / "evidence" / "a.md").write_text("needle")
+    (root / "evidence" / "sub" / "b.md").write_text("needle")
+    real_open = os.open
+
+    def failing(path, flags, *args, **kwargs):
+        if path == "sub" and kwargs.get("dir_fd") is not None:
+            raise PermissionError(13, "denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", failing)
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    assert result.status == me.OK and result.incomplete and "could not be examined" in result.reason
+
+
+def test_replacement_expanded_text_is_marked_truncated(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "bad.txt").write_bytes(b"needle " + b"\xff" * (me.MAX_TEXT_BYTES - 7))
+    source = me.find_measured_sources("needle", root=root, enabled=True).sources[0]
+    assert source.size_bytes == me.MAX_TEXT_BYTES and source.truncated
+
+
+@pytest.mark.parametrize("value", [5, ["a"], 0, True])
+def test_the_root_helper_ignores_non_path_values(monkeypatch, value):
+    import src.settings as settings
+    monkeypatch.setattr(settings, "get_setting", lambda key, default=None: value)
+    assert me.measured_evidence_root() is None
+
+
+def test_decimal_boundaries_are_judged_as_written():
+    measurement = me.Measurement(subject="s", metric="m", value=0.02, unit="u", path="p")
+    assertion = me.Assertion("C1", "s", "m", 0.001, "u", "doc")
+    report = me.find_conflicts([assertion], [measurement], rel_tolerance=0.95)
+    assert len(report.agreements) == 1 and report.conflicts == ()
+
+
+def test_a_large_json_document_is_not_decoded(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "big.json").write_text('{"needle": [' + "{}," * 400000 + '{}]}')
+    source = me.find_measured_sources("needle", root=root, enabled=True).sources[0]
+    assert source.measurements is None and source.measurements_capped

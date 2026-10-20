@@ -51,6 +51,7 @@ TRUST_CLASS = "authoritative"
 SOURCE_KIND = "measured"
 MAX_TEXT_BYTES = 65536
 _MAX_FILES_SCANNED = 5000
+_MAX_JSON_PARSE_BYTES = 1 << 20  # decoding a document materialises it whole; keep that bounded
 _MAX_QUERY_CHARS = 2000
 _MAX_QUERY_TOKENS = 32
 _MAX_MEASUREMENTS_PER_FILE = 1000  # structured entries kept per source
@@ -107,6 +108,7 @@ class LookupResult:
     status: str
     sources: tuple[MeasuredSource, ...]
     reason: str
+    incomplete: bool = False  # True: sources were found but part of the tree was not examined
 
 
 @dataclass(frozen=True)
@@ -235,7 +237,11 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             reason=f"measured-evidence root could not be opened: {root_path}: {err.strerror or err.errno}",
         )
     opened = os.fstat(root_fd)
-    if (opened.st_dev, opened.st_ino) != (validated.st_dev, validated.st_ino):
+    try:
+        resolved_again = Path(root).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        resolved_again = None
+    if resolved_again != root_path or (opened.st_dev, opened.st_ino) != (validated.st_dev, validated.st_ino):
         # The path was renamed or replaced between validation and the open: not the directory checked.
         os.close(root_fd)
         return LookupResult(
@@ -272,7 +278,9 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             # Cut by bytes; an invalid sequence becomes U+FFFD, never silently joining its neighbours.
             text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="replace")
             encoded = text.encode("utf-8")
+            trimmed = False
             if len(encoded) > MAX_TEXT_BYTES:
+                trimmed = True
                 # Replacement characters are longer than the bytes they stand for; trim the tail only.
                 text = encoded[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
             path_str = rel.as_posix()
@@ -280,8 +288,12 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             if score <= 0:
                 continue
             matched += 1
-            parsed, parsed_capped = (_parse_measurements_capped(data, path_str)
-                                     if rel.suffix.casefold() == ".json" else (None, False))
+            if rel.suffix.casefold() != ".json":
+                parsed, parsed_capped = None, False
+            elif len(data) > _MAX_JSON_PARSE_BYTES:
+                parsed, parsed_capped = None, True  # too large to decode safely: not parsed, and said so
+            else:
+                parsed, parsed_capped = _parse_measurements_capped(data, path_str)
             best.append(MeasuredSource(
                 path=path_str,
                 url="measured:" + path_str,
@@ -291,7 +303,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
                 content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 file_sha256=hashlib.sha256(data).hexdigest(),
                 text=text,
-                truncated=len(data) > MAX_TEXT_BYTES,
+                truncated=len(data) > MAX_TEXT_BYTES or trimmed,
                 size_bytes=len(data),
                 score=score,
                 measurements=parsed,
@@ -319,9 +331,13 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
                 status=NONE, sources=(),
                 reason="no measured sources matched the query" + note,
             )
+        incomplete = bool(capped or walk.get("walk_error"))
+        if walk.get("walk_error"):
+            note += f"; incomplete: {walk['walk_error']} could not be examined"
         return LookupResult(
             status=OK, sources=tuple(best),
             reason=f"{len(best)} of {matched} measured sources matched" + note,
+            incomplete=incomplete,
         )
     finally:
         os.close(root_fd)
@@ -443,6 +459,13 @@ def _parse_measurements_capped(raw, path) -> tuple:
     return tuple(measurements), False
 
 
+def _exact(value) -> Fraction:
+    """Exact value of a number as written: a float means its shortest decimal, not its binary form."""
+    if isinstance(value, float):
+        return Fraction(Decimal(repr(value)))
+    return Fraction(value)
+
+
 def _finite_number(value):
     """``value`` if it is a finite number, else None (booleans, non-numbers, overflowing integers).
 
@@ -504,7 +527,7 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
             else:
                 # Exact arithmetic: an integer and a float that differ by one count must not be
                 # rounded into agreement, whichever way each side was written in the JSON.
-                ratio = abs(Fraction(claimed) - Fraction(measured)) / abs(Fraction(measured))
+                ratio = abs(_exact(claimed) - _exact(measured)) / abs(_exact(measured))
                 try:
                     relative = float(ratio)
                 except OverflowError:
@@ -512,7 +535,7 @@ def find_conflicts(assertions, measurements, *, rel_tolerance=0.2) -> ConflictRe
                 if relative is not None and not math.isfinite(relative):
                     relative = None  # a ratio outside the float range is reported as incomputable
             # Classify on the exact ratio so rounding to float cannot turn a conflict into an agreement.
-            within = (relative == 0.0) if measured == 0 else (ratio <= Fraction(tolerance))
+            within = (relative == 0.0) if measured == 0 else (ratio <= _exact(tolerance))
             if relative is not None and within:
                 agreements.append(_comparison(
                     assertion, measurement, relative,
@@ -532,7 +555,8 @@ def measured_evidence_enabled() -> bool:
 def measured_evidence_root():
     from src.settings import get_setting
     value = get_setting("research_measured_evidence_root", None)
-    return str(value) if value else None
+    # Only a string or path is a root; any other persisted JSON type is not a path (5 is not "5").
+    return os.fspath(value) if isinstance(value, (str, os.PathLike)) and os.fspath(value) else None
 
 
 _SKIP_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO})
@@ -588,8 +612,10 @@ def _read_regular_file(root_fd, rel, used=None, remaining=None):
         fd = os.open(parts[-1], file_flags, dir_fd=current)
         fds.append(fd)
         before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_CANDIDATE_BYTES:
+        if not stat.S_ISREG(before.st_mode):
             return None
+        if before.st_size > _MAX_CANDIDATE_BYTES:
+            raise _Unreadable(f"{Path(rel).as_posix()}: larger than the {_MAX_CANDIDATE_BYTES} byte limit")
         if remaining is not None and before.st_size > remaining:
             raise _OverBudget()
         with os.fdopen(os.dup(fd), "rb") as handle:

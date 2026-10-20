@@ -92,3 +92,9 @@ def test_camel_case_secret_keys_blanked():
 def test_non_object_settings_return_empty_mapping():
     assert scrub_settings(["not", "settings"]) == {}
     assert scrub_settings("not settings") == {}
+
+
+def test_measured_evidence_root_path_is_not_exposed_to_public_callers():
+    scrubbed = scrub_settings({"research_measured_evidence_root": "/home/someone/private/mount", "tts_voice": "x"})
+    assert scrubbed["research_measured_evidence_root"] == ""
+    assert scrubbed["tts_voice"] == "x"

@@ -25,6 +25,8 @@ _SENSITIVE_KEY_EXACT = (
     # trigger outbound webhook sends; do not expose it to non-admin settings
     # callers even though it is not secret-shaped.
     "reminder_webhook_integration_id",
+    # A host filesystem path (usernames, mounts, directory layout): not for pre-login callers.
+    "research_measured_evidence_root",
 )
 
 
