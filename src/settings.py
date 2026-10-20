@@ -10,7 +10,9 @@ import time
 import logging
 from typing import Any
 
-from src.constants import SETTINGS_FILE, FEATURES_FILE
+from src.constants import (
+    SETTINGS_FILE, FEATURES_FILE, MEASURED_EVIDENCE_SETTING, MEASURED_EVIDENCE_ROOT_SETTING,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,15 @@ DEFAULT_SETTINGS = {
     "research_planning_timeout_seconds": 90,
     "research_query_timeout_seconds": 90,
     "research_extraction_concurrency": 3,
+    # Save a checkable run record with each deep-research result: per-source
+    # retrieved text (content-addressed blobs), sha256, extractor evidence
+    # per finding, and a RoutingModelRun row per LLM call. Off by default.
+    "research_run_record": False,
+    # Let deep research cite our own benchmark/receipt files as measured sources
+    # (src/measured_evidence.py). Off by default; the root is the directory that
+    # holds evidence/ and benchmark/<name>/results/.
+    MEASURED_EVIDENCE_SETTING: False,
+    MEASURED_EVIDENCE_ROOT_SETTING: "",
     # Hard wall-clock cap on a single deep-research run. The previous 600s
     # (10 min) default cut off slow local / edge LLMs mid-synthesis; 1800s
     # (30 min) is comfortable for most local setups while still bounding
