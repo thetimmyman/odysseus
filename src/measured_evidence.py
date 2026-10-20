@@ -67,12 +67,16 @@ _CANDIDATE_SUFFIXES = frozenset({".json", ".jsonl", ".md", ".txt", ".csv"})
 _MAX_CANDIDATE_BYTES = 8 * 1024 * 1024
 
 
+def _word_char(ch: str) -> bool:
+    return ch.isalnum() or unicodedata.category(ch).startswith("M")
+
+
 def _split_words(text: str) -> list[str]:
     """Words of ``text``: runs of letters and digits, with combining marks kept on their base letter."""
     words: list[str] = []
     current: list[str] = []
     for ch in text:
-        if ch.isalnum() or unicodedata.category(ch).startswith("M"):
+        if _word_char(ch):
             current.append(ch)
         elif current:
             words.append("".join(current))
@@ -291,7 +295,7 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             if rel.suffix.casefold() != ".json":
                 parsed, parsed_capped = None, False
             elif len(data) > _MAX_JSON_PARSE_BYTES:
-                parsed, parsed_capped = None, True  # too large to decode safely: not parsed, and said so
+                parsed, parsed_capped = (), True  # too large to decode safely: an empty answer, flagged capped
             else:
                 parsed, parsed_capped = _parse_measurements_capped(data, path_str)
             best.append(MeasuredSource(
@@ -630,7 +634,8 @@ def _read_regular_file(root_fd, rel, used=None, remaining=None):
         after = os.fstat(fd)
         if (len(data) != before.st_size or after.st_size != before.st_size
                 or after.st_mtime_ns != before.st_mtime_ns or after.st_ctime_ns != before.st_ctime_ns):
-            return None
+            # No stable read was possible: the evidence exists but was not examined.
+            raise _Unreadable(f"{Path(rel).as_posix()}: changed while it was being read")
         return data
     except OSError as err:
         if err.errno in _SKIP_ERRNOS:
@@ -698,7 +703,11 @@ def _query_tokens(query) -> list[str]:
     seen: set[str] = set()
     # Bound the work a query can cause: only the head of an oversized query is read, and only the
     # first few distinct tokens are scored against every candidate.
-    for part in _split_words(_fold(query[:_MAX_QUERY_CHARS])):
+    parts = _split_words(_fold(query[:_MAX_QUERY_CHARS]))
+    if len(query) > _MAX_QUERY_CHARS and parts and _word_char(query[_MAX_QUERY_CHARS - 1]) \
+            and _word_char(query[_MAX_QUERY_CHARS]):
+        parts.pop()  # the cap fell inside a word: that prefix is not a word of the query
+    for part in parts:
         # Three characters for ASCII words; scripts written without spaces (CJK and others) have
         # shorter meaningful tokens.
         if (len(part) >= 3 or (len(part) >= 2 and not part.isascii()) or _is_single_ideograph(part)) \

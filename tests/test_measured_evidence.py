@@ -371,7 +371,8 @@ def test_a_file_that_changes_while_it_is_read_is_rejected(tmp_path, monkeypatch)
         return info
 
     monkeypatch.setattr(os, "fstat", changing)
-    assert _read(root, Path("evidence/f.txt")) is None
+    with pytest.raises(me._Unreadable):
+        _read(root, Path("evidence/f.txt"))
 
 
 def test_invalid_utf8_cannot_expand_past_the_byte_cap(tmp_path):
@@ -956,7 +957,8 @@ def test_an_in_place_rewrite_that_restores_mtime_is_rejected(tmp_path):
     try:
         import unittest.mock as mock
         with mock.patch.object(os, "fstat", fstat):
-            assert me._read_regular_file(fd, Path("evidence/a.md")) is None
+            with pytest.raises(me._Unreadable):
+                me._read_regular_file(fd, Path("evidence/a.md"))
     finally:
         os.close(fd)
 
@@ -1082,4 +1084,36 @@ def test_a_large_json_document_is_not_decoded(tmp_path):
     (root / "evidence").mkdir(parents=True)
     (root / "evidence" / "big.json").write_text('{"needle": [' + "{}," * 400000 + '{}]}')
     source = me.find_measured_sources("needle", root=root, enabled=True).sources[0]
-    assert source.measurements is None and source.measurements_capped
+    assert source.measurements == () and source.measurements_capped
+
+
+def test_a_candidate_that_changes_while_read_is_incomplete_not_empty(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    target = root / "evidence" / "needle.md"
+    target.write_bytes(b"x" * 50)
+    real_fstat = os.fstat
+    calls = []
+
+    def fstat(handle):
+        result = real_fstat(handle)
+        calls.append(1)
+        if len(calls) == 2:  # the first call is the root identity check; the second is the file's
+            os.chmod(target, 0o600)
+        return result
+
+    monkeypatch.setattr(os, "fstat", fstat)
+    assert me.find_measured_sources("needle", root=root, enabled=True).status == me.UNAVAILABLE
+
+
+def test_a_capped_json_file_does_not_fall_back_to_its_text_prefix(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    head = '{"needle": 1, "measurements": [{"subject": "a", "metric": "m", "unit": "u", "value": 1}]'
+    (root / "evidence" / "big.json").write_text(head + " " * (me._MAX_JSON_PARSE_BYTES + 10) + "garbage")
+    source = me.find_measured_sources("needle", root=root, enabled=True).sources[0]
+    assert me.extract_measurements(source) == [] and source.measurements_capped
+
+
+def test_a_query_cut_inside_a_word_drops_the_partial_word():
+    assert me._query_tokens("a " * 998 + "needleSuffix") == []
