@@ -348,3 +348,55 @@ def test_route_owner_preserves_closed_failure_and_never_accepts_a_candidate(tmp_
         assert '/release' not in [p for p,_ in broker.calls]
     if failure in ('old_lease_target','changed_role'):
         assert processes.calls.count('request') == 0
+
+
+# --- failure diagnostics (OD-47) -------------------------------------------------------------------
+
+def test_a_qualification_refusal_records_the_predicate_that_refused(tmp_path):
+    """The message is the difference between one run and one run per hypothesis."""
+    from src.local_measurement_owner import _safe_failure_detail
+    from src.local_target_qualification import QualificationError
+
+    assert _safe_failure_detail(QualificationError('unsupported new-profile endpoint')) == (
+        'unsupported new-profile endpoint')
+
+
+def test_a_private_failure_never_records_its_message(tmp_path):
+    """Provider, collector and broker errors can carry endpoint or container material."""
+    from src.local_measurement_owner import _safe_failure_detail
+
+    for exc in (OSError('http://private-host:11434/api/chat refused'),
+                ValueError('container 552c2333 leaked'),
+                RuntimeError('secret-ish detail')):
+        assert _safe_failure_detail(exc) == '', type(exc).__name__
+
+
+def test_the_qualification_detail_is_bounded(tmp_path):
+    from src.local_measurement_owner import _safe_failure_detail
+    from src.local_target_qualification import QualificationError
+
+    assert len(_safe_failure_detail(QualificationError('x' * 5000))) == 300
+
+
+def test_the_failure_record_carries_the_detail_for_a_qualification_refusal(tmp_path, failure='cleanup_false'):
+    from src.local_measurement_owner import measure_once
+    from src.local_target_qualification import QualificationError
+    spec, descriptor, before = new_profile_inputs()
+
+    class Refuses(Processes):
+        def finish_capture(self):
+            return True
+
+        def identity(self, command, *, lease_valid):
+            raise QualificationError('observed material identity does not match profile')
+
+    processes, broker = Refuses(before), Broker()
+    broker.responses['/acquire'] = 200, {'lease': 'b' * 12, 'pool': 'rtx4500',
+                                         'url': spec.endpoint, 'ttl': 600}
+    lease = BrokerLease(broker, endpoint=spec.endpoint, holder='synthetic')
+    with pytest.raises(MeasurementUnresolved):
+        measure_once(spec, descriptor, ['collector'], tmp_path / 'run',
+                     lease=lease, processes=processes, new_profile=True)
+    record = json.loads((tmp_path / 'run' / 'failure.json').read_text())
+    assert record['failure_detail'] == 'observed material identity does not match profile'
+    assert record['failure_class'] == 'QualificationError'
