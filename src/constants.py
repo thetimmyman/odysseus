@@ -107,6 +107,11 @@ RAG_DIR = os.path.join(DATA_DIR, "rag")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
 BG_JOBS_DIR = os.path.join(DATA_DIR, "bg_jobs")
 DEEP_RESEARCH_DIR = os.path.join(DATA_DIR, "deep_research")
+# Content-addressed source texts for checkable research run records
+# (setting research_run_record): <sha256>.txt, the exact text given to the
+# extractor. Texts above the cap are hashed but not stored.
+DEEP_RESEARCH_BLOB_DIR = os.path.join(DEEP_RESEARCH_DIR, "blobs")
+DEEP_RESEARCH_BLOB_MAX_BYTES = 256 * 1024
 MCP_OAUTH_DIR = os.path.join(DATA_DIR, "mcp_oauth")
 GENERATED_IMAGES_DIR = os.path.join(DATA_DIR, "generated_images")
 TTS_CACHE_DIR = os.path.join(DATA_DIR, "tts_cache")
@@ -189,3 +194,8 @@ LOCAL_MEASUREMENT_OWNERSHIP_FILENAME = "ownership.json"
 
 # Content-addressed artifacts inside a caller-selected retained evidence root.
 EVIDENCE_BLOB_DIRNAME = "blobs"
+
+# Settings keys for the measured-evidence research provider (src/measured_evidence.py). The root
+# is a host path, so settings_scrub blanks it for public callers.
+MEASURED_EVIDENCE_SETTING = "research_measured_evidence"
+MEASURED_EVIDENCE_ROOT_SETTING = "research_measured_evidence_root"

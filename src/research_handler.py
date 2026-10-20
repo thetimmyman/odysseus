@@ -228,19 +228,23 @@ class ResearchHandler:
         query: str,
         llm_endpoint: str,
         llm_model: str,
-        max_time: int = 300,
+        max_time: Optional[int] = None,
         hard_timeout: int = None,
         llm_headers: dict = None,
         on_complete: callable = None,
         prior_report: str = "",
         prior_findings: list = None,
         prior_urls: set = None,
-        max_rounds: int = 20,
+        prior_claim_floor: int = 0,
+        max_rounds: Optional[int] = None,
         search_provider: str = None,
         category: str = None,
         extraction_timeout: int = None,
         extraction_concurrency: int = None,
         owner: str = "",
+        prior_run_record: dict = None,
+        depth: str = None,
+        max_urls_per_round: int = None,
     ) -> dict:
         """Start research as a background task. Returns task info dict.
 
@@ -249,6 +253,17 @@ class ResearchHandler:
         """
         if _research_json_path(session_id) is None:
             raise ValueError("Invalid research session_id")
+
+        from src.research_run_record import run_record_enabled
+        if run_record_enabled():
+            # Only a run that records carries an earlier record forward; with
+            # the setting off nothing about the run or its saved file changes.
+            if prior_run_record is None:
+                prior_run_record = self._continuation_run_record(session_id, prior_report)
+            if not prior_claim_floor:
+                prior_claim_floor = self._continuation_claim_floor(session_id, prior_report)
+        else:
+            prior_run_record, prior_claim_floor = None, 0
 
         # Resolve the hard wall-clock timeout from settings when the caller
         # didn't pin one. Local / edge models routinely need more than the
@@ -289,6 +304,8 @@ class ResearchHandler:
             "category": category,
             # SECURITY: track ownership so all reads / saves can filter by user.
             "owner": owner or "",
+            "claim_id_floor": prior_claim_floor,
+            "parent_run_record": prior_run_record,
         }
         self._active_tasks[session_id] = entry
 
@@ -325,11 +342,15 @@ class ResearchHandler:
                         prior_report=prior_report,
                         prior_findings=prior_findings,
                         prior_urls=prior_urls,
+                        prior_claim_floor=prior_claim_floor,
+                        prior_run_record=prior_run_record,
                         max_rounds=max_rounds,
                         search_provider=search_provider,
                         category=category,
                         extraction_timeout=extraction_timeout,
                         extraction_concurrency=extraction_concurrency,
+                        depth=depth,
+                        max_urls_per_round=max_urls_per_round,
                     ),
                     timeout=hard_timeout,
                 )
@@ -530,8 +551,11 @@ class ResearchHandler:
         return sources
 
     @staticmethod
-    def _extract_raw_findings(findings: list) -> list:
-        """Extract [{url, title, summary}] for per-source findings display, filtering junk."""
+    def _extract_raw_findings(findings: list, with_evidence: bool = False) -> list:
+        """Extract [{url, title, summary}] for per-source findings display, filtering junk.
+
+        with_evidence (run record on) adds the extractor's verbatim
+        ``evidence`` and the ``source_id`` it was extracted from."""
         try:
             items = []
             for f in findings:
@@ -543,7 +567,13 @@ class ResearchHandler:
                 evidence = f.get("evidence", "")
                 content = summary if summary else (evidence[:2000] if evidence else "")
                 if url and content and not is_low_quality(content):
-                    items.append({"url": url, "title": title, "summary": content})
+                    item = {"url": url, "title": title, "summary": content}
+                    if with_evidence and f.get("source_id"):
+                        item["source_id"] = f["source_id"]
+                        item["evidence"] = evidence
+                        if f.get("claim_id"):
+                            item["claim_id"] = f["claim_id"]
+                    items.append(item)
             return items
         except Exception as e:
             logger.warning(f"Failed to extract raw findings: {e}")
@@ -596,7 +626,7 @@ class ResearchHandler:
             path = _research_json_path(session_id)
             if path is None:
                 return
-            path.write_text(json.dumps({
+            marker = {
                 "query": entry.get("query", ""),
                 "status": "running",
                 "result": None,
@@ -608,7 +638,16 @@ class ResearchHandler:
                 "started_at": entry.get("started_at", 0),
                 "completed_at": None,
                 "owner": entry.get("owner", ""),
-            }), encoding="utf-8")
+            }
+            if entry.get("claim_id_floor"):
+                # Keep the floor readable while the run is in flight, so an
+                # overlapping continuation still starts after it.
+                marker["claim_id_floor"] = entry["claim_id_floor"]
+            if entry.get("parent_run_record"):
+                # ...and the record this run continues, so an overlapping
+                # continuation carries the same registry instead of none.
+                marker["run_record"] = entry["parent_run_record"]
+            path.write_text(json.dumps(marker), encoding="utf-8")
         except Exception as e:
             logger.warning(f"Could not write running marker for {session_id}: {e}")
 
@@ -661,9 +700,11 @@ class ResearchHandler:
             sources = []
             raw_findings = []
             researcher = entry.get("researcher")
+            recorder = getattr(researcher, "run_recorder", None) if researcher else None
             if researcher and researcher.findings:
                 sources = self._extract_sources(researcher.findings)
-                raw_findings = self._extract_raw_findings(researcher.findings)
+                raw_findings = self._extract_raw_findings(
+                    researcher.findings, with_evidence=recorder is not None)
             entry["sources"] = sources
 
             data = {
@@ -680,6 +721,8 @@ class ResearchHandler:
                 # SECURITY: stamp owner so route handlers can filter by user.
                 "owner": entry.get("owner", ""),
             }
+            if recorder is not None:
+                data["run_record"] = self._build_run_record(recorder, entry)
             path.write_text(json.dumps(data), encoding="utf-8")
             logger.info(f"Research result saved to {path}")
             try:
@@ -689,6 +732,57 @@ class ResearchHandler:
                 logger.debug("research_completed event dispatch failed", exc_info=True)
         except Exception as e:
             logger.error(f"Failed to save research result: {e}")
+
+    @staticmethod
+    def _build_run_record(recorder, entry: dict) -> Optional[dict]:
+        """Blobs + RoutingModelRun rows + the record; never fails the save."""
+        try:
+            recorder.persist_model_runs(
+                query=entry.get("query", ""), owner=entry.get("owner", ""),
+                status=entry.get("status", ""))
+            return recorder.build()
+        except Exception as e:
+            logger.error(f"Failed to build research run record: {e}")
+            return None
+
+    def _continuation_claim_floor(self, session_id: str, prior_report: str) -> int:
+        """Floor for a run that continues this session, else 0.
+
+        A continuation with a report always counts. One started while the
+        session's run is still in flight carries no report (the marker's is
+        empty), but it still has to start after the ids that run minted."""
+        if prior_report or self._session_run_in_flight(session_id):
+            return self._saved_claim_id_floor(session_id)
+        return 0
+
+    def _session_run_in_flight(self, session_id: str) -> bool:
+        saved = self._get_session_json(session_id) or {}
+        return saved.get("status") == "running"
+
+    def _continuation_run_record(self, session_id: str, prior_report: str) -> Optional[dict]:
+        """The saved record a continuation of this session carries forward.
+
+        Same rule as the floor: a continuation with a report, or one that
+        starts while the session's run is in flight (the running marker keeps
+        the record that run continues). None for a fresh run."""
+        if not (prior_report or self._session_run_in_flight(session_id)):
+            return None
+        record = (self._get_session_json(session_id) or {}).get("run_record")
+        return record if isinstance(record, dict) else None
+
+    def _saved_claim_id_floor(self, session_id: str) -> int:
+        """Highest claim id the saved run for this session minted (0 if none).
+
+        Read from our own saved run record, never from report text, so a page
+        cannot influence it. The running marker's own floor counts too: it can
+        be higher than the record it carries."""
+        from src.research_run_record import clamp_claim_floor
+        saved = self._get_session_json(session_id) or {}
+        record = saved.get("run_record")
+        floors = [saved.get("claim_id_floor")]  # running marker / record-off save
+        if isinstance(record, dict):
+            floors.append(record.get("claim_id_floor"))
+        return max(clamp_claim_floor(f) for f in floors)
 
     def _get_session_json(self, session_id: str) -> Optional[dict]:
         """Load the saved research JSON for a session, if it exists."""
@@ -794,18 +888,22 @@ class ResearchHandler:
         query: str,
         llm_endpoint: str,
         llm_model: str,
-        max_time: int = 300,
+        max_time: Optional[int] = None,
         progress_callback=None,
         _task_entry: dict = None,
         llm_headers: dict = None,
         prior_report: str = "",
         prior_findings: list = None,
         prior_urls: set = None,
-        max_rounds: int = 20,
+        prior_claim_floor: int = 0,
+        prior_run_record: dict = None,
+        max_rounds: Optional[int] = None,
         search_provider: str = None,
         category: str = None,
         extraction_timeout: int = None,
         extraction_concurrency: int = None,
+        depth: str = None,
+        max_urls_per_round: int = None,
     ) -> str:
         """
         Run iterative deep research using the LLM-in-the-loop DeepResearcher.
@@ -837,7 +935,8 @@ class ResearchHandler:
         await self._probe_endpoint(llm_endpoint, llm_model, llm_headers)
 
         try:
-            from src.deep_research import DeepResearcher
+            from src.deep_research import DeepResearcher, resolve_depth, select_default_depth
+            from src.research_run_record import run_record_enabled
 
             from src.settings import get_setting
             _max_report_tokens = int(get_setting("research_max_tokens", 16384))
@@ -866,13 +965,36 @@ class ResearchHandler:
                 maximum=3600,
             )
 
+            # When depth is "auto", select default depth deterministically
+            effective_depth = depth
+            if effective_depth == "auto":
+                effective_depth = select_default_depth(category)
+
+            # If depth mode is specified, its preset limits apply unless explicit overrides were provided.
+            # In legacy research, max_rounds default is 20 and max_time is 300.
+            # If depth is set, resolve preset and pass through to DeepResearcher.
+            if effective_depth:
+                resolved = resolve_depth(effective_depth, overrides={
+                    "max_rounds": max_rounds,
+                    "max_time": max_time,
+                    "max_urls_per_round": max_urls_per_round,
+                })
+                effective_max_rounds = resolved["max_rounds"]
+                effective_max_time = resolved["max_time"]
+                effective_max_urls = resolved["max_urls_per_round"]
+            else:
+                effective_max_rounds = max_rounds if max_rounds is not None else 20
+                effective_max_time = max_time if max_time is not None else 300
+                effective_max_urls = max_urls_per_round if max_urls_per_round is not None else 3
+
             researcher = DeepResearcher(
                 llm_endpoint=llm_endpoint,
                 llm_model=llm_model,
                 llm_headers=llm_headers,
-                max_rounds=max_rounds,
-                min_rounds=max(2, max_rounds - 2),
-                max_time=max_time,
+                max_rounds=effective_max_rounds,
+                min_rounds=max(2, effective_max_rounds - 2),
+                max_time=effective_max_time,
+                max_urls_per_round=effective_max_urls,
                 max_report_tokens=_max_report_tokens,
                 extraction_timeout=_extraction_timeout,
                 planning_timeout=_planning_timeout,
@@ -881,6 +1003,8 @@ class ResearchHandler:
                 progress_callback=progress_callback,
                 search_provider=search_provider,
                 category=category,
+                run_record=run_record_enabled(),
+                depth=effective_depth,
             )
             if _task_entry is not None:
                 _task_entry["researcher"] = researcher
@@ -891,6 +1015,8 @@ class ResearchHandler:
                 prior_report=prior_report,
                 prior_findings=prior_findings,
                 prior_urls=prior_urls,
+                prior_claim_floor=prior_claim_floor,
+                prior_run_record=prior_run_record,
             )
             elapsed = time.time() - start_time
 
@@ -908,7 +1034,8 @@ class ResearchHandler:
 
         except Exception as e:
             logger.error(f"DeepResearcher failed: {e}", exc_info=True)
-            return await self._fallback_research(query, llm_endpoint, llm_model, max_time, str(e))
+            return await self._fallback_research(
+                query, llm_endpoint, llm_model, max_time if max_time is not None else 300, str(e))
 
     async def _fallback_research(
         self, query: str, llm_endpoint: str, llm_model: str,

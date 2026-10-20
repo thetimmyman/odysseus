@@ -7,6 +7,7 @@ import logging
 import hashlib
 import threading
 import re
+from contextvars import ContextVar
 from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
 from src.model_context import get_context_length, DEFAULT_CONTEXT
@@ -1114,6 +1115,18 @@ def normalize_model_id(
             return a
     return None
 
+# Usage of the most recent llm_call_async in the current task context, or
+# None when the response carried none (cache hit, streamed provider, no usage
+# block). Read with last_async_usage() right after awaiting the call; each
+# asyncio task has its own context, so concurrent calls do not mix.
+_LAST_ASYNC_USAGE: ContextVar[Optional[Dict[str, int]]] = ContextVar("llm_last_async_usage", default=None)
+
+
+def last_async_usage() -> Optional[Dict[str, int]]:
+    """Provider-reported usage of the last llm_call_async in this context."""
+    return _LAST_ASYNC_USAGE.get()
+
+
 def _extract_usage(provider: str, data: dict) -> Optional[Dict[str, int]]:
     """Best-effort token-usage extraction, normalized to
     {"input_tokens": int, "output_tokens": int} regardless of provider dialect.
@@ -1373,6 +1386,7 @@ async def _llm_call_async_inner(
     reasoning_effort: Optional[str] = None,
 ) -> str:
     """Body of :func:`llm_call_async`, run inside the resolved lane."""
+    _LAST_ASYNC_USAGE.set(None)
     provider = _detect_provider(url)
     messages_copy = _sanitize_llm_messages(messages)
 
@@ -1496,6 +1510,7 @@ async def _llm_call_async_inner(
             logger.info(f"LLM async call to {target_url} succeeded in {duration:.2f}s (attempt {attempt})")
             _clear_host_dead(target_url)
             data = r.json()
+            _LAST_ASYNC_USAGE.set(_extract_usage(provider, data))
             try:
                 if provider == "anthropic":
                     response = _parse_anthropic_response(data)

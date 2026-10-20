@@ -395,10 +395,12 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         search_provider: Optional[str] = None
         endpoint_id: Optional[str] = None
         model: Optional[str] = None
-        max_time: int = Field(default=300, ge=60, le=1800)
+        max_time: Optional[int] = Field(default=None, ge=60, le=1800)
         extraction_timeout: Optional[int] = Field(default=None, ge=15, le=3600)
         extraction_concurrency: Optional[int] = Field(default=None, ge=1, le=12)
         category: Optional[str] = None
+        depth: Optional[str] = None
+        max_urls_per_round: Optional[int] = Field(default=None, ge=1, le=10)
 
     @router.post("/api/research/start")
     async def research_start(body: ResearchStartRequest, request: Request):
@@ -420,6 +422,13 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
                         pass
                 user = tool_owner
         session_id = f"rp-{uuid.uuid4().hex[:12]}"
+
+        # Validate depth if provided
+        depth_val = body.depth.strip().lower() if body.depth is not None else None
+        if depth_val is not None:
+            allowed_depths = {"quick", "standard", "deep", "critical", "auto"}
+            if depth_val not in allowed_depths:
+                raise HTTPException(422, f"Unknown depth mode '{body.depth}'. Must be one of: {', '.join(sorted(allowed_depths))}")
 
         if body.endpoint_id:
             from src.database import SessionLocal
@@ -470,13 +479,20 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
                 ep_model = body.model
 
         # max_rounds=0 → "Auto", let AI decide; pass 20 as the safety cap.
-        effective_max_rounds = body.max_rounds if body.max_rounds > 0 else 20
+        # If depth is set and max_rounds == 0, pass None so depth preset applies.
+        if depth_val:
+            effective_max_rounds = body.max_rounds if body.max_rounds > 0 else None
+            effective_max_time = body.max_time
+        else:
+            effective_max_rounds = body.max_rounds if body.max_rounds > 0 else 20
+            effective_max_time = body.max_time if body.max_time is not None else 300
+
         research_handler.start_research(
             session_id=session_id,
             query=body.query,
             llm_endpoint=ep_url,
             llm_model=ep_model,
-            max_time=body.max_time,
+            max_time=effective_max_time,
             llm_headers=ep_headers,
             max_rounds=effective_max_rounds,
             search_provider=body.search_provider or None,
@@ -484,6 +500,8 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
             extraction_timeout=body.extraction_timeout,
             extraction_concurrency=body.extraction_concurrency,
             owner=user,
+            depth=depth_val,
+            max_urls_per_round=body.max_urls_per_round,
         )
         return {"session_id": session_id, "status": "running", "query": body.query}
 
