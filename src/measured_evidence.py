@@ -201,7 +201,10 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             reason="measured-evidence root is not a valid path",
         )
     try:
-        root_is_dir = root_path.is_dir()
+        validated = os.stat(root_path)
+        root_is_dir = stat.S_ISDIR(validated.st_mode)
+    except FileNotFoundError:
+        root_is_dir = False
     except OSError as err:
         return LookupResult(
             status=UNAVAILABLE, sources=(),
@@ -230,6 +233,14 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         return LookupResult(
             status=UNAVAILABLE, sources=(),
             reason=f"measured-evidence root could not be opened: {root_path}: {err.strerror or err.errno}",
+        )
+    opened = os.fstat(root_fd)
+    if (opened.st_dev, opened.st_ino) != (validated.st_dev, validated.st_ino):
+        # The path was renamed or replaced between validation and the open: not the directory checked.
+        os.close(root_fd)
+        return LookupResult(
+            status=UNAVAILABLE, sources=(),
+            reason=f"measured-evidence root changed while it was being opened: {root_path}",
         )
     try:
         # Work is bounded before the result limit applies: a fixed number of files and bytes per lookup,
@@ -384,6 +395,10 @@ def _checked_float(text: str):
         return int(exact)
     value = float(text)
     if value == 0.0 and exact != 0:
+        return math.nan
+    if not math.isfinite(value) or Decimal(repr(value)) != exact:
+        # Rounded on the way to a float (more digits than a float keeps): a value that is not what
+        # the file states must not be compared as if it were, so it is skipped.
         return math.nan
     return value
 
@@ -574,7 +589,8 @@ def _read_regular_file(root_fd, rel, used=None, remaining=None):
         if remaining is not None and before.st_size > remaining:
             raise _OverBudget()
         with os.fdopen(os.dup(fd), "rb") as handle:
-            data = handle.read(_MAX_CANDIDATE_BYTES + 1)
+            cap = _MAX_CANDIDATE_BYTES if remaining is None else min(_MAX_CANDIDATE_BYTES, remaining)
+            data = handle.read(cap + 1)  # one sentinel byte past the allowance, never more
         if used is not None:
             used.append(len(data))  # charged to the byte budget even if the read is rejected below
         after = os.fstat(fd)

@@ -965,3 +965,46 @@ def test_an_unsupported_platform_is_unavailable_not_a_crash(tmp_path, monkeypatc
     monkeypatch.setattr(me, "_platform_supported", lambda: False)
     result = me.find_measured_sources("needle", root=tmp_path, enabled=True)
     assert result.status == me.UNAVAILABLE and "POSIX" in result.reason
+
+
+def test_a_decimal_literal_a_float_cannot_hold_is_skipped_not_rounded():
+    raw = (b'{"measurements": [{"subject": "a", "metric": "m", "unit": "u", "value": 1.0000000000000001},'
+           b' {"subject": "b", "metric": "m", "unit": "u", "value": 0.1}]}')
+    parsed, _ = me._parse_measurements_capped(raw, "p")
+    assert [m.subject for m in parsed] == ["b"]
+
+
+def test_a_root_replaced_by_another_directory_before_the_open_is_refused(tmp_path, monkeypatch):
+    parent = tmp_path / "parent"
+    (parent / "root" / "evidence").mkdir(parents=True)
+    (parent / "root" / "evidence" / "a.json").write_text('{"needle": 1}')
+    real_open = os.open
+    swapped = []
+
+    def swap_on_first_open(path, flags, *args, **kwargs):
+        if not swapped and path == "/":
+            swapped.append(True)
+            parent.rename(tmp_path / "parent-moved")
+            (parent / "root" / "evidence").mkdir(parents=True)
+            (parent / "root" / "evidence" / "evil.json").write_text('{"needle": 2}')
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", swap_on_first_open)
+    result = me.find_measured_sources("needle", root=parent / "root", enabled=True)
+    assert swapped and result.status == me.UNAVAILABLE and not result.sources
+
+
+def test_a_read_is_capped_at_the_remaining_allowance(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "a.md").write_bytes(b"x" * 50)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    used = []
+    try:
+        assert me._read_regular_file(fd, Path("evidence/a.md"), used, remaining=50) == b"x" * 50
+        used.clear()
+        with pytest.raises(me._OverBudget):
+            me._read_regular_file(fd, Path("evidence/a.md"), used, remaining=10)
+        assert used == []
+    finally:
+        os.close(fd)
