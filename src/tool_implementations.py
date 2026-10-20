@@ -4175,6 +4175,19 @@ async def do_edit_image(content: str, owner: Optional[str] = None) -> Dict:
 
 # ── Research tools ──
 
+def _research_visible_to(data: Optional[dict], owner: Optional[str]) -> bool:
+    """Whether a saved research session (its parsed JSON) belongs to `owner`.
+
+    Mirrors the route rule (`_assert_owns_research`): the session's ``owner``
+    must equal the caller. Both sides collapse to the empty string, so
+    single-user / auth-disabled installs — where neither side records an owner
+    — keep seeing their own sessions. A file without an ``owner`` key is
+    therefore visible only to the empty owner. Callers must reject unreadable
+    or non-object JSON (fail closed) before asking.
+    """
+    return ((data or {}).get("owner") or "") == (owner or "")
+
+
 async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
     """List, read/open, or delete saved deep-research results from the Library.
     Args (JSON): {"action": "list|read|delete", "id": "<id>", "search": "..."}.
@@ -4212,7 +4225,12 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
         p = data_dir / f"{rid}.json"
         if not p.exists():
             return {"error": f"Research '{rid}' not found."}
-        d = _load(p) or {}
+        d = _load(p)
+        # SECURITY: ids are global, sessions are not. Another user's agent must
+        # not read this file — and must not learn it exists, so report exactly
+        # what a missing id reports. Unreadable/non-object JSON is not visible.
+        if not isinstance(d, dict) or not _research_visible_to(d, owner):
+            return {"error": f"Research '{rid}' not found."}
         summary = d.get("result") or d.get("raw_report") or d.get("summary") or d.get("report") or "(no report body)"
         srcs = d.get("sources", []) or []
         out = f"# {d.get('query', '(untitled)')}\n\n{summary}"
@@ -4226,16 +4244,19 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
         if not rid:
             return {"error": "Provide the research id to delete (from action='list')."}
         p = data_dir / f"{rid}.json"
-        if p.exists():
-            deleted = _load(p)
-            try:
-                p.unlink()
-            except Exception as e:
-                return {"error": f"Failed to delete: {e}"}
-            from src.research_run_record import sweep_after_delete
-            sweep_after_delete(data_dir, deleted)
-            return {"output": f"Deleted research '{rid}'.", "exit_code": 0}
-        return {"error": f"Research '{rid}' not found."}
+        # SECURITY: load FIRST and check the owner BEFORE unlinking or sweeping
+        # its blobs. Another user's delete must be a no-op that looks identical
+        # to deleting a missing id. Unreadable JSON is not visible either.
+        deleted = _load(p) if p.exists() else None
+        if not isinstance(deleted, dict) or not _research_visible_to(deleted, owner):
+            return {"error": f"Research '{rid}' not found."}
+        try:
+            p.unlink()
+        except Exception as e:
+            return {"error": f"Failed to delete: {e}"}
+        from src.research_run_record import sweep_after_delete
+        sweep_after_delete(data_dir, deleted)
+        return {"output": f"Deleted research '{rid}'.", "exit_code": 0}
 
     # default: list — clickable [query](#research-<id>) rows, most-recent first
     search = (args.get("search") or "").lower()
@@ -4243,7 +4264,9 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
     if data_dir.exists():
         for p in data_dir.glob("*.json"):
             d = _load(p)
-            if not d:
+            # SECURITY: the library only lists this owner's sessions; the
+            # heading count and the search filter apply to that visible set.
+            if not isinstance(d, dict) or not _research_visible_to(d, owner):
                 continue
             q = d.get("query", "")
             if search and search not in q.lower():

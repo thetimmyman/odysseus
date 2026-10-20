@@ -194,16 +194,6 @@ class ResearchHandler:
                 sources.append({"url": url, "title": title})
         return sources
 
-    def clear_result(self, session_id: str):
-        """Remove persisted result after it's been consumed."""
-        self._active_tasks.pop(session_id, None)
-        path = RESEARCH_DATA_DIR / f"{session_id}.json"
-        if path.exists():
-            try:
-                path.unlink()
-            except Exception:
-                pass
-
     def _save_result(self, session_id: str, entry: dict):
         """Persist completed research result to disk."""
         try:
