@@ -128,7 +128,7 @@ def test_concurrent_identical_blob_writes_both_succeed(tmp_path, monkeypatch):
 
     assert src["blob"] == f"blobs/{_sha(text)}.txt"
     assert (blobs / f"{_sha(text)}.txt").read_text(encoding="utf-8") == text
-    assert [p.name for p in blobs.iterdir()] == [f"{_sha(text)}.txt"]  # no stray temp files
+    assert sorted(p.name for p in blobs.iterdir() if p.name != ".lock") == [f"{_sha(text)}.txt"]  # no temp files
 
 
 def test_failed_blob_write_leaves_no_temp_file(tmp_path, monkeypatch):
@@ -142,7 +142,7 @@ def test_failed_blob_write_leaves_no_temp_file(tmp_path, monkeypatch):
     [src] = recorder.build(blob_dir=tmp_path / "blobs")["sources"]
 
     assert src["blob"] is None and src["blob_missing_reason"] == "write_failed"
-    assert list((tmp_path / "blobs").iterdir()) == []
+    assert [p for p in (tmp_path / "blobs").iterdir() if p.name != ".lock"] == []
 
 
 # --- a cached completion is not model spend ------------------------------------
@@ -319,3 +319,44 @@ def test_failure_fallback_uses_the_resolved_timeout(monkeypatch, depth, explicit
         "q", ENDPOINT, "m", max_time=explicit, depth=depth))
 
     assert calls == [expected]
+
+
+def test_sweep_never_raises_when_the_blob_dir_cannot_be_listed(research_dir, monkeypatch):
+    _blob(research_dir, "b.txt")
+
+    def broken(self):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(research_run_record.Path, "iterdir", broken)
+
+    assert sweep_orphan_blobs(research_dir) == 0
+
+
+def test_saving_a_run_record_revisits_blobs_a_delete_skipped_as_too_fresh(
+        research_dir, routing_db, monkeypatch):
+    from src import research_handler
+
+    monkeypatch.setattr(research_handler, "RESEARCH_DATA_DIR", research_dir)
+    monkeypatch.setattr(research_run_record, "_last_sweep", 0.0)
+    # Orphaned by a delete, but still inside the grace window when that delete swept.
+    orphan = _blob(research_dir, "orphan.txt", age=5)
+    assert sweep_orphan_blobs(research_dir) == 0 and orphan.exists()
+    old = time.time() - 7200
+    os.utime(orphan, (old, old))  # the grace window has since passed
+    handler = ResearchHandler.__new__(ResearchHandler)
+    handler._active_tasks = {}
+    researcher = SimpleNamespace(findings=[], run_recorder=ResearchRunRecorder(run_id="run-1"))
+
+    handler._save_result("rp-new", {"query": "q", "status": "done", "result": "r",
+                                    "researcher": researcher, "started_at": 1.0, "owner": "alice"})
+
+    assert (research_dir / "rp-new.json").exists() and not orphan.exists()
+
+
+def test_due_sweep_runs_once_per_grace_window(research_dir, monkeypatch):
+    monkeypatch.setattr(research_run_record, "_last_sweep", 0.0)
+    first = _blob(research_dir, "one.txt")
+
+    assert research_run_record.sweep_orphan_blobs_if_due(research_dir) == 1 and not first.exists()
+    second = _blob(research_dir, "two.txt")
+    assert research_run_record.sweep_orphan_blobs_if_due(research_dir) == 0 and second.exists()

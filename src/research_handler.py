@@ -725,6 +725,10 @@ class ResearchHandler:
                 data["run_record"] = self._build_run_record(recorder, entry)
             path.write_text(json.dumps(data), encoding="utf-8")
             logger.info(f"Research result saved to {path}")
+            if recorder is not None:
+                # Revisit blobs an earlier delete skipped as too fresh to remove.
+                from src.research_run_record import sweep_orphan_blobs_if_due
+                sweep_orphan_blobs_if_due(path.parent)
             try:
                 from src.event_bus import fire_event
                 fire_event("research_completed", entry.get("owner") or None)
