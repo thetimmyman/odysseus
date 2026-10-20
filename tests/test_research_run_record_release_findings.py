@@ -360,3 +360,34 @@ def test_due_sweep_runs_once_per_grace_window(research_dir, monkeypatch):
     assert research_run_record.sweep_orphan_blobs_if_due(research_dir) == 1 and not first.exists()
     second = _blob(research_dir, "two.txt")
     assert research_run_record.sweep_orphan_blobs_if_due(research_dir) == 0 and second.exists()
+
+
+def test_deleting_a_running_session_keeps_the_blobs_its_task_still_carries(research_dir, monkeypatch):
+    monkeypatch.setattr("routes.research_routes.DEEP_RESEARCH_DIR", str(research_dir))
+    carried = _blob(research_dir, "carried.txt")
+    marker = {"owner": "alice", "status": "running",
+              "run_record": {"sources": [{"source_id": "S1", "blob": "blobs/carried.txt"}]}}
+    (research_dir / "rp-live.json").write_text(json.dumps(marker), encoding="utf-8")
+    from routes.research_routes import setup_research_routes
+    router = setup_research_routes(SimpleNamespace(_active_tasks={}))
+    delete = next(r.endpoint for r in router.routes
+                  if r.path == "/api/research/{session_id}" and "DELETE" in r.methods)
+
+    result = asyncio.run(delete("rp-live", SimpleNamespace(state=SimpleNamespace(current_user="alice"))))
+
+    assert result == {"deleted": True}
+    assert carried.exists()  # the finishing task writes the session back and still needs it
+
+
+def test_tidy_research_reclaims_blobs_only_a_broken_record_referenced(research_dir, monkeypatch):
+    from src import builtin_actions
+
+    monkeypatch.setattr(builtin_actions, "DEEP_RESEARCH_DIR", str(research_dir))
+    orphan, kept = _blob(research_dir, "orphan.txt"), _blob(research_dir, "kept.txt")
+    _session(research_dir, "rp-ok", "kept.txt")
+    (research_dir / "rp-broken.json").write_text("{not json", encoding="utf-8")
+
+    message, ok = asyncio.run(builtin_actions.action_tidy_research("alice"))
+
+    assert ok and not (research_dir / "rp-broken.json").exists()
+    assert kept.exists() and not orphan.exists()
