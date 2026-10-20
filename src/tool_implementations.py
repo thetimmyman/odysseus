@@ -4231,6 +4231,8 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
                 p.unlink()
             except Exception as e:
                 return {"error": f"Failed to delete: {e}"}
+            from src.research_run_record import sweep_orphan_blobs
+            sweep_orphan_blobs(data_dir)
             return {"output": f"Deleted research '{rid}'.", "exit_code": 0}
         return {"error": f"Research '{rid}' not found."}
 

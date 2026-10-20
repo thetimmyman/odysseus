@@ -382,6 +382,8 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
                 raise HTTPException(404, "Research not found")
             json_path.unlink()
             deleted = True
+            from src.research_run_record import sweep_orphan_blobs
+            sweep_orphan_blobs(data_dir)
         return {"deleted": deleted}
 
     # ------------------------------------------------------------------
