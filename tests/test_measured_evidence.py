@@ -847,7 +847,7 @@ def test_bytes_read_by_a_rejected_read_still_count_against_the_budget(tmp_path, 
     for index in range(5):
         (root / "evidence" / f"f{index}.md").write_text("needle " * 10)
 
-    def rejecting(fd, rel, used=None):
+    def rejecting(fd, rel, used=None, remaining=None):
         if used is not None:
             used.append(100)
         return None
@@ -918,3 +918,50 @@ def test_a_nonzero_literal_that_underflows_is_skipped_not_zero():
            ' {"subject": "b", "metric": "m", "unit": "u", "value": 0.0}]}').encode()
     parsed, _ = me._parse_measurements_capped(raw, "p")
     assert [m.subject for m in parsed] == ["b"]
+
+
+def test_an_integral_decimal_literal_keeps_its_exact_value():
+    raw = b'{"measurements": [{"subject": "a", "metric": "m", "unit": "u", "value": 9007199254740993.0}]}'
+    parsed, _ = me._parse_measurements_capped(raw, "p")
+    assertion = me.Assertion("C1", "a", "m", 9007199254740992, "u", "doc")
+    report = me.find_conflicts([assertion], list(parsed), rel_tolerance=0)
+    assert parsed[0].value == 9007199254740993 and len(report.conflicts) == 1
+
+
+def test_a_candidate_larger_than_the_remaining_byte_allowance_is_not_read(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence" / "a.md").write_text("needle " * 100)
+    monkeypatch.setattr(me, "_MAX_BYTES_SCANNED", 100)
+    result = me.find_measured_sources("needle", root=root, enabled=True)
+    assert result.status == me.UNAVAILABLE and not result.sources
+
+
+def test_an_in_place_rewrite_that_restores_mtime_is_rejected(tmp_path):
+    root = tmp_path / "root"
+    (root / "evidence").mkdir(parents=True)
+    target = root / "evidence" / "a.md"
+    target.write_bytes(b"x" * 100)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    real_fstat = os.fstat
+    calls = []
+
+    def fstat(handle):
+        result = real_fstat(handle)
+        calls.append(1)
+        if len(calls) == 1:
+            os.chmod(target, 0o600)  # a metadata change moves ctime without touching size or mtime
+        return result
+
+    try:
+        import unittest.mock as mock
+        with mock.patch.object(os, "fstat", fstat):
+            assert me._read_regular_file(fd, Path("evidence/a.md")) is None
+    finally:
+        os.close(fd)
+
+
+def test_an_unsupported_platform_is_unavailable_not_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setattr(me, "_platform_supported", lambda: False)
+    result = me.find_measured_sources("needle", root=tmp_path, enabled=True)
+    assert result.status == me.UNAVAILABLE and "POSIX" in result.reason

@@ -33,6 +33,7 @@ module-level mutable state.
 from __future__ import annotations
 
 import errno
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import math
@@ -149,6 +150,15 @@ class ConflictReport:
     uncomparable: tuple[Conflict, ...]
 
 
+_POSIX_ANCHORED_IO = (os.name == "posix" and os.open in os.supports_dir_fd and os.scandir in os.supports_fd
+                      and hasattr(os, "O_NOFOLLOW"))
+
+
+def _platform_supported() -> bool:
+    """Descriptor-anchored traversal needs POSIX ``dir_fd`` opens and ``scandir(fd)``."""
+    return _POSIX_ANCHORED_IO
+
+
 def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResult:
     """Find measured-evidence files under ``root`` matching ``query``.
 
@@ -165,6 +175,11 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
         return LookupResult(
             status=NOT_SEARCHED, sources=(),
             reason="measured-evidence provider is disabled",
+        )
+    if not _platform_supported():
+        return LookupResult(
+            status=UNAVAILABLE, sources=(),
+            reason="measured evidence needs a POSIX platform (descriptor-anchored reads); not supported here",
         )
     if root is None or (isinstance(root, (str, os.PathLike)) and not str(os.fspath(root)).strip()):
         return LookupResult(
@@ -232,7 +247,10 @@ def find_measured_sources(query, *, root, enabled=False, limit=5) -> LookupResul
             scanned += 1
             used: list[int] = []
             try:
-                data = _read_regular_file(root_fd, rel, used)
+                data = _read_regular_file(root_fd, rel, used, _MAX_BYTES_SCANNED - total_bytes)
+            except _OverBudget:
+                capped = True  # the next file would take the lookup past its byte ceiling
+                break
             except _Unreadable as err:
                 total_bytes += sum(used)
                 walk.setdefault("walk_error", str(err))
@@ -352,9 +370,20 @@ def _bounded_int(text: str):
 
 
 def _checked_float(text: str):
-    """A nonzero decimal that underflows to 0.0 is not a measured zero: it becomes NaN (skipped)."""
+    """Decimal literal to a number without losing the value the file states.
+
+    An integral literal (``9007199254740993.0``) becomes an exact int so it is not rounded to a
+    neighbouring float; a nonzero literal that underflows to 0.0 is not a measured zero and
+    becomes NaN (skipped later).
+    """
+    try:
+        exact = Decimal(text)
+    except InvalidOperation:
+        return math.nan
+    if exact.is_finite() and exact == exact.to_integral_value() and exact.adjusted() <= 400:
+        return int(exact)
     value = float(text)
-    if value == 0.0 and any(ch in "123456789" for ch in text.lower().split("e")[0]):
+    if value == 0.0 and exact != 0:
         return math.nan
     return value
 
@@ -490,6 +519,10 @@ def measured_evidence_root():
 _SKIP_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO})
 
 
+class _OverBudget(Exception):
+    """The next candidate would exceed the remaining byte allowance."""
+
+
 class _Unreadable(Exception):
     """A candidate that exists but could not be read (permissions or I/O)."""
 
@@ -514,7 +547,7 @@ def _open_dir_nofollow(path) -> int:
         raise
 
 
-def _read_regular_file(root_fd, rel, used=None):
+def _read_regular_file(root_fd, rel, used=None, remaining=None):
     """Read ``root/rel`` through descriptors anchored at ``root``, or None.
 
     Each directory component is opened relative to the previous descriptor with no-follow, and
@@ -538,13 +571,15 @@ def _read_regular_file(root_fd, rel, used=None):
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_CANDIDATE_BYTES:
             return None
+        if remaining is not None and before.st_size > remaining:
+            raise _OverBudget()
         with os.fdopen(os.dup(fd), "rb") as handle:
             data = handle.read(_MAX_CANDIDATE_BYTES + 1)
         if used is not None:
             used.append(len(data))  # charged to the byte budget even if the read is rejected below
         after = os.fstat(fd)
         if (len(data) != before.st_size or after.st_size != before.st_size
-                or after.st_mtime_ns != before.st_mtime_ns):
+                or after.st_mtime_ns != before.st_mtime_ns or after.st_ctime_ns != before.st_ctime_ns):
             return None
         return data
     except OSError as err:
