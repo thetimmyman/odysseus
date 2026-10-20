@@ -10,7 +10,9 @@ output is a private new approximate candidate at the declared context floor
 be a multiple of 1024 between 4096 and 131072, and the provider's own reported
 prompt tokens must reach it: the floor is never inferred from configuration, and
 a profile configured for a larger context does not become evidence of one. The
-upper bound exists because the prompt is sized to the floor and must stay inside
+floor must also fit the servable context: the engine's per-request slot limit when
+the profile records one, otherwise the configured context. A larger floor is
+refused before any lease or provider request. The upper bound exists because the prompt is sized to the floor and must stay inside
 the bounded worker HTTP payload. The probe is sized on characters rather than
 tokens, deliberately overshooting, because no tokenizer is available at this
 layer: a denser tokenizer costs prefill time, a sparser one is refused, and
