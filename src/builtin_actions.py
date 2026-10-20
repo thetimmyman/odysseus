@@ -373,6 +373,8 @@ async def action_tidy_research(owner: str, **kwargs) -> Tuple[str, bool]:
                 removed.append(p.stem[:8])
         if not removed:
             raise TaskNoop(f"scanned {len(files)} research file(s), none broken")
+        from src.research_run_record import sweep_orphan_blobs
+        sweep_orphan_blobs(research_dir)  # blobs only a broken record referenced
         return f"Removed {len(removed)} broken research file(s) of {len(files)}", True
     except Exception as e:
         logger.error(f"tidy_research action failed: {e}")
