@@ -725,6 +725,10 @@ class ResearchHandler:
                 data["run_record"] = self._build_run_record(recorder, entry)
             path.write_text(json.dumps(data), encoding="utf-8")
             logger.info(f"Research result saved to {path}")
+            if recorder is not None:
+                # Revisit blobs an earlier delete skipped as too fresh to remove.
+                from src.research_run_record import sweep_orphan_blobs_if_due
+                sweep_orphan_blobs_if_due(path.parent)
             try:
                 from src.event_bus import fire_event
                 fire_event("research_completed", entry.get("owner") or None)
@@ -934,6 +938,9 @@ class ResearchHandler:
             progress_callback({"phase": "probing", "model": llm_model})
         await self._probe_endpoint(llm_endpoint, llm_model, llm_headers)
 
+        # The time limit the failure fallback inherits; replaced by the
+        # resolved depth limit once that is known.
+        effective_max_time = max_time if max_time is not None else 300
         try:
             from src.deep_research import DeepResearcher, resolve_depth, select_default_depth
             from src.research_run_record import run_record_enabled
@@ -1035,7 +1042,7 @@ class ResearchHandler:
         except Exception as e:
             logger.error(f"DeepResearcher failed: {e}", exc_info=True)
             return await self._fallback_research(
-                query, llm_endpoint, llm_model, max_time if max_time is not None else 300, str(e))
+                query, llm_endpoint, llm_model, effective_max_time, str(e))
 
     async def _fallback_research(
         self, query: str, llm_endpoint: str, llm_model: str,
