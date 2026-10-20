@@ -246,8 +246,13 @@ class ResearchRunRecorder:
             if number is None or src["source_id"] in seen_sources:
                 continue
             seen_sources.add(src["source_id"])
-            kept = dict(src)
-            kept.setdefault("run_id", parent_id)
+            kept = {key: src[key] for key in ("url", "title", "retrieved_at", "content_sha256",
+                                              "blob", "blob_missing_reason")
+                    if isinstance(src.get(key), str)}
+            if isinstance(src.get("chars"), int) and not isinstance(src["chars"], bool):
+                kept["chars"] = src["chars"]
+            kept["source_id"] = src["source_id"]
+            kept["run_id"] = src["run_id"] if isinstance(src.get("run_id"), str) else parent_id
             self._carried_sources.append(kept)
             self._source_seq = max(self._source_seq, number)
         for claim in _list_of_dicts(record.get("claims")):
@@ -255,16 +260,23 @@ class ResearchRunRecorder:
             if number is None or claim["claim_id"] in seen_claims:
                 continue
             seen_claims.add(claim["claim_id"])
-            citations = [c for c in _list_of_dicts(claim.get("citations"))
-                         if c.get("source_id") in seen_sources]
-            first = citations[0]["source_id"] if citations else None
-            kept = dict(claim)
-            kept["citations"] = citations
-            kept.setdefault("run_id", parent_id)
-            kept.setdefault("source_id", first)
+            citations = [{"source_id": c["source_id"],
+                          "quote": c["quote"] if isinstance(c.get("quote"), str) else ""}
+                         for c in _list_of_dicts(claim.get("citations"))
+                         if isinstance(c.get("source_id"), str) and c["source_id"] in seen_sources]
+            source_id = claim.get("source_id")
+            if not (isinstance(source_id, str) and source_id in seen_sources):
+                source_id = citations[0]["source_id"] if citations else None
+            kept = {
+                "claim_id": claim["claim_id"],
+                "source_id": source_id,
+                "text": claim["text"] if isinstance(claim.get("text"), str) else "",
+                "citations": citations,
+                "run_id": claim["run_id"] if isinstance(claim.get("run_id"), str) else parent_id,
+            }
             self._carried_claims.append(kept)
-            if isinstance(kept.get("source_id"), str):
-                self._claim_sources[claim["claim_id"]] = kept["source_id"]
+            if source_id is not None:
+                self._claim_sources[claim["claim_id"]] = source_id
             self._claim_ids = max(self._claim_ids, number)
         self.reserve_claim_ids(record.get("claim_id_floor"))
         self.parent_run_id = parent_id
@@ -431,7 +443,13 @@ class ResearchRunRecorder:
             # (hash-checked): a parent blob that has since gone missing or
             # changed counts as not found, never as the old measurement.
             own = totals["quote_grounding"]
-            carried = self._carried_grounding_stats(blob_dir.parent)
+            try:
+                carried = self._carried_grounding_stats(blob_dir.parent)
+            except Exception as e:  # never lose the new record over a bad parent
+                logger.warning("Could not re-measure carried quotes: %s", e)
+                carried = {"quotes": sum(1 for c in self._carried_claims
+                                         for cit in c["citations"] if cit["quote"].strip()),
+                           "grounded": 0}
             quotes = own["quotes"] + carried["quotes"]
             grounded = own["grounded"] + carried["grounded"]
             totals["quote_grounding"] = {

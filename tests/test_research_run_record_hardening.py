@@ -194,6 +194,30 @@ def test_non_list_sections_of_a_parent_record_are_ignored(junk):
 
 
 @pytest.mark.asyncio
+async def test_hostile_field_types_in_a_parent_record_cannot_break_the_new_record(pages, tmp_path):
+    parent = {
+        "run_id": ["x"], "claim_id_floor": 1,
+        "sources": [{"source_id": "S1", "url": 5, "title": ["t"], "blob": 1,
+                     "content_sha256": {"a": 1}, "chars": "many"}],
+        "claims": [{"claim_id": "C1", "source_id": ["S1"], "text": 7,
+                    "citations": [{"source_id": ["S1"], "quote": "q"},
+                                  {"source_id": {"k": 1}, "quote": "q"},
+                                  {"source_id": "S1", "quote": ["not", "a", "string"]}]}],
+    }
+    r = _researcher()
+    r._llm = _llm_returning(_reply())
+    await r.research("q", prior_report="x", prior_findings=[], prior_run_record=parent)
+    r.findings.append(await r._fetch_and_extract("https://example.test/n", "q", "N"))
+    record = r.run_recorder.build(blob_dir=tmp_path / "blobs")
+    assert [c["claim_id"] for c in record["claims"]] == ["C1", "C2"]
+    assert record["claims"][0]["source_id"] == "S1"
+    assert record["claims"][0]["citations"] == [{"source_id": "S1", "quote": ""}]
+    assert record["sources"][0] == {"source_id": "S1", "run_id": None}
+    assert record["totals"]["quote_grounding"]["quotes"] == 1  # only the new quote
+    json.dumps(record)
+
+
+@pytest.mark.asyncio
 async def test_carried_quotes_are_remeasured_against_the_blobs_that_exist(pages, tmp_path):
     _, first = await _first_run(tmp_path)
     assert first["totals"]["quote_grounding"]["grounded"] == 1
