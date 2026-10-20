@@ -18,6 +18,7 @@ from src.research_run_record import (
     grounding_view,
     normalize_quotes,
     quote_grounding_stats,
+    MAX_CLAIM_ID,
 )
 
 PAGE = (
@@ -379,7 +380,7 @@ def test_saved_claim_id_floor_comes_from_the_saved_record_only(monkeypatch):
     monkeypatch.setattr(handler, "_get_session_json", lambda sid: saved)
     assert handler._saved_claim_id_floor("s") == 7
     saved["run_record"]["claim_id_floor"] = 10**9
-    assert handler._saved_claim_id_floor("s") == 100000
+    assert handler._saved_claim_id_floor("s") == MAX_CLAIM_ID
     saved["run_record"]["claim_id_floor"] = "9"
     assert handler._saved_claim_id_floor("s") == 0
     monkeypatch.setattr(handler, "_get_session_json", lambda sid: None)
