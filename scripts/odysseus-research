@@ -151,6 +151,8 @@ def cmd_delete(args):
         fail(f"no research session {args.id!r}")
     snap_summary = _summarize(args.id, _load(args.id) or {})
     path.unlink()
+    from src.research_run_record import sweep_orphan_blobs
+    sweep_orphan_blobs(_DATA_DIR)
     emit({"ok": True, "deleted": snap_summary}, args)
 
 

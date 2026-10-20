@@ -934,6 +934,9 @@ class ResearchHandler:
             progress_callback({"phase": "probing", "model": llm_model})
         await self._probe_endpoint(llm_endpoint, llm_model, llm_headers)
 
+        # The time limit the failure fallback inherits; replaced by the
+        # resolved depth limit once that is known.
+        effective_max_time = max_time if max_time is not None else 300
         try:
             from src.deep_research import DeepResearcher, resolve_depth, select_default_depth
             from src.research_run_record import run_record_enabled
@@ -1035,7 +1038,7 @@ class ResearchHandler:
         except Exception as e:
             logger.error(f"DeepResearcher failed: {e}", exc_info=True)
             return await self._fallback_research(
-                query, llm_endpoint, llm_model, max_time if max_time is not None else 300, str(e))
+                query, llm_endpoint, llm_model, effective_max_time, str(e))
 
     async def _fallback_research(
         self, query: str, llm_endpoint: str, llm_model: str,

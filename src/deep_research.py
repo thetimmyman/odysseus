@@ -541,10 +541,13 @@ class DeepResearcher:
 
     def _record_llm_call(self, recorder, started: float, started_at: str, messages: List[Dict],
                          response: str, error: Optional[BaseException]) -> None:
-        from src.llm_core import last_async_usage
+        from src.llm_core import last_async_cache_hit, last_async_usage
         from src.routing_context import estimate_tokens
         purpose, source_id = _LLM_PURPOSE.get()
         usage = last_async_usage() if error is None else None
+        # A process-cache hit made no provider request: zero tokens, zero spend,
+        # not an estimate.
+        cached = error is None and last_async_cache_hit()
         prompt_text = "\n".join(str(m.get("content") or "") for m in messages)
         recorder.add_llm_call(
             purpose=purpose,
@@ -552,9 +555,10 @@ class DeepResearcher:
             endpoint=self.llm_endpoint,
             started_at=started_at,
             latency_ms=int((time.monotonic() - started) * 1000),
-            input_tokens=usage["input_tokens"] if usage else estimate_tokens(prompt_text),
-            output_tokens=usage["output_tokens"] if usage else estimate_tokens(response or ""),
-            tokens_estimated=usage is None,
+            input_tokens=0 if cached else usage["input_tokens"] if usage else estimate_tokens(prompt_text),
+            output_tokens=0 if cached else usage["output_tokens"] if usage else estimate_tokens(response or ""),
+            tokens_estimated=usage is None and not cached,
+            cached=cached,
             error=None if error is None else f"{type(error).__name__}: {getattr(error, 'detail', error)}"[:500],
             source_id=source_id,
         )

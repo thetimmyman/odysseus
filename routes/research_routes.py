@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from src.endpoint_resolver import resolve_endpoint
 from src.auth_helpers import _auth_disabled, get_current_user
 from src.constants import DEEP_RESEARCH_DIR
+from src.research_run_record import sweep_orphan_blobs
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9-]{1,128}$")
 
@@ -382,6 +383,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
                 raise HTTPException(404, "Research not found")
             json_path.unlink()
             deleted = True
+            sweep_orphan_blobs(data_dir)
         return {"deleted": deleted}
 
     # ------------------------------------------------------------------
