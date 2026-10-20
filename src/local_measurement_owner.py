@@ -17,8 +17,26 @@ from src.endpoint_identity import canonical_endpoint_identity
 from src.constants import (LOCAL_QUALIFICATION_BEFORE_FILENAME, LOCAL_QUALIFICATION_AFTER_FILENAME,
                            LOCAL_QUALIFICATION_FAILURE_FILENAME, LOCAL_QUALIFICATION_RECEIPT_FILENAME,
                            LOCAL_MEASUREMENT_OWNERSHIP_FILENAME)
-from src.local_target_qualification import (measure_changed_host_profile, measure_changed_route_profile,
-                                          measure_new_profile)
+from src.local_target_qualification import (QualificationError, measure_changed_host_profile,
+                                          measure_changed_route_profile, measure_new_profile)
+
+
+def _safe_failure_detail(exc):
+    """The exception message when it is ours to publish, otherwise nothing.
+
+    QualificationError is raised only by this module's own validation, with
+    fixed strings that name the predicate that refused. Those strings are the
+    difference between one run and one run per hypothesis, so they are kept.
+
+    Every other exception can carry provider, collector or broker material
+    (endpoints, container ids, response snippets), so only its class name is
+    recorded: the failure record is a durable artifact and must stay safe to
+    hand to a reviewer.
+    """
+    if isinstance(exc, QualificationError):
+        detail = str(exc).strip()
+        return detail[:300]
+    return ''
 
 
 class MeasurementUnresolved(ValueError):
@@ -262,6 +280,7 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
             cleanup = {'state':'UNKNOWN', 'failure_class':type(cleanup_error).__name__}
         _write(folder / LOCAL_QUALIFICATION_FAILURE_FILENAME, {
             'status': 'UNRESOLVED', 'failure_class': type(exc).__name__,
+            'failure_detail': _safe_failure_detail(exc),
             'failed_stage': stage,
             'lease': lease.evidence(), 'receipt_accepted': False,
             'cleanup':cleanup, 'processes':_process_evidence(processes),
