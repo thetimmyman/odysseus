@@ -1117,3 +1117,9 @@ def test_a_capped_json_file_does_not_fall_back_to_its_text_prefix(tmp_path):
 
 def test_a_query_cut_inside_a_word_drops_the_partial_word():
     assert me._query_tokens("a " * 998 + "needleSuffix") == []
+
+
+def test_a_utf8_bom_does_not_discard_the_measurements():
+    raw = b'\xef\xbb\xbf{"measurements": [{"subject": "a", "metric": "m", "unit": "u", "value": 3}]}'
+    parsed, _ = me._parse_measurements_capped(raw, "p")
+    assert [m.subject for m in parsed] == ["a"]

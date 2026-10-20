@@ -434,7 +434,7 @@ def _parse_measurements_capped(raw, path) -> tuple:
     try:
         # Strict UTF-8 only: json.loads would auto-detect UTF-16/32, but the cited text is decoded as
         # UTF-8, so measurements from another encoding would not be represented by that text.
-        data = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw, parse_int=_bounded_int, parse_float=_checked_float)
+        data = json.loads(raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else raw, parse_int=_bounded_int, parse_float=_checked_float)
     except (ValueError, TypeError, RecursionError):
         return (), False
     if not isinstance(data, dict):
