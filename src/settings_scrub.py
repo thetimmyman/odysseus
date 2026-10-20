@@ -14,6 +14,8 @@ on secret-shaped names.
 
 import re
 
+from src.constants import MEASURED_EVIDENCE_ROOT_SETTING
+
 _SECRET_KEY_PATTERNS = (
     "_api_key", "_apikey", "_password", "_passwd", "_pass", "_pwd",
     "_secret", "_client_secret", "_token", "_access_token", "_refresh_token",
@@ -25,6 +27,8 @@ _SENSITIVE_KEY_EXACT = (
     # trigger outbound webhook sends; do not expose it to non-admin settings
     # callers even though it is not secret-shaped.
     "reminder_webhook_integration_id",
+    # A host filesystem path (usernames, mounts, directory layout): not for pre-login callers.
+    MEASURED_EVIDENCE_ROOT_SETTING,
 )
 
 
@@ -50,6 +54,8 @@ def _scrub_value(key, value):
     stored under a non-secret parent key (e.g.
     ``{"email_account": {"smtp_password": "..."}}``) is still blanked. Only
     non-empty *string* values are blanked; presence is preserved."""
+    if _canonical_key_name(str(key)) in _SENSITIVE_KEY_EXACT and value not in (None, "", {}, []):
+        return ""  # an exact-sensitive key is masked whole, whatever JSON type was stored
     if isinstance(value, dict):
         return {
             k: ("" if (is_secret_key(k) and isinstance(v, str) and v)

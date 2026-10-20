@@ -194,3 +194,8 @@ LOCAL_MEASUREMENT_OWNERSHIP_FILENAME = "ownership.json"
 
 # Content-addressed artifacts inside a caller-selected retained evidence root.
 EVIDENCE_BLOB_DIRNAME = "blobs"
+
+# Settings keys for the measured-evidence research provider (src/measured_evidence.py). The root
+# is a host path, so settings_scrub blanks it for public callers.
+MEASURED_EVIDENCE_SETTING = "research_measured_evidence"
+MEASURED_EVIDENCE_ROOT_SETTING = "research_measured_evidence_root"
