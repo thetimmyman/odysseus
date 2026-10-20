@@ -651,6 +651,17 @@ def sweep_orphan_blobs(research_dir: Optional[Path] = None,
         return 0
 
 
+def sweep_after_delete(research_dir: Optional[Path] = None, deleted: Optional[dict] = None) -> int:
+    """sweep_orphan_blobs for a delete path, given the session JSON just deleted.
+
+    A session still marked running was a live task: it is still carrying its
+    parent's blobs and will write the session back when it finishes, so its
+    blobs are kept (the sweep on that save revisits them)."""
+    if isinstance(deleted, dict) and deleted.get("status") == "running":
+        return 0
+    return sweep_orphan_blobs(research_dir)
+
+
 def sweep_orphan_blobs_if_due(research_dir: Optional[Path] = None,
                               grace_seconds: float = BLOB_SWEEP_GRACE_SECONDS) -> int:
     """sweep_orphan_blobs at most once per grace window per process.

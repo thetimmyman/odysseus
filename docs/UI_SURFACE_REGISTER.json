@@ -52,7 +52,7 @@
       "routes/prefs_routes.py": "ac4564759253e61490b6968893b3ec257e646adfa8e69fc6b8ce27f7d744c79c",
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
       "routes/project_files_routes.py": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
-      "routes/research_routes.py": "910e65a7d923de7b57abbc53a8e8bc97cf1973358de70117fece263a5185129d",
+      "routes/research_routes.py": "2b67572321cf88228cfc8ae0a8585dec1e0e320b26d53449b48bf24302bfa83d",
       "routes/routing_harness_routes.py": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
       "routes/search_routes.py": "1510aa0e1bbf5cf537aea90406e29f95407eda507264e3d9eec09ca19fc4fb6a",
       "routes/session_routes.py": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
@@ -2976,7 +2976,7 @@
           {
             "path": "routes/research_routes.py",
             "line": 1,
-            "sha256": "910e65a7d923de7b57abbc53a8e8bc97cf1973358de70117fece263a5185129d",
+            "sha256": "2b67572321cf88228cfc8ae0a8585dec1e0e320b26d53449b48bf24302bfa83d",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -3061,7 +3061,7 @@
             "evidence": {
               "path": "routes/research_routes.py",
               "line": 231,
-              "sha256": "910e65a7d923de7b57abbc53a8e8bc97cf1973358de70117fece263a5185129d",
+              "sha256": "2b67572321cf88228cfc8ae0a8585dec1e0e320b26d53449b48bf24302bfa83d",
               "claim": "Route-rendered HTML entry /api/research/report/{session_id}."
             }
           }
@@ -12979,7 +12979,7 @@
         "source": {
           "path": "routes/research_routes.py",
           "line": 231,
-          "sha256": "910e65a7d923de7b57abbc53a8e8bc97cf1973358de70117fece263a5185129d",
+          "sha256": "2b67572321cf88228cfc8ae0a8585dec1e0e320b26d53449b48bf24302bfa83d",
           "claim": "Route returns an HTML research report; grouped under Deep Research report view."
         },
         "classification": "html_subview"
