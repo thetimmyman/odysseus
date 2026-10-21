@@ -531,6 +531,45 @@ def test_render_shows_a_filled_sections_text_and_evidence():
     assert body[1] == "Evidence: licence.ref"
 
 
+def test_render_of_accepted_direct_mixed_refs_shows_only_real_refs():
+    """A draft the validator accepts must render for human review.
+
+    Directly constructed refs can mix real strings with non-strings.  The
+    validator accepts the section because a legitimate string is present; the
+    renderer must show exactly those real, trimmed refs and never a ``None``,
+    ``0`` or ``{}`` placeholder.
+    """
+    section = RulingSection(
+        FILLED,
+        "Synthetic assertion",
+        ("fixture:licence", None, 0, {}, "  fixture:second  "),
+    )
+    draft = _with_section(_skeleton(), "licence", section)
+    assert validate_ruling(draft) == []
+    markdown = render_ruling_markdown(draft)
+    body = _section_bodies(markdown)["licence"]
+    assert body[0] == "Synthetic assertion"
+    assert body[1] == "Evidence: fixture:licence, fixture:second"
+    assert "None" not in markdown
+    assert "{}" not in markdown
+    assert markdown.splitlines()[-1] == DRAFT_FOOTER
+
+
+def test_direct_refs_with_no_real_string_are_still_rejected():
+    """Negative control: dropping non-strings must not admit an evidence-free draft."""
+    section = RulingSection(FILLED, "Synthetic assertion", (None, 0, {}, "   "))
+    draft = _with_section(_skeleton(), "licence", section)
+    assert validate_ruling(draft) == ["section 'licence' is FILLED without evidence refs"]
+
+
+def test_render_of_a_legitimate_full_ruling_is_unchanged():
+    """Positive control: a normal FILLED ruling renders as before the fix."""
+    markdown = render_ruling_markdown(_clean_draft("adopt"))
+    body = _section_bodies(markdown)["licence"]
+    assert body == ["licence text", "Evidence: licence.ref"]
+    assert markdown.splitlines()[-1] == DRAFT_FOOTER
+
+
 def test_render_is_deterministic():
     first = render_ruling_markdown(_clean_draft("adopt"))
     second = render_ruling_markdown(_clean_draft("adopt"))

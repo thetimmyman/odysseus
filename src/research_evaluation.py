@@ -479,7 +479,7 @@ def render_ruling_markdown(draft: RulingDraft) -> str:
         if section.status == FILLED:
             lines.append(section.text)
             lines.append("")
-            lines.append("Evidence: " + ", ".join(section.evidence_refs))
+            lines.append("Evidence: " + ", ".join(_clean_refs(section.evidence_refs)))
         else:
             lines.append(section.status)
         lines.append("")
