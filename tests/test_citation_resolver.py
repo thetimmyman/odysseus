@@ -6,6 +6,7 @@ is performed and no network client is involved.
 """
 
 import os
+from urllib.parse import unquote
 
 import pytest
 
@@ -89,6 +90,11 @@ def _arxiv(identifier, **kw):
         ("doi:10.1234/foo", "10.1234/foo"),
         ("DOI:10.1234/Foo", "10.1234/foo"),
         ("10.123456789/x", "10.123456789/x"),
+        ("10.12345678901/x", "10.12345678901/x"),  # no length ceiling
+        ("10.1000.10/x", "10.1000.10/x"),  # segmented registrant code
+        ("10.1000/ABC 123", "10.1000/abc 123"),  # plain space inside the suffix
+        ("10.1234/foo bar", "10.1234/foo bar"),
+        ("https://doi.org/10.1234/foo%20bar", "10.1234/foo bar"),
     ],
 )
 def test_normalize_doi_accepts(raw, expected):
@@ -125,6 +131,43 @@ def test_doi_url_with_encoded_hash_is_encoded_once_for_the_authority():
     assert fetcher.calls == [DOI_URL + "10.1234/res%23test"]
 
 
+def test_doi_url_with_encoded_space_resolves_with_the_space_encoded():
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    result = resolve_citation(
+        _doi("https://doi.org/10.1234/foo%20bar"), fetcher=fetcher
+    )
+    assert result.status == TRUE
+    assert fetcher.calls == [DOI_URL + "10.1234/foo%20bar"]
+
+
+def test_bare_doi_with_a_space_resolves_and_the_url_carries_it_encoded():
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    result = resolve_citation(_doi("10.1234/foo bar"), fetcher=fetcher)
+    assert result.status == TRUE
+    assert fetcher.calls == [DOI_URL + "10.1234/foo%20bar"]
+
+
+@pytest.mark.parametrize("identifier", ["10.1234/a/../b", "10.1234/a/./b", "10.1234/a/.", "10.1234/a/.."])
+def test_doi_url_encodes_the_slash_before_a_dot_segment(identifier):
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    resolve_citation(_doi(identifier), fetcher=fetcher)
+    assert len(fetcher.calls) == 1
+    url = fetcher.calls[0]
+    # A client is free to resolve /./ and /../ away, so neither may appear.
+    assert "/../" not in url
+    assert "/./" not in url
+    # Only the URL changed; percent-decoding it yields the cited DOI again.
+    assert unquote(url[len(DOI_URL):]) == identifier
+    assert normalize_doi(identifier) == identifier
+
+
+def test_doi_url_leaves_an_ordinary_dot_unchanged():
+    # Control for the dot-segment test: a dot inside a segment is content.
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    resolve_citation(_doi("10.1234/a.b/c"), fetcher=fetcher)
+    assert fetcher.calls == [DOI_URL + "10.1234/a.b/c"]
+
+
 def test_normalize_doi_lowercases_ascii_only_and_rejects_lone_surrogates():
     assert normalize_doi("10.1234/ABC-Á") == "10.1234/abc-Á"  # A-Z fold, non-ASCII case is kept
     assert normalize_doi("10.1234/\ud800") is None
@@ -158,8 +201,19 @@ def test_normalize_doi_known_good_control():
         "",
         "   ",
         "10.12/x",  # registrant prefix too short
-        "10.1000/foo bar",  # whitespace inside
+        "10./x",  # no registrant code at all
+        "10.1234./x",  # a further registrant segment needs digits
+        "10.1234.a/x",  # .a is not a registrant segment
         "10.1000/",  # empty suffix
+        "10.1234/ x",  # a leading space in the suffix is not stripped away
+        "10.1234/foo\tbar",  # tab is whitespace, not a DOI space
+        "10.1234/foo\nbar",  # so is a newline
+        "10.1234/foo\u00a0bar",  # and NBSP
+        # The whole identifier is stripped, so a bare trailing space disappears
+        # before validation; one that arrives percent-encoded survives and is
+        # rejected, as is a leading one.
+        "https://doi.org/10.1234/foo%20bar%20",
+        "https://doi.org/10.1234/%20foo",
         "not-a-doi",
         "11.1000/x",  # wrong registrant root
         "10.١٢٣٤/x",  # non-ASCII digits in the registrant prefix
@@ -183,12 +237,28 @@ def test_normalize_doi_rejects(raw):
         ("1501.00001v1", "1501.00001v1"),
         ("arXiv:2101.00001", "2101.00001"),
         ("hep-th/9901001", "hep-th/9901001"),
-        ("math.GT/0309136", "math.gt/0309136"),
+        ("math.GT/0309136", "math/0309136"),  # subject class is not the id
+        ("math/0309136", "math/0309136"),
+        ("math.GT/0309136v2", "math/0309136v2"),
         ("  arXiv:hep-th/9901001v1  ", "hep-th/9901001v1"),
     ],
 )
 def test_normalize_arxiv_accepts(raw, expected):
     assert normalize_arxiv(raw) == expected
+
+
+def test_arxiv_old_style_subject_class_is_not_sent_as_the_identifier():
+    for spelling in ("math.GT/0309136", "math/0309136"):
+        fetcher = RecordingFetcher(ARXIV_OK)
+        result = resolve_citation(_arxiv(spelling), fetcher=fetcher)
+        assert result.status == TRUE
+        assert fetcher.calls == [ARXIV_URL + "math/0309136"]
+
+
+def test_arxiv_old_style_subject_class_keeps_the_version_suffix():
+    fetcher = RecordingFetcher(ARXIV_OK)
+    resolve_citation(_arxiv("math.GT/0309136v2"), fetcher=fetcher)
+    assert fetcher.calls == [ARXIV_URL + "math/0309136v2"]
 
 
 def test_normalize_arxiv_known_good_control():

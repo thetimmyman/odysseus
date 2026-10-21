@@ -18,7 +18,9 @@ Fetcher contract
 
 * The URL is one this module builds:
 
-  - DOI:   ``https://api.crossref.org/works/<percent-encoded doi>``
+  - DOI:   ``https://api.crossref.org/works/<percent-encoded doi>`` (the
+    slash before a suffix segment that is exactly ``.`` or ``..`` is encoded
+    as ``%2F`` so no path client resolves it away)
   - arXiv: ``https://export.arxiv.org/api/query?id_list=<id>``
 
 * It returns the parsed JSON of the authority response, or ``None`` when the
@@ -104,7 +106,18 @@ DOI_PREFIXES = ("https://doi.org/", "http://dx.doi.org/", "doi:")
 CROSSREF_WORKS_URL = "https://api.crossref.org/works/"
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?id_list="
 
-_DOI_RE = re.compile(r"10\.[0-9]{4,9}/[^\s\x00-\x1f\x7f]+")
+# A DOI name is ``10.`` + registrant + ``/`` + suffix.  The registrant is four
+# or more ASCII digits, optionally followed by further ``.``-separated digit
+# segments (``10.1000.10/x``); there is no upper length bound.  The suffix takes
+# Unicode graphic characters and plain U+0020 spaces, but no other whitespace
+# and no control characters.  The whole identifier is stripped before this
+# runs, yet a space that arrived percent-encoded (``...foo%20``) is not, so the
+# suffix is required to start and end with a non-space character.
+_DOI_SUFFIX_CHAR = r"[^\s\x00-\x1f\x7f]"
+_DOI_RE = re.compile(
+    r"10\.[0-9]{4,}(?:\.[0-9]+)*/"
+    rf"{_DOI_SUFFIX_CHAR}(?:(?:{_DOI_SUFFIX_CHAR}| )*{_DOI_SUFFIX_CHAR})?"
+)
 _ARXIV_NEW_RE = re.compile(
     r"(?:(?:07(?:0[4-9]|1[0-2])|0[89](?:0[1-9]|1[0-2])|1[0-4](?:0[1-9]|1[0-2]))\.(?!0000)[0-9]{4}"
     r"|(?:1[5-9]|[2-9][0-9])(?:0[1-9]|1[0-2])\.(?!00000)[0-9]{5})"
@@ -168,9 +181,12 @@ def normalize_doi(s: str) -> Optional[str]:
 
     Accepts an optional ``https://doi.org/`` / ``http://dx.doi.org/`` /
     ``doi:`` prefix (case-insensitive) and surrounding whitespace.  The
-    registrant prefix must be ``10.`` plus 4-9 ASCII digits and the suffix must be
-    non-empty with no whitespace or control characters (Unicode is allowed).
-    A DOI given as a ``https://`` URL is percent-decoded once.
+    registrant prefix must be ``10.`` plus four or more ASCII digits
+    (further ``.``-separated digit segments such as ``10.1000.10`` are
+    allowed), and the suffix must be non-empty with no control characters and
+    no whitespace other than single U+0020 spaces between its characters
+    (Unicode is allowed).  A DOI given as a ``https://`` URL is
+    percent-decoded once.
     """
     if not isinstance(s, str):
         return None
@@ -229,7 +245,10 @@ def normalize_arxiv(s: str) -> Optional[str]:
     Accepts new style ``YYMM.NNNN`` / ``YYMM.NNNNN`` with an optional
     ``vN``, and old style ``category/YYMMNNN`` (``hep-th/9901001``), each
     with an optional ``arXiv:`` prefix.  Returns the id with the prefix
-    stripped and lowercased.  Syntax is ASCII-only, the ``YYMM`` month must
+    stripped and lowercased.  An old-style subject class (``math.GT/0309136``)
+    is classification metadata, not part of the identifier arXiv indexes for
+    the paper, so it is dropped: that input normalises to ``math/0309136``.
+    Syntax is ASCII-only, the ``YYMM`` month must
     be 01..12, new-style ids start at 0704 (April 2007) and old-style ids run
     from 9107 to 0703, a new-style sequence is four digits before 1501 and five
     from 1501 on, and a version suffix is ``v1`` or higher with no leading zero.
@@ -240,8 +259,14 @@ def normalize_arxiv(s: str) -> Optional[str]:
     if value.lower().startswith("arxiv:"):
         value = value[len("arxiv:"):].strip()
     value = value.lower()
-    if _ARXIV_NEW_RE.fullmatch(value) or _ARXIV_OLD_RE.fullmatch(value):
+    if _ARXIV_NEW_RE.fullmatch(value):
         return value
+    if _ARXIV_OLD_RE.fullmatch(value):
+        # ``math.GT/0309136``: arXiv identifies the paper as ``math/0309136``;
+        # the ``.GT`` is the subject classification, so it is not sent as part
+        # of ``id_list``.  The archive part holds at most one dot.
+        archive, _, rest = value.partition("/")
+        return f"{archive.partition('.')[0]}/{rest}"
     return None
 
 
@@ -255,6 +280,26 @@ def _percent_encode(value: str) -> str:
         else:
             out.append("%%%02X" % byte)
     return "".join(out)
+
+
+def _doi_path(doi: str) -> str:
+    """Percent-encode a DOI for the Crossref URL path, defusing dot segments.
+
+    ``_percent_encode`` keeps ``/`` literal, which is right for the DOI's own
+    structure.  A suffix segment that is exactly ``.`` or ``..`` is not content
+    though: an HTTP client or intermediary is entitled to resolve ``/./`` and
+    ``/../`` away, which would look up a different DOI.  Encode the slash that
+    precedes such a segment as ``%2F`` so the path carries neither sequence;
+    percent-decoding the result still yields the original DOI.
+    """
+    segments = _percent_encode(doi).split("/")
+    out = [segments[0]]
+    for segment in segments[1:]:
+        if segment in (".", ".."):
+            out[-1] += "%2F" + segment
+        else:
+            out.append(segment)
+    return "/".join(out)
 
 
 def _clip(text: str) -> str:
@@ -357,7 +402,7 @@ def resolve_citation(
 
     if ref.kind == "doi":
         identifier = normalize_doi(ref.identifier)
-        url = CROSSREF_WORKS_URL + _percent_encode(identifier) if identifier else None
+        url = CROSSREF_WORKS_URL + _doi_path(identifier) if identifier else None
     elif ref.kind == "arxiv":
         identifier = normalize_arxiv(ref.identifier)
         url = ARXIV_QUERY_URL + identifier if identifier else None
