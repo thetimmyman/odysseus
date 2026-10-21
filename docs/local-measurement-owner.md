@@ -3,8 +3,21 @@
 `scripts/odysseus-measure-once` owns one normal P1 RTX lease and calls the
 existing changed-host qualifier. It does not register, import, activate,
 dispatch, renew an old profile, or change routing policy. Its only successful
-output is a private new approximate 4K candidate. The earlier receipt remains
-historical evidence.
+output is a private new approximate candidate at the declared context floor
+(4K by default). The earlier receipt remains historical evidence.
+
+`--context-floor <tokens>` declares the floor the measurement must prove. It must
+be a multiple of 1024 between 4096 and 131072, and the provider's own reported
+prompt tokens must reach it: the floor is never inferred from configuration, and
+a profile configured for a larger context does not become evidence of one. The
+floor must also fit the servable context: the engine's per-request slot limit when
+the profile records one, otherwise the configured context. A larger floor is
+refused before any lease or provider request. The upper bound exists because the prompt is sized to the floor and must stay inside
+the bounded worker HTTP payload. The probe is sized on characters rather than
+tokens, deliberately overshooting, because no tokenizer is available at this
+layer: a denser tokenizer costs prefill time, a sparser one is refused, and
+neither can produce a false pass. The sealed report records `context_floor`, so a
+receipt cannot be read as a floor it did not measure.
 
 `--new-profile <separate-descriptor.json>` instead measures a genuinely new
 request contract. It is mutually exclusive with `--receipt`, changed-route,
@@ -31,12 +44,14 @@ It does not use the old changed-route exception to hide other drift.
 Fresh-profile measurement uses the same local process proofs, projection,
 normal owned lease, bounded native capture, postcheck and cleanup-before-release
 flow described below. Only successful trials, stable post-identity and the
-acknowledged release permit atomic publication of a new approximate4K candidate
-with its own report anchor and empty supersedes. The descriptor remains
+acknowledged release permit atomic publication of a new approximate candidate at
+the declared floor, with its own report anchor and empty supersedes. The descriptor remains
 unqualified and unchanged. No import, registration, activation, routing or
 pilot admission follows. A configured or advertised larger context does not
-turn this4K measurement into32K evidence. Existing renewal, changed-host and
-changed-route inputs and guards remain unchanged.
+become evidence of itself: a measurement at 4K cannot be read as 32K evidence, and
+only a run whose `--context-floor` and reported prompt tokens both reach the
+higher figure may claim it. Existing renewal, changed-host and changed-route
+inputs and guards remain unchanged.
 
 `--changed-route --current-spec <separate-file>` explicitly measures a newly
 observed hostname instead. The old receipt/specification stays immutable. The
@@ -47,7 +62,8 @@ must independently bind that actual route to the published serving container,
 unchanged runtime/artifact, GPU and request options. Only the observed kernel,
 boot identity and endpoint URL may differ from historical material. This mode
 derives an UNQUALIFIED new profile and requires the same two complete trials
-and stable fresh post-identity before a new 4K receipt with its own anchor.
+and stable fresh post-identity before a new receipt at the declared floor with
+its own anchor.
 It requires an explicit owned transport, with no unbounded default fallback.
 The default changed-host mode and same-profile renewal still refuse endpoint
 changes. No alias equivalence, broker configuration change or activation is

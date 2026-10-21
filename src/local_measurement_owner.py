@@ -17,8 +17,9 @@ from src.endpoint_identity import canonical_endpoint_identity
 from src.constants import (LOCAL_QUALIFICATION_BEFORE_FILENAME, LOCAL_QUALIFICATION_AFTER_FILENAME,
                            LOCAL_QUALIFICATION_FAILURE_FILENAME, LOCAL_QUALIFICATION_RECEIPT_FILENAME,
                            LOCAL_MEASUREMENT_OWNERSHIP_FILENAME)
-from src.local_target_qualification import (QualificationError, measure_changed_host_profile,
-                                          measure_changed_route_profile, measure_new_profile)
+from src.local_target_qualification import (CONTEXT_FLOOR_DEFAULT, CONTEXT_FLOOR_MAX, QualificationError,
+                                          measure_changed_host_profile,
+                                          measure_changed_route_profile, measure_new_profile, _servable_context)
 
 
 def _safe_failure_detail(exc):
@@ -200,7 +201,8 @@ def _configuration_evidence(processes):
 
 
 def measure_once(spec, previous, identity_command, output_dir, *, lease, processes,
-                 current_spec=None, new_profile=False, now=None):
+                 current_spec=None, new_profile=False, now=None,
+                 context_floor=CONTEXT_FLOOR_DEFAULT):
     """Run the existing two trials once; publish only after explicit release ACK.
 
     processes supplies bounded, qualified owned-client captures. Successful
@@ -217,6 +219,9 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
     try:
         if (getattr(processes, 'qualified', False) is not True
                 or type(new_profile) is not bool or new_profile and current_spec is not None
+                or type(context_floor) is not int or context_floor < CONTEXT_FLOOR_DEFAULT
+                or context_floor % 1024 or context_floor > CONTEXT_FLOOR_MAX
+                or context_floor > _servable_context(previous.context)
                 or new_profile and not callable(getattr(processes, 'finish_capture', None))
                 or execution_spec.runtime_kind != 'ollama' or execution_spec.transport != 'http'
                 or execution_spec.max_concurrency != 1
@@ -247,13 +252,16 @@ def measure_once(spec, previous, identity_command, output_dir, *, lease, process
         after = lambda: capture(LOCAL_QUALIFICATION_AFTER_FILENAME)
         if new_profile:
             candidate, _ = measure_new_profile(spec, previous, before, after,
-                                               folder, transport=send, now=now)
+                                               folder, transport=send, now=now,
+                                               context_floor=context_floor)
         elif current_spec is None:
             candidate, _ = measure_changed_host_profile(spec, previous, before, after,
-                                                        folder, transport=send, now=now)
+                                                        folder, transport=send, now=now,
+                                                        context_floor=context_floor)
         else:
             candidate, _ = measure_changed_route_profile(spec, current_spec, previous, before,
-                                                         after, folder, transport=send, now=now)
+                                                         after, folder, transport=send, now=now,
+                                                         context_floor=context_floor)
         # Private capture resources must be finalized BEFORE release and the
         # last atomic publication. Cleanup cannot invalidate a published receipt.
         stage = 'capture_cleanup'
