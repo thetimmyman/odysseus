@@ -40,9 +40,14 @@ Statuses (see :class:`CitationResult`), with the same vocabulary as
                    metadata does not match, or the identifier was malformed
                    and rejected before any lookup.
 * ``UNRESOLVABLE`` no authority could answer (no fetcher, the fetcher raised
-                   or returned ``None``), or the authority confirmed the
+                   or returned ``None``), the authority confirmed the
                    identifier but returned none of the title / authors the
-                   citation asks to be checked (``METADATA_UNAVAILABLE``).  A no-answer is never ``FALSE``.
+                   citation asks to be checked (``METADATA_UNAVAILABLE``), or
+                   Crossref has no record of a DOI, which may be registered
+                   with another agency (``REGISTRY_NOT_COVERED``).  A
+                   no-answer is never ``FALSE``.
+* ``FALSE`` for a missing arXiv id: arXiv is the sole registry for its own
+                   identifiers (``NOT_FOUND``).
 * ``NOT_SEARCHED`` no lookup was performed at all (provider disabled).
 """
 
@@ -62,6 +67,7 @@ __all__ = [
     "NO_FETCHER",
     "AUTHORITY_UNREACHABLE",
     "NOT_FOUND",
+    "REGISTRY_NOT_COVERED",
     "TITLE_MISMATCH",
     "AUTHOR_MISMATCH",
     "EXISTENCE_ONLY",
@@ -86,6 +92,7 @@ MALFORMED_ID = "MALFORMED_ID"
 NO_FETCHER = "NO_FETCHER"
 AUTHORITY_UNREACHABLE = "AUTHORITY_UNREACHABLE"
 NOT_FOUND = "NOT_FOUND"
+REGISTRY_NOT_COVERED = "REGISTRY_NOT_COVERED"
 TITLE_MISMATCH = "TITLE_MISMATCH"
 AUTHOR_MISMATCH = "AUTHOR_MISMATCH"
 EXISTENCE_ONLY = "EXISTENCE_ONLY"
@@ -95,9 +102,16 @@ DOI_PREFIXES = ("https://doi.org/", "http://dx.doi.org/", "doi:")
 CROSSREF_WORKS_URL = "https://api.crossref.org/works/"
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?id_list="
 
-_DOI_RE = re.compile(r"10\.\d{4,9}/\S+")
-_ARXIV_NEW_RE = re.compile(r"\d{4}\.\d{4,5}(?:v\d+)?")
-_ARXIV_OLD_RE = re.compile(r"[a-z][a-z-]*(?:\.[a-z]{2})?/\d{7}(?:v\d+)?")
+_DOI_RE = re.compile(r"10\.[0-9]{4,9}/[!-~]+")
+_ARXIV_NEW_RE = re.compile(
+    r"(?:(?:0[0-9]|1[0-4])(?:0[1-9]|1[0-2])\.[0-9]{4}"
+    r"|(?:1[5-9]|[2-9][0-9])(?:0[1-9]|1[0-2])\.[0-9]{5})"
+    r"(?:v[1-9][0-9]*)?"
+)
+_ARXIV_OLD_RE = re.compile(
+    r"[a-z][a-z-]*(?:\.[a-z]{2})?/[0-9]{2}(?:0[1-9]|1[0-2])[0-9]{3}"
+    r"(?:v[1-9][0-9]*)?"
+)
 _WS_RE = re.compile(r"\s+")
 
 # Echoed authority text is untrusted: never repeat more than this in detail.
@@ -172,7 +186,9 @@ def normalize_arxiv(s: str) -> Optional[str]:
     Accepts new style ``YYMM.NNNN`` / ``YYMM.NNNNN`` with an optional
     ``vN``, and old style ``category/YYMMNNN`` (``hep-th/9901001``), each
     with an optional ``arXiv:`` prefix.  Returns the id with the prefix
-    stripped and lowercased.
+    stripped and lowercased.  Syntax is ASCII-only, the ``YYMM`` month must
+    be 01..12, a new-style sequence is four digits before 1501 and five from
+    1501 on, and a version suffix is ``v1`` or higher with no leading zero.
     """
     if not isinstance(s, str):
         return None
@@ -337,6 +353,16 @@ def resolve_citation(
 
     extracted = _read_authority(ref.kind, payload)
     if extracted is None:
+        if ref.kind == "doi":
+            # Crossref /works only indexes DOIs registered with Crossref.
+            # A miss does not prove the DOI does not exist: it may be
+            # registered with another agency such as DataCite.
+            return CitationResult(
+                ref,
+                UNRESOLVABLE,
+                [REGISTRY_NOT_COVERED],
+                "Crossref has no record; the DOI may be registered with another agency",
+            )
         return CitationResult(
             ref,
             FALSE,
@@ -346,20 +372,9 @@ def resolve_citation(
 
     title, authors, full_names = extracted
 
-    # The authority knows the identifier but did not return the metadata the
-    # citation asks us to check: that is a no-answer, never TRUE and never
-    # FALSE.
-    if (ref.title is not None and title is None) or (
-        ref.first_author_surname is not None and not authors
-    ):
-        return CitationResult(
-            ref,
-            UNRESOLVABLE,
-            [METADATA_UNAVAILABLE],
-            "authority confirms the identifier but returned no metadata to compare",
-            title,
-        )
-
+    # Compare every field the authority did return before treating a missing
+    # field as a no-answer: a returned field that contradicts the citation is
+    # a definitive FALSE, whatever the authority omitted.
     if ref.title is not None and title is not None:
         if _norm_text(ref.title) != _norm_text(title):
             return CitationResult(
@@ -370,7 +385,7 @@ def resolve_citation(
                 title,
             )
 
-    if ref.first_author_surname is not None:
+    if ref.first_author_surname is not None and authors:
         if not _author_matches(ref.first_author_surname, authors, full_names):
             return CitationResult(
                 ref,
@@ -379,6 +394,19 @@ def resolve_citation(
                 "cited first-author surname is not among the authority authors",
                 title,
             )
+
+    # Nothing returned disproved the citation, but a requested field could not
+    # be checked: that is a no-answer, never TRUE and never FALSE.
+    if (ref.title is not None and title is None) or (
+        ref.first_author_surname is not None and not authors
+    ):
+        return CitationResult(
+            ref,
+            UNRESOLVABLE,
+            [METADATA_UNAVAILABLE],
+            "authority confirms the identifier but returned no metadata to compare",
+            title,
+        )
 
     if ref.title is None and ref.first_author_surname is None:
         return CitationResult(

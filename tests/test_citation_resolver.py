@@ -21,6 +21,7 @@ from src.citation_resolver import (
     NOT_SEARCHED,
     NO_FETCHER,
     PROVIDER_DISABLED,
+    REGISTRY_NOT_COVERED,
     TITLE_MISMATCH,
     TRUE,
     UNRESOLVABLE,
@@ -109,6 +110,7 @@ def test_normalize_doi_known_good_control():
         "10.1000/",  # empty suffix
         "not-a-doi",
         "11.1000/x",  # wrong registrant root
+        "10.١٢٣٤/x",  # non-ASCII digits in the registrant prefix
         None,
     ],
 )
@@ -123,8 +125,10 @@ def test_normalize_doi_rejects(raw):
     "raw,expected",
     [
         ("2212.12345", "2212.12345"),
-        ("2212.1234", "2212.1234"),
+        ("0704.0001", "0704.0001"),
+        ("1501.00001", "1501.00001"),
         ("2212.12345v2", "2212.12345v2"),
+        ("1501.00001v1", "1501.00001v1"),
         ("arXiv:2101.00001", "2101.00001"),
         ("hep-th/9901001", "hep-th/9901001"),
         ("math.GT/0309136", "math.gt/0309136"),
@@ -147,6 +151,15 @@ def test_normalize_arxiv_known_good_control():
         "hep-th/99",  # old style needs seven digits
         "2212.123",  # new style needs four digits in the sequence
         "2212.123456",  # and at most five
+        "2212.1234",  # 22xx needs the five-digit sequence
+        "1501.0001",  # first five-digit year-month is 1501
+        "2213.12345",  # month 13
+        "2200.12345",  # month 00
+        "2212.12345v0",  # version starts at v1
+        "2212.12345v01",  # no leading zero in the version
+        "hep-th/9900001",  # old-style month 00
+        "hep-th/9913001",  # old-style month 13
+        "٢٢١٢.١٢٣٤٥",  # non-ASCII digits
         "abcd",
         "2101.00001v",  # version marker without a number
         None,
@@ -183,6 +196,49 @@ def test_malformed_arxiv_identifier_never_calls_fetcher():
     assert fetcher.calls == []
 
 
+@pytest.mark.parametrize(
+    "kind,identifier",
+    [
+        ("doi", "10.١٢٣٤/x"),  # non-ASCII DOI registrant digits
+        ("arxiv", "٢٢١٢.١٢٣٤٥"),  # non-ASCII digits
+        ("arxiv", "2213.12345"),  # month 13
+        ("arxiv", "2200.12345"),  # month 00
+        ("arxiv", "1501.0001"),  # five-digit sequence required from 1501
+        ("arxiv", "2212.12345v0"),  # version starts at v1
+        ("arxiv", "2212.12345v01"),  # no leading zero in the version
+        ("arxiv", "hep-th/9900001"),  # old-style month 00
+        ("arxiv", "hep-th/9913001"),  # old-style month 13
+    ],
+)
+def test_malformed_shapes_are_rejected_before_any_fetch(kind, identifier):
+    fetcher = RecordingFetcher(CROSSREF_OK if kind == "doi" else ARXIV_OK)
+    result = resolve_citation(
+        CitationRef(kind=kind, identifier=identifier), fetcher=fetcher
+    )
+    assert result.status == FALSE
+    assert MALFORMED_ID in result.flags
+    assert fetcher.calls == []
+
+
+@pytest.mark.parametrize(
+    "kind,identifier",
+    [
+        ("doi", "10.1000/xyz"),
+        ("arxiv", "0704.0001"),  # four-digit sequence before 1501
+        ("arxiv", "1501.00001"),  # five-digit sequence from 1501
+        ("arxiv", "2212.12345v1"),  # version v1
+        ("arxiv", "hep-th/9901001"),  # old style
+    ],
+)
+def test_accepted_shapes_reach_the_fetcher(kind, identifier):
+    fetcher = RecordingFetcher(CROSSREF_OK if kind == "doi" else ARXIV_OK)
+    result = resolve_citation(
+        CitationRef(kind=kind, identifier=identifier), fetcher=fetcher
+    )
+    assert result.status == TRUE
+    assert len(fetcher.calls) == 1
+
+
 def test_no_fetcher_is_unresolvable():
     result = resolve_citation(_doi("10.1000/xyz"))
     assert result.status == UNRESOLVABLE
@@ -204,25 +260,30 @@ def test_fetcher_returning_none_is_unresolvable_not_false():
     assert AUTHORITY_UNREACHABLE in result.flags
 
 
-def test_crossref_not_found_status_failed():
+def test_crossref_not_found_status_failed_is_registry_not_covered():
     fetcher = RecordingFetcher({"status": "failed"})
     result = resolve_citation(_doi("10.1000/xyz"), fetcher=fetcher)
-    assert result.status == FALSE
-    assert NOT_FOUND in result.flags
+    assert result.status == UNRESOLVABLE
+    assert REGISTRY_NOT_COVERED in result.flags
+    assert NOT_FOUND not in result.flags
+    assert "may be registered with another agency" in result.detail
 
 
-def test_crossref_not_found_missing_message():
+def test_crossref_not_found_missing_message_is_registry_not_covered():
     fetcher = RecordingFetcher({"status": "ok"})
     result = resolve_citation(_doi("10.1000/xyz"), fetcher=fetcher)
-    assert result.status == FALSE
-    assert NOT_FOUND in result.flags
+    assert result.status == UNRESOLVABLE
+    assert REGISTRY_NOT_COVERED in result.flags
+    assert NOT_FOUND not in result.flags
 
 
-def test_arxiv_not_found_empty_entries():
+def test_arxiv_not_found_is_still_false():
+    # arXiv is the sole registry for arXiv ids, so a miss is definitive.
     fetcher = RecordingFetcher({"entries": []})
     result = resolve_citation(_arxiv("2212.12345"), fetcher=fetcher)
     assert result.status == FALSE
     assert NOT_FOUND in result.flags
+    assert REGISTRY_NOT_COVERED not in result.flags
 
 
 def test_title_mismatch_reports_authority_title():
@@ -242,6 +303,34 @@ def test_author_mismatch():
     )
     assert result.status == FALSE
     assert AUTHOR_MISMATCH in result.flags
+
+
+def test_title_mismatch_wins_over_missing_authors():
+    # The authority returned a title (but no authors): the title contradicts
+    # the citation, so this is FALSE, not a missing-metadata no-answer.
+    fetcher = RecordingFetcher({"status": "ok", "message": {"title": ["Actual title"]}})
+    result = resolve_citation(
+        _doi("10.1000/xyz", title="Wrong title", first_author_surname="Rivera"),
+        fetcher=fetcher,
+    )
+    assert result.status == FALSE
+    assert TITLE_MISMATCH in result.flags
+    assert METADATA_UNAVAILABLE not in result.flags
+
+
+def test_author_mismatch_wins_over_missing_title():
+    # The authority returned authors (but no title): the author contradicts
+    # the citation, so this is FALSE, not a missing-metadata no-answer.
+    fetcher = RecordingFetcher(
+        {"status": "ok", "message": {"author": [{"family": "Rivera"}]}}
+    )
+    result = resolve_citation(
+        _doi("10.1000/xyz", title="Some title", first_author_surname="Nakamura"),
+        fetcher=fetcher,
+    )
+    assert result.status == FALSE
+    assert AUTHOR_MISMATCH in result.flags
+    assert METADATA_UNAVAILABLE not in result.flags
 
 
 def test_true_with_full_match_after_whitespace_and_case_folding():
@@ -289,11 +378,14 @@ def test_arxiv_title_mismatch():
 # --- negative controls: these must never come back TRUE --------------------
 
 
-def test_fabricated_doi_is_false():
-    # A made-up DOI whose stub authority answers "failed".
+def test_fabricated_doi_is_not_true():
+    # A made-up DOI whose stub authority answers "failed".  Crossref's miss
+    # cannot prove non-existence (another agency may hold it), so this is
+    # UNRESOLVABLE -- but never TRUE.
     fetcher = RecordingFetcher({"status": "failed"})
     result = resolve_citation(_doi("10.9999/does-not-exist"), fetcher=fetcher)
-    assert result.status == FALSE
+    assert result.status == UNRESOLVABLE
+    assert REGISTRY_NOT_COVERED in result.flags
     assert result.status != TRUE
 
 
@@ -359,7 +451,7 @@ def test_resolve_citations_preserves_order():
     ]
     out = resolve_citations(refs, fetcher=fetcher)
     assert [r.ref for r in out] == refs
-    assert [r.status for r in out] == [TRUE, FALSE, TRUE]
+    assert [r.status for r in out] == [TRUE, UNRESOLVABLE, TRUE]
 
 
 def test_long_authority_text_is_clipped_in_detail():
