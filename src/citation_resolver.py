@@ -42,7 +42,8 @@ Statuses (see :class:`CitationResult`), with the same vocabulary as
 * ``UNRESOLVABLE`` no authority could answer (no fetcher, the fetcher raised
                    or returned ``None``), the authority confirmed the
                    identifier but returned none of the title / authors the
-                   citation asks to be checked (``METADATA_UNAVAILABLE``), or
+                   citation asks to be checked (``METADATA_UNAVAILABLE``; a
+                   blank or whitespace-only field counts as not returned), or
                    Crossref has no record of a DOI, which may be registered
                    with another agency (``REGISTRY_NOT_COVERED``).  A
                    no-answer is never ``FALSE``.
@@ -266,11 +267,24 @@ def _norm_text(text: str) -> str:
     return _WS_RE.sub(" ", unicodedata.normalize("NFC", text)).strip().casefold()
 
 
+def _nonblank(value) -> Optional[str]:
+    """Return ``value`` when it is a string with content, otherwise None.
+
+    ``None``, non-strings, the empty string and whitespace-only strings all
+    mean "the authority returned nothing to compare": a blank field is not
+    evidence against a citation, so it must never produce a mismatch.
+    """
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 def _first_str(values) -> Optional[str]:
     if isinstance(values, list):
         for value in values:
-            if isinstance(value, str) and value.strip():
-                return value
+            text = _nonblank(value)
+            if text is not None:
+                return text
     return None
 
 
@@ -291,8 +305,10 @@ def _read_authority(kind: str, payload: dict):
         raw_authors = message.get("author")
         if isinstance(raw_authors, list):
             for author in raw_authors:
-                if isinstance(author, dict) and isinstance(author.get("family"), str):
-                    authors.append(author["family"])
+                if isinstance(author, dict):
+                    family = _nonblank(author.get("family"))
+                    if family is not None:
+                        authors.append(family)
         return title, authors, False
 
     entries = payload.get("entries")
@@ -301,8 +317,8 @@ def _read_authority(kind: str, payload: dict):
     entry = entries[0]
     if not isinstance(entry, dict):
         return None
-    title = entry.get("title") if isinstance(entry.get("title"), str) else None
-    authors = [name for name in entry.get("authors") or [] if isinstance(name, str)]
+    title = _nonblank(entry.get("title"))
+    authors = [name for name in entry.get("authors") or [] if _nonblank(name) is not None]
     return title, authors, True
 
 

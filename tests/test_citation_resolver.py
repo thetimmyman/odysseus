@@ -570,3 +570,178 @@ def test_authority_without_metadata_is_still_true_for_existence_only():
     result = resolve_citation(_doi("10.1234/abc"), fetcher=fetcher)
     assert result.status == TRUE
     assert EXISTENCE_ONLY in result.flags
+
+
+# --- blank authority metadata is unavailable, never a mismatch ---------------
+
+
+@pytest.mark.parametrize("blank_title", ["", "   "])
+def test_arxiv_blank_title_is_unavailable_not_a_mismatch(blank_title):
+    # The entry carries a title, but there is nothing in it to compare: that
+    # is a no-answer, not evidence that the cited title is wrong.
+    fetcher = RecordingFetcher(
+        {"entries": [{"title": blank_title, "authors": ["Ana Rivera"]}]}
+    )
+    result = resolve_citation(
+        _arxiv("2212.12345", title="Pinned sources and citation drift"),
+        fetcher=fetcher,
+    )
+    assert result.status == UNRESOLVABLE
+    assert METADATA_UNAVAILABLE in result.flags
+    assert TITLE_MISMATCH not in result.flags
+
+
+def test_arxiv_blank_authors_are_unavailable_not_a_mismatch():
+    fetcher = RecordingFetcher(
+        {
+            "entries": [
+                {
+                    "title": "Pinned sources and citation drift",
+                    "authors": ["", "   "],
+                }
+            ]
+        }
+    )
+    result = resolve_citation(
+        _arxiv(
+            "2212.12345",
+            title="Pinned sources and citation drift",
+            first_author_surname="Rivera",
+        ),
+        fetcher=fetcher,
+    )
+    assert result.status == UNRESOLVABLE
+    assert METADATA_UNAVAILABLE in result.flags
+    assert AUTHOR_MISMATCH not in result.flags
+
+
+@pytest.mark.parametrize("blank_title", ["", "   "])
+def test_crossref_blank_title_is_unavailable_not_a_mismatch(blank_title):
+    fetcher = RecordingFetcher(
+        {
+            "status": "ok",
+            "message": {"title": [blank_title], "author": [{"family": "Rivera"}]},
+        }
+    )
+    result = resolve_citation(
+        _doi("10.1000/xyz", title="Grounding citations in an authority"),
+        fetcher=fetcher,
+    )
+    assert result.status == UNRESOLVABLE
+    assert METADATA_UNAVAILABLE in result.flags
+    assert TITLE_MISMATCH not in result.flags
+
+
+def test_crossref_blank_family_is_unavailable_not_a_mismatch():
+    fetcher = RecordingFetcher(
+        {
+            "status": "ok",
+            "message": {
+                "title": ["Grounding citations in an authority"],
+                "author": [{"family": " "}, {"family": ""}],
+            },
+        }
+    )
+    result = resolve_citation(
+        _doi("10.1000/xyz", first_author_surname="Rivera"), fetcher=fetcher
+    )
+    assert result.status == UNRESOLVABLE
+    assert METADATA_UNAVAILABLE in result.flags
+    assert AUTHOR_MISMATCH not in result.flags
+
+
+def test_arxiv_blank_author_alongside_a_real_author_still_matches():
+    fetcher = RecordingFetcher(
+        {
+            "entries": [
+                {
+                    "title": "Pinned sources and citation drift",
+                    "authors": ["   ", "Ana Rivera"],
+                }
+            ]
+        }
+    )
+    result = resolve_citation(
+        _arxiv(
+            "2212.12345",
+            title="Pinned sources and citation drift",
+            first_author_surname="Rivera",
+        ),
+        fetcher=fetcher,
+    )
+    assert result.status == TRUE
+    assert result.flags == []
+
+
+def test_crossref_blank_family_alongside_a_real_family_still_matches():
+    fetcher = RecordingFetcher(
+        {
+            "status": "ok",
+            "message": {
+                "title": ["Grounding citations in an authority"],
+                "author": [{"family": " "}, {"family": "Rivera"}],
+            },
+        }
+    )
+    result = resolve_citation(
+        _doi(
+            "10.1000/xyz",
+            title="Grounding citations in an authority",
+            first_author_surname="Rivera",
+        ),
+        fetcher=fetcher,
+    )
+    assert result.status == TRUE
+    assert result.flags == []
+
+
+# --- controls: real metadata still yields a definitive answer ----------------
+
+
+def test_control_real_matching_arxiv_metadata_is_true():
+    fetcher = RecordingFetcher(ARXIV_OK)
+    result = resolve_citation(
+        _arxiv(
+            "2212.12345",
+            title="Pinned sources and citation drift",
+            first_author_surname="Rivera",
+        ),
+        fetcher=fetcher,
+    )
+    assert result.status == TRUE
+    assert result.flags == []
+
+
+def test_control_real_matching_crossref_metadata_is_true():
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    result = resolve_citation(
+        _doi(
+            "10.1000/xyz",
+            title="Grounding citations in an authority",
+            first_author_surname="Rivera",
+        ),
+        fetcher=fetcher,
+    )
+    assert result.status == TRUE
+    assert result.flags == []
+
+
+def test_control_real_different_arxiv_title_is_still_a_mismatch():
+    fetcher = RecordingFetcher(ARXIV_OK)
+    result = resolve_citation(
+        _arxiv("2212.12345", title="Something else entirely"), fetcher=fetcher
+    )
+    assert result.status == FALSE
+    assert TITLE_MISMATCH in result.flags
+    assert METADATA_UNAVAILABLE not in result.flags
+
+
+def test_control_real_different_crossref_title_is_still_a_mismatch():
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    result = resolve_citation(
+        _doi("10.1000/xyz", title="A completely different title"), fetcher=fetcher
+    )
+    assert result.status == FALSE
+    assert TITLE_MISMATCH in result.flags
+    assert METADATA_UNAVAILABLE not in result.flags
+
