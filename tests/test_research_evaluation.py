@@ -124,6 +124,56 @@ def test_fill_section_without_evidence_stays_unknown_and_drops_the_text():
     assert blank.sections["licence"].status == UNKNOWN
 
 
+@pytest.mark.parametrize("ref", [None, False, 0, 0.0, {}, [], (), ""])
+def test_fill_section_does_not_stringify_a_non_string_ref(ref):
+    """A non-string is not a reference: stringifying it would invent evidence."""
+    draft = fill_section(_skeleton(), "licence", "Synthetic assertion", [ref])
+    section = draft.sections["licence"]
+    assert section.status == UNKNOWN
+    assert section.text == ""
+    assert section.evidence_refs == ()
+
+
+def test_fill_section_never_calls_str_on_a_reference_object():
+    class Unstringable:
+        def __str__(self):
+            raise AssertionError("evidence refs must not be coerced with str()")
+
+    draft = fill_section(_skeleton(), "licence", "Synthetic assertion", [Unstringable()])
+    assert draft.sections["licence"].status == UNKNOWN
+    assert draft.sections["licence"].evidence_refs == ()
+
+
+def test_fill_section_mixed_refs_keep_only_real_string_evidence():
+    class Unstringable:
+        def __str__(self):
+            raise AssertionError("evidence refs must not be coerced with str()")
+
+    draft = fill_section(
+        _skeleton(),
+        "licence",
+        "MIT, per the pinned source.",
+        [Unstringable(), "  tools/a  ", None, 0, "   ", "tools/b"],
+    )
+    section = draft.sections["licence"]
+    assert section.status == FILLED
+    assert section.evidence_refs == ("tools/a", "tools/b")
+
+
+def test_fill_section_accepts_a_lone_string_ref_and_trims_it():
+    draft = fill_section(_skeleton(), "licence", "MIT.", "  tools/tmos/LICENSE  ")
+    section = draft.sections["licence"]
+    assert section.status == FILLED
+    assert section.evidence_refs == ("tools/tmos/LICENSE",)
+
+
+def test_fill_section_preserves_the_order_of_a_list_of_refs():
+    draft = fill_section(
+        _skeleton(), "licence", "MIT.", ["  b.ref ", "a.ref", "\tc.ref\t"]
+    )
+    assert draft.sections["licence"].evidence_refs == ("b.ref", "a.ref", "c.ref")
+
+
 def test_fill_section_never_mutates_the_input_draft():
     draft = _skeleton()
     before = {name: draft.sections[name] for name in RULING_SECTIONS}
@@ -325,6 +375,51 @@ def test_filled_section_with_blank_text_is_reported(text):
     assert validate_ruling(draft) == ["section 'licence' is FILLED with blank text"]
     # control: the same section with text and the same ref is clean
     assert validate_ruling(_with_section(_skeleton(), "licence", _filled())) == []
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [
+        (),
+        ("   ",),
+        ["\t\n"],
+        [None],
+        [None, "  "],
+        [0, False],
+        [{}],
+        [{}, []],
+    ],
+)
+def test_directly_built_filled_section_without_real_string_evidence_is_reported(refs):
+    """A direct FILLED section must carry actual non-blank string refs."""
+    draft = _with_section(
+        _skeleton(), "licence", RulingSection(FILLED, "Synthetic assertion", refs)
+    )
+    assert validate_ruling(draft) == ["section 'licence' is FILLED without evidence refs"]
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [
+        ("tools/tmos/LICENSE",),
+        ["tools/tmos/LICENSE"],
+        ["  tools/tmos/LICENSE  ", "a.ref"],
+    ],
+)
+def test_directly_built_filled_section_with_real_string_evidence_is_clean(refs):
+    # Positive control for the negative cases above: the same validator,
+    # same direct construction, with actual string refs, returns no problems.
+    draft = _with_section(
+        _skeleton(), "licence", RulingSection(FILLED, "Synthetic assertion", refs)
+    )
+    assert validate_ruling(draft) == []
+
+
+def test_fill_section_with_mixed_refs_validates_clean():
+    draft = fill_section(
+        _skeleton(), "licence", "MIT.", [None, "  tools/tmos/LICENSE  ", 0]
+    )
+    assert validate_ruling(draft) == []
 
 
 def test_filled_section_with_blank_text_keeps_its_other_problems():
