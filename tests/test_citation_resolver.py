@@ -153,6 +153,8 @@ def test_normalize_arxiv_known_good_control():
         "2212.123456",  # and at most five
         "2212.1234",  # 22xx needs the five-digit sequence
         "1501.0001",  # first five-digit year-month is 1501
+        "0001.0001",  # the new YYMM.NNNN scheme began in April 2007
+        "0703.0001",  # one month too early
         "2213.12345",  # month 13
         "2200.12345",  # month 00
         "2212.12345v0",  # version starts at v1
@@ -204,6 +206,8 @@ def test_malformed_arxiv_identifier_never_calls_fetcher():
         ("arxiv", "2213.12345"),  # month 13
         ("arxiv", "2200.12345"),  # month 00
         ("arxiv", "1501.0001"),  # five-digit sequence required from 1501
+        ("arxiv", "0001.0001"),  # before the new scheme began (0704)
+        ("arxiv", "0703.0001"),  # one month before 0704
         ("arxiv", "2212.12345v0"),  # version starts at v1
         ("arxiv", "2212.12345v01"),  # no leading zero in the version
         ("arxiv", "hep-th/9900001"),  # old-style month 00

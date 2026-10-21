@@ -104,7 +104,7 @@ ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?id_list="
 
 _DOI_RE = re.compile(r"10\.[0-9]{4,9}/[!-~]+")
 _ARXIV_NEW_RE = re.compile(
-    r"(?:(?:0[0-9]|1[0-4])(?:0[1-9]|1[0-2])\.[0-9]{4}"
+    r"(?:(?:07(?:0[4-9]|1[0-2])|0[89](?:0[1-9]|1[0-2])|1[0-4](?:0[1-9]|1[0-2]))\.[0-9]{4}"
     r"|(?:1[5-9]|[2-9][0-9])(?:0[1-9]|1[0-2])\.[0-9]{5})"
     r"(?:v[1-9][0-9]*)?"
 )
@@ -187,7 +187,7 @@ def normalize_arxiv(s: str) -> Optional[str]:
     ``vN``, and old style ``category/YYMMNNN`` (``hep-th/9901001``), each
     with an optional ``arXiv:`` prefix.  Returns the id with the prefix
     stripped and lowercased.  Syntax is ASCII-only, the ``YYMM`` month must
-    be 01..12, a new-style sequence is four digits before 1501 and five from
+    be 01..12, new-style ids start at 0704 (April 2007), a new-style sequence is four digits before 1501 and five from
     1501 on, and a version suffix is ``v1`` or higher with no leading zero.
     """
     if not isinstance(s, str):
