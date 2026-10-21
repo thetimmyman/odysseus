@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 from src.endpoint_resolver import resolve_endpoint
 from src.auth_helpers import _auth_disabled, get_current_user
 from src.constants import DEEP_RESEARCH_DIR
@@ -403,6 +403,10 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         category: Optional[str] = None
         depth: Optional[str] = None
         max_urls_per_round: Optional[int] = Field(default=None, ge=1, le=10)
+        # Per-run citation-verification override. None (omitted) keeps the
+        # established global-setting fallback; an explicit bool applies to
+        # this run only and never writes settings.
+        citation_verification: Optional[StrictBool] = None
 
     @router.post("/api/research/start")
     async def research_start(body: ResearchStartRequest, request: Request):
@@ -504,6 +508,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
             owner=user,
             depth=depth_val,
             max_urls_per_round=body.max_urls_per_round,
+            citation_verification=body.citation_verification,
         )
         return {"session_id": session_id, "status": "running", "query": body.query}
 
