@@ -838,7 +838,11 @@ class DeepResearcher:
                 timeout=self.extraction_timeout,
             )
             parsed = self._parse_json_object(response)
-            if parsed:
+            if isinstance(parsed, dict):
+                # Verification belongs to the verifier.  The extractor is an
+                # untrusted model: drop any verdict it invents before the
+                # opt-in verifier gets a chance to attach a real one.
+                parsed.pop("citation_verification", None)
                 parsed["url"] = url
                 parsed["title"] = title or page.get("title", "")
                 parsed["og_image"] = page.get("og_image", "")
@@ -870,7 +874,13 @@ class DeepResearcher:
         """
         session = self._citation_session
         if session is not None:
-            await session.annotate(finding)
+            try:
+                await session.annotate(finding)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Advisory verification must never discard useful research.
+                logger.warning(f"Citation verification failed: {e}")
 
     def _carried_finding(self, finding):
         """A copy of a prior finding, keeping its claim id only if the carried

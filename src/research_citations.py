@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import xml.etree.ElementTree as ET
 from typing import Awaitable, Callable, Dict, Optional, Tuple
 from urllib.parse import unquote, urlsplit
@@ -96,6 +97,13 @@ ARXIV_HOSTS = frozenset({"arxiv.org", "www.arxiv.org"})
 AUTHORITY_HOSTS = frozenset({"api.crossref.org", "export.arxiv.org"})
 
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
+_ATOM_FEED_TAG = _ATOM_NS + "feed"
+_ATOM_ENTRY_TAG = _ATOM_NS + "entry"
+_ARXIV_ERROR_ID_PREFIXES = (
+    "http://arxiv.org/api/errors#",
+    "https://arxiv.org/api/errors#",
+)
+_ARXIV_ENTRY_VERSION_RE = re.compile(r"v[0-9]+$")
 _CROSSREF_MISS = b'{"status": "failed"}'
 
 
@@ -195,51 +203,144 @@ def _is_authority_url(url: str) -> bool:
     return plain and host in AUTHORITY_HOSTS
 
 
-def _parse_crossref(raw: bytes) -> Optional[Dict]:
+def _parse_crossref(raw: bytes, requested_doi: str) -> Optional[Dict]:
+    """Crossref JSON, but only when it proves the identity that was requested.
+
+    The live API puts the registered DOI at ``message.DOI``.  A success
+    message without it, with an unparseable value, or naming a different work
+    is not evidence about the requested DOI: return ``None`` so the core
+    resolver reports the authority as unable to answer.  A documented miss
+    (``status: failed``) or a payload with no ``message`` is passed through
+    unchanged so the core keeps its ``REGISTRY_NOT_COVERED`` semantics.
+    """
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
     # Only a JSON object carries the shape the resolver reads.
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") != "ok":
+        # ``failed`` is the documented registry miss; anything else cannot be
+        # read as a successful authority answer.
+        return payload if payload.get("status") == "failed" else None
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        # Let the core resolver report the registry-miss shape it defines.
+        return payload
+    requested = normalize_doi(requested_doi)
+    registered = normalize_doi(message.get("DOI"))
+    if requested is None or registered is None or registered != requested:
+        return None
+    return payload
 
 
 def _child_text(element, suffix: str) -> Optional[str]:
+    """Text of the exact Atom child, or None.
+
+    Only fully namespaced Atom children count: an unnamespaced or
+    suffix-namespaced lookalike is not evidence about an arXiv identifier.
+    """
     for child in element:
-        if child.tag == suffix or child.tag == _ATOM_NS + suffix or child.tag.endswith("}" + suffix):
+        if child.tag == _ATOM_NS + suffix:
             return " ".join((child.text or "").split())
     return None
 
 
-def _parse_arxiv(raw: bytes) -> Optional[Dict]:
+def _arxiv_entry_identifier(entry_id: Optional[str]) -> Optional[str]:
+    """The normalised arXiv id an Atom entry ``<id>`` names, or None."""
+    if not isinstance(entry_id, str):
+        return None
+    parts = urlsplit(entry_id.strip())
+    if parts.scheme.lower() not in ("http", "https"):
+        return None
+    if (parts.hostname or "").lower() not in ARXIV_HOSTS:
+        return None
+    if not parts.path.startswith("/abs/"):
+        return None
+    return normalize_arxiv(parts.path[len("/abs/"):].strip("/"))
+
+
+def _is_arxiv_error_entry(entry_id: Optional[str], title: str) -> bool:
+    if isinstance(entry_id, str) and entry_id.strip().lower().startswith(
+        _ARXIV_ERROR_ID_PREFIXES
+    ):
+        return True
+    return title.strip().casefold() == "error"
+
+
+def _arxiv_identity_matches(requested: str, returned: str) -> bool:
+    """Whether ``returned`` is the canonical entry for ``requested``.
+
+    A requested version must match exactly.  An unversioned request accepts
+    the canonical versioned entry for the same base identifier.
+    """
+    if _ARXIV_ENTRY_VERSION_RE.search(requested):
+        return returned == requested
+    return _ARXIV_ENTRY_VERSION_RE.sub("", returned) == requested
+
+
+def _parse_arxiv(raw: bytes, requested_id: str) -> Optional[Dict]:
+    """An arXiv Atom answer, reduced to the core resolver's entry shape.
+
+    The document must be an actual Atom feed: root ``feed`` in the exact
+    ``http://www.w3.org/2005/Atom`` namespace.  Anything else -- an HTML
+    error page, an unnamespaced document, a suffix namespace -- is not proof
+    of anything and returns ``None`` (unavailable), never an empty feed.
+    A valid feed with no entries is an authoritative "no such id"
+    (``{"entries": []}``).  An error entry, or an entry whose ``<id>`` does
+    not match the requested identifier, is unavailable: it is not evidence
+    of existence and not an authoritative miss.
+    """
     try:
         root = ET.fromstring(raw)
-    except ET.ParseError:
+    except (ET.ParseError, ValueError, UnicodeDecodeError):
         return None
-    entries = []
+    except Exception:
+        # Any other parser failure is also "the authority could not answer".
+        return None
+    if root.tag != _ATOM_FEED_TAG:
+        return None
+
+    requested = normalize_arxiv(requested_id)
+    if requested is None:
+        return None
+
+    entry_count = 0
     for element in root:
-        if not (element.tag == "entry" or element.tag == _ATOM_NS + "entry" or element.tag.endswith("}entry")):
+        if element.tag != _ATOM_ENTRY_TAG:
             continue
+        entry_count += 1
+        entry_id = _child_text(element, "id")
         title = _child_text(element, "title") or ""
+        if _is_arxiv_error_entry(entry_id, title):
+            return None
+        returned = _arxiv_entry_identifier(entry_id)
+        if returned is None or not _arxiv_identity_matches(requested, returned):
+            continue
         authors = []
         for child in element:
-            if child.tag == "author" or child.tag == _ATOM_NS + "author" or child.tag.endswith("}author"):
+            if child.tag == _ATOM_NS + "author":
                 name = _child_text(child, "name")
                 if name:
                     authors.append(name)
-        entries.append({"title": title, "authors": authors})
-    # A well-formed feed with no <entry> is an authoritative "no such id";
-    # parse failures returned above are treated as unreachable instead.
-    return {"entries": entries}
+        return {"entries": [{"title": title, "authors": authors}]}
+
+    if entry_count == 0:
+        # A well-formed Atom feed with no <entry> is an authoritative
+        # "no such id"; parse failures above are unreachable instead.
+        return {"entries": []}
+    # Entries exist but none identifies the requested work: unknown, not a miss.
+    return None
 
 
-def _parse_authority(kind: str, raw: bytes) -> Optional[Dict]:
+def _parse_authority(kind: str, identifier: str, raw: bytes) -> Optional[Dict]:
     if len(raw) > MAX_AUTHORITY_BYTES:
         return None
     if kind == "doi":
-        return _parse_crossref(raw)
+        return _parse_crossref(raw, identifier)
     if kind == "arxiv":
-        return _parse_arxiv(raw)
+        return _parse_arxiv(raw, identifier)
     return None
 
 
@@ -301,7 +402,9 @@ class CitationVerificationSession:
         max_lookups: int = MAX_LOOKUPS_PER_RUN,
     ):
         self._transport = transport if transport is not None else http_transport
-        self.max_lookups = max(0, int(max_lookups))
+        # The per-run ceiling is a public bound: a caller may lower it, never
+        # raise it, so a custom request cannot widen the lookup budget.
+        self.max_lookups = min(MAX_LOOKUPS_PER_RUN, max(0, int(max_lookups)))
         self.lookups = 0
         self._cache: Dict[Tuple[str, str], Dict] = {}
 
@@ -342,7 +445,7 @@ class CitationVerificationSession:
             # Reserve the budget before awaiting so concurrent findings cannot
             # overshoot the cap.
             self.lookups += 1
-            payload = await self._fetch(kind, url)
+            payload = await self._fetch(kind, identifier, url)
 
         # The resolver remains the only place that interprets statuses and
         # flags; the transport's answer enters through its documented seam.
@@ -354,7 +457,7 @@ class CitationVerificationSession:
         self._cache[key] = record
         return dict(record, flags=list(record["flags"]))
 
-    async def _fetch(self, kind: str, url: str) -> Optional[Dict]:
+    async def _fetch(self, kind: str, identifier: str, url: str) -> Optional[Dict]:
         if not _is_authority_url(url):
             return None
         try:
@@ -365,4 +468,11 @@ class CitationVerificationSession:
             return None
         if not isinstance(raw, (bytes, bytearray)):
             return None
-        return _parse_authority(kind, bytes(raw))
+        try:
+            return _parse_authority(kind, identifier, bytes(raw))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A malformed authority response is "unknown", never an exception
+            # that could tear down the caller's extraction.
+            return None

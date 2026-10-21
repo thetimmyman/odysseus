@@ -31,6 +31,23 @@ ports, non-HTTPS URLs, ordinary pages, and malformed paths are ignored with
 zero network calls. The identifier is read from the URL path only; free text
 in the page or finding is never mined for identifiers.
 
+An answer only counts when it proves the identity that was asked about. The
+arXiv response must be an actual Atom feed (root `feed` in the exact
+`http://www.w3.org/2005/Atom` namespace) and its `<entry><id>` must name the
+requested canonical identifier: a requested version must match exactly, while
+an unversioned request accepts the canonical versioned entry for the same
+base. HTML error pages, unnamespaced or suffix-namespaced documents, arXiv
+error entries, and entries naming a different identifier are `UNRESOLVABLE`,
+never `TRUE` and never an authoritative miss. A valid Atom feed with no
+entries is an authoritative `FALSE` / `NOT_FOUND`. For Crossref, a successful
+`message` must carry `message.DOI` matching the requested DOI; a missing,
+malformed, or conflicting DOI is `UNRESOLVABLE`. A documented Crossref
+registry miss keeps its `REGISTRY_NOT_COVERED` semantics.
+
+`citation_verification` is owned by the verifier. Any value the extractor
+model returns under that key is discarded from the parsed extraction before
+the opt-in verifier runs, so a model cannot fabricate a verdict.
+
 ## What is recorded
 
 Each eligible finding gets a `citation_verification` object, which the normal
@@ -69,9 +86,10 @@ the resolver where echoed, and never sent to a model as instructions.
 - HTTPS only, to the exact authorities `api.crossref.org` and
   `export.arxiv.org`; the URL is re-checked before the request.
 - 10 s fixed per-request ceiling, redirects disabled, 1 MiB response cap.
-- At most 10 actual authority lookups per research run. Duplicate identifiers
-  reuse a completed in-memory result; findings beyond the cap record
-  `UNRESOLVABLE` without a lookup.
+- At most 10 actual authority lookups per research run; this public bound
+  cannot be raised by a custom session. Duplicate identifiers reuse a
+  completed in-memory result; findings beyond the cap record `UNRESOLVABLE`
+  without a lookup.
 - Lookups are async and cancellable; research cancellation and the hard run
   timeout propagate. No retries, no service, no store.
 

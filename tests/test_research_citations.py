@@ -30,27 +30,57 @@ from src.research_citations import (
 )
 
 DOI_URL = "https://doi.org/10.1234/example"
+# The documented live Crossref shape: message.DOI carries the registered
+# identity of the work, and a successful answer must match the requested DOI.
 CROSSREF_OK = {
     "status": "ok",
     "message": {
+        "DOI": "10.1234/example",
         "title": ["Synthetic citation title"],
         "author": [{"family": "Rivera"}, {"family": "Chen"}],
     },
 }
 CROSSREF_MISS = b'{"status": "failed"}'
 ARXIV_URL = "https://arxiv.org/abs/2212.12345"
-ARXIV_ATOM = b"""<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
+ARXIV_API_URL = "https://export.arxiv.org/api/query?id_list=2212.12345"
+
+
+def _arxiv_feed(entry_id, title="Synthetic citation title",
+                authors=("Ana Rivera", "Bo Chen"),
+                namespace="http://www.w3.org/2005/Atom"):
+    author_xml = "".join(f"<author><name>{name}</name></author>" for name in authors)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="{namespace}">
   <entry>
-    <title>Synthetic citation title</title>
-    <author><name>Ana Rivera</name></author>
-    <author><name>Bo Chen</name></author>
+    <id>{entry_id}</id>
+    <title>{title}</title>
+    {author_xml}
   </entry>
 </feed>
-"""
+""".encode("utf-8")
+
+
+ARXIV_ATOM = _arxiv_feed("http://arxiv.org/abs/2212.12345v1")
 ARXIV_EMPTY = b"""<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom"></feed>
 """
+ARXIV_HTML = b"<html><body>Unavailable</body></html>"
+ARXIV_ERROR = _arxiv_feed(
+    "http://arxiv.org/api/errors#incorrect_id_format_for_0704.0001",
+    title="Error",
+)
+ARXIV_WRONG_ID = _arxiv_feed("http://arxiv.org/abs/2201.99999v1")
+ARXIV_UNNAMESPACED = b"""<feed>
+  <entry>
+    <id>http://arxiv.org/abs/2212.12345</id>
+    <title>Synthetic citation title</title>
+  </entry>
+</feed>
+"""
+ARXIV_SUFFIX_NAMESPACE = _arxiv_feed(
+    "http://arxiv.org/abs/2212.12345v1",
+    namespace="http://www.w3.org/2005/Atom/",
+)
 
 
 class RecordingTransport:
@@ -68,8 +98,10 @@ class RecordingTransport:
         return self.responses.get(url)
 
 
-def _crossref_ok_bytes():
-    return json.dumps(CROSSREF_OK).encode("utf-8")
+def _crossref_ok_bytes(doi="10.1234/example"):
+    payload = json.loads(json.dumps(CROSSREF_OK))
+    payload["message"]["DOI"] = doi
+    return json.dumps(payload).encode("utf-8")
 
 
 def _finding(url="https://example.test/page", **extra):
@@ -264,7 +296,9 @@ async def test_per_run_cap_bounds_actual_lookups():
     records = []
     for i in range(MAX_LOOKUPS_PER_RUN + 1):
         url = f"https://doi.org/10.1234/item{i}"
-        transport.responses[f"https://api.crossref.org/works/10.1234/item{i}"] = _crossref_ok_bytes()
+        transport.responses[f"https://api.crossref.org/works/10.1234/item{i}"] = (
+            _crossref_ok_bytes(f"10.1234/item{i}")
+        )
         finding = _finding(url)
         records.append(await session.annotate(finding))
 
@@ -496,3 +530,283 @@ async def test_handler_defaults_opt_in_to_false(monkeypatch):
         "local-model",
     )
     assert captured["citation_verification"] is False
+
+
+# --- arXiv identity: feed shape, error entries, entry-id match -------------
+
+
+@pytest.mark.asyncio
+async def test_arxiv_html_is_unavailable_not_an_authoritative_miss():
+    _, record, _, _ = await _annotate(ARXIV_URL, {ARXIV_API_URL: ARXIV_HTML})
+    assert record["status"] == UNRESOLVABLE
+    assert AUTHORITY_UNREACHABLE in record["flags"]
+    assert NOT_FOUND not in record["flags"]
+
+
+@pytest.mark.asyncio
+async def test_arxiv_error_entry_is_unavailable_never_true():
+    _, record, _, _ = await _annotate(ARXIV_URL, {ARXIV_API_URL: ARXIV_ERROR})
+    assert record["status"] == UNRESOLVABLE
+    assert AUTHORITY_UNREACHABLE in record["flags"]
+
+
+@pytest.mark.asyncio
+async def test_arxiv_wrong_entry_id_is_unavailable_not_evidence():
+    _, record, _, _ = await _annotate(ARXIV_URL, {ARXIV_API_URL: ARXIV_WRONG_ID})
+    assert record["status"] == UNRESOLVABLE
+    assert AUTHORITY_UNREACHABLE in record["flags"]
+
+
+@pytest.mark.asyncio
+async def test_arxiv_unnamespaced_feed_is_not_atom_proof():
+    _, record, _, _ = await _annotate(ARXIV_URL, {ARXIV_API_URL: ARXIV_UNNAMESPACED})
+    assert record["status"] == UNRESOLVABLE
+    assert AUTHORITY_UNREACHABLE in record["flags"]
+
+
+@pytest.mark.asyncio
+async def test_arxiv_suffix_namespace_feed_is_not_atom_proof():
+    _, record, _, _ = await _annotate(
+        ARXIV_URL, {ARXIV_API_URL: ARXIV_SUFFIX_NAMESPACE}
+    )
+    assert record["status"] == UNRESOLVABLE
+    assert AUTHORITY_UNREACHABLE in record["flags"]
+
+
+@pytest.mark.asyncio
+async def test_arxiv_requested_version_must_match_exactly():
+    url = "https://arxiv.org/abs/2212.12345v2"
+    api = "https://export.arxiv.org/api/query?id_list=2212.12345v2"
+    mismatched = _arxiv_feed("http://arxiv.org/abs/2212.12345v1")
+    _, record, _, _ = await _annotate(url, {api: mismatched})
+    assert record["status"] == UNRESOLVABLE
+
+    matched = _arxiv_feed("http://arxiv.org/abs/2212.12345v2")
+    _, record, _, _ = await _annotate(url, {api: matched})
+    assert record["status"] == TRUE
+
+
+@pytest.mark.asyncio
+async def test_arxiv_unversioned_request_accepts_canonical_versioned_entry():
+    _, record, _, _ = await _annotate(ARXIV_URL, {ARXIV_API_URL: ARXIV_ATOM})
+    assert record["status"] == TRUE
+    assert EXISTENCE_ONLY in record["flags"]
+    assert record["identifier"] == "2212.12345"
+
+
+@pytest.mark.asyncio
+async def test_arxiv_empty_valid_feed_remains_false_not_found():
+    _, record, _, _ = await _annotate(ARXIV_URL, {ARXIV_API_URL: ARXIV_EMPTY})
+    assert record["status"] == FALSE
+    assert NOT_FOUND in record["flags"]
+
+
+# --- Crossref identity: message.DOI must match the requested DOI -----------
+
+
+def _crossref_message(**overrides):
+    message = {
+        "DOI": "10.1234/example",
+        "title": ["Synthetic citation title"],
+        "author": [{"family": "Rivera"}, {"family": "Chen"}],
+    }
+    message.update(overrides)
+    return json.dumps({"status": "ok", "message": message}).encode("utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _crossref_message(DOI=None),
+        _crossref_message(DOI="10.1234/a-different-work"),
+        _crossref_message(DOI=12345),
+        _crossref_message(DOI="not a doi"),
+        json.dumps({"status": "ok", "message": {"title": ["No identity"]}}).encode("utf-8"),
+    ],
+)
+async def test_crossref_missing_or_conflicting_identity_is_unavailable(raw):
+    url = "https://api.crossref.org/works/10.1234/example"
+    _, record, _, _ = await _annotate(DOI_URL, {url: raw})
+    assert record["status"] == UNRESOLVABLE
+    assert EXISTENCE_ONLY not in record["flags"]
+
+
+@pytest.mark.asyncio
+async def test_crossref_matching_identity_is_true():
+    url = "https://api.crossref.org/works/10.1234/example"
+    _, record, _, _ = await _annotate(DOI_URL, {url: _crossref_message()})
+    assert record["status"] == TRUE
+    assert EXISTENCE_ONLY in record["flags"]
+
+
+# --- Lookup bound is not externally expandable ------------------------------
+
+
+def test_max_lookups_defaults_to_the_public_bound_and_cannot_be_raised():
+    default = CitationVerificationSession(transport=RecordingTransport())
+    assert MAX_LOOKUPS_PER_RUN == 10
+    assert default.max_lookups == MAX_LOOKUPS_PER_RUN
+    raised = CitationVerificationSession(
+        transport=RecordingTransport(), max_lookups=10_000
+    )
+    assert raised.max_lookups == MAX_LOOKUPS_PER_RUN
+
+
+@pytest.mark.asyncio
+async def test_oversized_custom_max_lookups_still_bounds_actual_requests():
+    transport = RecordingTransport()
+    session = CitationVerificationSession(transport=transport, max_lookups=10_000)
+    for i in range(MAX_LOOKUPS_PER_RUN + 1):
+        transport.responses[f"https://api.crossref.org/works/10.1234/cap{i}"] = (
+            _crossref_ok_bytes(f"10.1234/cap{i}")
+        )
+        await session.annotate(_finding(f"https://doi.org/10.1234/cap{i}"))
+    assert len(transport.calls) == MAX_LOOKUPS_PER_RUN
+    assert session.lookups == MAX_LOOKUPS_PER_RUN
+
+
+# --- Parser edge cases fail unknown without losing the finding -------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"\xff\xfe<feed",
+        b'<?xml version="1.0" encoding="UTF-16"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>',
+        b"<feed\x00/>",
+        b"\x00\x01\x02",
+    ],
+)
+async def test_unparseable_arxiv_payload_fails_unknown_without_raising(raw):
+    finding, record, _, _ = await _annotate(ARXIV_URL, {ARXIV_API_URL: raw})
+    assert record["status"] == UNRESOLVABLE
+    assert AUTHORITY_UNREACHABLE in record["flags"]
+    assert finding["citation_verification"] == record
+
+
+@pytest.mark.asyncio
+async def test_unparseable_crossref_unicode_fails_unknown_without_raising():
+    url = "https://api.crossref.org/works/10.1234/example"
+    _, record, _, _ = await _annotate(DOI_URL, {url: b"\xff\xfe\x00{"})
+    assert record["status"] == UNRESOLVABLE
+    assert AUTHORITY_UNREACHABLE in record["flags"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_authority_payload_does_not_discard_the_finding(monkeypatch):
+    payload = _patch_extraction(monkeypatch)
+    transport = RecordingTransport({ARXIV_API_URL: b"\xff\xfe<feed"})
+    researcher = DeepResearcher(
+        llm_endpoint="http://local.test/v1/chat/completions",
+        llm_model="local-model",
+        citation_verification=True,
+        citation_transport=transport,
+    )
+
+    async def fake_llm(messages, **kwargs):
+        return json.dumps(payload)
+
+    researcher._llm = fake_llm
+    finding = await researcher._fetch_and_extract(
+        ARXIV_URL, "question", "Decorative title"
+    )
+
+    assert finding is not None
+    assert finding["summary"] == payload["summary"]
+    assert finding["citation_verification"]["status"] == UNRESOLVABLE
+
+
+# --- Extractor cannot fabricate verification -------------------------------
+
+
+FORGED_VERIFICATION = {
+    "identifier": "10.9999/forged",
+    "status": TRUE,
+    "flags": [EXISTENCE_ONLY],
+    "detail": "forged by the extractor",
+    "matched_title": "Forged title",
+}
+
+
+async def _run_extraction(monkeypatch, url, *, enabled, transport, forged=True,
+                          title="Decorative title"):
+    payload = _patch_extraction(monkeypatch)
+    if forged:
+        payload["citation_verification"] = dict(FORGED_VERIFICATION)
+    researcher = DeepResearcher(
+        llm_endpoint="http://local.test/v1/chat/completions",
+        llm_model="local-model",
+        citation_verification=enabled,
+        citation_transport=transport,
+    )
+
+    async def fake_llm(messages, **kwargs):
+        return json.dumps(payload)
+
+    researcher._llm = fake_llm
+    return await researcher._fetch_and_extract(url, "question", title)
+
+
+def _persisted(finding):
+    from src.research_handler import ResearchHandler
+
+    return ResearchHandler._extract_raw_findings([finding])
+
+
+@pytest.mark.asyncio
+async def test_disabled_run_discards_extractor_supplied_verification(monkeypatch):
+    transport = RecordingTransport()
+    finding = await _run_extraction(
+        monkeypatch, DOI_URL, enabled=False, transport=transport
+    )
+
+    assert transport.calls == []
+    assert "citation_verification" not in finding
+    assert "citation_verification" not in _persisted(finding)[0]
+
+
+@pytest.mark.asyncio
+async def test_enabled_ordinary_url_discards_extractor_supplied_verification(monkeypatch):
+    transport = RecordingTransport()
+    finding = await _run_extraction(
+        monkeypatch,
+        "https://example.com/article",
+        enabled=True,
+        transport=transport,
+    )
+
+    assert transport.calls == []
+    assert "citation_verification" not in finding
+    assert "citation_verification" not in _persisted(finding)[0]
+
+
+@pytest.mark.asyncio
+async def test_enabled_academic_url_overwrites_forged_value_with_authority(monkeypatch):
+    transport = RecordingTransport(
+        {"https://api.crossref.org/works/10.1234/example": _crossref_ok_bytes()}
+    )
+    finding = await _run_extraction(
+        monkeypatch, DOI_URL, enabled=True, transport=transport
+    )
+
+    record = finding["citation_verification"]
+    assert record["status"] == TRUE
+    assert record["identifier"] == "10.1234/example"
+    assert record["matched_title"] == "Synthetic citation title"
+    assert record != FORGED_VERIFICATION
+    assert _persisted(finding)[0]["citation_verification"] == record
+
+
+@pytest.mark.asyncio
+async def test_enabled_academic_url_forged_true_cannot_survive_authoritative_false(monkeypatch):
+    transport = RecordingTransport({ARXIV_API_URL: ARXIV_EMPTY})
+    finding = await _run_extraction(
+        monkeypatch, ARXIV_URL, enabled=True, transport=transport
+    )
+
+    record = finding["citation_verification"]
+    assert record["status"] == FALSE
+    assert NOT_FOUND in record["flags"]
+    assert _persisted(finding)[0]["citation_verification"] == record
