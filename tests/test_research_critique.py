@@ -141,7 +141,7 @@ def test_family_of_prefix_marker_accepts_a_version_suffix(model_name, expected):
         ("llamacpp-7b", "unknown"),
         ("qwenlm-7b", "unknown"),
         ("deepseekcoder", "unknown"),
-        ("llamafactory/tiny-random-qwen3", "qwen"),
+        ("llamafactory/tiny-random-qwen3", "unknown"),
     ],
 )
 def test_family_of_prefix_marker_rejects_provider_words(model_name, expected):
@@ -149,8 +149,8 @@ def test_family_of_prefix_marker_rejects_provider_words(model_name, expected):
 
     "llamafactory" starts with "llama" and "qwenlm" starts with "qwen", but the
     rest of the segment is a word, not a version, so neither names the family.
-    When a later segment does name one -- "llamafactory/tiny-random-qwen3" --
-    that segment wins.
+    A later segment that does name one -- "llamafactory/tiny-random-qwen3" --
+    is not believed either, because only a family leading the name counts.
 
     Control: "llama3" and "qwen3" are meta and qwen in the test above, so the
     difference here is the suffix after the marker.
@@ -158,17 +158,28 @@ def test_family_of_prefix_marker_rejects_provider_words(model_name, expected):
     assert family_of(model_name) == expected
 
 
-def test_family_of_prefers_the_last_matching_segment():
-    """The model segment comes after the vendor segment, so it wins.
+def test_family_of_refuses_a_name_that_matches_two_families():
+    """A hub owner, base model or training-data source can all appear in a name.
 
-    "meta-llama/qwen3-distill" names the hub owner "meta-llama" and the model
-    "qwen3-distill": the family is the model's, not the owner's.
-
-    Control: the earlier segment alone really does resolve to meta, so this is
-    an order rule and not "qwen" matching everything.
+    Neither the first nor the last position reliably names the model's own
+    family, so a name matching two different families is "unknown" and the
+    pass refuses it.  Control: the same marker repeated is one family, so this
+    is not a matcher that gives up on every multi-segment name.
     """
-    assert family_of("meta-llama/qwen3-distill") == "qwen"
+    assert family_of("meta-llama/qwen3-distill") == "unknown"
+    assert family_of("deepseek-r1-distill-qwen-7b") == "unknown"
+    assert (
+        family_of("tartuNLP/Llammas-base-p1-GPT-4o-human-error-mix-paragraph-GEC")
+        == "unknown"
+    )
     assert family_of("meta-llama/Llama-3.1-70B") == "meta"
+    assert family_of("anthropic/claude-opus-4") == "anthropic"
+
+
+def test_family_of_ignores_a_family_buried_late_in_a_fine_tune_name():
+    """A marker far into the model name is a reference, not the model's family."""
+    assert family_of("someone/my-finetune-of-the-thing-gpt-4o-mix") == "unknown"
+    assert family_of("gpt-4o-mini") == "openai"  # leading: believed
 
 
 @pytest.mark.parametrize(
@@ -1064,3 +1075,18 @@ def test_claim_id_shape_comes_from_the_registry_helper():
         assert bool(judge.calls) == is_claim_id(candidate), candidate
         if not is_claim_id(candidate):
             assert result.status == SKIPPED_NO_CLAIMS
+
+
+def test_scan_budget_exhaustion_fails_closed():
+    """Stray braces must not push a CRITICAL object past the scan cap."""
+    clean = _reply(_entry("C1", SUPPORTED))
+    critical = _reply(_entry("C1", CONTRADICTED, CRITICAL))
+    reply = clean + "{" * (rc._MAX_OBJECT_ATTEMPTS + 5) + critical
+    assert parse_reply(reply, ["C1"])[0] == []
+    result = run_critique([_claim("C1")], StubJudge(reply), _JUDGE, _AUTHOR)
+    assert result.status == UNPARSEABLE
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+    # Control: an ordinary reply is far below the cap and still parses.
+    assert run_critique(
+        [_claim("C1")], StubJudge(clean), _JUDGE, _AUTHOR
+    ).status == DONE

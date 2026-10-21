@@ -309,6 +309,22 @@ def _segment_matches(segment: str, marker: str, mode: str) -> bool:
     return not rest[0].isdigit()
 
 
+_HEAD_SEGMENTS = 2
+
+
+def _families_in(segments: Sequence[str], positions: Iterable[int]) -> set:
+    """The families named by ``segments`` at ``positions`` (next-segment refusal included)."""
+    families = set()
+    for position in positions:
+        following = segments[position + 1] if position + 1 < len(segments) else ""
+        for marker, family, mode in _FAMILY_MARKERS:
+            if following in _MARKER_REFUSED_NEXT_SEGMENTS.get(marker, ()):
+                continue
+            if _segment_matches(segments[position], marker, mode):
+                families.add(family)
+    return families
+
+
 def family_of(model_name: str) -> str:
     """The vendor family of a model name, or ``"unknown"``.
 
@@ -322,10 +338,16 @@ def family_of(model_name: str) -> str:
     version (``qwen3``, ``deepseekv3``).  A marker may also refuse the segment
     that follows it, because that segment can name a different vendor's
     family: ``"gpt-neox-20b"`` and ``"EleutherAI/gpt-j-6B"`` are ``"unknown"``,
-    not openai.  When several segments match different markers the LAST one
-    wins, because the model name comes after the vendor or hub name:
-    ``"meta-llama/qwen3-distill"`` is qwen, not meta.  An empty, non-string or
-    unrecognised name is ``"unknown"`` -- never a guess.
+    not openai.  Two rules refuse a name instead of guessing.  A name whose
+    segments match markers of DIFFERENT families is ``"unknown"``
+    (``"meta-llama/qwen3-distill"``, ``"deepseek-r1-distill-qwen-7b"``): a hub
+    owner, a base model or a training-data source can all appear in a name and
+    nothing says which is the model.  And a family counts only when it LEADS
+    the name -- the hub owner, or the first two segments of the model name --
+    so ``"tartuNLP/Llammas-base-...-GPT-4o-..."`` is ``"unknown"`` rather than
+    openai.  The same marker repeated (``"meta-llama/Llama-3"``) is one family.
+    An empty, non-string or unrecognised name is ``"unknown"`` -- never a
+    guess.
 
     This is a best-effort heuristic and it is incomplete by nature: no marker
     list can know every vendor's naming.  ``"unknown"`` therefore means "could
@@ -339,16 +361,26 @@ def family_of(model_name: str) -> str:
     if not name:
         return UNKNOWN_FAMILY
     segments = [segment for segment in _SEGMENT_RE.split(name) if segment]
-    # Backwards: a later segment is the model name and an earlier one is the
-    # vendor or hub owner, so the model's family is the more specific answer.
-    for position in range(len(segments) - 1, -1, -1):
-        segment = segments[position]
-        following = segments[position + 1] if position + 1 < len(segments) else ""
-        for marker, family, mode in _FAMILY_MARKERS:
-            if following in _MARKER_REFUSED_NEXT_SEGMENTS.get(marker, ()):
-                continue
-            if _segment_matches(segment, marker, mode):
-                return family
+    # The model's own name is the text after the last "/"; what precedes it is
+    # the hub owner.  A family is only believed when it leads the name (the
+    # owner, or the first _HEAD_SEGMENTS of the model name): a marker buried
+    # later is as likely a training-data or base-model reference in a
+    # fine-tune's name as the model's own family.
+    owner_count = len(
+        [
+            segment
+            for part in name.split("/")[:-1]
+            for segment in _SEGMENT_RE.split(part)
+            if segment
+        ]
+    )
+    model_count = len(segments) - owner_count
+    everywhere = _families_in(segments, range(len(segments)))
+    leading = _families_in(
+        segments, range(owner_count + min(_HEAD_SEGMENTS, model_count))
+    )
+    if len(everywhere) == 1 and everywhere == leading:
+        return next(iter(everywhere))
     return UNKNOWN_FAMILY
 
 
@@ -521,7 +553,24 @@ def build_prompt(claims: Sequence[Dict[str, Any]], conclusion: str = "") -> str:
 # --- Reply parsing ----------------------------------------------------------
 
 
-class _DuplicateKeyError(Exception):
+class _UnusableReply(Exception):
+    """The reply cannot be trusted to carry one unambiguous answer.
+
+    Not a ValueError on purpose: the scan treats ValueError as "nothing
+    decodable here, move on", and these conditions must instead make the whole
+    reply unusable (fail closed).
+    """
+
+
+class _ScanBudgetExhausted(_UnusableReply):
+    """Object starts remained when the attempt cap was reached.
+
+    Stopping silently would let a reply padded with stray braces hide a later
+    CRITICAL object behind an earlier clean one.
+    """
+
+
+class _DuplicateKeyError(_UnusableReply):
     """A JSON object repeated a key.
 
     Not a ValueError on purpose: the scan treats ValueError as "nothing
@@ -544,7 +593,9 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
     """Every JSON object decodable from ``text``, left to right.
 
     The attempt cap keeps a hostile reply full of stray braces from turning
-    this scan quadratic; a real judge reply needs a handful of attempts.
+    this scan quadratic; a real judge reply needs a handful of attempts.  A
+    reply that still has object starts left when the cap is hit raises
+    :class:`_ScanBudgetExhausted`, so the cap can never hide a later object.
 
     A nesting depth the decoder cannot walk raises ``RecursionError`` rather
     than ``ValueError``; it means exactly the same thing here -- no object is
@@ -554,7 +605,9 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
     decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys)
     index = text.find("{")
     attempts = 0
-    while index >= 0 and attempts < _MAX_OBJECT_ATTEMPTS:
+    while index >= 0:
+        if attempts >= _MAX_OBJECT_ATTEMPTS:
+            raise _ScanBudgetExhausted(attempts)
         attempts += 1
         try:
             obj, _end = decoder.raw_decode(text, index)
@@ -604,7 +657,7 @@ def _critique_payload(reply: str) -> Tuple[Optional[List[Any]], bool]:
         return None, False
     try:
         objects = _distinct_critique_objects(reply)
-    except _DuplicateKeyError:
+    except _UnusableReply:
         return None, False
     if len(objects) > 1:
         return None, True
