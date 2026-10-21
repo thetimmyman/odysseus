@@ -1343,3 +1343,37 @@ def test_all_claims_unusable_is_skipped_no_claims_and_not_run():
     assert judge.calls == []
     assert result.skipped_claims == 2
     assert gate_effect(result) == GATE_NOT_RUN
+
+
+@pytest.mark.parametrize("prefix", ['[', '{"wrapper":', '{'])
+def test_malformed_container_cannot_promote_a_nested_answer(prefix):
+    reply = prefix + _reply(_entry("C1", SUPPORTED))
+    result = run_critique([_claim("C1")], StubJudge(reply), _JUDGE, _AUTHOR)
+    assert result.status == UNPARSEABLE
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+
+@pytest.mark.parametrize('model', ['grok-4', 'grok-3-fast', 'xai/grok-4'])
+def test_supported_grok_models_can_receive_a_cross_family_critique(model):
+    result = run_critique(
+        [_claim('C1')], StubJudge(_reply(_entry('C1', SUPPORTED))), 'gpt-4o', model
+    )
+    assert result.status == DONE
+    assert result.author_family == 'xai'
+    assert gate_effect(result) == GATE_NONE
+
+
+@pytest.mark.parametrize('citations', [[{'source_id': 'S1', 'quote': 'quote'}, 'broken'], {'source_id': 'S1'}, [None]])
+def test_malformed_citations_require_review_even_if_the_judge_supports_the_claim(citations):
+    claim = _claim('C1')
+    claim['citations'] = citations
+    result = run_critique([claim], StubJudge(_reply(_entry('C1', SUPPORTED))), _JUDGE, _AUTHOR)
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+
+def test_duplicate_only_claims_do_not_report_a_completed_judge_pass():
+    judge = StubJudge(_reply(_entry('C1', SUPPORTED)))
+    result = run_critique([_claim('C1'), _claim('C1', text='another claim')], judge, _JUDGE, _AUTHOR)
+    assert result.status == UNPARSEABLE
+    assert judge.calls == []
+    assert gate_effect(result) == GATE_NEEDS_HUMAN

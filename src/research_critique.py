@@ -33,7 +33,8 @@ Statuses (see :class:`CritiqueResult`):
 * ``SKIPPED_NO_CLAIMS``   there was nothing to critique.
 * ``JUDGE_ERROR``         the judge raised; only the exception *class* name is
                           recorded, never its message.
-* ``UNPARSEABLE``         no single critique JSON could be read out of the
+* ``UNPARSEABLE``         duplicate-only input prevented a judge call, or
+                          no single critique JSON could be read out of the
                           reply: either none at all, or more than one
                           distinct object carrying a ``critiques`` list (an
                           illustrative example followed by the real answer,
@@ -206,6 +207,7 @@ _FAMILY_MARKERS = (
     ("o1", "openai", _MARKER_NO_DIGIT),
     ("o3", "openai", _MARKER_NO_DIGIT),
     ("o4", "openai", _MARKER_NO_DIGIT),
+    ("grok", "xai", _MARKER_PREFIX),
     ("gemini", "google", _MARKER_PREFIX),
     ("gemma", "google", _MARKER_PREFIX),
     ("qwen", "qwen", _MARKER_PREFIX),
@@ -287,8 +289,8 @@ class CritiqueResult:
     judge_family: str = UNKNOWN_FAMILY
     author_family: str = UNKNOWN_FAMILY
     notes: Tuple[str, ...] = ()
-    # Input claims that could not be critiqued (no dict, or no registry-shaped
-    # id).  They were never shown to the judge, so a DONE pass that skipped any
+    # Input claims that could not be fully critiqued (no dict, no registry-shaped
+    # id, or malformed citations).  They were never shown to the judge, so a DONE pass that skipped any
     # of them is not a clean pass: see :func:`gate_effect`.
     skipped_claims: int = 0
 
@@ -631,18 +633,16 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
     Resuming at the next start would yield those nested objects as if they
     were the reply's own payload.
 
-    A failed decode means nothing is decodable at that position, so the scan
-    moves on to the next start -- it may still begin a real object.
+    A failed decode makes the whole reply unusable: a later start could be
+    nested inside that malformed container rather than a top-level answer.
 
     The attempt cap keeps a hostile reply full of stray braces from turning
     this scan quadratic; a real judge reply needs a handful of attempts.  A
     reply that still has object starts left when the cap is hit raises
     :class:`_ScanBudgetExhausted`, so the cap can never hide a later object.
 
-    A nesting depth the decoder cannot walk raises ``RecursionError`` rather
-    than ``ValueError``; it means exactly the same thing here -- no object is
-    decodable at this position -- so it moves the scan on instead of escaping
-    as a crash.
+    A nesting depth the decoder cannot walk likewise makes the reply unusable
+    instead of escaping as a crash.
     """
     decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys)
     index = _next_object_start(text, 0)
@@ -653,9 +653,10 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
         attempts += 1
         try:
             obj, end = decoder.raw_decode(text, index)
-        except (ValueError, RecursionError):
-            index = _next_object_start(text, index + 1)
-            continue
+        except (ValueError, RecursionError) as exc:
+            # The failed value may enclose a valid-looking critique. Rescanning
+            # inside it would turn nested evidence into a top-level answer.
+            raise _UnusableReply("malformed JSON container") from exc
         if isinstance(obj, dict):
             yield obj
         index = _next_object_start(text, end)
@@ -1000,9 +1001,21 @@ def run_critique(
 
     claim_items = list(claims) if claims is not None else []
     ordered_ids, skipped = _claim_ids(claim_items)
+    malformed_citations = sum(
+        1 for claim in claim_items
+        if isinstance(claim, dict) and is_claim_id(claim.get("claim_id"))
+        and (
+            (claim.get("citations") is not None and not isinstance(claim.get("citations"), (list, tuple)))
+            or any(not isinstance(citation, dict) for citation in (claim.get("citations") or ()) )
+        )
+    )
+    if malformed_citations:
+        notes.append(f"{_plural(malformed_citations, 'claim')} had malformed citations; requires human review")
+        skipped += malformed_citations
     duplicated = _duplicated_claim_ids(claim_items)
-    if skipped:
-        notes.append(f"skipped {_plural(skipped, 'claim')} with no usable claim id")
+    unusable_ids = skipped - malformed_citations
+    if unusable_ids:
+        notes.append(f"skipped {_plural(unusable_ids, 'claim')} with no usable claim id")
 
     if not ordered_ids:
         return CritiqueResult(
@@ -1062,8 +1075,9 @@ def run_critique(
         # Nothing askable is left: every id is shared by several claims.
         critiques, parse_notes = _critiques_from_items([], ordered_ids, duplicated)
         notes.extend(parse_notes)
+        notes.append("no judge call: every usable claim id was duplicated")
         return CritiqueResult(
-            DONE,
+            UNPARSEABLE,
             tuple(critiques),
             (),
             judge_family,
