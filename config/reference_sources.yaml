@@ -1,0 +1,22 @@
+# Reference sources: external projects tracked for inspiration or used as
+# telemetry/eval substrates. They are NOT authority — nothing in Odysseus may
+# treat their output as authoritative for scoring or decision pipelines.
+# Downstream tooling filters on the reference_only flag below.
+#
+# See OD-19 / OD-50.
+
+sources:
+  - name: TensorZero
+    url: https://github.com/tensorzero/tensorzero
+    role: telemetry-substrate
+    reference_only: true
+
+  - name: OpenLIT
+    url: https://github.com/openlit/openlit
+    role: telemetry-substrate
+    reference_only: true
+
+  - name: Langfuse
+    url: https://github.com/langfuse/langfuse
+    role: telemetry-substrate
+    reference_only: true
