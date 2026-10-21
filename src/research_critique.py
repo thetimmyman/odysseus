@@ -14,11 +14,15 @@ author's model names so the pass can refuse a self-critique.
 
 Cross-family refusal: :func:`family_of` is a heuristic over model-name
 segments, so it is deliberately incomplete and this module never treats it as
-proof.  ``run_critique`` calls the judge only when BOTH names resolve to a
-recognised family and those families differ.  The same known family on both
-sides is refused, and so is ``"unknown"`` on either side: an unrecognised name
-may be the author's own family, so it is not provably cross-family.  A refusal
-never calls the judge and never produces a verdict.
+proof.  A marker only matches at the start of a segment, and a marker that
+allows a suffix allows only a version, so provider words such as
+``"llamafactory"`` are not read as a family; when several segments match, the
+last one (the model name, not the vendor) wins.  ``run_critique`` calls the
+judge only when BOTH names resolve to a recognised family and those families
+differ.  The same known family on both sides is refused, and so is ``"unknown"``
+on either side: an unrecognised name may be the author's own family, so it is
+not provably cross-family.  A refusal never calls the judge and never produces
+a verdict.
 
 Statuses (see :class:`CritiqueResult`):
 
@@ -48,8 +52,11 @@ A pass that did not run is not a clean pass: :func:`gate_effect` answers
 severity is CRITICAL (read from the critiques themselves, not from the
 redundant ``critical_claim_ids`` list), and for a ``DONE`` pass that left any
 claim ``NOT_JUDGED`` -- a judge that answers a valid but empty
-``{"critiques": []}`` has judged nothing, so that is not ``NONE`` either.  Only
-a ``DONE`` pass with every claim judged and nothing critical answers ``NONE``.
+``{"critiques": []}`` has judged nothing, so that is not ``NONE`` either, and
+neither is a CONTRADICTED / ALTERNATIVE / UNSUPPORTED entry that arrived with
+no severity (that entry is not guessed at MAJOR, since the unstated severity
+could be CRITICAL; it becomes ``NOT_JUDGED``).  Only a ``DONE`` pass with every
+claim judged and nothing critical answers ``NONE``.
 ``SUPPORTED`` means only "the judge found no problem"; nothing here marks a
 claim verified.
 
@@ -170,9 +177,10 @@ UNKNOWN_FAMILY = "unknown"
 # is a prefix of another.
 #
 # How far a marker may extend inside a segment matters: a loose prefix test
-# makes "starcoder2-7b-GPTQ" an OpenAI model, which it is not.  So a marker
-# declares its own rule:
-_MARKER_PREFIX = "prefix"  # the segment may continue with anything
+# makes "starcoder2-7b-GPTQ" an OpenAI model, which it is not, and an
+# unrestricted one makes "llamafactory" a Meta model.  So a marker declares
+# its own rule:
+_MARKER_PREFIX = "prefix"  # the marker, then nothing, a digit, or "v"+digit
 _MARKER_DIGIT = "digit"  # exactly the marker, or the marker then a digit
 _MARKER_NO_DIGIT = "no_digit"  # exactly the marker, or the marker then no digit
 
@@ -238,8 +246,11 @@ class ClaimCritique:
 
     ``verdict`` is one of :data:`VERDICTS`; ``severity`` is one of
     :data:`SEVERITIES` and only for CONTRADICTED / ALTERNATIVE / UNSUPPORTED,
-    otherwise ``None``.  ``reason`` and ``alternative`` are the judge's text,
-    length-capped, and are untrusted data like every other model reply.
+    otherwise ``None``.  A problem verdict without a severity is not
+    represented here at all: it fails closed to ``NOT_JUDGED``, so a CRITICAL
+    the judge failed to state cannot be read as a MAJOR.  ``reason`` and
+    ``alternative`` are the judge's text, length-capped, and are untrusted data
+    like every other model reply.
     """
 
     claim_id: str
@@ -276,19 +287,22 @@ def _segment_matches(segment: str, marker: str, mode: str) -> bool:
     """Whether one name segment names the vendor behind ``marker``.
 
     A marker matches only at the start of a segment.  ``_MARKER_PREFIX`` lets
-    the segment continue with anything ("qwen" in "qwen2"); ``_MARKER_DIGIT``
-    allows exactly the marker or the marker followed by a digit ("gpt",
-    "gpt4o"); ``_MARKER_NO_DIGIT`` allows exactly the marker or the marker
-    followed by a non-digit ("o1", "o4mini"), so a version number cannot pass
-    as a marker ("o100").
+    the segment continue with a *version* and nothing else -- the marker
+    alone, the marker then a digit, or the marker then ``v`` and a digit
+    ("claude", "qwen3", "deepseekv3") -- so provider words that merely begin
+    with a marker ("llamafactory", "llamacpp", "qwenlm") are not family
+    markers.  ``_MARKER_DIGIT`` allows exactly the marker or the marker
+    followed by a digit ("gpt", "gpt4o"); ``_MARKER_NO_DIGIT`` allows exactly
+    the marker or the marker followed by a non-digit ("o1", "o4mini"), so a
+    version number cannot pass as a marker ("o100").
     """
     if not segment.startswith(marker):
         return False
-    if mode == _MARKER_PREFIX:
-        return True
     rest = segment[len(marker) :]
     if not rest:
         return True
+    if mode == _MARKER_PREFIX:
+        return rest[0].isdigit() or (rest[0] == "v" and rest[1:2].isdigit())
     if mode == _MARKER_DIGIT:
         return rest[0].isdigit()
     return not rest[0].isdigit()
@@ -297,15 +311,20 @@ def _segment_matches(segment: str, marker: str, mode: str) -> bool:
 def family_of(model_name: str) -> str:
     """The vendor family of a model name, or ``"unknown"``.
 
-    Matches a marker at the start of any name segment, so
+    Matches a marker at the start of a name segment, so
     ``"claude-3-5-sonnet"`` is anthropic, ``"meta-llama/Llama-3.1-70B"`` is meta
     (the ``llama`` segment) and ``"qwen2.5:7b"`` is qwen.  A marker is never a
     bare prefix of a longer word unless the marker says so: ``"gpt4o"`` is
-    openai but ``"gptq"`` is not, and ``"o4-mini"`` is openai while ``"o100"``
-    is not.  A marker may also refuse the segment that follows it, because that
-    segment can name a different vendor's family: ``"gpt-neox-20b"`` and
-    ``"EleutherAI/gpt-j-6B"`` are ``"unknown"``, not openai.  An empty,
-    non-string or unrecognised name is ``"unknown"`` -- never a guess.
+    openai but ``"gptq"`` is not, ``"o4-mini"`` is openai while ``"o100"`` is
+    not, and ``"llamafactory"`` / ``"llamacpp"`` / ``"qwenlm"`` are provider
+    words, not family names -- a prefix marker may only continue with a
+    version (``qwen3``, ``deepseekv3``).  A marker may also refuse the segment
+    that follows it, because that segment can name a different vendor's
+    family: ``"gpt-neox-20b"`` and ``"EleutherAI/gpt-j-6B"`` are ``"unknown"``,
+    not openai.  When several segments match different markers the LAST one
+    wins, because the model name comes after the vendor or hub name:
+    ``"meta-llama/qwen3-distill"`` is qwen, not meta.  An empty, non-string or
+    unrecognised name is ``"unknown"`` -- never a guess.
 
     This is a best-effort heuristic and it is incomplete by nature: no marker
     list can know every vendor's naming.  ``"unknown"`` therefore means "could
@@ -319,7 +338,10 @@ def family_of(model_name: str) -> str:
     if not name:
         return UNKNOWN_FAMILY
     segments = [segment for segment in _SEGMENT_RE.split(name) if segment]
-    for position, segment in enumerate(segments):
+    # Backwards: a later segment is the model name and an earlier one is the
+    # vendor or hub owner, so the model's family is the more specific answer.
+    for position in range(len(segments) - 1, -1, -1):
+        segment = segments[position]
         following = segments[position + 1] if position + 1 < len(segments) else ""
         for marker, family, mode in _FAMILY_MARKERS:
             if following in _MARKER_REFUSED_NEXT_SEGMENTS.get(marker, ()):
@@ -374,9 +396,9 @@ _PROMPT_INTRO = (
     "- UNSUPPORTED: the quotes do not establish the claim either way.\n"
     "- NOT_JUDGED: use only when the claim cannot be judged at all.\n"
     "\n"
-    "Severity is one of CRITICAL, MAJOR, MINOR and applies only to\n"
-    "CONTRADICTED, ALTERNATIVE and UNSUPPORTED; use null for SUPPORTED and\n"
-    "NOT_JUDGED.  "
+    "Severity is REQUIRED for CONTRADICTED, ALTERNATIVE and UNSUPPORTED and\n"
+    "must be one of CRITICAL, MAJOR, MINOR: an entry with no severity is\n"
+    "treated as NOT_JUDGED.  Use null for SUPPORTED and NOT_JUDGED.  "
 )
 
 # The CRITICAL rule depends on whether the caller can show the judge the
@@ -593,8 +615,20 @@ def _critique_from_item(
         if raw_severity is None or (
             isinstance(raw_severity, str) and not raw_severity.strip()
         ):
-            severity = MAJOR
-        elif isinstance(raw_severity, str) and raw_severity.strip().upper() in SEVERITIES:
+            # Fail closed: a problem the judge did not rank may be a CRITICAL it
+            # failed to state, so guessing MAJOR here would be a silent
+            # downgrade.  NOT_JUDGED instead, and the gate asks for a human.
+            return (
+                ClaimCritique(
+                    claim_id,
+                    NOT_JUDGED,
+                    None,
+                    "the judge returned no severity for a problem verdict",
+                ),
+                f"claim {claim_id} had a problem verdict without a severity; "
+                "marked NOT_JUDGED",
+            )
+        if isinstance(raw_severity, str) and raw_severity.strip().upper() in SEVERITIES:
             severity = raw_severity.strip().upper()
         else:
             return (
@@ -695,9 +729,12 @@ def parse_reply(
     an entry naming a claim that was not asked about is ignored with a note; a
     claim the judge never mentioned, a claim judged more than once, and an
     unusable verdict or severity all become ``NOT_JUDGED`` with a note.  A
-    missing severity for CONTRADICTED / ALTERNATIVE / UNSUPPORTED defaults to
-    MAJOR; SUPPORTED and NOT_JUDGED never carry one.  Reason text is cut at
-    :data:`MAX_REASON_CHARS`, alternative text at :data:`MAX_ALTERNATIVE_CHARS`.
+    CONTRADICTED / ALTERNATIVE / UNSUPPORTED entry with no severity is not
+    guessed at MAJOR -- that would hide a CRITICAL the judge failed to state --
+    so it fails closed to ``NOT_JUDGED``, which :func:`gate_effect` reads as
+    ``NEEDS_HUMAN``.  SUPPORTED and NOT_JUDGED never carry a severity.  Reason
+    text is cut at :data:`MAX_REASON_CHARS`, alternative text at
+    :data:`MAX_ALTERNATIVE_CHARS`.
 
     A reply carrying more than one DISTINCT object with a ``critiques`` list is
     ambiguous, so it parses to ``([], [note])`` rather than to the first one:

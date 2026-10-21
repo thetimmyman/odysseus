@@ -112,6 +112,66 @@ def test_family_of_table(model_name, expected):
 
 
 @pytest.mark.parametrize(
+    "model_name, expected",
+    [
+        ("claude3", "anthropic"),
+        ("gemini2", "google"),
+        ("gemma2", "google"),
+        ("qwen3", "qwen"),
+        ("llama3", "meta"),
+        ("deepseekv3", "deepseek"),
+        ("glm4", "zhipu"),
+        ("mistral7b", "mistral"),
+    ],
+)
+def test_family_of_prefix_marker_accepts_a_version_suffix(model_name, expected):
+    """A prefix marker followed by a version still names that family.
+
+    Control: test_family_of_prefix_marker_rejects_provider_words below answers
+    "unknown" for the same markers inside longer provider words, so this is not
+    a matcher that claims every word it finds.
+    """
+    assert family_of(model_name) == expected
+
+
+@pytest.mark.parametrize(
+    "model_name, expected",
+    [
+        ("llamafactory", "unknown"),
+        ("llamacpp-7b", "unknown"),
+        ("qwenlm-7b", "unknown"),
+        ("deepseekcoder", "unknown"),
+        ("llamafactory/tiny-random-qwen3", "qwen"),
+    ],
+)
+def test_family_of_prefix_marker_rejects_provider_words(model_name, expected):
+    """A provider word that starts with a marker is not that family.
+
+    "llamafactory" starts with "llama" and "qwenlm" starts with "qwen", but the
+    rest of the segment is a word, not a version, so neither names the family.
+    When a later segment does name one -- "llamafactory/tiny-random-qwen3" --
+    that segment wins.
+
+    Control: "llama3" and "qwen3" are meta and qwen in the test above, so the
+    difference here is the suffix after the marker.
+    """
+    assert family_of(model_name) == expected
+
+
+def test_family_of_prefers_the_last_matching_segment():
+    """The model segment comes after the vendor segment, so it wins.
+
+    "meta-llama/qwen3-distill" names the hub owner "meta-llama" and the model
+    "qwen3-distill": the family is the model's, not the owner's.
+
+    Control: the earlier segment alone really does resolve to meta, so this is
+    an order rule and not "qwen" matching everything.
+    """
+    assert family_of("meta-llama/qwen3-distill") == "qwen"
+    assert family_of("meta-llama/Llama-3.1-70B") == "meta"
+
+
+@pytest.mark.parametrize(
     "model_name",
     ["", "   ", "some-local-model", "totally-unknown-7b", "mythos-9b"],
 )
@@ -400,10 +460,49 @@ def test_supported_never_carries_a_severity():
     assert critiques[0].severity is None
 
 
-def test_missing_severity_defaults_to_major_for_contradicted():
-    reply = _reply(_entry("C1", CONTRADICTED))
-    critiques, _notes = parse_reply(reply, ["C1"])
-    assert critiques[0].severity == MAJOR
+@pytest.mark.parametrize("verdict", [CONTRADICTED, ALTERNATIVE, UNSUPPORTED])
+@pytest.mark.parametrize("severity", [None, "", "   "])
+def test_a_problem_verdict_without_a_severity_is_not_judged(verdict, severity):
+    """A problem with no severity may be hiding a CRITICAL, so fail closed.
+
+    Guessing MAJOR would silently downgrade a CRITICAL the judge forgot to
+    state, so such an entry is not judged at all.
+
+    Control: the same verdict carrying an explicit MINOR is judged, in
+    test_severity_is_kept_for_judged_problem_verdicts below.
+    """
+    reply = _reply(_entry("C1", verdict, severity, alternative="another reading"))
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques[0].verdict == NOT_JUDGED
+    assert critiques[0].severity is None
+    assert (
+        "claim C1 had a problem verdict without a severity; marked NOT_JUDGED"
+        in notes
+    )
+
+
+def test_a_done_pass_with_a_severityless_problem_needs_a_human():
+    """The parse rule above must reach the gate, not just the notes."""
+    judge = StubJudge(
+        _reply(_entry("C1", CONTRADICTED, None, "the quote says the opposite"))
+    )
+    result = run_critique([_claim("C1")], judge, "claude-3-5-sonnet", "gpt-4o")
+    assert result.status == DONE
+    assert [critique.verdict for critique in result.critiques] == [NOT_JUDGED]
+    assert result.critical_claim_ids == ()
+    assert any("without a severity" in note for note in result.notes)
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+    # Control: the same entry with CRITICAL really is a judged critique, so
+    # the NOT_JUDGED above is the missing severity and not the verdict path.
+    critical = run_critique(
+        [_claim("C1")],
+        StubJudge(_reply(_entry("C1", CONTRADICTED, CRITICAL, "the opposite"))),
+        "claude-3-5-sonnet",
+        "gpt-4o",
+    )
+    assert [critique.verdict for critique in critical.critiques] == [CONTRADICTED]
+    assert critical.critical_claim_ids == ("C1",)
 
 
 @pytest.mark.parametrize("verdict", [CONTRADICTED, ALTERNATIVE, UNSUPPORTED])
@@ -569,23 +668,66 @@ def test_oversize_reply_is_refused_before_any_scan():
     assert gate_effect(result) == GATE_NEEDS_HUMAN
 
 
-def test_deeply_nested_reply_is_unparseable_not_an_exception():
-    """A nesting blow-up means "not decodable here", not a crash."""
+def test_deeply_nested_reply_is_never_an_exception():
+    """A nesting blow-up must not crash the pass, whatever the decoder does.
+
+    Whether a JSON decoder walks 50,000 levels is a property of the Python
+    version, not of this module, so the assertion is on the public outcome:
+    the reply is either undecodable (``UNPARSEABLE``) or decoded into a
+    ``critiques`` list whose entries are not critique objects, which leaves
+    every claim ``NOT_JUDGED``.  Either way nothing is judged and the gate
+    asks for a human.
+    """
     reply = '{"critiques": ' + "[" * 50_000 + "]" * 50_000 + "}"
     # Control 1: this reply is under the length cap, so it does reach the
     # decoder rather than being refused up front.
     assert len(reply) <= rc.MAX_REPLY_CHARS
-    # Control 2: the text really does exhaust the decoder, so catching
-    # RecursionError is what keeps the pass alive.
-    with pytest.raises(RecursionError):
-        json.JSONDecoder().raw_decode(reply, 0)
 
+    result = run_critique(
+        [_claim("C1")], StubJudge(reply), "claude-3-5-sonnet", "gpt-4o"
+    )
+    if result.status == UNPARSEABLE:
+        assert result.critiques == ()
+        assert any("no parseable critique JSON" in note for note in result.notes)
+    else:
+        assert result.status == DONE
+        assert result.critiques
+        assert [critique.verdict for critique in result.critiques] == [NOT_JUDGED]
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+    # Control 2: the same path over a small well-formed reply is a clean pass,
+    # so the gate answer above is this reply and not the run's default.
+    control = run_critique(
+        [_claim("C1")],
+        StubJudge(_reply(_entry("C1", SUPPORTED))),
+        "claude-3-5-sonnet",
+        "gpt-4o",
+    )
+    assert control.status == DONE
+    assert gate_effect(control) == GATE_NONE
+
+
+def test_a_decoder_recursion_error_is_unparseable_not_a_crash(monkeypatch):
+    """The RecursionError branch, forced, without depending on a deep reply."""
+
+    def explode(*_args, **_kwargs):
+        raise RecursionError("decoder exhausted")
+
+    reply = _reply(_entry("C1", SUPPORTED))
+    # Control: the same reply parses normally before the decoder is patched,
+    # so the UNPARSEABLE below is the raised RecursionError.
+    assert run_critique(
+        [_claim("C1")], StubJudge(reply), "claude-3-5-sonnet", "gpt-4o"
+    ).status == DONE
+
+    monkeypatch.setattr(json.JSONDecoder, "raw_decode", explode)
     result = run_critique(
         [_claim("C1")], StubJudge(reply), "claude-3-5-sonnet", "gpt-4o"
     )
     assert result.status == UNPARSEABLE
     assert result.critiques == ()
     assert any("no parseable critique JSON" in note for note in result.notes)
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
 
 
 def test_parse_reply_refuses_an_oversize_reply():
@@ -738,6 +880,21 @@ def test_prompt_marks_untrusted_text_as_data_not_instructions():
     assert '"critiques"' in prompt
     for verdict in rc.VERDICTS:
         assert verdict in prompt
+
+
+def test_prompt_requires_a_severity_for_problem_verdicts():
+    """The judge is told the severity is required, not optional.
+
+    A reply without one is treated as NOT_JUDGED, so the prompt has to say so
+    rather than leave the judge guessing.
+
+    Control: the sentence names all three severities, so this is not a match
+    on a stray word.
+    """
+    prompt = build_prompt([_claim("C1")])
+    assert "Severity is REQUIRED for CONTRADICTED, ALTERNATIVE and UNSUPPORTED" in prompt
+    assert "CRITICAL, MAJOR, MINOR" in prompt
+    assert "NOT_JUDGED" in prompt
 
 
 def test_prompt_notes_claims_without_evidence():
