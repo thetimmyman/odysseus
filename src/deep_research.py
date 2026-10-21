@@ -230,6 +230,13 @@ DEPTH_MODES = {
         "max_time": 600,
         "max_urls_per_round": 4,
     },
+    # Evaluation mode (draft rulings) is opt-in only: select_default_depth
+    # never returns it, so "auto" cannot start an evaluation run.
+    "evaluation": {
+        "max_rounds": 8,
+        "max_time": 600,
+        "max_urls_per_round": 4,
+    },
 }
 
 
