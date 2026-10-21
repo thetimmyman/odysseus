@@ -86,6 +86,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from src.research_run_record import is_claim_id, is_source_id
+
 __all__ = [
     "VERDICTS",
     "SEVERITIES",
@@ -214,12 +216,8 @@ _MARKER_REFUSED_NEXT_SEGMENTS = {
 }
 _SEGMENT_RE = re.compile(r"[^a-z0-9]+")
 
-# The claim-id registry in src/research_run_record.py mints "C<n>" for
-# 1 <= n <= 999999 (_CLAIM_ID_RE / MAX_CLAIM_ID there) and reads nothing else.
-# The pattern is repeated here rather than imported so this module stays free
-# of feature imports; it must stay identical in shape.
-_CLAIM_ID_RE = re.compile(r"C[1-9][0-9]{0,5}")
-
+# Claim and source ids are validated by the registry's own helpers, so the
+# recorder and this pass can never accept different ids.
 # --- Reply / prompt limits --------------------------------------------------
 MAX_REASON_CHARS = 500
 MAX_ALTERNATIVE_CHARS = 500
@@ -435,6 +433,25 @@ _PROMPT_REPLY_SHAPE = (
 )
 
 
+def _duplicated_claim_ids(claims: Sequence[Any]) -> frozenset:
+    """Usable claim ids carried by more than one claim.
+
+    Two claims under one id cannot be told apart in the judge's reply, so one
+    SUPPORTED entry would clear both.  Such ids are kept out of the prompt and
+    reported as NOT_JUDGED instead of being merged.
+    """
+    seen: set = set()
+    duplicated: set = set()
+    for claim in claims:
+        claim_id = claim.get("claim_id") if isinstance(claim, dict) else None
+        if not is_claim_id(claim_id):
+            continue
+        if claim_id in seen:
+            duplicated.add(claim_id)
+        seen.add(claim_id)
+    return frozenset(duplicated)
+
+
 def build_prompt(claims: Sequence[Dict[str, Any]], conclusion: str = "") -> str:
     """The critique prompt for ``claims`` (the ``grounding_view`` shape).
 
@@ -450,7 +467,7 @@ def build_prompt(claims: Sequence[Dict[str, Any]], conclusion: str = "") -> str:
     and narrows CRITICAL to a direct contradiction of the claim.
 
     A claim is rendered only when its ``claim_id`` fullmatches the registry
-    shape ``C<n>`` (see :data:`_CLAIM_ID_RE`).  The id is printed as a label
+    shape ``C<n>`` (see :func:`src.research_run_record.is_claim_id`).  The id is printed as a label
     *outside* the data blocks, so an arbitrary string there would be prompt
     text rather than data; a claim with any other id is left out entirely.
     :func:`run_critique` counts those claims in a note.
@@ -468,11 +485,12 @@ def build_prompt(claims: Sequence[Dict[str, Any]], conclusion: str = "") -> str:
         parts.append("\n")
     parts.append(_PROMPT_REPLY_SHAPE)
 
+    duplicated = _duplicated_claim_ids(claims or ())
     for claim in claims or ():
         if not isinstance(claim, dict):
             continue
         claim_id = claim.get("claim_id")
-        if not isinstance(claim_id, str) or not _CLAIM_ID_RE.fullmatch(claim_id):
+        if not is_claim_id(claim_id) or claim_id in duplicated:
             continue
         parts.append(f"\nClaim id: {claim_id}\n")
         parts.append(_data_block("Claim text", claim.get("text")))
@@ -483,14 +501,40 @@ def build_prompt(claims: Sequence[Dict[str, Any]], conclusion: str = "") -> str:
         for index, citation in enumerate(citations, start=1):
             if not isinstance(citation, dict):
                 continue
-            source = _one_line(citation.get("source_id"))
-            label = f"Quote {index} from source {source}" if source else f"Quote {index}"
+            # The label sits outside the data block, so only a registry-shaped
+            # source id (S<n>) is echoed; anything else is untrusted text and
+            # is left out rather than interpolated.
+            source = citation.get("source_id")
+            label = (
+                f"Quote {index} from source {source}"
+                if is_source_id(source)
+                else f"Quote {index}"
+            )
             parts.append(_data_block(label, citation.get("quote")))
     parts.append("\nReply now with the JSON object only.\n")
     return "".join(parts)
 
 
 # --- Reply parsing ----------------------------------------------------------
+
+
+class _DuplicateKeyError(Exception):
+    """A JSON object repeated a key.
+
+    Not a ValueError on purpose: the scan treats ValueError as "nothing
+    decodable here, move on", and a repeated key must instead make the whole
+    reply unusable, because the decoder's last-key-wins rule would let a later
+    SUPPORTED overwrite an earlier CRITICAL.
+    """
+
+
+def _reject_duplicate_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKeyError(key)
+        result[key] = value
+    return result
 
 
 def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
@@ -504,7 +548,7 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
     decodable at this position -- so it moves the scan on instead of escaping
     as a crash.
     """
-    decoder = json.JSONDecoder()
+    decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys)
     index = text.find("{")
     attempts = 0
     while index >= 0 and attempts < _MAX_OBJECT_ATTEMPTS:
@@ -555,7 +599,10 @@ def _critique_payload(reply: str) -> Tuple[Optional[List[Any]], bool]:
     """
     if not isinstance(reply, str):
         return None, False
-    objects = _distinct_critique_objects(reply)
+    try:
+        objects = _distinct_critique_objects(reply)
+    except _DuplicateKeyError:
+        return None, False
     if len(objects) > 1:
         return None, True
     if not objects:
@@ -649,10 +696,13 @@ def _critique_from_item(
 
 
 def _critiques_from_items(
-    items: Sequence[Any], claim_ids: Sequence[str]
+    items: Sequence[Any],
+    claim_ids: Sequence[str],
+    refused: frozenset = frozenset(),
 ) -> Tuple[List[ClaimCritique], List[str]]:
+    """One critique per claim id; ids in ``refused`` are NOT_JUDGED, never asked."""
     ordered_ids = list(dict.fromkeys(claim_ids))
-    expected = set(ordered_ids)
+    expected = set(ordered_ids) - set(refused)
     by_id: Dict[str, List[Dict[str, Any]]] = {}
     notes: List[str] = []
     malformed = 0
@@ -687,6 +737,20 @@ def _critiques_from_items(
 
     critiques: List[ClaimCritique] = []
     for claim_id in ordered_ids:
+        if claim_id in refused:
+            notes.append(
+                f"claim {claim_id} was carried by more than one claim; "
+                "it was not sent to the judge and is marked NOT_JUDGED"
+            )
+            critiques.append(
+                ClaimCritique(
+                    claim_id,
+                    NOT_JUDGED,
+                    None,
+                    "more than one claim carried this claim id",
+                )
+            )
+            continue
         entries = by_id.get(claim_id, [])
         if not entries:
             notes.append(f"claim {claim_id} was not judged: no verdict named it")
@@ -760,8 +824,8 @@ def parse_reply(
 def _claim_ids(claim_items: Sequence[Any]) -> Tuple[List[str], int]:
     """Claim ids in claim order, plus a count of claims with no usable id.
 
-    A usable id fullmatches :data:`_CLAIM_ID_RE`, the shape the registry in
-    ``src/research_run_record.py`` mints.  Ids are untrusted and are printed as
+    A usable id satisfies :func:`src.research_run_record.is_claim_id`, the
+    registry's own check.  Ids are untrusted and are printed as
     labels *outside* the data blocks, so anything else -- a lower-case ``c1``,
     ``C0``, or an instruction smuggled into the id -- is not echoed, and its
     claim is not critiqued.
@@ -770,7 +834,7 @@ def _claim_ids(claim_items: Sequence[Any]) -> Tuple[List[str], int]:
     skipped = 0
     for claim in claim_items:
         claim_id = claim.get("claim_id") if isinstance(claim, dict) else None
-        if isinstance(claim_id, str) and _CLAIM_ID_RE.fullmatch(claim_id):
+        if is_claim_id(claim_id):
             if claim_id not in ordered:
                 ordered.append(claim_id)
         else:
@@ -817,6 +881,7 @@ def run_critique(
 
     claim_items = list(claims) if claims is not None else []
     ordered_ids, skipped = _claim_ids(claim_items)
+    duplicated = _duplicated_claim_ids(claim_items)
     if skipped:
         notes.append(f"skipped {_plural(skipped, 'claim')} with no usable claim id")
 
@@ -848,6 +913,14 @@ def run_critique(
         notes.append("no callable judge was supplied")
         return CritiqueResult(
             JUDGE_ERROR, (), (), judge_family, author_family, tuple(notes)
+        )
+
+    if all(claim_id in duplicated for claim_id in ordered_ids):
+        # Nothing askable is left: every id is shared by several claims.
+        critiques, parse_notes = _critiques_from_items([], ordered_ids, duplicated)
+        notes.extend(parse_notes)
+        return CritiqueResult(
+            DONE, tuple(critiques), (), judge_family, author_family, tuple(notes)
         )
 
     try:
@@ -882,7 +955,7 @@ def run_critique(
             UNPARSEABLE, (), (), judge_family, author_family, tuple(notes)
         )
 
-    critiques, parse_notes = _critiques_from_items(items, ordered_ids)
+    critiques, parse_notes = _critiques_from_items(items, ordered_ids, duplicated)
     notes.extend(parse_notes)
     critical_claim_ids = tuple(
         critique.claim_id for critique in critiques if critique.severity == CRITICAL
