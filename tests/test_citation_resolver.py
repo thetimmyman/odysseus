@@ -119,6 +119,28 @@ def test_doi_url_with_encoded_hash_is_encoded_once_for_the_authority():
     assert fetcher.calls == [DOI_URL + "10.1234/res%23test"]
 
 
+def test_normalize_doi_lowercases_ascii_only_and_rejects_lone_surrogates():
+    assert normalize_doi("10.1234/ABC-Á") == "10.1234/abc-Á"  # A-Z fold, non-ASCII case is kept
+    assert normalize_doi("10.1234/\ud800") is None
+    assert normalize_doi("https://doi.org/10.1234/\ud800") is None
+
+
+def test_surrogate_doi_returns_malformed_without_calling_the_fetcher():
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    result = resolve_citation(_doi("10.1234/\ud800"), fetcher=fetcher)
+    assert result.status == FALSE and MALFORMED_ID in result.flags
+    assert fetcher.calls == []
+
+
+def test_title_and_author_compare_across_unicode_normalization_forms():
+    composed = "Caf\u00e9"
+    decomposed = "Cafe\u0301"
+    payload = {"message": {"title": [composed], "author": [{"family": composed}]}}
+    fetcher = RecordingFetcher(payload)
+    ref = CitationRef(kind="doi", identifier="10.1000/xyz", title=decomposed, first_author_surname=decomposed)
+    assert resolve_citation(ref, fetcher=fetcher).status == TRUE
+
+
 def test_normalize_doi_known_good_control():
     # Control for the malformed table below: this input must normalise.
     assert normalize_doi("10.1000/xyz") == "10.1000/xyz"
@@ -178,6 +200,9 @@ def test_normalize_arxiv_known_good_control():
         "2212.1234",  # 22xx needs the five-digit sequence
         "1501.0001",  # first five-digit year-month is 1501
         "0001.0001",  # the new YYMM.NNNN scheme began in April 2007
+        "0704.0000",  # sequence numbers start at 0001
+        "1501.00000",  # and at 00001
+        "hep-th/9901000",  # old-style sequence starts at 001
         "0703.0001",  # one month too early
         "2213.12345",  # month 13
         "2200.12345",  # month 00

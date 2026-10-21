@@ -54,6 +54,7 @@ Statuses (see :class:`CitationResult`), with the same vocabulary as
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -104,15 +105,15 @@ ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?id_list="
 
 _DOI_RE = re.compile(r"10\.[0-9]{4,9}/[^\s\x00-\x1f\x7f]+")
 _ARXIV_NEW_RE = re.compile(
-    r"(?:(?:07(?:0[4-9]|1[0-2])|0[89](?:0[1-9]|1[0-2])|1[0-4](?:0[1-9]|1[0-2]))\.[0-9]{4}"
-    r"|(?:1[5-9]|[2-9][0-9])(?:0[1-9]|1[0-2])\.[0-9]{5})"
+    r"(?:(?:07(?:0[4-9]|1[0-2])|0[89](?:0[1-9]|1[0-2])|1[0-4](?:0[1-9]|1[0-2]))\.(?!0000)[0-9]{4}"
+    r"|(?:1[5-9]|[2-9][0-9])(?:0[1-9]|1[0-2])\.(?!00000)[0-9]{5})"
     r"(?:v[1-9][0-9]*)?"
 )
 _ARXIV_OLD_RE = re.compile(
     r"[a-z][a-z-]*(?:\.[a-z]{2})?/"
     # old-style ids cover 9107 through 0703 only
     r"(?:91(?:0[7-9]|1[0-2])|9[2-9](?:0[1-9]|1[0-2])|0[0-6](?:0[1-9]|1[0-2])|070[1-3])"
-    r"[0-9]{3}"
+    r"(?!000)[0-9]{3}"
     r"(?:v[1-9][0-9]*)?"
 )
 _WS_RE = re.compile(r"\s+")
@@ -185,18 +186,31 @@ def normalize_doi(s: str) -> Optional[str]:
                 if value is None:
                     return None
             break
-    value = value.lower()
+    value = _ascii_lower(value)
     if not _DOI_RE.fullmatch(value):
+        return None
+    try:
+        value.encode("utf-8")  # a lone surrogate is not a DOI: it cannot be sent
+    except UnicodeEncodeError:
         return None
     return value
 
 
+def _ascii_lower(text: str) -> str:
+    """Lower-case only Basic Latin letters: DOI equivalence folds A-Z and nothing else."""
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in text)
+
+
 def _percent_decode(text: str) -> Optional[str]:
     """Decode ``%XX`` sequences as UTF-8 once; None when the result is not valid UTF-8."""
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
     raw = re.sub(
         rb"%([0-9A-Fa-f]{2})",
         lambda match: bytes([int(match.group(1), 16)]),
-        text.encode("utf-8"),
+        encoded,
     )
     try:
         return raw.decode("utf-8")
@@ -245,7 +259,7 @@ def _clip(text: str) -> str:
 
 def _norm_text(text: str) -> str:
     """Whitespace-collapsed, case-insensitive comparison form."""
-    return _WS_RE.sub(" ", text).strip().casefold()
+    return _WS_RE.sub(" ", unicodedata.normalize("NFC", text)).strip().casefold()
 
 
 def _first_str(values) -> Optional[str]:
