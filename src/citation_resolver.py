@@ -348,12 +348,12 @@ def _read_authority(kind: str, payload: dict):
         title = _first_str(message.get("title"))
         authors = []
         raw_authors = message.get("author")
-        if isinstance(raw_authors, list):
-            for author in raw_authors:
-                if isinstance(author, dict):
-                    family = _nonblank(author.get("family"))
-                    if family is not None:
-                        authors.append(family)
+        if isinstance(raw_authors, list) and raw_authors:
+            author = raw_authors[0]
+            if isinstance(author, dict):
+                family = _nonblank(author.get("family"))
+                if family is not None:
+                    authors.append(family)
         return title, authors, False
 
     entries = payload.get("entries")
@@ -363,7 +363,9 @@ def _read_authority(kind: str, payload: dict):
     if not isinstance(entry, dict):
         return None
     title = _nonblank(entry.get("title"))
-    authors = [name for name in entry.get("authors") or [] if _nonblank(name) is not None]
+    raw_authors = entry.get("authors")
+    first = _nonblank(raw_authors[0]) if isinstance(raw_authors, list) and raw_authors else None
+    authors = [first] if first is not None else []
     return title, authors, True
 
 
@@ -495,7 +497,7 @@ def resolve_citation(
                 ref,
                 FALSE,
                 [AUTHOR_MISMATCH],
-                "cited first-author surname is not among the authority authors",
+                "cited first-author surname does not match the authority first author",
                 title,
             )
 
