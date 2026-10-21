@@ -22,7 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.local_measurement_owner import BrokerLease, MeasurementUnresolved, measure_once
 from src.local_measurement_config import ReadOnlyConfigProjection, ConfigProjectionRefused
 from src.local_measurement_process import SystemdProcesses, decode_json
-from src.local_target_qualification import _http_transport, read_bounded_http_json
+from src.local_target_qualification import (CONTEXT_FLOOR_DEFAULT, CONTEXT_FLOOR_MAX,
+                                            _http_transport, read_bounded_http_json)
+
+
+def _safe_detail(exc):
+    """A message safe to print: ours only, never provider or collector material."""
+    from src.local_target_qualification import QualificationError
+    return str(exc).strip()[:300] if isinstance(exc, QualificationError) else ''
 from src.local_targets import (LocalTargetSpec, make_target_capability_receipt,
                               target_capability_receipt_hash_is_valid)
 
@@ -78,6 +85,26 @@ def worker(args, *, input_bytes=None):
     print(json.dumps(result, allow_nan=False))
 
 
+def _context_floor(value):
+    """Measured context floor: >= 4096 tokens and a multiple of 1024.
+
+    Validated while parsing so a bad floor fails before any unit, lease or
+    provider request exists. The upper bound keeps the probe prompt inside the
+    bounded worker HTTP payload. The provider's reported prompt tokens must
+    still reach the floor; this only bounds what may be asked for.
+    """
+    try:
+        floor = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError('context floor must be an integer') from None
+    if (floor < CONTEXT_FLOOR_DEFAULT or floor % 1024
+            or floor > CONTEXT_FLOOR_MAX):
+        raise argparse.ArgumentTypeError(
+            f'context floor must be a multiple of 1024 between {CONTEXT_FLOOR_DEFAULT} '
+            f'and {CONTEXT_FLOOR_MAX}')
+    return floor
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if "--owned-executor" in argv or "--executor-unit" in argv:
@@ -111,6 +138,9 @@ def main(argv=None):
                         help='Explicit new profile for a natively bound hostname change; old spec stays immutable.')
     parser.add_argument('--current-spec', type=Path,
                         help='Separately pinned proposed specification; only hostname may change.')
+    parser.add_argument('--context-floor', type=_context_floor, default=CONTEXT_FLOOR_DEFAULT,
+                        help='Measured context floor in tokens: >= 4096, a multiple of 1024. '
+                             'The provider must report at least this many prompt tokens.')
     args = parser.parse_args(argv)
     if args.new_profile is not None and (args.qualify_boundary or args.worker_http
             or args.worker_broker or args.worker_workspace or args.changed_route or args.current_spec is not None):
@@ -175,16 +205,21 @@ def main(argv=None):
         lease = BrokerLease(processes.post, endpoint=execution_spec.endpoint, holder=args.holder)
         candidate = measure_once(spec, previous, identity_command, args.output_dir,
                                  current_spec=current_spec, new_profile=args.new_profile is not None,
-                                 lease=lease, processes=processes)
+                                 lease=lease, processes=processes,
+                                 context_floor=args.context_floor)
         # measure_once finalized copies before release/publication. No new
         # filesystem cleanup may fail after the accepted receipt exists.
         projection = None
         print(json.dumps({'receipt_hash':candidate.receipt_hash, 'profile_id':candidate.profile_id,
-                          'safe_context':4096, 'applied':False}, sort_keys=True))
+                          'safe_context':candidate.context.safe_working_context,
+                          'applied':False}, sort_keys=True))
         return 0
     except Exception as exc:
-        # Provider/collector/broker exceptions may contain private data.
-        print('measurement refused: '+type(exc).__name__+'; no receipt applied', file=sys.stderr)
+        # Provider/collector/broker exceptions may contain private data, so only a
+        # QualificationError - whose message this package authors - contributes text.
+        detail = _safe_detail(exc)
+        print('measurement refused: '+type(exc).__name__+((': '+detail) if detail else '')+
+              '; no receipt applied', file=sys.stderr)
         if isinstance(exc, ConfigProjectionRefused):
             # Same private owned-resource channel as unit reconciliation keys.
             # No original configuration path/body or exception text is emitted.
