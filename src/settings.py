@@ -97,6 +97,11 @@ DEFAULT_SETTINGS = {
     # retrieved text (content-addressed blobs), sha256, extractor evidence
     # per finding, and a RoutingModelRun row per LLM call. Off by default.
     "research_run_record": False,
+    # Advisory citation verification for deep-research findings: resolve
+    # DOI/arXiv source URLs against Crossref/arXiv and record the result on
+    # the finding. Off by default (no network, no finding change). See
+    # src/research_citations.py and docs/research-citations.md.
+    "research_citation_verification": False,
     # Let deep research cite our own benchmark/receipt files as measured sources
     # (src/measured_evidence.py). Off by default; the root is the directory that
     # holds evidence/ and benchmark/<name>/results/.
