@@ -95,6 +95,30 @@ def test_normalize_doi_accepts(raw, expected):
     assert normalize_doi(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("10.1234/café", "10.1234/café"),  # Unicode suffix is a valid DOI
+        ("https://doi.org/10.1234/res%23test", "10.1234/res#test"),  # URL form is percent-decoded once
+        ("doi:10.1234/res%23test", "10.1234/res%23test"),  # a bare form is taken literally
+        ("https://doi.org/10.1234/caf%C3%A9", "10.1234/café"),
+    ],
+)
+def test_normalize_doi_unicode_and_url_decoding(raw, expected):
+    assert normalize_doi(raw) == expected
+
+
+def test_normalize_doi_rejects_control_characters_and_invalid_percent_utf8():
+    assert normalize_doi("10.1234/a\x01b") is None
+    assert normalize_doi("https://doi.org/10.1234/%FF%FE") is None
+
+
+def test_doi_url_with_encoded_hash_is_encoded_once_for_the_authority():
+    fetcher = RecordingFetcher(CROSSREF_OK)
+    resolve_citation(_doi("https://doi.org/10.1234/res%23test"), fetcher=fetcher)
+    assert fetcher.calls == [DOI_URL + "10.1234/res%23test"]
+
+
 def test_normalize_doi_known_good_control():
     # Control for the malformed table below: this input must normalise.
     assert normalize_doi("10.1000/xyz") == "10.1000/xyz"
@@ -161,6 +185,10 @@ def test_normalize_arxiv_known_good_control():
         "2212.12345v01",  # no leading zero in the version
         "hep-th/9900001",  # old-style month 00
         "hep-th/9913001",  # old-style month 13
+        "hep-th/9001001",  # old-style ids start at 9107
+        "hep-th/9106001",  # one month early
+        "hep-th/0704001",  # old-style ids end at 0703
+        "hep-th/2212001",  # far outside the old-style range
         "٢٢١٢.١٢٣٤٥",  # non-ASCII digits
         "abcd",
         "2101.00001v",  # version marker without a number

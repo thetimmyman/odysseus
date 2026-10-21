@@ -102,14 +102,17 @@ DOI_PREFIXES = ("https://doi.org/", "http://dx.doi.org/", "doi:")
 CROSSREF_WORKS_URL = "https://api.crossref.org/works/"
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?id_list="
 
-_DOI_RE = re.compile(r"10\.[0-9]{4,9}/[!-~]+")
+_DOI_RE = re.compile(r"10\.[0-9]{4,9}/[^\s\x00-\x1f\x7f]+")
 _ARXIV_NEW_RE = re.compile(
     r"(?:(?:07(?:0[4-9]|1[0-2])|0[89](?:0[1-9]|1[0-2])|1[0-4](?:0[1-9]|1[0-2]))\.[0-9]{4}"
     r"|(?:1[5-9]|[2-9][0-9])(?:0[1-9]|1[0-2])\.[0-9]{5})"
     r"(?:v[1-9][0-9]*)?"
 )
 _ARXIV_OLD_RE = re.compile(
-    r"[a-z][a-z-]*(?:\.[a-z]{2})?/[0-9]{2}(?:0[1-9]|1[0-2])[0-9]{3}"
+    r"[a-z][a-z-]*(?:\.[a-z]{2})?/"
+    # old-style ids cover 9107 through 0703 only
+    r"(?:91(?:0[7-9]|1[0-2])|9[2-9](?:0[1-9]|1[0-2])|0[0-6](?:0[1-9]|1[0-2])|070[1-3])"
+    r"[0-9]{3}"
     r"(?:v[1-9][0-9]*)?"
 )
 _WS_RE = re.compile(r"\s+")
@@ -163,8 +166,9 @@ def normalize_doi(s: str) -> Optional[str]:
 
     Accepts an optional ``https://doi.org/`` / ``http://dx.doi.org/`` /
     ``doi:`` prefix (case-insensitive) and surrounding whitespace.  The
-    registrant prefix must be ``10.`` plus 4-9 digits and the suffix must be
-    non-empty with no whitespace.
+    registrant prefix must be ``10.`` plus 4-9 ASCII digits and the suffix must be
+    non-empty with no whitespace or control characters (Unicode is allowed).
+    A DOI given as a ``https://`` URL is percent-decoded once.
     """
     if not isinstance(s, str):
         return None
@@ -173,11 +177,31 @@ def normalize_doi(s: str) -> Optional[str]:
     for prefix in DOI_PREFIXES:
         if lowered.startswith(prefix):
             value = value[len(prefix):].strip()
+            if prefix.startswith("http"):
+                # A DOI URL carries its suffix percent-encoded (``res%23test``
+                # is the DOI ``res#test``); decode once so the authority URL
+                # is built from the real identifier, not a double encoding.
+                value = _percent_decode(value)
+                if value is None:
+                    return None
             break
     value = value.lower()
     if not _DOI_RE.fullmatch(value):
         return None
     return value
+
+
+def _percent_decode(text: str) -> Optional[str]:
+    """Decode ``%XX`` sequences as UTF-8 once; None when the result is not valid UTF-8."""
+    raw = re.sub(
+        rb"%([0-9A-Fa-f]{2})",
+        lambda match: bytes([int(match.group(1), 16)]),
+        text.encode("utf-8"),
+    )
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def normalize_arxiv(s: str) -> Optional[str]:
@@ -187,8 +211,9 @@ def normalize_arxiv(s: str) -> Optional[str]:
     ``vN``, and old style ``category/YYMMNNN`` (``hep-th/9901001``), each
     with an optional ``arXiv:`` prefix.  Returns the id with the prefix
     stripped and lowercased.  Syntax is ASCII-only, the ``YYMM`` month must
-    be 01..12, new-style ids start at 0704 (April 2007), a new-style sequence is four digits before 1501 and five from
-    1501 on, and a version suffix is ``v1`` or higher with no leading zero.
+    be 01..12, new-style ids start at 0704 (April 2007) and old-style ids run
+    from 9107 to 0703, a new-style sequence is four digits before 1501 and five
+    from 1501 on, and a version suffix is ``v1`` or higher with no leading zero.
     """
     if not isinstance(s, str):
         return None
