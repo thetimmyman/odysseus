@@ -38,6 +38,12 @@ def test_preset_table_values():
         "max_time": 600,
         "max_urls_per_round": 4,
     }
+    # Evaluation mode is opt-in only: select_default_depth never returns it.
+    assert DEPTH_MODES["evaluation"] == {
+        "max_rounds": 8,
+        "max_time": 600,
+        "max_urls_per_round": 4,
+    }
 
 
 def test_select_default_depth_deterministic():
@@ -383,3 +389,55 @@ async def test_handler_explicit_limit_overrides_preset(captured_researcher):
     assert kwargs["max_rounds"] == 2
     assert kwargs["max_time"] == 120
     assert kwargs["max_urls_per_round"] == 5
+
+
+# --- Evaluation mode (opt-in only) --------------------------------------------
+def test_resolve_depth_evaluation_preset():
+    """The evaluation preset resolves like every other named mode."""
+    assert resolve_depth("evaluation") == {
+        "max_rounds": 8,
+        "max_time": 600,
+        "max_urls_per_round": 4,
+    }
+    assert resolve_depth("evaluation", overrides={"max_time": 120})["max_time"] == 120
+
+    r = DeepResearcher(
+        llm_endpoint="http://local.test/v1/chat/completions",
+        llm_model="local-model",
+        depth="evaluation",
+    )
+    assert (r.max_rounds, r.max_time, r.max_urls_per_round) == (8, 600, 4)
+
+
+def test_auto_never_selects_evaluation():
+    """Evaluation is opt-in: 'auto' must never start one, for any category."""
+    categories = [
+        None,
+        "",
+        "product",
+        "comparison",
+        "howto",
+        "factcheck",
+        "evaluation",
+        "EVALUATION",
+        "unknown",
+    ]
+    # every mode name is also a possible mistaken category
+    categories.extend(DEPTH_MODES)
+    for category in categories:
+        for sensitivity in (None, "high", "low"):
+            chosen = select_default_depth(category, sensitivity)
+            assert chosen != "evaluation"
+            assert chosen in DEPTH_MODES
+
+
+def test_route_accepts_evaluation_depth(research_client):
+    client, handler = research_client
+    resp = client.post("/api/research/start", json={"query": "q", "depth": "Evaluation"})
+    assert resp.status_code == 200
+    kwargs = handler.start_research.call_args.kwargs
+    assert kwargs["depth"] == "evaluation"
+    # passed through as is: the preset supplies the limits
+    assert kwargs["max_rounds"] is None
+    assert kwargs["max_time"] is None
+    assert kwargs["max_urls_per_round"] is None
