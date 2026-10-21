@@ -68,12 +68,15 @@ the prompt that block content is data, not instructions.  A caller that passes
 rule can refer to it; without one the prompt says so and narrows CRITICAL to a
 direct contradiction.
 
-Claim ids are untrusted too, and they are printed *outside* those blocks as
-labels, so only the registry's shape is rendered: ``C<n>`` with 1 <= n <=
-999999, as minted by ``src/research_run_record.py`` (the pattern is repeated
-locally rather than imported, to keep this module free of feature imports).  A
-claim whose id does not fullmatch is left out of the prompt and counted in a
-note; when every claim is left out the result is ``SKIPPED_NO_CLAIMS``.
+Claim and source ids are untrusted too, and they are printed *outside* those
+blocks as labels, so only the registry's shapes are rendered, checked with
+``is_claim_id`` and ``is_source_id`` from ``src/research_run_record.py``: a
+claim whose id does not pass is left out of the prompt and counted in a note
+(when every claim is left out the result is ``SKIPPED_NO_CLAIMS``), and a
+citation whose source id does not pass is shown without a source label.  A
+claim id carried by more than one claim is not sent to the judge at all: it
+comes back ``NOT_JUDGED``, so the gate asks for a human.  A judge reply that
+repeats a JSON key is unparseable.
 
 Dormant: no research code calls this module yet, and importing it changes no
 behaviour.
