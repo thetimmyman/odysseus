@@ -17,6 +17,27 @@ The feature is **off by default** (no network calls, no finding changes).
 
 in `data/settings.json` (or the Settings API, which accepts the same key).
 
+### Per-run override
+
+`POST /api/research/start` accepts an optional boolean field:
+
+```json
+{
+  "query": "…",
+  "citation_verification": true
+}
+```
+
+- `true` enables verification for **that run only**.
+- `false` disables it for **that run only**, even when the global setting is
+  `true`.
+- Omitted / `null` preserves the established fallback to
+  `research_citation_verification` (default `false`).
+
+The field is a strict boolean: strings (`"true"`, `"false"`), numbers (`0`,
+`1`), objects, and arrays are rejected with `422`. An override never writes
+settings and never affects concurrent runs.
+
 ## What is checked
 
 Only source URLs that are already identifiers are consulted:
