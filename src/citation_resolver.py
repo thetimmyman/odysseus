@@ -40,7 +40,9 @@ Statuses (see :class:`CitationResult`), with the same vocabulary as
                    metadata does not match, or the identifier was malformed
                    and rejected before any lookup.
 * ``UNRESOLVABLE`` no authority could answer (no fetcher, the fetcher raised
-                   or returned ``None``).  A no-answer is never ``FALSE``.
+                   or returned ``None``), or the authority confirmed the
+                   identifier but returned none of the title / authors the
+                   citation asks to be checked (``METADATA_UNAVAILABLE``).  A no-answer is never ``FALSE``.
 * ``NOT_SEARCHED`` no lookup was performed at all (provider disabled).
 """
 
@@ -63,6 +65,7 @@ __all__ = [
     "TITLE_MISMATCH",
     "AUTHOR_MISMATCH",
     "EXISTENCE_ONLY",
+    "METADATA_UNAVAILABLE",
     "CitationRef",
     "CitationResult",
     "normalize_doi",
@@ -86,6 +89,7 @@ NOT_FOUND = "NOT_FOUND"
 TITLE_MISMATCH = "TITLE_MISMATCH"
 AUTHOR_MISMATCH = "AUTHOR_MISMATCH"
 EXISTENCE_ONLY = "EXISTENCE_ONLY"
+METADATA_UNAVAILABLE = "METADATA_UNAVAILABLE"
 
 DOI_PREFIXES = ("https://doi.org/", "http://dx.doi.org/", "doi:")
 CROSSREF_WORKS_URL = "https://api.crossref.org/works/"
@@ -341,6 +345,20 @@ def resolve_citation(
         )
 
     title, authors, full_names = extracted
+
+    # The authority knows the identifier but did not return the metadata the
+    # citation asks us to check: that is a no-answer, never TRUE and never
+    # FALSE.
+    if (ref.title is not None and title is None) or (
+        ref.first_author_surname is not None and not authors
+    ):
+        return CitationResult(
+            ref,
+            UNRESOLVABLE,
+            [METADATA_UNAVAILABLE],
+            "authority confirms the identifier but returned no metadata to compare",
+            title,
+        )
 
     if ref.title is not None and title is not None:
         if _norm_text(ref.title) != _norm_text(title):

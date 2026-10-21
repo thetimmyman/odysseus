@@ -16,6 +16,7 @@ from src.citation_resolver import (
     EXISTENCE_ONLY,
     FALSE,
     MALFORMED_ID,
+    METADATA_UNAVAILABLE,
     NOT_FOUND,
     NOT_SEARCHED,
     NO_FETCHER,
@@ -393,3 +394,24 @@ def test_module_is_stdlib_and_network_free():
     for forbidden in ("import urllib", "import requests", "import httpx",
                       "import socket", "http.client", "os.environ", "getenv("):
         assert forbidden not in text, forbidden
+
+
+def test_authority_without_title_cannot_confirm_a_cited_title():
+    fetcher = RecordingFetcher({"status": "ok", "message": {"author": [{"family": "Rivera"}]}})
+    result = resolve_citation(_doi("10.1234/abc", title="Some title"), fetcher=fetcher)
+    assert result.status == UNRESOLVABLE
+    assert METADATA_UNAVAILABLE in result.flags
+
+
+def test_authority_without_authors_cannot_confirm_a_cited_author():
+    fetcher = RecordingFetcher({"status": "ok", "message": {"title": ["T"]}})
+    result = resolve_citation(_doi("10.1234/abc", first_author_surname="Rivera"), fetcher=fetcher)
+    assert result.status == UNRESOLVABLE
+    assert METADATA_UNAVAILABLE in result.flags
+
+
+def test_authority_without_metadata_is_still_true_for_existence_only():
+    fetcher = RecordingFetcher({"status": "ok", "message": {}})
+    result = resolve_citation(_doi("10.1234/abc"), fetcher=fetcher)
+    assert result.status == TRUE
+    assert EXISTENCE_ONLY in result.flags
