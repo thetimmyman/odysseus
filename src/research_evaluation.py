@@ -17,15 +17,20 @@ network access, no filesystem reads:
 A section carries exactly one status:
 
 * ``FILLED``  -- text plus at least one evidence ref;
-* ``UNKNOWN`` -- evidence was looked for and nothing was found;
+* ``UNKNOWN`` -- evidence was looked for and could not answer (the search
+  failed, or returned something unusable);
 * ``SKIPPED`` -- not attempted.
 
 Nothing here is filled by synthesis: unevidenced text never becomes
-``FILLED``, and a search that fails says so instead of looking filled.
+``FILLED``, and a search that fails says so instead of looking filled.  A
+search that ran and found nothing is not a failure: it is evidence of absence,
+so it fills the overlap section with :data:`NO_MATCH_SECTION_TEXT` and
+:data:`NO_MATCH_SECTION_REF`, while a search that raised stays ``UNKNOWN``.
 
-Stdlib only.  The one first-party import is the ``UNPINNED`` flag from
-:mod:`src.pinned_source`, so the ruling validator and the pin resolver share
-one flag vocabulary instead of a second copy of the string.
+Stdlib only.  The one first-party import is the pin-result vocabulary
+(``TRUE`` and the ``UNPINNED`` flag) from :mod:`src.pinned_source`, so the
+ruling validator and the pin resolver share one vocabulary instead of a
+second copy of the strings.
 """
 from __future__ import annotations
 
@@ -34,7 +39,7 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Optional
 
-from src.pinned_source import UNPINNED
+from src.pinned_source import TRUE, UNPINNED
 
 __all__ = [
     "RULING_SECTIONS",
@@ -44,6 +49,8 @@ __all__ = [
     "SKIPPED",
     "SECTION_STATUSES",
     "DRAFT_FOOTER",
+    "NO_MATCH_SECTION_TEXT",
+    "NO_MATCH_SECTION_REF",
     "RulingSection",
     "RulingDraft",
     "IncumbentOverlap",
@@ -82,6 +89,13 @@ SKIPPED = "SKIPPED"
 SECTION_STATUSES = (FILLED, UNKNOWN, SKIPPED)
 
 DRAFT_FOOTER = "DRAFT: a human must accept this ruling."
+
+# A search that ran and found no existing owner.  This is evidence of absence,
+# not a failure, so it fills the overlap section -- with a ref that says which
+# search produced it, never a match's name.
+NO_MATCH_SECTION_TEXT = "Searched for an existing owner; none found."
+NO_MATCH_SECTION_REF = "overlap-search:no-match"
+
 
 # The section a pin result's identity is cited by, unless the result names one.
 _DEFAULT_PIN_SECTION = "pinned_source_identity"
@@ -143,7 +157,10 @@ class IncumbentOverlap:
     ``matches`` are the entries the injected search returned, in order (each a
     dict with ``name``, ``owner`` and ``source``).  A search that failed is
     ``UNKNOWN`` with the exception CLASS name in ``detail``: the exception
-    message is not repeated, because it may carry private text.
+    message is not repeated, because it may carry private text.  A search that
+    completed and found nothing is ``FILLED`` with no ``matches`` and
+    :data:`NO_MATCH_SECTION_TEXT` in ``detail`` -- an answer, distinct from a
+    failure.
     """
 
     status: str
@@ -168,11 +185,19 @@ class IncumbentOverlap:
 
     @property
     def section_refs(self) -> tuple[str, ...]:
-        """Evidence refs for the ``incumbent_overlap`` section (a match's source)."""
+        """Evidence refs for the ``incumbent_overlap`` section.
+
+        Only a match's non-blank ``source`` is evidence: a match without one
+        supplies no ref, so :func:`fill_section` leaves the section
+        ``UNKNOWN`` instead of citing a bare name.  A completed no-match
+        search cites :data:`NO_MATCH_SECTION_REF`; a failure cites nothing.
+        """
+        if not self.matches:
+            return (NO_MATCH_SECTION_REF,) if self.status == FILLED else ()
         refs: list[str] = []
         for match in self.matches:
-            ref = _match_field(match, "source") or _match_field(match, "name")
-            if ref:
+            ref = _match_field(match, "source")
+            if ref and ref.strip():
                 refs.append(ref.strip())
         return tuple(refs)
 
@@ -276,10 +301,15 @@ def find_incumbent_overlap(
     * matches returned -> ``FILLED``; :attr:`IncumbentOverlap.section_text`
       lists each one (pass it, with :attr:`IncumbentOverlap.section_refs`, to
       :func:`fill_section`);
-    * an empty list -> ``UNKNOWN``: it was searched and nothing was found;
+    * an empty list -> ``FILLED``: the search COMPLETED and found no existing
+      owner, which is evidence of absence.  The text is
+      :data:`NO_MATCH_SECTION_TEXT` and the single ref is
+      :data:`NO_MATCH_SECTION_REF`, so a ``build`` may proceed past the
+      overlap gate;
     * the search raising -> ``UNKNOWN`` carrying the exception CLASS name in
       ``detail``.  The message is not repeated (it may carry private text),
-      but the failure is never swallowed and never reported as ``FILLED``;
+      but the failure is never swallowed and never reported as ``FILLED``, so
+      it is never an all-clear;
     * a result that is not a list -> ``UNKNOWN`` naming its type.
     """
     if search is None:
@@ -295,7 +325,7 @@ def find_incumbent_overlap(
         )
     matches = tuple(found)
     if not matches:
-        return IncumbentOverlap(UNKNOWN, (), "overlap search returned no match")
+        return IncumbentOverlap(FILLED, (), NO_MATCH_SECTION_TEXT)
     return IncumbentOverlap(FILLED, matches, "")
 
 
@@ -328,15 +358,20 @@ def validate_ruling(
     3. ``adopt`` / ``adapt`` while ``pinned_source_identity`` is not
        ``FILLED``: the identity of the source being adopted must be pinned;
     4. a ``FILLED`` section with no evidence refs;
-    5. a pin result carrying the ``UNPINNED`` flag while the section that cites
-       it is ``FILLED``.
+    5. a ``FILLED`` section with blank text;
+    6. a pin result whose ``status`` is not ``TRUE`` while the section that
+       cites it is ``FILLED``;
+    7. a pin result carrying the ``UNPINNED`` flag while the section that
+       cites it is ``FILLED``.
 
     ``pin_results`` are duck-typed: objects with a ``flags`` list and a
-    ``status``.  The flag alone triggers rule 5 -- an unpinned citation cannot
-    back a filled section whatever its status -- and the status only appears
-    in the message.  A pin result's ``section`` attribute names the section
-    citing it; without one it is ``pinned_source_identity``.  A section
-    missing from the draft counts as ``UNKNOWN``.
+    ``status``.  Only ``status == TRUE`` confirms a citation, so ``FALSE``,
+    ``UNRESOLVABLE``, ``NOT_SEARCHED`` and a missing status are all problems:
+    the status appears in the message.  The ``UNPINNED`` flag is reported even
+    for a ``TRUE`` result -- an unpinned citation cannot back a filled section
+    whatever it resolved to.  A pin result's ``section`` attribute names the
+    section citing it; without one it is ``pinned_source_identity``.  A
+    section missing from the draft counts as ``UNKNOWN``.
     """
     problems: list[str] = []
 
@@ -372,14 +407,30 @@ def validate_ruling(
         if section is not None and section.status == FILLED and not section.evidence_refs:
             problems.append(f"section {name!r} is FILLED without evidence refs")
 
-    # 5) An unpinned pin result cited by a filled section.
-    for pin in pin_results or ():
-        flags = getattr(pin, "flags", None) or ()
-        if UNPINNED not in flags:
+    # 5) A filled section with nothing to say (a section built directly, not
+    #    through fill_section, can carry blank text behind a FILLED status).
+    for name in RULING_SECTIONS:
+        section = draft.sections.get(name)
+        if section is None or section.status != FILLED:
             continue
+        text = section.text if isinstance(section.text, str) else ""
+        if not text.strip():
+            problems.append(f"section {name!r} is FILLED with blank text")
+
+    # 6/7) A pin result cited by a filled section that does not back it.
+    for pin in pin_results or ():
         name = _pin_section(pin)
-        if _status(draft, name) == FILLED:
-            status = getattr(pin, "status", "no status")
+        if _status(draft, name) != FILLED:
+            continue
+        status = getattr(pin, "status", None)
+        flags = getattr(pin, "flags", None) or ()
+        if status != TRUE:
+            label = status if isinstance(status, str) and status else "no status"
+            problems.append(
+                f"section {name!r} is FILLED but cites a pin result that is not "
+                f"{TRUE} ({label})"
+            )
+        elif UNPINNED in flags:
             problems.append(
                 f"section {name!r} is FILLED but cites an UNPINNED pin result ({status})"
             )

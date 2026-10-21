@@ -429,15 +429,3 @@ def test_auto_never_selects_evaluation():
             chosen = select_default_depth(category, sensitivity)
             assert chosen != "evaluation"
             assert chosen in DEPTH_MODES
-
-
-def test_route_accepts_evaluation_depth(research_client):
-    client, handler = research_client
-    resp = client.post("/api/research/start", json={"query": "q", "depth": "Evaluation"})
-    assert resp.status_code == 200
-    kwargs = handler.start_research.call_args.kwargs
-    assert kwargs["depth"] == "evaluation"
-    # passed through as is: the preset supplies the limits
-    assert kwargs["max_rounds"] is None
-    assert kwargs["max_time"] is None
-    assert kwargs["max_urls_per_round"] is None

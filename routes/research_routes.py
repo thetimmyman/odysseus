@@ -428,7 +428,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         # Validate depth if provided
         depth_val = body.depth.strip().lower() if body.depth is not None else None
         if depth_val is not None:
-            allowed_depths = {"quick", "standard", "deep", "critical", "evaluation", "auto"}
+            allowed_depths = {"quick", "standard", "deep", "critical", "auto"}
             if depth_val not in allowed_depths:
                 raise HTTPException(422, f"Unknown depth mode '{body.depth}'. Must be one of: {', '.join(sorted(allowed_depths))}")
 

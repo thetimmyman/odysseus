@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.pinned_source import NOT_SEARCHED, TRUE, UNPINNED, PinResult
+from src.pinned_source import FALSE, NOT_SEARCHED, TRUE, UNPINNED, UNRESOLVABLE, PinResult
 from src.research_evaluation import (
     DRAFT_FOOTER,
     FILLED,
@@ -172,6 +172,27 @@ def test_overlap_lists_a_found_incumbent():
     assert result.section_refs == ("tools/tmos/gate.py",)
 
 
+def test_overlap_match_without_a_source_supplies_no_evidence_ref():
+    """A bare name is not evidence: only a non-blank source becomes a ref."""
+    result = find_incumbent_overlap(
+        CANDIDATE, search=lambda candidate: [{"name": "tmos-gate", "owner": "platform"}]
+    )
+    assert result.status == FILLED
+    assert result.section_refs == ()
+    draft = fill_section(
+        _skeleton(), "incumbent_overlap", result.section_text, result.section_refs
+    )
+    assert draft.sections["incumbent_overlap"].status == UNKNOWN
+    # a blank source is not a ref either
+    blank = find_incumbent_overlap(
+        CANDIDATE, search=lambda candidate: [{"name": "tmos-gate", "source": "   "}]
+    )
+    assert blank.section_refs == ()
+    # control: the same match with a source does supply the ref
+    sourced = find_incumbent_overlap(CANDIDATE, search=lambda candidate: [INCUMBENT])
+    assert sourced.section_refs == ("tools/tmos/gate.py",)
+
+
 def test_overlap_result_fills_the_incumbent_section():
     result = find_incumbent_overlap(CANDIDATE, search=lambda candidate: [INCUMBENT])
     draft = fill_section(
@@ -193,10 +214,40 @@ def test_overlap_search_failure_is_unknown_and_names_the_exception():
     assert "private-host" not in result.section_text
 
 
-def test_overlap_search_without_a_match_is_unknown_not_filled():
+def test_completed_overlap_search_with_no_match_is_filled_not_unknown():
+    """A search that ran and found nothing is an answer, not a failure."""
     result = find_incumbent_overlap(CANDIDATE, search=lambda candidate: [])
+    assert result.status == FILLED
+    assert result.matches == ()
+    assert result.section_text == "Searched for an existing owner; none found."
+    assert result.section_refs == ("overlap-search:no-match",)
+
+
+def test_no_match_search_fills_the_incumbent_section_so_a_build_validates():
+    result = find_incumbent_overlap(CANDIDATE, search=lambda candidate: [])
+    draft = fill_section(
+        _skeleton(), "incumbent_overlap", result.section_text, result.section_refs
+    )
+    assert draft.sections["incumbent_overlap"].status == FILLED
+    # positive control for the overlap gate: a build is no longer blocked
+    assert validate_ruling(draft.with_verdict("build")) == []
+
+
+def test_failed_overlap_search_cannot_back_a_build():
+    def search(candidate):
+        raise RuntimeError("private-host is down")
+
+    result = find_incumbent_overlap(CANDIDATE, search=search)
     assert result.status == UNKNOWN
-    assert "no match" in result.section_text
+    draft = fill_section(
+        _skeleton(), "incumbent_overlap", result.section_text, result.section_refs
+    )
+    # a failure is never an all-clear: the section stays UNKNOWN
+    assert draft.sections["incumbent_overlap"].status == UNKNOWN
+    problems = validate_ruling(draft.with_verdict("build"))
+    assert len(problems) == 1
+    assert "incumbent_overlap" in problems[0]
+    assert UNKNOWN in problems[0]
 
 
 def test_overlap_search_with_a_non_list_result_is_unknown():
@@ -267,6 +318,23 @@ def test_filled_section_without_evidence_refs_is_reported():
     assert validate_ruling(_with_section(_skeleton(), "licence", _filled())) == []
 
 
+@pytest.mark.parametrize("text", ["", "   ", "\n\t "])
+def test_filled_section_with_blank_text_is_reported(text):
+    """A FILLED section built directly, with nothing to say, is a problem."""
+    draft = _with_section(_skeleton(), "licence", RulingSection(FILLED, text, ("licence.ref",)))
+    assert validate_ruling(draft) == ["section 'licence' is FILLED with blank text"]
+    # control: the same section with text and the same ref is clean
+    assert validate_ruling(_with_section(_skeleton(), "licence", _filled())) == []
+
+
+def test_filled_section_with_blank_text_keeps_its_other_problems():
+    draft = _with_section(_skeleton(), "licence", RulingSection(FILLED, "  ", ()))
+    problems = validate_ruling(draft)
+    assert len(problems) == 2
+    assert any("without evidence refs" in problem for problem in problems)
+    assert any("with blank text" in problem for problem in problems)
+
+
 def test_unpinned_pin_result_under_a_filled_identity_is_reported():
     pin = PinResult(TRUE, [UNPINNED], "branch ref can drift")
     problems = validate_ruling(_clean_draft("adopt"), pin_results=[pin])
@@ -282,6 +350,39 @@ def test_unpinned_pin_result_under_a_filled_identity_is_reported():
 def test_a_pinned_result_without_the_flag_is_not_reported():
     pin = PinResult(TRUE, [], "commit sha")
     assert validate_ruling(_clean_draft("adopt"), pin_results=[pin]) == []
+
+
+@pytest.mark.parametrize("status", [FALSE, UNRESOLVABLE, NOT_SEARCHED])
+def test_pin_result_that_is_not_true_cannot_back_a_filled_section(status):
+    """Only TRUE confirms a citation: any other status is a problem."""
+    pin = PinResult(status, [], "not confirmed")
+    problems = validate_ruling(_clean_draft("reference"), pin_results=[pin])
+    assert len(problems) == 1
+    assert "pinned_source_identity" in problems[0]
+    assert status in problems[0]
+    # control: the same result under an unfilled identity section is silent
+    quiet = _with_section(_clean_draft("reference"), "pinned_source_identity", RulingSection())
+    assert validate_ruling(quiet, pin_results=[pin]) == []
+
+
+def test_pin_result_without_a_status_cannot_back_a_filled_section():
+    # duck-typed: a missing status is not TRUE, and must not read as one.
+    pin = SimpleNamespace(section="licence")
+    problems = validate_ruling(_clean_draft("reference"), pin_results=[pin])
+    assert len(problems) == 1
+    assert "licence" in problems[0]
+    assert "no status" in problems[0]
+    # control: the same object with TRUE and no flags is silent
+    confirmed = SimpleNamespace(section="licence", status=TRUE, flags=[])
+    assert validate_ruling(_clean_draft("reference"), pin_results=[confirmed]) == []
+
+
+def test_not_true_pin_result_names_section_even_with_the_unpinned_flag():
+    pin = SimpleNamespace(status=FALSE, flags=[UNPINNED], section="integration_cost")
+    problems = validate_ruling(_clean_draft("reference"), pin_results=[pin])
+    assert len(problems) == 1
+    assert "integration_cost" in problems[0]
+    assert FALSE in problems[0]
 
 
 def test_pin_result_naming_its_section_is_checked_against_that_section():
