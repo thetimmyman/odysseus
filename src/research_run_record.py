@@ -64,6 +64,11 @@ def is_claim_id(value) -> bool:
     return claim_id_number(value) is not None
 
 
+def is_source_id(value) -> bool:
+    """True for a well-formed source id (``S<n>``), the shape the registry mints."""
+    return _source_id_number(value) is not None
+
+
 def clamp_claim_floor(value) -> int:
     """A saved claim-id floor as an int in 0..MAX_CLAIM_ID (0 if not a number)."""
     if isinstance(value, bool) or not isinstance(value, int):
