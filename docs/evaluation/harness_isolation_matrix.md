@@ -1,7 +1,7 @@
 # Harness-isolation experiment matrix
 
 Reference protocol for OD-19. This document defines an experiment; it records
-**no executed trials, validated Flash endpoint, winner, or runtime admission**.
+**no executed trials, end-to-end Flash qualification, winner, or runtime admission**.
 The treatment is the harness and its pinned configuration. Outcome differences
 are observations until the controls and uncertainty rules below are satisfied.
 
@@ -127,8 +127,9 @@ Repository contracts checked against `dev` commit
 `7a41c3904d6c105756cd40bb3ffe4af95878bfd3`:
 
 - `src/pi_config.py` defaults to `local-qwen` / `qwen3.8:27b`; it does not define
-  `qwen3.8-flash` as an alias. No endpoint discovery or Flash probe was performed
-  for this document. The exact served Flash ID/build is **UNKNOWN**, so M remains
+  `qwen3.8-flash` as an alias. The later read-only observation below identifies one
+  actually configured Flash candidate and its request alias; it does not approve
+  that variant or establish the complete M identity for all three arms. M remains
   unfilled and this matrix is not launch-ready.
 - `src/pi_runtime.py` and `src/pi_executions.py` expose execution/session,
   worktree and event evidence; they do not establish a cross-harness B enforcer.
@@ -140,6 +141,55 @@ Repository contracts checked against `dev` commit
   They do not implement this randomized trial or clustered inference plan.
   Store a versioned experiment sidecar linked by exact execution/raw-record
   hashes; do not invent canonical receipt fields or create a second authority.
+
+### Read-only model observation (2026-10-21 15:53:27 UTC)
+
+A separately authorized observer read model-list/health metadata, the running
+engine command and container image identity, plus cached model/download metadata
+and prior-verification file-stat stamps. This is a point-in-time process and
+metadata observation, **not a generation result or experiment**.
+
+| Identity | Observed value and epistemic limit |
+| --- | --- |
+| Provider-native request ID | `halogen-qwen3.8-flash-next`. The advertised ID is a configurable **alias**, reused across native-v2 and candidate profiles; it does not encode a weight revision. |
+| Selected candidate | Engine checkpoint basename `Qwen3.8-Flash-Next-Uncensored-IQ4_XS-00001-of-00003.gguf`, profile `orcarouter-iq4xs`; cached source repository `orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF`, immutable revision `d27c0a15447dd92ae7c90919352c6810496945b1`. This is the observed **Uncensored candidate variant**, not an approved selection of the intended canonical model. |
+| Weight representation | Three GGUF shards, IQ4_XS-named checkpoint; cached headers report mixed tensor encodings including IQ4_XS, IQ4_NL, F32, Q5_K and BF16. The name is not proof that every tensor uses one quantization. |
+| Serving runtime | Health reports API and engine `0.18.12`, matching; observed container image digest `sha256:b6403f1d07e22b719fb23d131d16d1ea27650da414dfaff734cfdd4fe18b9ba2`, OCI revision `f44d382cafdd`. |
+| Observed profile | Engine context 262144, 4 slots, prefill batch maximum 16384; health reports KV pool 262144, BF16 KV cache, output default 8192/cap 65536 and default reasoning effort `xhigh`. These are observations of one serving profile, **not** the common experimental budget B or proof of isolation. |
+
+Cached published shard references (byte counts and SHA-256 digests):
+
+- `Qwen3.8-Flash-Next-Uncensored-IQ4_XS-00001-of-00003.gguf`: 44766155936 bytes; SHA-256
+  `28a99b125cb905fc3bdc06baf6266a56b0cbd1b27e833b9142acc2017b673704`.
+- `Qwen3.8-Flash-Next-Uncensored-IQ4_XS-00002-of-00003.gguf`: 44735995008 bytes; SHA-256
+  `2a309e0b112fde96ba3bcba5a6b58cc05e5df7bb7fad5a990eaa51df335b0e43`.
+- `Qwen3.8-Flash-Next-Uncensored-IQ4_XS-00003-of-00003.gguf`: 7971004256 bytes; SHA-256
+  `ebc43c58e2eaeba1d5bdf62c8cb1f0eac198c4dc01941f771921edeebf574bc3`.
+
+All three prior-verification stamps matched the observed inode, size, modification
+and change-time identities. The candidate mount was read-only. **No weight was
+freshly hashed**, and no loaded-memory or per-generated-response identity was
+attested. Cached metadata with matching stat stamps is weaker than a fresh
+content verification. Native draft-head and tokenizer content digests/revisions
+remain independently unestablished; one reported chat-template hash does not
+identify the complete tokenizer or draft head. Seed behavior is reported by
+health metadata, not empirically verified by this observation.
+
+The literal request-ID/selected-checkpoint ambiguity is now documented for this
+observation. It does not establish that the advertised alias always resolves to
+this variant, that the variant is approved for this experiment, or that it stays
+fixed over a future run window. Before admission, approve the actual variant and
+pin the complete model/tokenizer/draft/runtime/profile identity for **all arms**,
+independently verify their resolution and establish the stable experiment window.
+Any subsequent selection or profile drift creates a new arm/block. Until those
+controls and B enforcement are demonstrated, the matrix remains **BLOCKED**.
+Do not silently replace the intended model with this observed candidate.
+
+The retained observer receipt is identified by SHA-256
+`cf43e476e92a2f6ac2f32f976a73fc2331bffb0f6bd230feb729832b9d1442dc`;
+it records the methods and limits above. Private endpoint/host paths and raw
+metadata stay outside this document. No endpoint request, restart, configuration
+change, inference or source grant is instructed by this observation.
 
 For each scheduled trial retain the manifest/protocol hash, task/block/arm/order,
 seed status, exact harness/provider/model identities, starting source digest,
