@@ -111,6 +111,12 @@ def test_normalize_doi_unicode_and_url_decoding(raw, expected):
 def test_normalize_doi_rejects_control_characters_and_invalid_percent_utf8():
     assert normalize_doi("10.1234/a\x01b") is None
     assert normalize_doi("https://doi.org/10.1234/%FF%FE") is None
+    # C1 controls (U+0080-U+009F) are control code points too, and a
+    # percent-encoded one in a DOI URL decodes to one.
+    assert normalize_doi("10.1234/a\x80b") is None
+    assert normalize_doi("10.1234/a\x9fb") is None
+    assert normalize_doi("https://doi.org/10.1234/a%C2%85b") is None
+    assert normalize_doi("10.1234/a\u00a0b") is None  # NBSP is whitespace
 
 
 def test_doi_url_with_encoded_hash_is_encoded_once_for_the_authority():

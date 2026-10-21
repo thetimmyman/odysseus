@@ -193,6 +193,10 @@ def normalize_doi(s: str) -> Optional[str]:
         value.encode("utf-8")  # a lone surrogate is not a DOI: it cannot be sent
     except UnicodeEncodeError:
         return None
+    # DOI syntax allows Unicode graphic characters and excludes control code
+    # points; \s and the ASCII class above miss the C1 range (U+0080-U+009F).
+    if any(unicodedata.category(ch) == "Cc" for ch in value):
+        return None
     return value
 
 
