@@ -568,6 +568,11 @@ class ResearchHandler:
                 content = summary if summary else (evidence[:2000] if evidence else "")
                 if url and content and not is_low_quality(content):
                     item = {"url": url, "title": title, "summary": content}
+                    # Advisory citation verification, when the run produced it.
+                    # Absent by default, so disabled runs persist the same shape.
+                    verification = f.get("citation_verification")
+                    if isinstance(verification, dict):
+                        item["citation_verification"] = verification
                     if with_evidence and f.get("source_id"):
                         item["source_id"] = f["source_id"]
                         item["evidence"] = evidence
@@ -971,6 +976,11 @@ class ResearchHandler:
                 minimum=15,
                 maximum=3600,
             )
+            # Explicit opt-in: the handler reads the setting once and passes
+            # it through; off means DeepResearcher never creates a verifier.
+            _citation_verification = bool(
+                get_setting("research_citation_verification", False)
+            )
 
             # When depth is "auto", select default depth deterministically
             effective_depth = depth
@@ -1012,6 +1022,7 @@ class ResearchHandler:
                 category=category,
                 run_record=run_record_enabled(),
                 depth=effective_depth,
+                citation_verification=_citation_verification,
             )
             if _task_entry is not None:
                 _task_entry["researcher"] = researcher

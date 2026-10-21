@@ -319,6 +319,8 @@ class DeepResearcher:
         category: Optional[str] = None,
         run_record: bool = False,
         depth: Optional[str] = None,
+        citation_verification: bool = False,
+        citation_transport: Optional[Callable] = None,
     ):
         self.llm_endpoint = llm_endpoint
         self.llm_model = llm_model
@@ -365,6 +367,13 @@ class DeepResearcher:
         if run_record:
             from src.research_run_record import ResearchRunRecorder
             self.run_recorder = ResearchRunRecorder()
+        # Advisory citation verification (setting research_citation_verification);
+        # None when off, so the finding path makes no lookup at all.
+        self.citation_verification = bool(citation_verification)
+        self._citation_session = None
+        if citation_verification:
+            from src.research_citations import CitationVerificationSession
+            self._citation_session = CitationVerificationSession(transport=citation_transport)
 
     def cancel(self):
         """Request cooperative cancellation of the research loop."""
@@ -837,19 +846,31 @@ class DeepResearcher:
                 if is_low_quality(parsed.get("summary", "")):
                     logger.info(f"Skipping low-quality extraction from {url}")
                     return None
+                await self._annotate_citation(parsed)
                 return self._recorded_finding(parsed, source_id)
             # If JSON parsing fails, treat entire response as evidence
-            return self._recorded_finding({
+            fallback = {
                 "url": url,
                 "title": title or page.get("title", ""),
                 "og_image": page.get("og_image", ""),
                 "rational": "LLM extraction (raw)",
                 "evidence": response[:3000],
                 "summary": response[:500],
-            }, source_id)
+            }
+            await self._annotate_citation(fallback)
+            return self._recorded_finding(fallback, source_id)
         except Exception as e:
             logger.warning(f"LLM extraction failed for {url}: {e}")
             return None
+
+    async def _annotate_citation(self, finding: Dict) -> None:
+        """Attach the advisory citation result before the finding is recorded.
+
+        No-op when verification is off, so the default finding is unchanged.
+        """
+        session = self._citation_session
+        if session is not None:
+            await session.annotate(finding)
 
     def _carried_finding(self, finding):
         """A copy of a prior finding, keeping its claim id only if the carried
