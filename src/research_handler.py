@@ -245,8 +245,12 @@ class ResearchHandler:
         prior_run_record: dict = None,
         depth: str = None,
         max_urls_per_round: int = None,
+        citation_verification: Optional[bool] = None,
     ) -> dict:
         """Start research as a background task. Returns task info dict.
+
+        ``citation_verification`` is a per-run override: None keeps the global
+        setting fallback, while an explicit bool applies to this run only.
 
         max_rounds is the safety cap; the AI's _should_stop decision (after
         min_rounds) terminates the loop earlier in normal operation.
@@ -351,6 +355,7 @@ class ResearchHandler:
                         extraction_concurrency=extraction_concurrency,
                         depth=depth,
                         max_urls_per_round=max_urls_per_round,
+                        citation_verification=citation_verification,
                     ),
                     timeout=hard_timeout,
                 )
@@ -913,6 +918,7 @@ class ResearchHandler:
         extraction_concurrency: int = None,
         depth: str = None,
         max_urls_per_round: int = None,
+        citation_verification: Optional[bool] = None,
     ) -> str:
         """
         Run iterative deep research using the LLM-in-the-loop DeepResearcher.
@@ -976,11 +982,15 @@ class ResearchHandler:
                 minimum=15,
                 maximum=3600,
             )
-            # Explicit opt-in: the handler reads the setting once and passes
-            # it through; off means DeepResearcher never creates a verifier.
-            _citation_verification = bool(
-                get_setting("research_citation_verification", False)
-            )
+            # Explicit opt-in: a per-run override wins for this run only; None
+            # falls back to the global setting (read once, never written).
+            # Off means DeepResearcher never creates a verifier.
+            if citation_verification is None:
+                _citation_verification = bool(
+                    get_setting("research_citation_verification", False)
+                )
+            else:
+                _citation_verification = bool(citation_verification)
 
             # When depth is "auto", select default depth deterministically
             effective_depth = depth
