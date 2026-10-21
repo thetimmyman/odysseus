@@ -720,7 +720,7 @@ def test_crossref_blank_family_is_unavailable_not_a_mismatch():
     assert AUTHOR_MISMATCH not in result.flags
 
 
-def test_arxiv_blank_author_alongside_a_real_author_still_matches():
+def test_arxiv_missing_first_author_cannot_fall_back_to_a_coauthor():
     fetcher = RecordingFetcher(
         {
             "entries": [
@@ -739,11 +739,11 @@ def test_arxiv_blank_author_alongside_a_real_author_still_matches():
         ),
         fetcher=fetcher,
     )
-    assert result.status == TRUE
-    assert result.flags == []
+    assert result.status == UNRESOLVABLE
+    assert result.flags == [METADATA_UNAVAILABLE]
 
 
-def test_crossref_blank_family_alongside_a_real_family_still_matches():
+def test_crossref_missing_first_author_cannot_fall_back_to_a_coauthor():
     fetcher = RecordingFetcher(
         {
             "status": "ok",
@@ -761,8 +761,8 @@ def test_crossref_blank_family_alongside_a_real_family_still_matches():
         ),
         fetcher=fetcher,
     )
-    assert result.status == TRUE
-    assert result.flags == []
+    assert result.status == UNRESOLVABLE
+    assert result.flags == [METADATA_UNAVAILABLE]
 
 
 # --- controls: real metadata still yields a definitive answer ----------------
@@ -815,3 +815,13 @@ def test_control_real_different_crossref_title_is_still_a_mismatch():
     assert TITLE_MISMATCH in result.flags
     assert METADATA_UNAVAILABLE not in result.flags
 
+
+
+@pytest.mark.parametrize('ref,payload', [
+    (_doi('10.1000/xyz', first_author_surname='Chen'), CROSSREF_OK),
+    (_arxiv('2212.12345', first_author_surname='Chen'), ARXIV_OK),
+])
+def test_a_coauthor_cannot_validate_a_claim_about_the_first_author(ref, payload):
+    result = resolve_citation(ref, fetcher=RecordingFetcher(payload))
+    assert result.status == FALSE
+    assert result.flags == [AUTHOR_MISMATCH]
