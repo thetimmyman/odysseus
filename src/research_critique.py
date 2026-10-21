@@ -45,7 +45,9 @@ Statuses (see :class:`CritiqueResult`):
                           nested inside another one is part of that object,
                           not a separate answer, so a wrapper such as
                           ``{"example": {"critiques": [...]}}`` carries no
-                          critique payload of its own.  A reply longer than
+                          critique payload of its own, and neither does an
+                          object nested in a top-level array such as
+                          ``[{"critiques": [...]}]``.  A reply longer than
                           :data:`MAX_REPLY_CHARS` is refused up front, and a
                           nesting depth the JSON decoder cannot walk is simply
                           not decodable at that position, so the scan stays
@@ -59,8 +61,10 @@ claim ``NOT_JUDGED`` -- a judge that answers a valid but empty
 ``{"critiques": []}`` has judged nothing, so that is not ``NONE`` either, and
 neither is a CONTRADICTED / ALTERNATIVE / UNSUPPORTED entry that arrived with
 no severity (that entry is not guessed at MAJOR, since the unstated severity
-could be CRITICAL; it becomes ``NOT_JUDGED``).  Only a ``DONE`` pass with every
-claim judged and nothing critical answers ``NONE``.
+could be CRITICAL; it becomes ``NOT_JUDGED``).  A ``DONE`` pass that skipped input claims
+whose id was unusable also answers ``NEEDS_HUMAN``: those claims were never
+reviewed.  Only a ``DONE`` pass with every claim judged, nothing critical, and
+nothing skipped answers ``NONE``.
 ``SUPPORTED`` means only "the judge found no problem"; nothing here marks a
 claim verified.
 
@@ -283,6 +287,10 @@ class CritiqueResult:
     judge_family: str = UNKNOWN_FAMILY
     author_family: str = UNKNOWN_FAMILY
     notes: Tuple[str, ...] = ()
+    # Input claims that could not be critiqued (no dict, or no registry-shaped
+    # id).  They were never shown to the judge, so a DONE pass that skipped any
+    # of them is not a clean pass: see :func:`gate_effect`.
+    skipped_claims: int = 0
 
 
 # --- Family resolution ------------------------------------------------------
@@ -593,18 +601,38 @@ def _reject_duplicate_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
     return result
 
 
+def _next_object_start(text: str, position: int) -> int:
+    """The nearest ``{`` or ``[`` at or after ``position``, or ``-1``.
+
+    A JSON array can hold a critique object, so a scan that only tried ``{``
+    would start at the inner object and mistake it for a top-level answer.
+    Trying ``[`` as well keeps the array (and everything nested in it) out.
+    """
+    brace = text.find("{", position)
+    bracket = text.find("[", position)
+    if brace < 0:
+        return bracket
+    if bracket < 0:
+        return brace
+    return min(brace, bracket)
+
+
 def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
     """Every TOP-LEVEL JSON object decodable from ``text``, left to right.
 
-    Only a top-level object is an answer.  After a successful decode the scan
-    resumes at the END of the object it just read, never inside it: a wrapper
-    such as ``{"example": {"critiques": [...]}}`` decodes as one object with no
+    Only a top-level object is an answer.  A decode attempt starts at the
+    nearest ``{`` or ``[``; only a decoded dict is yielded, and a decoded array
+    is skipped in full.  After a successful decode the scan resumes at the END
+    of the value it just read, never inside it: a wrapper such as
+    ``{"example": {"critiques": [...]}}`` decodes as one object with no
     ``critiques`` key, and the nested object is part of it, not a second
-    answer.  Resuming at the next ``{`` would yield that nested object as if it
+    answer.  An array such as ``[{"critiques": [...]}]`` is one value whose
+    inner object is likewise part of it, so it carries no top-level answer.
+    Resuming at the next start would yield those nested objects as if they
     were the reply's own payload.
 
     A failed decode means nothing is decodable at that position, so the scan
-    moves on to the next ``{`` -- that ``{`` may still start a real object.
+    moves on to the next start -- it may still begin a real object.
 
     The attempt cap keeps a hostile reply full of stray braces from turning
     this scan quadratic; a real judge reply needs a handful of attempts.  A
@@ -617,7 +645,7 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
     as a crash.
     """
     decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys)
-    index = text.find("{")
+    index = _next_object_start(text, 0)
     attempts = 0
     while index >= 0:
         if attempts >= _MAX_OBJECT_ATTEMPTS:
@@ -626,11 +654,11 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
         try:
             obj, end = decoder.raw_decode(text, index)
         except (ValueError, RecursionError):
-            index = text.find("{", index + 1)
+            index = _next_object_start(text, index + 1)
             continue
         if isinstance(obj, dict):
             yield obj
-        index = text.find("{", end)
+        index = _next_object_start(text, end)
 
 
 _AMBIGUOUS_NOTE = "the reply contained more than one critique object"
@@ -978,7 +1006,13 @@ def run_critique(
 
     if not ordered_ids:
         return CritiqueResult(
-            SKIPPED_NO_CLAIMS, (), (), judge_family, author_family, tuple(notes)
+            SKIPPED_NO_CLAIMS,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     if UNKNOWN_FAMILY in (judge_family, author_family):
@@ -988,7 +1022,13 @@ def run_critique(
             "unknown name may be the author's own family, so the judge was not called"
         )
         return CritiqueResult(
-            SKIPPED_SAME_FAMILY, (), (), judge_family, author_family, tuple(notes)
+            SKIPPED_SAME_FAMILY,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     if judge_family == author_family:
@@ -997,13 +1037,25 @@ def run_critique(
             "provably cross-family; the judge was not called"
         )
         return CritiqueResult(
-            SKIPPED_SAME_FAMILY, (), (), judge_family, author_family, tuple(notes)
+            SKIPPED_SAME_FAMILY,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     if not callable(judge):
         notes.append("no callable judge was supplied")
         return CritiqueResult(
-            JUDGE_ERROR, (), (), judge_family, author_family, tuple(notes)
+            JUDGE_ERROR,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     if all(claim_id in duplicated for claim_id in ordered_ids):
@@ -1011,7 +1063,13 @@ def run_critique(
         critiques, parse_notes = _critiques_from_items([], ordered_ids, duplicated)
         notes.extend(parse_notes)
         return CritiqueResult(
-            DONE, tuple(critiques), (), judge_family, author_family, tuple(notes)
+            DONE,
+            tuple(critiques),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     try:
@@ -1019,31 +1077,61 @@ def run_critique(
     except Exception as exc:  # the class name only: messages can carry data
         notes.append(f"judge raised {type(exc).__name__}")
         return CritiqueResult(
-            JUDGE_ERROR, (), (), judge_family, author_family, tuple(notes)
+            JUDGE_ERROR,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     if not isinstance(reply, str):
         notes.append("judge returned a non-string reply")
         return CritiqueResult(
-            UNPARSEABLE, (), (), judge_family, author_family, tuple(notes)
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     if len(reply) > MAX_REPLY_CHARS:
         notes.append(_oversize_reply_note(reply))
         return CritiqueResult(
-            UNPARSEABLE, (), (), judge_family, author_family, tuple(notes)
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     items, ambiguous = _critique_payload(reply)
     if ambiguous:
         notes.append(_AMBIGUOUS_NOTE)
         return CritiqueResult(
-            UNPARSEABLE, (), (), judge_family, author_family, tuple(notes)
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
     if items is None:
         notes.append("judge reply contained no parseable critique JSON")
         return CritiqueResult(
-            UNPARSEABLE, (), (), judge_family, author_family, tuple(notes)
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
         )
 
     critiques, parse_notes = _critiques_from_items(items, ordered_ids, duplicated)
@@ -1058,6 +1146,7 @@ def run_critique(
         judge_family,
         author_family,
         tuple(notes),
+        skipped_claims=skipped,
     )
 
 
@@ -1072,9 +1161,13 @@ def gate_effect(result: CritiqueResult) -> str:
     has judged nothing, so that must not read as ``NONE``.
 
     ``NEEDS_HUMAN`` for ``JUDGE_ERROR`` and ``UNPARSEABLE`` too: a critique
-    that did not run is not a clean pass.  ``NONE`` only for a ``DONE`` pass
-    with every claim judged and nothing critical.  ``NOT_RUN`` for the two
-    skipped statuses.  An unrecognised status fails closed.
+    that did not run is not a clean pass.  ``NEEDS_HUMAN`` also for a ``DONE``
+    pass whose ``skipped_claims`` is non-zero: those input claims were never
+    shown to the judge, so part of the report went unreviewed even though every
+    claim that was asked about came back clean.  ``NONE`` only for a ``DONE``
+    pass with every claim judged, nothing critical, and nothing skipped.
+    ``NOT_RUN`` for the two skipped statuses.  An unrecognised status fails
+    closed.
     """
     if any(critique.severity == CRITICAL for critique in result.critiques):
         return GATE_NEEDS_HUMAN
@@ -1085,6 +1178,8 @@ def gate_effect(result: CritiqueResult) -> str:
         return GATE_NEEDS_HUMAN
     if status == DONE:
         if any(critique.verdict == NOT_JUDGED for critique in result.critiques):
+            return GATE_NEEDS_HUMAN
+        if result.skipped_claims > 0:
             return GATE_NEEDS_HUMAN
         return GATE_NONE
     if status in UNJUDGED_STATUSES:

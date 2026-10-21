@@ -1199,3 +1199,147 @@ def test_scan_budget_exhaustion_fails_closed():
     assert run_critique(
         [_claim("C1")], StubJudge(clean), _JUDGE, _AUTHOR
     ).status == DONE
+
+
+# --- review fixes: an array is not a top-level answer -----------------------
+
+
+def _in_array(entry):
+    """A critique object nested inside a top-level array."""
+    return json.dumps([{"critiques": [entry]}])
+
+
+def _array_inside_a_wrapper(entry):
+    """A critique object nested in an array, itself nested in an object."""
+    return '{"wrapper": [%s]}' % json.dumps({"critiques": [entry]})
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda body: body,
+        lambda body: "```json\n" + body + "\n```",
+        lambda body: "Here is my answer:\n" + body + "\nThat is all.",
+    ],
+    ids=["bare", "fenced", "prose-wrapped"],
+)
+def test_a_critique_object_inside_an_array_is_not_the_reply_payload(wrap):
+    """The scan used to start only at ``{``, so the inner object read as top-level.
+
+    Starting at a ``[`` too decodes the whole array and skips it, so the array
+    is one value rather than a container of answers.
+    """
+    entry = _entry("C1", SUPPORTED)
+    body = _in_array(entry)
+    reply = wrap(body)
+
+    # Control 1: the same entry as a real top-level reply parses, so the empty
+    # result below is the array rule and not a malformed entry.
+    assert [c.verdict for c in parse_reply(_reply(entry), ["C1"])[0]] == [SUPPORTED]
+    # Control 2: the array really does contain the critique payload.
+    assert json.loads(body)[0]["critiques"] == [entry]
+
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques == []
+    assert notes == ["the reply contained no parseable critique JSON"]
+
+    result = run_critique([_claim("C1")], StubJudge(reply), _JUDGE, _AUTHOR)
+    assert result.status == UNPARSEABLE
+    assert result.critiques == ()
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+
+def test_an_array_nested_inside_a_wrapper_object_is_not_the_reply_payload():
+    entry = _entry("C1", SUPPORTED)
+    reply = _array_inside_a_wrapper(entry)
+
+    # Control: the payload really is decodable inside the wrapper's array.
+    assert json.loads(reply)["wrapper"][0]["critiques"] == [entry]
+
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques == []
+    assert notes == ["the reply contained no parseable critique JSON"]
+
+    result = run_critique([_claim("C1")], StubJudge(reply), _JUDGE, _AUTHOR)
+    assert result.status == UNPARSEABLE
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+
+def test_a_stray_bracket_before_the_real_object_still_parses():
+    """An unrelated array in the prose must not swallow the answer.
+
+    Control: the same reply without the stray ``[1]`` parses too, so the parse
+    below is the object and not some other path.
+    """
+    entry = _entry("C1", SUPPORTED)
+    reply = "See footnote [1] for the source list.\n" + _reply(entry)
+    assert parse_reply(_reply(entry), ["C1"])[1] == []
+
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert notes == []
+    assert [c.verdict for c in critiques] == [SUPPORTED]
+
+
+def test_an_object_followed_by_prose_still_parses():
+    reply = _reply(_entry("C1", SUPPORTED)) + "\nThat is my verdict."
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert notes == []
+    assert [c.verdict for c in critiques] == [SUPPORTED]
+
+
+def test_two_distinct_top_level_objects_stay_ambiguous_with_arrays_present():
+    """The array rule must not turn two real answers into one.
+
+    Control: each object alone parses, so the ambiguity below is the pair.
+    """
+    example = _reply(_entry("C1", SUPPORTED))
+    answer = _reply(_entry("C1", CONTRADICTED, CRITICAL))
+    reply = _in_array(_entry("C1", SUPPORTED)) + "\n" + example + "\n" + answer
+    assert parse_reply(example, ["C1"])[1] == []
+    assert parse_reply(answer, ["C1"])[0][0].severity == CRITICAL
+
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques == []
+    assert notes == [rc._AMBIGUOUS_NOTE]
+
+
+# --- review fixes: a skipped input claim requires a human -------------------
+
+
+def test_a_skipped_input_claim_requires_a_human_even_when_the_rest_is_clean():
+    claims = [
+        _claim("C1", text="prices rose"),
+        _claim("c1", text="an unusable id"),
+        "a non-dict claim entry",
+    ]
+    judge = StubJudge(_reply(_entry("C1", SUPPORTED)))
+    result = run_critique(claims, judge, _JUDGE, _AUTHOR)
+    assert result.status == DONE
+    assert result.skipped_claims == 2
+    assert [c.verdict for c in result.critiques] == [SUPPORTED]
+    assert any(
+        "skipped 2 claims with no usable claim id" in note for note in result.notes
+    )
+    # Part of the supplied report was never shown to the judge.
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+    # Control: the same valid claim alone is a clean pass.
+    alone = run_critique(
+        [_claim("C1", text="prices rose")],
+        StubJudge(_reply(_entry("C1", SUPPORTED))),
+        _JUDGE,
+        _AUTHOR,
+    )
+    assert alone.status == DONE
+    assert alone.skipped_claims == 0
+    assert gate_effect(alone) == GATE_NONE
+
+
+def test_all_claims_unusable_is_skipped_no_claims_and_not_run():
+    claims = [_claim("c1"), "not a dict"]
+    judge = StubJudge(_reply(_entry("C1", SUPPORTED)))
+    result = run_critique(claims, judge, _JUDGE, _AUTHOR)
+    assert result.status == SKIPPED_NO_CLAIMS
+    assert judge.calls == []
+    assert result.skipped_claims == 2
+    assert gate_effect(result) == GATE_NOT_RUN
