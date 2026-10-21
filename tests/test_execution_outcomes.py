@@ -394,7 +394,7 @@ def test_duplicate_dispatch_identity_refuses_before_aggregate(tmp_path):
 
 
 def _build_offer_record(root, *, run_id, tariff_version, harness="command-code",
-                        usage_path="subscription-cli"):
+                        usage_path="subscription-cli", observed_at="2026-10-04T00:00:00+00:00"):
     from src.provider_capacity import (
         AuthorizationClass, CapacityState, Entitlement, EvidenceProvenance,
         make_capacity_receipt,
@@ -404,7 +404,6 @@ def _build_offer_record(root, *, run_id, tariff_version, harness="command-code",
     )
 
     evidence, extensions, _, dispatch, attempt, _ = make_evidence(root, run_id=run_id)
-    observed_at = "2026-10-04T00:00:00+00:00"
     provenance = EvidenceProvenance("synthetic", "synthetic-ref", "test-collector",
                                     observed_at, 3600)
     capacity = make_capacity_receipt(
