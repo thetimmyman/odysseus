@@ -41,7 +41,11 @@ Statuses (see :class:`CritiqueResult`):
                           win: picking one could hide a CRITICAL verdict
                           behind the other.  The same object repeated
                           verbatim -- inside and outside a fence -- is one
-                          object.  A reply longer than
+                          object.  Only a TOP-LEVEL object counts: an object
+                          nested inside another one is part of that object,
+                          not a separate answer, so a wrapper such as
+                          ``{"example": {"critiques": [...]}}`` carries no
+                          critique payload of its own.  A reply longer than
                           :data:`MAX_REPLY_CHARS` is refused up front, and a
                           nesting depth the JSON decoder cannot walk is simply
                           not decodable at that position, so the scan stays
@@ -590,7 +594,17 @@ def _reject_duplicate_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
 
 
 def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
-    """Every JSON object decodable from ``text``, left to right.
+    """Every TOP-LEVEL JSON object decodable from ``text``, left to right.
+
+    Only a top-level object is an answer.  After a successful decode the scan
+    resumes at the END of the object it just read, never inside it: a wrapper
+    such as ``{"example": {"critiques": [...]}}`` decodes as one object with no
+    ``critiques`` key, and the nested object is part of it, not a second
+    answer.  Resuming at the next ``{`` would yield that nested object as if it
+    were the reply's own payload.
+
+    A failed decode means nothing is decodable at that position, so the scan
+    moves on to the next ``{`` -- that ``{`` may still start a real object.
 
     The attempt cap keeps a hostile reply full of stray braces from turning
     this scan quadratic; a real judge reply needs a handful of attempts.  A
@@ -610,13 +624,13 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
             raise _ScanBudgetExhausted(attempts)
         attempts += 1
         try:
-            obj, _end = decoder.raw_decode(text, index)
+            obj, end = decoder.raw_decode(text, index)
         except (ValueError, RecursionError):
             index = text.find("{", index + 1)
             continue
         if isinstance(obj, dict):
             yield obj
-        index = text.find("{", index + 1)
+        index = text.find("{", end)
 
 
 _AMBIGUOUS_NOTE = "the reply contained more than one critique object"
@@ -713,6 +727,25 @@ def _critique_from_item(
         )
 
     severity: Optional[str] = None
+    if verdict not in SEVERITY_VERDICTS:
+        raw_severity = item.get("severity")
+        if not (
+            raw_severity is None
+            or (isinstance(raw_severity, str) and not raw_severity.strip())
+        ):
+            # A SUPPORTED / NOT_JUDGED entry that states a severity contradicts
+            # itself.  Dropping the severity would silently discard a CRITICAL
+            # the judge did state, so fail closed instead of picking a side.
+            return (
+                ClaimCritique(
+                    claim_id,
+                    NOT_JUDGED,
+                    None,
+                    "the judge carried a severity on a verdict that takes none",
+                ),
+                f"claim {claim_id} carried a severity on a verdict that takes "
+                "none; marked NOT_JUDGED",
+            )
     if verdict in SEVERITY_VERDICTS:
         raw_severity = item.get("severity")
         if raw_severity is None or (
@@ -852,8 +885,10 @@ def parse_reply(
     CONTRADICTED / ALTERNATIVE / UNSUPPORTED entry with no severity is not
     guessed at MAJOR -- that would hide a CRITICAL the judge failed to state --
     so it fails closed to ``NOT_JUDGED``, which :func:`gate_effect` reads as
-    ``NEEDS_HUMAN``.  SUPPORTED and NOT_JUDGED never carry a severity.  Reason
-    text is cut at :data:`MAX_REASON_CHARS`, alternative text at
+    ``NEEDS_HUMAN``.  SUPPORTED and NOT_JUDGED take no severity: one that is
+    present and non-empty on either verdict is contradictory input and is
+    refused as ``NOT_JUDGED`` rather than silently dropped.  Reason text is cut
+    at :data:`MAX_REASON_CHARS`, alternative text at
     :data:`MAX_ALTERNATIVE_CHARS`.
 
     A reply carrying more than one DISTINCT object with a ``critiques`` list is

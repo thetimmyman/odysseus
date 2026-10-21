@@ -464,11 +464,40 @@ def test_duplicate_claim_id_keeps_neither_entry():
     assert any("judged 2 times" in note for note in notes)
 
 
-def test_supported_never_carries_a_severity():
+def test_supported_with_a_severity_is_contradictory_and_not_judged():
+    """A severity on SUPPORTED may be a CRITICAL the judge meant, so refuse it.
+
+    Normalising it to ``None`` would silently discard the critical signal and
+    leave the gate at ``NONE``, so the entry fails closed instead.
+    """
     reply = _reply(_entry("C1", SUPPORTED, CRITICAL))
-    critiques, _notes = parse_reply(reply, ["C1"])
-    assert critiques[0].verdict == SUPPORTED
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques[0].verdict == NOT_JUDGED
     assert critiques[0].severity is None
+    assert notes == [
+        "claim C1 carried a severity on a verdict that takes none; marked NOT_JUDGED"
+    ]
+
+    result = run_critique([_claim("C1")], StubJudge(reply), "claude-3-5-sonnet", "gpt-4o")
+    assert result.status == DONE
+    assert [critique.verdict for critique in result.critiques] == [NOT_JUDGED]
+    assert result.critical_claim_ids == ()
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+
+@pytest.mark.parametrize("verdict", [SUPPORTED, NOT_JUDGED])
+@pytest.mark.parametrize("severity", [None, "", "   "])
+def test_a_verdict_that_takes_no_severity_accepts_an_absent_one(verdict, severity):
+    """Control for the refusal above: absent/null/empty severity is not a contradiction.
+
+    Only a present, non-empty severity is refused, so a well-formed SUPPORTED
+    entry is still judged.
+    """
+    reply = _reply(_entry("C1", verdict, severity))
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques[0].verdict == verdict
+    assert critiques[0].severity is None
+    assert notes == []
 
 
 @pytest.mark.parametrize("verdict", [CONTRADICTED, ALTERNATIVE, UNSUPPORTED])
@@ -1075,6 +1104,86 @@ def test_claim_id_shape_comes_from_the_registry_helper():
         assert bool(judge.calls) == is_claim_id(candidate), candidate
         if not is_claim_id(candidate):
             assert result.status == SKIPPED_NO_CLAIMS
+
+
+# --- review fixes: only TOP-LEVEL objects are answers -----------------------
+
+
+def _wrapped(entry):
+    """A reply that nests a critique payload one level down, with no top-level list."""
+    return '{"example": {"critiques": [%s]}}' % json.dumps(entry)
+
+
+def test_a_nested_critiques_list_is_not_the_reply_payload():
+    """A wrapper object must not donate its nested object as the answer.
+
+    The scan used to resume at the next ``{``, so the inner object was yielded
+    as if it were top-level, giving DONE plus a NONE gate for a reply that
+    never returned a critique payload of its own.
+    """
+    entry = _entry("C1", SUPPORTED)
+    reply = _wrapped(entry)
+
+    # Control 1: the same entry as a real top-level reply parses, so the empty
+    # result below is the nesting rule and not a malformed entry.
+    assert [c.verdict for c in parse_reply(_reply(entry), ["C1"])[0]] == [SUPPORTED]
+    # Control 2: the wrapper really does contain a decodable critique list.
+    assert json.loads(reply)["example"]["critiques"] == [entry]
+
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques == []
+    assert notes == ["the reply contained no parseable critique JSON"]
+
+    result = run_critique([_claim("C1")], StubJudge(reply), _JUDGE, _AUTHOR)
+    assert result.status == UNPARSEABLE
+    assert result.critiques == ()
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+
+def test_a_nested_critiques_list_inside_a_fence_is_not_the_reply_payload():
+    entry = _entry("C1", SUPPORTED)
+    reply = "```json\n" + _wrapped(entry) + "\n```"
+
+    # Control: the inner payload is a valid top-level answer on its own.
+    assert parse_reply(_reply(entry), ["C1"])[1] == []
+
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques == []
+    assert notes == ["the reply contained no parseable critique JSON"]
+
+    result = run_critique([_claim("C1")], StubJudge(reply), _JUDGE, _AUTHOR)
+    assert result.status == UNPARSEABLE
+    assert gate_effect(result) == GATE_NEEDS_HUMAN
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _reply(_entry("C1", SUPPORTED)),
+        "```json\n" + _reply(_entry("C1", SUPPORTED)) + "\n```",
+        "Here is my answer:\n" + _reply(_entry("C1", SUPPORTED)) + "\nThat is all.",
+    ],
+    ids=["bare", "fenced", "prose-wrapped"],
+)
+def test_a_top_level_object_still_parses_in_the_usual_shapes(reply):
+    """Controls for the nesting rule: it must not stop ordinary replies parsing."""
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert notes == []
+    assert [critique.verdict for critique in critiques] == [SUPPORTED]
+
+
+def test_two_distinct_top_level_objects_are_still_ambiguous():
+    example = _reply(_entry("C1", SUPPORTED))
+    answer = _reply(_entry("C1", CONTRADICTED, CRITICAL))
+    reply = example + "\n" + answer
+
+    # Control: two top-level objects really are present, one of them CRITICAL.
+    assert reply.count('"critiques"') == 2
+    assert parse_reply(answer, ["C1"])[0][0].severity == CRITICAL
+
+    critiques, notes = parse_reply(reply, ["C1"])
+    assert critiques == []
+    assert notes == [rc._AMBIGUOUS_NOTE]
 
 
 def test_scan_budget_exhaustion_fails_closed():
