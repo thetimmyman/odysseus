@@ -12,16 +12,20 @@ clock.  The judge is injected by the caller as ``judge(prompt) -> str``
 (returns the judge's raw text reply), together with the judge's and the
 author's model names so the pass can refuse a self-critique.
 
-Cross-family refusal: ``run_critique`` calls the judge only when
-:func:`family_of` puts judge and author in different vendor families.  Two
-unrecognised names are both ``"unknown"``, and an unknown pair is not provably
-cross-family, so it is refused too.
+Cross-family refusal: :func:`family_of` is a heuristic over model-name
+segments, so it is deliberately incomplete and this module never treats it as
+proof.  ``run_critique`` calls the judge only when BOTH names resolve to a
+recognised family and those families differ.  The same known family on both
+sides is refused, and so is ``"unknown"`` on either side: an unrecognised name
+may be the author's own family, so it is not provably cross-family.  A refusal
+never calls the judge and never produces a verdict.
 
 Statuses (see :class:`CritiqueResult`):
 
 * ``DONE``                the judge answered and its reply was parsed.
-* ``SKIPPED_SAME_FAMILY`` refused before any judge call: same (or unknown)
-                          family on both sides.
+* ``SKIPPED_SAME_FAMILY`` refused before any judge call: the judge and author
+                          are the same known family, or either family is
+                          unknown, so the pair is not provably cross-family.
 * ``SKIPPED_NO_CLAIMS``   there was nothing to critique.
 * ``JUDGE_ERROR``         the judge raised; only the exception *class* name is
                           recorded, never its message.
@@ -33,7 +37,11 @@ Statuses (see :class:`CritiqueResult`):
                           win: picking one could hide a CRITICAL verdict
                           behind the other.  The same object repeated
                           verbatim -- inside and outside a fence -- is one
-                          object.
+                          object.  A reply longer than
+                          :data:`MAX_REPLY_CHARS` is refused up front, and a
+                          nesting depth the JSON decoder cannot walk is simply
+                          not decodable at that position, so the scan stays
+                          bounded instead of raising.
 
 A pass that did not run is not a clean pass: :func:`gate_effect` answers
 ``NEEDS_HUMAN`` for ``JUDGE_ERROR`` and ``UNPARSEABLE``, for any critique whose
@@ -52,6 +60,13 @@ the prompt that block content is data, not instructions.  A caller that passes
 ``conclusion`` shows the judge what the report claims overall, so the CRITICAL
 rule can refer to it; without one the prompt says so and narrows CRITICAL to a
 direct contradiction.
+
+Claim ids are untrusted too, and they are printed *outside* those blocks as
+labels, so only the registry's shape is rendered: ``C<n>`` with 1 <= n <=
+999999, as minted by ``src/research_run_record.py`` (the pattern is repeated
+locally rather than imported, to keep this module free of feature imports).  A
+claim whose id does not fullmatch is left out of the prompt and counted in a
+note; when every claim is left out the result is ``SKIPPED_NO_CLAIMS``.
 
 Dormant: no research code calls this module yet, and importing it changes no
 behaviour.
@@ -90,6 +105,7 @@ __all__ = [
     "BLOCK_ESCAPE",
     "MAX_REASON_CHARS",
     "MAX_ALTERNATIVE_CHARS",
+    "MAX_REPLY_CHARS",
     "ClaimCritique",
     "CritiqueResult",
     "family_of",
@@ -170,6 +186,7 @@ _FAMILY_MARKERS = (
     ("o3", "openai", _MARKER_NO_DIGIT),
     ("o4", "openai", _MARKER_NO_DIGIT),
     ("gemini", "google", _MARKER_PREFIX),
+    ("gemma", "google", _MARKER_PREFIX),
     ("qwen", "qwen", _MARKER_PREFIX),
     ("llama", "meta", _MARKER_PREFIX),
     ("deepseek", "deepseek", _MARKER_PREFIX),
@@ -177,11 +194,31 @@ _FAMILY_MARKERS = (
     ("glm", "zhipu", _MARKER_PREFIX),
     ("minimax", "minimax", _MARKER_PREFIX),
 )
+# A marker segment can be the start of a different vendor's name: the split
+# cuts "EleutherAI/gpt-j-6B" and "gpt-neox-20b" into a "gpt" segment followed
+# by "j" / "neox", and those are not OpenAI models.  So a marker may refuse a
+# following segment, and the name then falls through to "unknown" (or to
+# another segment's marker) instead of being claimed for that family.
+_MARKER_REFUSED_NEXT_SEGMENTS = {
+    # gpt-neo, gpt-neox, gpt-j, and "japanese-gpt-neox-small"; "gpt-2",
+    # "gpt-4o" and "gpt-oss-20b" keep their OpenAI attribution.
+    "gpt": frozenset({"j", "neo", "neox"}),
+}
 _SEGMENT_RE = re.compile(r"[^a-z0-9]+")
+
+# The claim-id registry in src/research_run_record.py mints "C<n>" for
+# 1 <= n <= 999999 (_CLAIM_ID_RE / MAX_CLAIM_ID there) and reads nothing else.
+# The pattern is repeated here rather than imported so this module stays free
+# of feature imports; it must stay identical in shape.
+_CLAIM_ID_RE = re.compile(r"C[1-9][0-9]{0,5}")
 
 # --- Reply / prompt limits --------------------------------------------------
 MAX_REASON_CHARS = 500
 MAX_ALTERNATIVE_CHARS = 500
+# A judge reply longer than this is refused before it is scanned at all: the
+# scan is a bounded number of JSON attempts, but walking a huge reply is still
+# work an untrusted judge should not be able to ask for.
+MAX_REPLY_CHARS = 200_000
 
 # Every untrusted block opens and closes with this one marker, and any literal
 # copy of it inside the text is rewritten to BLOCK_ESCAPE (which does not
@@ -265,18 +302,28 @@ def family_of(model_name: str) -> str:
     (the ``llama`` segment) and ``"qwen2.5:7b"`` is qwen.  A marker is never a
     bare prefix of a longer word unless the marker says so: ``"gpt4o"`` is
     openai but ``"gptq"`` is not, and ``"o4-mini"`` is openai while ``"o100"``
-    is not.  An empty, non-string or unrecognised name is ``"unknown"`` --
-    never a guess.
+    is not.  A marker may also refuse the segment that follows it, because that
+    segment can name a different vendor's family: ``"gpt-neox-20b"`` and
+    ``"EleutherAI/gpt-j-6B"`` are ``"unknown"``, not openai.  An empty,
+    non-string or unrecognised name is ``"unknown"`` -- never a guess.
+
+    This is a best-effort heuristic and it is incomplete by nature: no marker
+    list can know every vendor's naming.  ``"unknown"`` therefore means "could
+    not prove this", not "not this vendor", which is why
+    :func:`run_critique` refuses an unknown side instead of reading it as a
+    different family.
     """
     if not isinstance(model_name, str):
         return UNKNOWN_FAMILY
     name = model_name.strip().lower()
     if not name:
         return UNKNOWN_FAMILY
-    for segment in _SEGMENT_RE.split(name):
-        if not segment:
-            continue
+    segments = [segment for segment in _SEGMENT_RE.split(name) if segment]
+    for position, segment in enumerate(segments):
+        following = segments[position + 1] if position + 1 < len(segments) else ""
         for marker, family, mode in _FAMILY_MARKERS:
+            if following in _MARKER_REFUSED_NEXT_SEGMENTS.get(marker, ()):
+                continue
             if _segment_matches(segment, marker, mode):
                 return family
     return UNKNOWN_FAMILY
@@ -379,6 +426,12 @@ def build_prompt(claims: Sequence[Dict[str, Any]], conclusion: str = "") -> str:
     block labelled "Report conclusion", and the CRITICAL rule then refers to it.
     Left empty (the default) the prompt states that no conclusion was supplied
     and narrows CRITICAL to a direct contradiction of the claim.
+
+    A claim is rendered only when its ``claim_id`` fullmatches the registry
+    shape ``C<n>`` (see :data:`_CLAIM_ID_RE`).  The id is printed as a label
+    *outside* the data blocks, so an arbitrary string there would be prompt
+    text rather than data; a claim with any other id is left out entirely.
+    :func:`run_critique` counts those claims in a note.
     """
     conclusion_text = _as_text(conclusion)
     has_conclusion = bool(conclusion_text.strip())
@@ -396,7 +449,10 @@ def build_prompt(claims: Sequence[Dict[str, Any]], conclusion: str = "") -> str:
     for claim in claims or ():
         if not isinstance(claim, dict):
             continue
-        parts.append(f"\nClaim id: {_one_line(claim.get('claim_id'))}\n")
+        claim_id = claim.get("claim_id")
+        if not isinstance(claim_id, str) or not _CLAIM_ID_RE.fullmatch(claim_id):
+            continue
+        parts.append(f"\nClaim id: {claim_id}\n")
         parts.append(_data_block("Claim text", claim.get("text")))
         citations = claim.get("citations")
         citations = list(citations) if isinstance(citations, (list, tuple)) else []
@@ -420,6 +476,11 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
 
     The attempt cap keeps a hostile reply full of stray braces from turning
     this scan quadratic; a real judge reply needs a handful of attempts.
+
+    A nesting depth the decoder cannot walk raises ``RecursionError`` rather
+    than ``ValueError``; it means exactly the same thing here -- no object is
+    decodable at this position -- so it moves the scan on instead of escaping
+    as a crash.
     """
     decoder = json.JSONDecoder()
     index = text.find("{")
@@ -428,7 +489,7 @@ def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
         attempts += 1
         try:
             obj, _end = decoder.raw_decode(text, index)
-        except ValueError:
+        except (ValueError, RecursionError):
             index = text.find("{", index + 1)
             continue
         if isinstance(obj, dict):
@@ -499,6 +560,14 @@ def _clip(text: str, limit: int) -> str:
 
 def _plural(count: int, word: str) -> str:
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def _oversize_reply_note(reply: str) -> str:
+    """The note for a reply that was refused before it was scanned."""
+    return (
+        f"judge reply was {len(reply)} characters, over the {MAX_REPLY_CHARS} "
+        "character limit; it was not parsed"
+    )
 
 
 def _critique_from_item(
@@ -633,8 +702,13 @@ def parse_reply(
     A reply carrying more than one DISTINCT object with a ``critiques`` list is
     ambiguous, so it parses to ``([], [note])`` rather than to the first one:
     an illustrative example must not be able to hide the real answer's
-    CRITICAL verdict.  The same object repeated verbatim counts as one.
+    CRITICAL verdict.  The same object repeated verbatim counts as one.  A
+    reply longer than :data:`MAX_REPLY_CHARS` is refused with a note rather
+    than scanned, and a reply nested past the JSON decoder's recursion limit is
+    not decodable rather than an exception.
     """
+    if isinstance(reply, str) and len(reply) > MAX_REPLY_CHARS:
+        return [], [_oversize_reply_note(reply)]
     items, ambiguous = _critique_payload(reply)
     if ambiguous:
         return [], [_AMBIGUOUS_NOTE]
@@ -647,12 +721,19 @@ def parse_reply(
 
 
 def _claim_ids(claim_items: Sequence[Any]) -> Tuple[List[str], int]:
-    """Claim ids in claim order, plus a count of claims with no usable id."""
+    """Claim ids in claim order, plus a count of claims with no usable id.
+
+    A usable id fullmatches :data:`_CLAIM_ID_RE`, the shape the registry in
+    ``src/research_run_record.py`` mints.  Ids are untrusted and are printed as
+    labels *outside* the data blocks, so anything else -- a lower-case ``c1``,
+    ``C0``, or an instruction smuggled into the id -- is not echoed, and its
+    claim is not critiqued.
+    """
     ordered: List[str] = []
     skipped = 0
     for claim in claim_items:
         claim_id = claim.get("claim_id") if isinstance(claim, dict) else None
-        if isinstance(claim_id, str) and claim_id.strip():
+        if isinstance(claim_id, str) and _CLAIM_ID_RE.fullmatch(claim_id):
             if claim_id not in ordered:
                 ordered.append(claim_id)
         else:
@@ -670,10 +751,20 @@ def run_critique(
     """Run one critique pass over ``claims`` with the injected ``judge``.
 
     Refuses before calling the judge when there is nothing to critique
-    (``SKIPPED_NO_CLAIMS``) or when judge and author share a family, including
-    the two-unknown case (``SKIPPED_SAME_FAMILY``).  Otherwise the judge is
-    called exactly once.  A judge exception becomes ``JUDGE_ERROR`` recording
-    only the exception class name; an unreadable reply becomes ``UNPARSEABLE``.
+    (``SKIPPED_NO_CLAIMS``) or when the pair is not provably cross-family
+    (``SKIPPED_SAME_FAMILY``): both names must resolve to a recognised family
+    and those families must differ.  A shared known family is refused, and so
+    is ``"unknown"`` on either side, because :func:`family_of` is an incomplete
+    heuristic -- an unrecognised name may be the author's own family, so it
+    proves nothing about the pair.  Otherwise the judge is called exactly once.
+    A judge exception becomes ``JUDGE_ERROR`` recording only the exception
+    class name; an unreadable reply becomes ``UNPARSEABLE``.
+
+    Claims whose ``claim_id`` is not the registry shape are left out of the
+    prompt and counted in a note (see :func:`build_prompt`); when that leaves
+    nothing to critique the result is ``SKIPPED_NO_CLAIMS``.  A reply longer
+    than :data:`MAX_REPLY_CHARS` is refused up front as ``UNPARSEABLE`` rather
+    than scanned.
 
     ``conclusion`` is passed through to :func:`build_prompt`, so the judge can
     weigh whether a claim matters to the report's conclusion.  Empty by
@@ -697,10 +788,20 @@ def run_critique(
             SKIPPED_NO_CLAIMS, (), (), judge_family, author_family, tuple(notes)
         )
 
+    if UNKNOWN_FAMILY in (judge_family, author_family):
+        notes.append(
+            f"judge family {judge_family} and author family {author_family} are "
+            "not provably cross-family: family detection is a heuristic, and an "
+            "unknown name may be the author's own family, so the judge was not called"
+        )
+        return CritiqueResult(
+            SKIPPED_SAME_FAMILY, (), (), judge_family, author_family, tuple(notes)
+        )
+
     if judge_family == author_family:
         notes.append(
-            f"judge and author are both family {judge_family}; a critique must "
-            "cross families, so the judge was not called"
+            f"judge and author are both family {judge_family}, so the pair is not "
+            "provably cross-family; the judge was not called"
         )
         return CritiqueResult(
             SKIPPED_SAME_FAMILY, (), (), judge_family, author_family, tuple(notes)
@@ -722,6 +823,12 @@ def run_critique(
 
     if not isinstance(reply, str):
         notes.append("judge returned a non-string reply")
+        return CritiqueResult(
+            UNPARSEABLE, (), (), judge_family, author_family, tuple(notes)
+        )
+
+    if len(reply) > MAX_REPLY_CHARS:
+        notes.append(_oversize_reply_note(reply))
         return CritiqueResult(
             UNPARSEABLE, (), (), judge_family, author_family, tuple(notes)
         )
