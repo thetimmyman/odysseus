@@ -212,14 +212,24 @@ def _require_section(name: str) -> None:
 
 
 def _clean_refs(evidence_refs) -> tuple[str, ...]:
-    """Evidence refs as a tuple of non-blank strings (a lone string is one ref)."""
+    """Evidence refs as a tuple of non-blank strings (a lone string is one ref).
+
+    A non-string is not evidence: it is dropped, never stringified, so
+    ``None``, ``0`` or a mapping cannot be cited as though it were a source.
+    """
     if evidence_refs is None:
         return ()
     if isinstance(evidence_refs, str):
         evidence_refs = (evidence_refs,)
+    try:
+        items = list(evidence_refs)
+    except TypeError:
+        return ()
     refs: list[str] = []
-    for item in evidence_refs:
-        ref = str(item).strip()
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        ref = item.strip()
         if ref:
             refs.append(ref)
     return tuple(refs)
@@ -273,7 +283,9 @@ def fill_section(
     * blank text (empty or whitespace only) -> ``ValueError``;
     * no evidence refs -> the section is ``UNKNOWN`` and the text is NOT
       stored.  Unevidenced text never stands, so there is nothing to render:
-      an empty section is a question, not a claim.
+      an empty section is a question, not a claim.  Only non-blank strings
+      are evidence: a non-string ref is dropped, never stringified, and a
+      mixed sequence keeps just its real refs, in order.
 
     Returns a NEW draft; ``draft`` is never mutated.
     """
@@ -357,7 +369,8 @@ def validate_ruling(
        owner was searched for;
     3. ``adopt`` / ``adapt`` while ``pinned_source_identity`` is not
        ``FILLED``: the identity of the source being adopted must be pinned;
-    4. a ``FILLED`` section with no evidence refs;
+    4. a ``FILLED`` section with no evidence refs (only a non-blank string
+       ref counts; a blank or non-string ref is not evidence);
     5. a ``FILLED`` section with blank text;
     6. a pin result whose ``status`` is not ``TRUE`` while the section that
        cites it is ``FILLED``;
@@ -401,10 +414,15 @@ def validate_ruling(
                 f"'pinned_source_identity' is {identity_status}"
             )
 
-    # 4) A filled section with nothing behind it.
+    # 4) A filled section with nothing behind it.  Only a non-blank string is
+    #    evidence; a blank or non-string ref does not back a claim.
     for name in RULING_SECTIONS:
         section = draft.sections.get(name)
-        if section is not None and section.status == FILLED and not section.evidence_refs:
+        if (
+            section is not None
+            and section.status == FILLED
+            and not _clean_refs(section.evidence_refs)
+        ):
             problems.append(f"section {name!r} is FILLED without evidence refs")
 
     # 5) A filled section with nothing to say (a section built directly, not
@@ -461,7 +479,7 @@ def render_ruling_markdown(draft: RulingDraft) -> str:
         if section.status == FILLED:
             lines.append(section.text)
             lines.append("")
-            lines.append("Evidence: " + ", ".join(section.evidence_refs))
+            lines.append("Evidence: " + ", ".join(_clean_refs(section.evidence_refs)))
         else:
             lines.append(section.status)
         lines.append("")
