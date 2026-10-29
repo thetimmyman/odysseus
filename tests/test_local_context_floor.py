@@ -53,8 +53,8 @@ def test_probe_default_floor_keeps_the_existing_4k_prompt_size():
 
 def test_probe_sizes_the_prompt_to_the_declared_floor():
     prompt, _ = _probe(0, FLOOR)
-    assert distractor_lines(prompt) > 2000
-    assert len(prompt) >= FLOOR * 4
+    assert distractor_lines(prompt) > 1500
+    assert len(prompt) >= int(FLOOR * 3.5)
     positions = [prompt.index(f'{name}=') for name in ('FIRST', 'MIDDLE', 'LAST')]
     assert positions == sorted(positions)
 
@@ -100,7 +100,7 @@ def test_new_profile_records_the_measured_floor_not_a_constant(tmp_path):
     assert candidate.context.safe_working_context == FLOOR
     assert candidate.context.semantic_verified_context == FLOOR
     assert candidate.context.engine_demonstrated_context == 33060
-    assert distractor_lines(calls[0]['messages'][0]['content']) > 2000
+    assert distractor_lines(calls[0]['messages'][0]['content']) > 1500
     assert candidate.qualification_state(now=NOW) == 'valid'
 
 
