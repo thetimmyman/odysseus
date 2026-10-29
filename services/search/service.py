@@ -102,3 +102,13 @@ class SearchService:
     def get_config(self) -> Dict[str, Any]:
         """Get current search configuration."""
         return get_search_config()
+
+    async def discover_public(self, owner: str, query_id: str) -> dict:
+        """Run an operator-registered public query through the owner instance."""
+        from src.web_acquisition import WebAcquisitionClient
+        return await asyncio.to_thread(WebAcquisitionClient(owner).discover, query_id)
+
+    async def acquire_public(self, owner: str, source_id: str) -> dict:
+        """Stage a registered source; indexing never grants review approval."""
+        from src.web_acquisition import WebAcquisitionClient
+        return await asyncio.to_thread(WebAcquisitionClient(owner).acquire, source_id)
