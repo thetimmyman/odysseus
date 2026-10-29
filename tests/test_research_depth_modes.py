@@ -255,11 +255,11 @@ async def test_limit_max_urls_per_round_honoured():
     r._search = fake_search
     r._fetch_and_extract = fake_extract
 
-    queries = ["q1", "q2"]  # 2 queries * max_urls_per_round(2) = 4 max
+    queries = ["q1", "q2"]  # The round shares one two-URL allowance.
     findings = await r._search_and_extract(queries, "question")
 
-    assert len(findings) == 4
-    assert len(extracted_urls) == 4
+    assert len(findings) == 2
+    assert len(extracted_urls) == 2
 
 
 @pytest.fixture

@@ -36,7 +36,7 @@ class _ControlledResearcher(DeepResearcher):
 
 @pytest.mark.asyncio
 async def test_search_and_extract_respects_extraction_concurrency():
-    researcher = _ControlledResearcher(extraction_concurrency=2, max_urls_per_round=4)
+    researcher = _ControlledResearcher(extraction_concurrency=2, max_urls_per_round=8)
     researcher._start_time = time.time()
 
     findings = await researcher._search_and_extract(["a", "b"], "question")
