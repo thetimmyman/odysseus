@@ -89,3 +89,9 @@ class DocsService:
     def rebuild_index(self) -> bool:
         """Rebuild the entire index."""
         return self.rag.rebuild_index()
+
+    async def query_acquired(self, query: str, owner: str, *, semantic: bool = False) -> dict:
+        """Retrieve validated/current acquired evidence from the owner instance."""
+        import asyncio
+        from src.web_acquisition import WebAcquisitionClient
+        return await asyncio.to_thread(WebAcquisitionClient(owner).retrieve, query, semantic)
