@@ -19,6 +19,7 @@ from src.research_utils import strip_thinking, is_low_quality
 
 from src.goal_based_extractor import EXTRACTOR_SYSTEM
 from src.prompt_security import untrusted_context_message
+from src.research_transport import ResearchModelReply, ResearchTransport
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +322,7 @@ class DeepResearcher:
         depth: Optional[str] = None,
         citation_verification: bool = False,
         citation_transport: Optional[Callable] = None,
+        transport: Optional[ResearchTransport] = None,
     ):
         self.llm_endpoint = llm_endpoint
         self.llm_model = llm_model
@@ -328,6 +330,10 @@ class DeepResearcher:
         self.search_provider_override = search_provider
         self.category = category
         self.depth = depth
+        if transport is not None and not all(callable(getattr(transport, method, None))
+                                             for method in ("generate", "search", "fetch")):
+            raise TypeError("research transport requires generate, search and fetch methods")
+        self.transport = transport
 
         resolved_limits = resolve_depth(depth, overrides={
             "max_rounds": max_rounds,
@@ -531,20 +537,27 @@ class DeepResearcher:
     async def _llm(self, messages: List[Dict], temperature: float = 0.3,
                    max_tokens: int = 4096, timeout: int = 60) -> str:
         """Call the LLM asynchronously and strip thinking tags."""
-        from src.llm_core import llm_call_async
         recorder = getattr(self, "run_recorder", None)
+        transport = getattr(self, "transport", None)
+        transport_usage = None
         started = time.monotonic()
         started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
-            response = await llm_call_async(
-                url=self.llm_endpoint,
-                model=self.llm_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                headers=self.llm_headers,
-                timeout=timeout,
-            )
+            if transport is None:
+                from src.llm_core import llm_call_async
+                response = await llm_call_async(
+                    url=self.llm_endpoint, model=self.llm_model, messages=messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    headers=self.llm_headers, timeout=timeout,
+                )
+            else:
+                reply = await asyncio.wait_for(transport.generate(
+                    model=self.llm_model, messages=messages, temperature=temperature,
+                    max_tokens=max_tokens, timeout=timeout,
+                ), timeout=timeout)
+                if not isinstance(reply, ResearchModelReply):
+                    raise TypeError("research transport must return ResearchModelReply")
+                response, transport_usage = reply.text, reply.usage
         except (Exception, asyncio.CancelledError) as e:
             # CancelledError is how the hard research timeout interrupts an
             # in-flight call; record it before it propagates.
@@ -552,18 +565,22 @@ class DeepResearcher:
                 self._record_llm_call(recorder, started, started_at, messages, "", e)
             raise
         if recorder is not None:
-            self._record_llm_call(recorder, started, started_at, messages, response, None)
+            self._record_llm_call(recorder, started, started_at, messages, response, None, transport_usage)
         return strip_thinking(response)
 
     def _record_llm_call(self, recorder, started: float, started_at: str, messages: List[Dict],
-                         response: str, error: Optional[BaseException]) -> None:
-        from src.llm_core import last_async_cache_hit, last_async_usage
+                         response: str, error: Optional[BaseException], transport_usage=None) -> None:
         from src.routing_context import estimate_tokens
         purpose, source_id = _LLM_PURPOSE.get()
-        usage = last_async_usage() if error is None else None
+        if getattr(self, "transport", None) is None:
+            from src.llm_core import last_async_cache_hit, last_async_usage
+            usage = last_async_usage() if error is None else None
+            cached = error is None and last_async_cache_hit()
+        else:
+            usage = transport_usage if error is None else None
+            cached = False
         # A process-cache hit made no provider request: zero tokens, zero spend,
         # not an estimate.
-        cached = error is None and last_async_cache_hit()
         prompt_text = "\n".join(str(m.get("content") or "") for m in messages)
         recorder.add_llm_call(
             purpose=purpose,
@@ -702,9 +719,9 @@ class DeepResearcher:
         search_tasks = [self._search(q) for q in queries]
         search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-        # Collect URLs to fetch from all search results
+        # All queries share the round's URL allowance, including failed fetch attempts.
         urls_to_fetch = []
-        url_cap = self.max_urls_per_round * len(queries)
+        url_cap = self.max_urls_per_round
         for result in search_results:
             if len(urls_to_fetch) >= url_cap:
                 break
@@ -748,6 +765,11 @@ class DeepResearcher:
     async def _search(self, query: str) -> List[Dict]:
         """Run a search query using the configured research search provider."""
         try:
+            if getattr(self, "transport", None) is not None:
+                results = await asyncio.wait_for(self.transport.search(query, 10), timeout=self.query_timeout)
+                if "replay-transport" not in self.providers_used:
+                    self.providers_used.append("replay-transport")
+                return results
             from src.search.providers import _get_search_settings
             from src.search.core import _call_provider, _build_provider_chain
 
@@ -801,8 +823,11 @@ class DeepResearcher:
         self._emit(phase="reading", url=url, title=display,
                    total_sources=len(self.urls_fetched))
         try:
-            from src.search import fetch_webpage_content
-            page = await asyncio.to_thread(fetch_webpage_content, url, 10)
+            if getattr(self, "transport", None) is None:
+                from src.search import fetch_webpage_content
+                page = await asyncio.to_thread(fetch_webpage_content, url, 10)
+            else:
+                page = await asyncio.wait_for(self.transport.fetch(url, 10), timeout=10)
         except Exception as e:
             logger.warning(f"Failed to fetch {url}: {e}")
             return None
