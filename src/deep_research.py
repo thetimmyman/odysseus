@@ -719,9 +719,9 @@ class DeepResearcher:
         search_tasks = [self._search(q) for q in queries]
         search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-        # Collect URLs to fetch from all search results
+        # All queries share the round's URL allowance, including failed fetch attempts.
         urls_to_fetch = []
-        url_cap = self.max_urls_per_round * len(queries)
+        url_cap = self.max_urls_per_round
         for result in search_results:
             if len(urls_to_fetch) >= url_cap:
                 break
