@@ -73,13 +73,14 @@ def test_opt_in_reads_metadata_only_on_the_already_open_fd_and_closes_it(policy_
     _write(policy_files.selected, {"routingPolicyVersion": "synthetic"})
     opened = _track_open(monkeypatch)
     original = os.fstat
+    # Keep pytest's own descriptor/capture operations outside this OS fault.
     fds = []
 
     def observed(fd):
         fds.append(fd)
         return original(fd)
 
-    monkeypatch.setattr(os, "fstat", observed)
+    monkeypatch.setattr(policy, "os", SimpleNamespace(**{**vars(os), "fstat": observed}))
     sink = {}
     policy.load_policy(provenance_sink=sink)
     assert opened == [(str(policy_files.selected), "r")]
@@ -109,7 +110,7 @@ def test_metadata_failure_never_turns_successful_policy_into_defaults(policy_fil
             fields["st_ctime_ns"] += 1
         return SimpleNamespace(**fields)
 
-    monkeypatch.setattr(os, "fstat", unreliable)
+    monkeypatch.setattr(policy, "os", SimpleNamespace(**{**vars(os), "fstat": unreliable}))
     sink = {}
     assert policy.load_policy(provenance_sink=sink) == content
     assert sink["origin"]["kind"] == "file"
@@ -224,7 +225,9 @@ class UnsupportedSink(dict):
 def test_only_an_exact_plain_dict_can_opt_into_provenance(policy_files, monkeypatch, sink):
     content = {"routingPolicyVersion": "synthetic-legacy"}
     _write(policy_files.selected, content)
-    monkeypatch.setattr(os, "fstat", lambda fd: pytest.fail("unsupported sink requested metadata"))
+    monkeypatch.setattr(policy, "os", SimpleNamespace(**{
+        **vars(os), "fstat": lambda fd: pytest.fail("unsupported sink requested metadata"),
+    }))
     assert policy.load_policy(provenance_sink=sink) == content
     if isinstance(sink, UnsupportedSink):
         assert sink.calls == 0
