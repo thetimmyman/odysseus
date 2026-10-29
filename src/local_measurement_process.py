@@ -146,8 +146,10 @@ class _Boundary:
         # First stop this launcher so no further start request can be submitted.
         if self.process.returncode is None:
             self.process.kill()
-            await asyncio.wait_for(self.process.wait(), 0.2)
+        # The unit may still hold the launcher's pipes open. Stop its descendants
+        # before reaping: asyncio's pending wait can otherwise require their EOF.
         await _control('kill', '--signal=SIGKILL', '--kill-whom=all', '--', self.unit)
+        await asyncio.wait_for(self.process.wait(), 0.2)
 
     async def confirm_stopped(self):
         if self.process.returncode is None:
