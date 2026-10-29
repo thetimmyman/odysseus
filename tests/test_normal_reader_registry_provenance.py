@@ -185,7 +185,7 @@ def test_optional_identity_failure_does_not_change_normal_success(
             values["st_mtime_ns"] += 1
         return SimpleNamespace(**values)
 
-    monkeypatch.setattr(targets.os, "fstat", observed_fstat)
+    monkeypatch.setattr(targets, "os", SimpleNamespace(**{**vars(os), "fstat": observed_fstat}))
     sink = {}
     assert targets.registered_targets(provenance_sink=sink) == legacy
     assert sink["kind"] == "explicit_file" and sink["path"] == str(path)
@@ -207,7 +207,7 @@ def test_non_plain_sink_is_ignored_without_extra_metadata_operations(
 ):
     _write_registry(tmp_path, monkeypatch, [])
     fstat = Mock(side_effect=AssertionError("legacy read must not acquire metadata"))
-    monkeypatch.setattr(targets.os, "fstat", fstat)
+    monkeypatch.setattr(targets, "os", SimpleNamespace(**{**vars(os), "fstat": fstat}))
     assert targets.registered_targets(provenance_sink=sink) == defaults
     fstat.assert_not_called()
     if isinstance(sink, Mock):
