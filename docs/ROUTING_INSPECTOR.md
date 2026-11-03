@@ -59,7 +59,8 @@ the same evidence and instant, two evaluations hash identically. Passing
 `apply_operator_override(explanation, target)` steers only between candidates
 that are already eligible. It re-derives the domain policy (provider allow and
 deny lists, sensitivity ceiling, local-only), evidence presence, health,
-freshness, credential binding and entitlement against the override instant
+capability freshness, credential binding, and entitlement including the
+expiry of the capacity facts behind it, against the override instant
 rather than trusting the recorded `eligible` flag, so a hash-sealed receipt that
 claims eligibility for a target failing a hard rule is still refused. The
 resolved `DomainPolicy` is recorded in the explanation as data and re-run
@@ -83,7 +84,11 @@ receipt here must not be reported as measured attention cost or a completed
 override, and there is no route, store, migration or default activation for it.
 Tests cover the positive control, determinism, refusal codes for filtered
 alternates, and the negative controls above at both the evaluator and the
-override boundary, including resealed tampered explanations. Because the
+override boundary, including resealed tampered explanations. Capacity
+freshness is re-checked from the recorded fact expiry, so a grant whose evidence
+has lapsed (or whose expiry was never recorded) cannot be overridden; detecting
+a revocation that leaves the facts themselves fresh still needs a new capacity
+collection and remains a route-layer concern. Because the
 hard/soft refusal taxonomy is descriptive, a further control proves a
 curably-classified refusal still blocks an override, so the DENY guarantee rests
 on the deciding rule the gate re-derives rather than on the classification.

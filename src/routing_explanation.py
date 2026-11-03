@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from src import dispatch_routing as dr
@@ -247,6 +247,9 @@ class CandidateExplanation:
     receipt_hash: str = ""
     receipt_observed_at: str = ""
     receipt_ttl_s: int = 0
+    #: Earliest expiry among the capacity receipts that evidenced this target's
+    #: entitlement, so the gate can re-check freshness instead of trusting a flag.
+    capacity_expires_at: str = ""
     endpoint_url: str = ""
     receipt_healthy: bool = False
     credential_bound: bool = False
@@ -329,6 +332,7 @@ class CandidateExplanation:
             "capability_receipt_hash": self.receipt_hash,
             "capability_receipt_observed_at": self.receipt_observed_at,
             "capability_receipt_ttl_s": self.receipt_ttl_s,
+            "capacity_expires_at": self.capacity_expires_at,
             "endpoint_url": self.endpoint_url,
             "capability_receipt_healthy": self.receipt_healthy,
             "credential_bound": self.credential_bound,
@@ -356,6 +360,7 @@ class CandidateExplanation:
                 receipt_hash=payload.get("capability_receipt_hash", ""),
                 receipt_observed_at=payload.get("capability_receipt_observed_at", ""),
                 receipt_ttl_s=payload.get("capability_receipt_ttl_s", 0),
+                capacity_expires_at=payload.get("capacity_expires_at", ""),
                 endpoint_url=payload.get("endpoint_url", ""),
                 receipt_healthy=payload.get("capability_receipt_healthy", False),
                 credential_bound=payload.get("credential_bound", False),
@@ -566,6 +571,28 @@ def _order_key(candidate: CandidateExplanation) -> Tuple[Any, ...]:
             candidate.cost_rank, candidate.target_id, candidate.profile_id)
 
 
+def _capacity_expiry_s(capacity_receipts: Sequence[Any],
+                       refs: Sequence[str]) -> str:
+    """Earliest fact-expiry among the capacity receipts named by ``refs``.
+
+    Empty when no receipt is named: a local target needs no capacity, and a
+    hosted one with no expiry evidence fails closed in the gate.
+    """
+    wanted = {str(ref) for ref in refs}
+    if not wanted:
+        return ""
+    expiries = []
+    for receipt in capacity_receipts or ():
+        if str(getattr(receipt, "ref", "")) not in wanted:
+            continue
+        observed = _parse_ts(getattr(receipt, "observed_at", ""))
+        ttl = getattr(receipt, "ttl_seconds", None)
+        if observed is None or type(ttl) is not int or ttl < 0:
+            return ""  # unreadable or malformed facts never look fresh
+        expiries.append(observed + timedelta(seconds=ttl))
+    return min(expiries).isoformat() if expiries else ""
+
+
 def _candidate_explanation(assessment: Any, profile: Any, receipt: Any, *,
                            capacity_receipts: Sequence[Any],
                            now: datetime) -> CandidateExplanation:
@@ -599,6 +626,7 @@ def _candidate_explanation(assessment: Any, profile: Any, receipt: Any, *,
         credential_bound=bool(profile.credential_sha256),
         capacity_eligible=bool(capacity_ok), capacity_rule=capacity_rule,
         capacity_receipt_refs=tuple(capacity_refs),
+        capacity_expires_at=_capacity_expiry_s(capacity_receipts, capacity_refs),
         budget_class=assessment.budget_class, exactness=assessment.exactness,
         cost_rank=assessment.cost_rank, preference_rank=assessment.preference_rank,
     )
@@ -895,6 +923,13 @@ def _gate_violations(explanation: RoutingExplanation,
             codes.append(dr.REFUSED_CAPACITY_MISSING)
         if not candidate.capacity_eligible:
             codes.append(candidate.capacity_rule or dr.REFUSED_CAPACITY_MISSING)
+        else:
+            # Freshness of the entitlement facts is a fact about now: a grant
+            # whose evidence has expired (or was never recorded) is not
+            # established, and no override supplies it.
+            expires = _parse_ts(candidate.capacity_expires_at)
+            if expires is None or now > expires:
+                codes.append(dr.REFUSED_CAPACITY_STALE)
 
     if any(code not in dr.KNOWN_REFUSALS for code in codes):
         raise ExplanationError("gate produced an unknown refusal code")
@@ -1106,7 +1141,10 @@ class OverrideAuditReceipt:
         if unknown:
             raise ExplanationError(
                 f"unknown override receipt field(s): {sorted(unknown)}")
-        payload: dict[str, Any] = {
+        # ``Any`` on purpose: every value is validated by ``__post_init__``, and
+        # a narrower inferred type makes ``**payload`` a type-check target for
+        # tooling that cannot see through the comprehension.
+        payload: Any = {
             name: (tuple(value) if isinstance(value, (list, tuple)) else value)
             for name, value in kwargs.items()}
         provisional = cls(override_id="", **payload)

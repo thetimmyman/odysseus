@@ -425,7 +425,8 @@ def test_a_hash_sealed_receipt_that_claims_eligibility_is_still_refused():
         receipt_id="cap-ha", receipt_hash="b" * 64,
         receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
         receipt_healthy=True, credential_bound=True, capacity_eligible=True,
-        capacity_rule=RULE_ELIGIBLE)
+        capacity_rule=RULE_ELIGIBLE,
+        capacity_expires_at=(NOW + datetime.timedelta(hours=1)).isoformat())
     forged = _reseal(RoutingExplanation(
         decision_id=local_only.decision_id, request=dict(local_only.request),
         policy=dict(local_only.policy),
@@ -450,7 +451,8 @@ def test_a_hosted_target_without_a_credential_binding_is_refused():
         receipt_id="cap-ha", receipt_hash="b" * 64,
         receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
         receipt_healthy=True, credential_bound=False, capacity_eligible=True,
-        capacity_rule=RULE_ELIGIBLE)
+        capacity_rule=RULE_ELIGIBLE,
+        capacity_expires_at=(NOW + datetime.timedelta(hours=1)).isoformat())
     forged = _reseal(RoutingExplanation(
         decision_id=explanation.decision_id, request=dict(explanation.request),
         policy=dict(explanation.policy),
@@ -746,7 +748,8 @@ def test_a_policy_denied_provider_cannot_be_overridden_even_when_resealed():
         receipt_id="cap-hosted-a", receipt_hash="b" * 64,
         receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
         receipt_healthy=True, credential_bound=True, capacity_eligible=True,
-        capacity_rule=RULE_ELIGIBLE, endpoint_url=HOSTED_ENDPOINT)
+        capacity_rule=RULE_ELIGIBLE, endpoint_url=HOSTED_ENDPOINT,
+        capacity_expires_at=(NOW + datetime.timedelta(hours=1)).isoformat())
     forged = _reseal(RoutingExplanation(
         decision_id=explanation.decision_id, request=dict(explanation.request),
         policy=dict(explanation.policy),
@@ -762,3 +765,54 @@ def test_a_policy_denied_provider_cannot_be_overridden_even_when_resealed():
         apply_operator_override(forged, "hosted-a", operator_id="operator-1",
                                 justification="the receipt says eligible", now=NOW)
     assert err.value.refusal_reasons == (dr.REFUSED_PRIVACY_LOCAL_ONLY,)
+
+
+def test_expired_capacity_facts_cannot_be_overridden():
+    """Entitlement freshness is re-checked, never read from a decision-time flag.
+
+    Capability evidence for these hosted targets is valid all day, so only the
+    capacity grant expires. An override after that instant must refuse, because
+    the entitlement is no longer established and no override supplies one.
+    """
+    profiles = [hosted_profile("hosted-a", "prof-ha"),
+                hosted_profile("hosted-b", "prof-hb")]
+    receipts = [hosted_receipt("hosted-a", "prof-ha"),
+                hosted_receipt("hosted-b", "prof-hb")]
+    explanation = evaluator(capacity=[capacity_receipt()]).evaluate(
+        bare_request(), profiles, receipts)
+    assert explanation.eligible_target_ids() == ("hosted-a", "hosted-b")
+    row = {c.target_id: c for c in explanation.considered}["hosted-b"]
+    assert row.capacity_expires_at
+    assert row.receipt_ttl_s > 3600  # capability evidence outlives the grant
+
+    later = NOW + datetime.timedelta(hours=2)
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(explanation, "hosted-b", operator_id="operator-1",
+                                justification="switch pools", now=later)
+    assert err.value.refusal_reasons == (dr.REFUSED_CAPACITY_STALE,)
+
+
+def test_a_hosted_row_without_entitlement_freshness_evidence_is_refused():
+    """Unknown capacity freshness fails closed, so a bare flag cannot qualify."""
+    explanation = explain_two_locals()
+    no_expiry = CandidateExplanation(
+        target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
+        locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-ha", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, credential_bound=True, capacity_eligible=True,
+        capacity_rule=RULE_ELIGIBLE)  # capacity_expires_at deliberately absent
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy),
+        domain_policy=dict(explanation.domain_policy),
+        considered=(*explanation.considered, no_expiry),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
+                                justification="capacity looks fine", now=NOW)
+    assert dr.REFUSED_CAPACITY_STALE in err.value.refusal_reasons
