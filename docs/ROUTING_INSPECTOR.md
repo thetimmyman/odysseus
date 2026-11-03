@@ -40,3 +40,43 @@ request idempotency and unchanged stale-capacity facts. They do not qualify a
 production filesystem, live provider, installed transport or the TMOS readiness
 pilot. Rollback disables the entry point/service while retaining every canonical
 receipt and association; do not delete the audit table or repoint handles.
+
+## Deterministic explanation and audited eligible-target steering
+
+`src/routing_explanation.py` supplies the fresh selector evaluation the section
+above reserved, as a pure module with no route and no store. It adds no rules:
+`RoutingInspectorEvaluator` calls `dispatch_routing.select_target` — the single
+ordered filter path — and projects that decision into a sealed
+`RoutingExplanation`. Each alternative carries the selector's own deciding rule
+code, its own prose, the canonical capability evidence identity, the entitlement
+outcome, and a deterministic `required_change_to_qualify`. The rationale is
+therefore a projection of canonical receipts: the module imports no model client
+and no network library, so a post-hoc rationale has nowhere to come from. Given
+the same evidence and instant, two evaluations hash identically. Passing
+`decision_id` pins an explanation to a decision actually taken, so its
+`dispatch_receipt_hash` is comparable with the retained receipt.
+
+`apply_operator_override(explanation, target)` steers only between candidates
+that are already eligible. It re-derives privacy, evidence presence, health,
+freshness, credential binding and entitlement against the override instant
+rather than trusting the recorded `eligible` flag, so a hash-sealed receipt that
+claims eligibility for a target failing a hard rule is still refused. Every
+ineligibility raises `PolicyViolationException` with its typed refusal codes and
+mints nothing; expired capability evidence is never restamped into freshness
+and a policy DENY is never converted. An accepted steering mints an immutable
+`OverrideAuditReceipt` (schema 1) recording operator, justification, instant,
+original and authorized target/profile, explanation/decision/dispatch hashes,
+policy ref, request fingerprint, the closed eligible set, `original_still_eligible`
+and evidence refs. `authorizes` is a fixed single-element vocabulary and `scope`
+is fixed, so the receipt cannot be read as a dispatch, a capability grant, a
+policy change or a refresh. Re-issuing the same intent yields the same id and
+hash.
+
+This increment still authorizes nothing downstream: no dispatch, no worker
+control, no capability or policy change, no evidence refresh and no pinned
+attempt. OD-19 still does not accept observed interventions, so an override
+receipt here must not be reported as measured attention cost or a completed
+override, and there is no route, store, migration or default activation for it.
+Tests cover the positive control, determinism, refusal codes for filtered
+alternates, and the negative controls above at both the evaluator and the
+override boundary, including a resealed tampered explanation.
