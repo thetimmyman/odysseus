@@ -217,6 +217,17 @@ class ResearchRunRecorder:
         self.llm_calls: List[Dict] = []
         self._call_endpoints: List[str] = []
         self.routing_run_id: Optional[str] = None
+        self.critique: Optional[Dict[str, Any]] = None
+
+    def set_critique(self, critique_data: Any) -> None:
+        """Store the critique pass outcome on this run record."""
+        if hasattr(critique_data, "status"):
+            from src.research_critique import critique_to_dict
+            self.critique = critique_to_dict(critique_data)
+        elif isinstance(critique_data, dict):
+            self.critique = dict(critique_data)
+        else:
+            self.critique = None
 
     def add_source(self, url: str, title: str, text: str) -> str:
         """Record the exact text given to the extractor; returns its source_id."""
@@ -481,7 +492,7 @@ class ResearchRunRecorder:
             self.run_id, totals["quote_grounding"]["grounded"],
             totals["quote_grounding"]["quotes"], totals["quote_grounding"]["rate"],
         )
-        return {
+        record_out = {
             "schema": RECORD_SCHEMA,
             "run_id": self.run_id,
             "parent_run_id": self.parent_run_id,
@@ -493,6 +504,9 @@ class ResearchRunRecorder:
             "claim_id_floor": self._claim_ids,
             "routing_run_id": self.routing_run_id,
         }
+        if self.critique is not None:
+            record_out["critique"] = dict(self.critique)
+        return record_out
 
     def persist_model_runs(self, *, query: str, owner: str, status: str) -> Optional[str]:
         """One RoutingTask + RoutingRun for the research run and a

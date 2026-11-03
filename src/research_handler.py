@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Callable, Optional, Dict
 
 from src.research_utils import strip_thinking, is_low_quality
 from src.constants import DEEP_RESEARCH_DIR
@@ -919,6 +919,10 @@ class ResearchHandler:
         depth: str = None,
         max_urls_per_round: int = None,
         citation_verification: Optional[bool] = None,
+        critique: Optional[bool] = None,
+        critique_judge: Optional[Callable] = None,
+        critique_judge_model: Optional[str] = None,
+        critique_judge_endpoint: Optional[str] = None,
     ) -> str:
         """
         Run iterative deep research using the LLM-in-the-loop DeepResearcher.
@@ -1033,6 +1037,10 @@ class ResearchHandler:
                 run_record=run_record_enabled(),
                 depth=effective_depth,
                 citation_verification=_citation_verification,
+                critique=critique,
+                critique_judge=critique_judge,
+                critique_judge_model=critique_judge_model,
+                critique_judge_endpoint=critique_judge_endpoint,
             )
             if _task_entry is not None:
                 _task_entry["researcher"] = researcher
@@ -1057,6 +1065,9 @@ class ResearchHandler:
             if _task_entry is not None:
                 _task_entry["raw_report"] = strip_thinking(report)
                 _task_entry["stats"] = stats
+                if getattr(researcher, "critique_result", None) is not None:
+                    from src.research_critique import critique_to_dict
+                    _task_entry["critique"] = critique_to_dict(researcher.critique_result)
 
             return self._format_research_report(query, report, stats, elapsed)
 
