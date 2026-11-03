@@ -32,7 +32,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.constants import DEEP_RESEARCH_BLOB_DIR, DEEP_RESEARCH_BLOB_MAX_BYTES
 from src.prompt_security import _escape_guard_markers

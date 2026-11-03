@@ -8,7 +8,6 @@ from src.research_critique import (
     SKIPPED_NO_CLAIMS,
     SKIPPED_SAME_FAMILY,
     GATE_NEEDS_HUMAN,
-    GATE_NONE,
 )
 from src.research_handler import ResearchHandler
 
@@ -265,6 +264,7 @@ async def test_research_handler_wires_critique(monkeypatch):
         _task_entry=task_entry,
     )
 
+    assert report is not None
     assert "critique" in task_entry
     assert task_entry["critique"]["status"] == DONE
     assert task_entry["critique"]["judge_family"] == "anthropic"
