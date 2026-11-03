@@ -63,9 +63,24 @@ capability freshness, credential binding, and entitlement including the
 expiry of the capacity facts behind it, against the override instant
 rather than trusting the recorded `eligible` flag, so a hash-sealed receipt that
 claims eligibility for a target failing a hard rule is still refused. The
-resolved `DomainPolicy` is recorded in the explanation as data and re-run
-through the canonical `evaluate_route`, so a provider the domain denies stays
-denied even when the request itself does not set local-only. Every
+resolved `DomainPolicy` is recorded in the explanation as data, but the gate
+re-evaluates the **authoritative** revision for that domain rather than the
+recorded one, so a forger who rewrites the policy and reseals is refused, and a
+provider the domain denies stays denied even when the request itself does not
+set local-only. A record whose policy disagrees with the authoritative revision
+is refused: that is either tampering or a policy that moved since the decision,
+and both must be re-decided.
+
+A sealed record is internally consistent even when its *request* was rewritten,
+so the record alone cannot be the last word. `apply_operator_override` accepts a
+`CanonicalEvidence` (the real request, profiles, capability and capacity
+receipts). When supplied, eligibility is re-derived by a fresh evaluation of
+those inputs and the target must qualify there, so a swapped domain or evidence
+identity is refused. The issued `OverrideAuditReceipt` records
+`canonical_evidence_verified` so the assurance class is visible, and a caller
+that needs the real guarantee must require it to be `True`; record-only
+steering is internally consistent, not proven, and must not be wired to a
+route. Every
 ineligibility raises `PolicyViolationException` with its typed refusal codes and
 mints nothing; expired capability evidence is never restamped into freshness
 and a policy DENY is never converted. An accepted steering mints an immutable

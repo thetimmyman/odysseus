@@ -37,12 +37,14 @@ from src.provider_capacity import (
 )
 from src.routing_explanation import (
     ANNOTATABLE_REFUSALS, NON_OVERRIDABLE_REFUSALS, OVERRIDE_AUTHORIZES,
+    CanonicalEvidence,
     OVERRIDE_SCOPE, REQUIRED_CHANGE, RULE_ELIGIBLE, CandidateExplanation,
     ExplanationError, PolicyViolationException, RoutingExplanation,
     RoutingInspectorEvaluator, apply_operator_override,
     explanation_hash_is_valid, override_receipt_hash_is_valid,
-    routing_explanation_from_dict,
+    routing_explanation_from_dict, _recorded_domain_policy,
 )
+from src.routing_domain_policy import domain_policy
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
 POLICY = dr.policy_snapshot(policy={"routingPolicyVersion": "1.2",
@@ -816,3 +818,112 @@ def test_a_hosted_row_without_entitlement_freshness_evidence_is_refused():
         apply_operator_override(forged, "hosted-a", operator_id="operator-1",
                                 justification="capacity looks fine", now=NOW)
     assert dr.REFUSED_CAPACITY_STALE in err.value.refusal_reasons
+
+
+# --------------------------------------------------------------------------
+# The record is evidence, never control: the authoritative policy governs.
+# --------------------------------------------------------------------------
+
+def test_a_rewritten_domain_policy_is_refused():
+    """A permissive policy written into the record must not be believed."""
+    hosted = hosted_profile("hosted-a", "prof-ha")
+    explanation = evaluator().evaluate(
+        request(domain="personal"),
+        [profile(), hosted],
+        [receipt(), hosted_receipt("hosted-a", "prof-ha")])
+    assert explanation.domain_policy["local_only"] is True
+
+    permissive = dict(explanation.domain_policy)
+    permissive.update({"local_only": False, "denied_providers": [],
+                       "allowed_providers": None})
+    lie = CandidateExplanation(
+        target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
+        locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-hosted-a", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, credential_bound=True, capacity_eligible=True,
+        capacity_rule=RULE_ELIGIBLE, endpoint_url=HOSTED_ENDPOINT,
+        capacity_expires_at=(NOW + datetime.timedelta(hours=1)).isoformat())
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy), domain_policy=permissive,
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+    assert explanation_hash_is_valid(forged.to_dict())
+
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
+                                justification="the recorded policy allows it",
+                                now=NOW)
+    assert err.value.refusal_reasons == (dr.REFUSED_POLICY_DENIED,)
+
+
+def test_canonical_evidence_is_what_makes_the_gate_real():
+    """Forging the request is the residual a record alone cannot detect.
+
+    Authoritative policy cannot help when the recorded *domain* was swapped, so
+    the gate must be handed the real inputs. The receipt then says which
+    assurance class it carries, and a route can require the verified one.
+    """
+    hosted = hosted_profile("hosted-a", "prof-ha")
+    profiles = [profile(), hosted]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    real_request = request(domain="personal")
+    explanation = evaluator().evaluate(real_request, profiles, receipts)
+
+    lie = CandidateExplanation(
+        target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
+        locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-hosted-a", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, credential_bound=True, capacity_eligible=True,
+        capacity_rule=RULE_ELIGIBLE, endpoint_url=HOSTED_ENDPOINT,
+        capacity_expires_at=(NOW + datetime.timedelta(hours=1)).isoformat())
+    swapped_request = dict(explanation.request)
+    swapped_request["domain"] = "general_swe"
+    # Exactly what the evaluator would have recorded for the swapped domain, so
+    # the policy-consistency check passes and only the evidence can catch it.
+    swapped_policy = _recorded_domain_policy(domain_policy("general_swe"))
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=swapped_request,
+        policy=dict(explanation.policy), domain_policy=swapped_policy,
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+
+    # With the real inputs, the forgery is refused before any selection.
+    with pytest.raises(ExplanationError, match="different request"):
+        apply_operator_override(
+            forged, "hosted-a", operator_id="operator-1",
+            justification="swapped domain", now=NOW,
+            evidence=CanonicalEvidence(request=real_request, profiles=profiles,
+                                       receipts=receipts))
+
+    # And a legitimate steering over the real inputs records the verified class.
+    local_alt = profile(target_id="local-b", profile_id="prof-b", cost_rank=1)
+    honest = evaluator().evaluate(
+        request(), [profile(), local_alt],
+        [receipt(), receipt(receipt_id="cap-b", profile_id="prof-b",
+                            target_id="local-b")])
+    unchecked = apply_operator_override(
+        honest, "local-b", operator_id="operator-1", justification="record only",
+        now=NOW)
+    assert unchecked.canonical_evidence_verified is False
+
+    verified = apply_operator_override(
+        honest, "local-b", operator_id="operator-1", justification="real inputs",
+        now=NOW,
+        evidence=CanonicalEvidence(request=request(),
+                                   profiles=[profile(), local_alt],
+                                   receipts=[receipt(),
+                                             receipt(receipt_id="cap-b",
+                                                     profile_id="prof-b",
+                                                     target_id="local-b")]))
+    assert verified.canonical_evidence_verified is True
+    assert verified.verify() is True
+    assert override_receipt_hash_is_valid(verified.to_dict())

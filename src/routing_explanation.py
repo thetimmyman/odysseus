@@ -854,8 +854,19 @@ def _domain_policy_violations(explanation: RoutingExplanation,
     if recorded.get("resolution") != "resolved":
         return (dr.REFUSED_POLICY_DENIED,)
     try:
-        from src.routing_domain_policy import DomainPolicy, evaluate_route
+        from src.routing_domain_policy import (
+            DomainPolicy, domain_policy as resolve, evaluate_route,
+        )
 
+        domain = str(explanation.request.get("domain")
+                     or recorded.get("domain") or "")
+        # The AUTHORITATIVE revision governs a live override. The recorded one is
+        # evidence, not control: a forger who rewrites it and reseals must not be
+        # believed, and a policy that moved since the decision re-decides.
+        authoritative = resolve(domain)
+        if recorded != _recorded_domain_policy(authoritative):
+            return (dr.REFUSED_POLICY_DENIED,)
+        recorded = _recorded_domain_policy(authoritative)
         allowed = recorded.get("allowed_providers")
         policy = DomainPolicy(
             domain=str(recorded.get("domain") or ""),
@@ -936,10 +947,68 @@ def _gate_violations(explanation: RoutingExplanation,
     return tuple(sorted(set(codes)))
 
 
+@dataclass(frozen=True)
+class CanonicalEvidence:
+    """The canonical inputs an explanation claims to describe.
+
+    Supplying these turns the gate's record-internal consistency checks into a
+    real check: the target must be eligible in a FRESH evaluation of the actual
+    inputs, so a rewritten request or evidence identity cannot be believed.
+    """
+
+    request: Any
+    profiles: Sequence[Any] = ()
+    receipts: Sequence[Any] = ()
+    capacity_receipts: Sequence[Any] = ()
+    domain_policy: Any = None
+
+
+def _verify_against_canonical_evidence(explanation: RoutingExplanation,
+                                       candidate: CandidateExplanation,
+                                       evidence: Optional[CanonicalEvidence],
+                                       moment: datetime) -> None:
+    """Re-evaluate the canonical inputs and require this target to qualify.
+
+    Without evidence the gate can only prove the record is internally consistent;
+    with it, eligibility is re-derived from the real inputs, so a forged record
+    is refused no matter how well it is sealed.
+    """
+    if evidence is None:
+        return
+    if not isinstance(evidence, CanonicalEvidence):
+        raise ExplanationError("evidence must be a CanonicalEvidence")
+    try:
+        claimed = dict(evidence.request.core())
+    except Exception as exc:
+        raise ExplanationError("evidence request is malformed") from exc
+    if _canonical(claimed) != _canonical(dict(explanation.request)):
+        raise ExplanationError(
+            "the supplied evidence describes a different request than this "
+            "explanation, so it cannot certify it")
+    fresh = RoutingInspectorEvaluator(
+        capacity_receipts=evidence.capacity_receipts,
+        policy=None, domain_policy=evidence.domain_policy).evaluate(
+            evidence.request, list(evidence.profiles), list(evidence.receipts),
+            now=moment)
+    authoritative = fresh.candidate(candidate.target_id)
+    if authoritative is None or not authoritative.eligible:
+        reasons = (authoritative.refusal_reasons if authoritative is not None
+                   else (dr.REFUSED_NO_ELIGIBLE_TARGET,))
+        raise PolicyViolationException(
+            candidate.target_id, reasons,
+            detail="a fresh evaluation of the canonical inputs refuses this target")
+    if authoritative.profile_id != candidate.profile_id:
+        raise PolicyViolationException(
+            candidate.target_id, (dr.REFUSED_NO_ELIGIBLE_TARGET,),
+            detail="the canonical inputs resolve this target to another profile")
+
+
 def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
                             operator_id: str, justification: str,
                             now: Optional[datetime] = None,
-                            idempotency_key: str = "") -> "OverrideAuditReceipt":
+                            idempotency_key: str = "",
+                            evidence: Optional["CanonicalEvidence"] = None
+                            ) -> "OverrideAuditReceipt":
     """Steer execution to an already-eligible candidate, or refuse and mint nothing.
 
     ``decision_receipt`` is a sealed :class:`RoutingExplanation` (or its stored
@@ -983,6 +1052,8 @@ def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
             detail=("the target is not eligible at the override instant"
                     if violations else "the target was not eligible when selected"))
 
+    _verify_against_canonical_evidence(explanation, candidate, evidence, moment)
+
     if explanation.selected is None:
         raise ExplanationError(
             "this explanation records a refusal, so there is no selection to steer")
@@ -1017,6 +1088,7 @@ def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
         considered_eligible=tuple(f"{c.target_id}/{c.profile_id}" for c in eligible),
         hard_refusals_checked=tuple(sorted(NON_OVERRIDABLE_REFUSALS)),
         original_still_eligible=original_still_eligible,
+        canonical_evidence_verified=evidence is not None,
         evidence_refs=tuple(dict.fromkeys(
             (*((candidate.receipt_hash,) if candidate.receipt_hash else ()),
              *candidate.capacity_receipt_refs))),
@@ -1049,6 +1121,10 @@ class OverrideAuditReceipt:
     considered_eligible: Tuple[str, ...]
     hard_refusals_checked: Tuple[str, ...]
     original_still_eligible: bool
+    #: True only when eligibility was re-derived from canonical inputs rather
+    #: than from the sealed record alone. A route must require True: a record is
+    #: internally consistent even when its request or evidence identity is forged.
+    canonical_evidence_verified: bool = False
     evidence_refs: Tuple[str, ...] = ()
     idempotency_key: str = ""
     override_id: str = ""
@@ -1068,8 +1144,10 @@ class OverrideAuditReceipt:
             raise ExplanationError(
                 f"override receipt requested_at must be an aware ISO timestamp, "
                 f"got {self.requested_at!r}")
-        if type(self.original_still_eligible) is not bool:
-            raise ExplanationError("override receipt original_still_eligible must be a bool")
+        for name in ("original_still_eligible", "canonical_evidence_verified"):
+            if type(getattr(self, name)) is not bool:
+                raise ExplanationError(
+                    f"override receipt {name} must be a bool")
         if self.schema_version != OVERRIDE_SCHEMA_VERSION:
             raise ExplanationError(
                 f"unsupported override schema_version {self.schema_version!r}")
@@ -1109,6 +1187,7 @@ class OverrideAuditReceipt:
             "considered_eligible": list(self.considered_eligible),
             "hard_refusals_checked": list(self.hard_refusals_checked),
             "original_still_eligible": self.original_still_eligible,
+            "canonical_evidence_verified": self.canonical_evidence_verified,
             "evidence_refs": list(self.evidence_refs),
             "idempotency_key": self.idempotency_key,
             "authorizes": list(self.authorizes),
