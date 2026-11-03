@@ -36,11 +36,12 @@ from src.provider_capacity import (
     AuthorizationClass, CapacityState, Entitlement, make_capacity_receipt,
 )
 from src.routing_explanation import (
-    NON_OVERRIDABLE_REFUSALS, OVERRIDE_AUTHORIZES, OVERRIDE_SCOPE,
-    REQUIRED_CHANGE, RULE_ELIGIBLE, CandidateExplanation, ExplanationError,
-    PolicyViolationException, RoutingExplanation, RoutingInspectorEvaluator,
-    apply_operator_override, explanation_hash_is_valid,
-    override_receipt_hash_is_valid, routing_explanation_from_dict,
+    ANNOTATABLE_REFUSALS, NON_OVERRIDABLE_REFUSALS, OVERRIDE_AUTHORIZES,
+    OVERRIDE_SCOPE, REQUIRED_CHANGE, RULE_ELIGIBLE, CandidateExplanation,
+    ExplanationError, PolicyViolationException, RoutingExplanation,
+    RoutingInspectorEvaluator, apply_operator_override,
+    explanation_hash_is_valid, override_receipt_hash_is_valid,
+    routing_explanation_from_dict,
 )
 
 NOW = datetime.datetime(2026, 9, 15, 12, 0, tzinfo=datetime.timezone.utc)
@@ -465,6 +466,17 @@ def test_a_hosted_target_without_a_credential_binding_is_refused():
     assert dr.REFUSED_CAPACITY_MISSING in err.value.refusal_reasons
 
 
+def test_every_known_refusal_is_classified_exactly_once():
+    """The taxonomy is a complete, disjoint partition of the selector's codes.
+
+    A refusal code added upstream fails this test until it is classified, so a
+    new hard rule can never be left looking overridable by omission.
+    """
+    assert NON_OVERRIDABLE_REFUSALS | ANNOTATABLE_REFUSALS == set(dr.KNOWN_REFUSALS)
+    assert not (NON_OVERRIDABLE_REFUSALS & ANNOTATABLE_REFUSALS)
+    assert NON_OVERRIDABLE_REFUSALS <= set(REQUIRED_CHANGE)
+
+
 def test_every_non_overridable_code_is_actually_non_overridable():
     """The taxonomy is a closed set, and it covers every refusal that matters."""
     for code in (dr.REFUSED_PRIVACY_LOCAL_ONLY, dr.REFUSED_POLICY_DENIED,
@@ -474,7 +486,6 @@ def test_every_non_overridable_code_is_actually_non_overridable():
         assert code in NON_OVERRIDABLE_REFUSALS
         assert code in REQUIRED_CHANGE
     assert NON_OVERRIDABLE_REFUSALS <= set(dr.KNOWN_REFUSALS)
-
 
 # --------------------------------------------------------------------------
 # Malformed and no-op overrides mint nothing.
