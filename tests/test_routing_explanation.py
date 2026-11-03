@@ -670,3 +670,36 @@ def test_the_scope_of_an_override_receipt_is_fixed():
         dataclasses.replace(override, authorizes=("dispatch",))
     with pytest.raises(ExplanationError, match="scope must be"):
         dataclasses.replace(override, scope="full_authority")
+
+
+def test_a_soft_refusal_is_still_not_overridable():
+    """Blocking is unconditional: the hard/soft split is descriptive only.
+
+    ``role_not_supported`` sits on the curable side of the taxonomy, so a
+    candidate can carry it with no hard refusal at all. It must still refuse an
+    override, because the gate re-derives from the deciding ``rule`` rather than
+    from the ``hard_refusals`` label. That keeps the DENY guarantee independent
+    of the classification: a mis-classified or newly added code can never become
+    an override path.
+    """
+    wrong_role = profile(target_id="local-verifier", profile_id="prof-verifier",
+                         roles=frozenset({dr.ROLE_VERIFIER}))
+    explanation = evaluator().evaluate(
+        request(),
+        [profile(), wrong_role],
+        [receipt(), receipt(receipt_id="cap-v", profile_id="prof-verifier",
+                            target_id="local-verifier")])
+    refused = {c.target_id: c for c in explanation.considered}["local-verifier"]
+    assert refused.eligible is False
+    assert refused.refusal_reasons == (dr.REFUSED_ROLE,)
+    assert dr.REFUSED_ROLE in ANNOTATABLE_REFUSALS
+    assert dr.REFUSED_ROLE not in NON_OVERRIDABLE_REFUSALS
+    # No hard label on the row at all...
+    assert refused.hard_refusals == ()
+
+    # ...and it is still refused, with the rule that blocked it.
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(explanation, "local-verifier",
+                                operator_id="operator-1",
+                                justification="I need this node instead", now=NOW)
+    assert err.value.refusal_reasons == (dr.REFUSED_ROLE,)
