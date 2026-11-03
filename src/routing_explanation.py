@@ -247,6 +247,7 @@ class CandidateExplanation:
     receipt_hash: str = ""
     receipt_observed_at: str = ""
     receipt_ttl_s: int = 0
+    endpoint_url: str = ""
     receipt_healthy: bool = False
     credential_bound: bool = False
     capacity_eligible: bool = False
@@ -328,6 +329,7 @@ class CandidateExplanation:
             "capability_receipt_hash": self.receipt_hash,
             "capability_receipt_observed_at": self.receipt_observed_at,
             "capability_receipt_ttl_s": self.receipt_ttl_s,
+            "endpoint_url": self.endpoint_url,
             "capability_receipt_healthy": self.receipt_healthy,
             "credential_bound": self.credential_bound,
             "capacity_eligible": self.capacity_eligible,
@@ -354,6 +356,7 @@ class CandidateExplanation:
                 receipt_hash=payload.get("capability_receipt_hash", ""),
                 receipt_observed_at=payload.get("capability_receipt_observed_at", ""),
                 receipt_ttl_s=payload.get("capability_receipt_ttl_s", 0),
+                endpoint_url=payload.get("endpoint_url", ""),
                 receipt_healthy=payload.get("capability_receipt_healthy", False),
                 credential_bound=payload.get("credential_bound", False),
                 capacity_eligible=payload.get("capacity_eligible", False),
@@ -392,6 +395,9 @@ class RoutingExplanation:
     observed_at: str = ""
     dispatch_receipt_hash: str = ""
     decision_hash: str = ""
+    #: The resolved DomainPolicy this evaluation used, as data, so the override
+    #: gate can re-evaluate provider allow/deny instead of trusting a row flag.
+    domain_policy: Mapping[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
     explanation_hash: str = field(default="")
 
@@ -407,6 +413,8 @@ class RoutingExplanation:
                 f"{self.observed_at!r}")
         if not isinstance(self.request, Mapping) or not isinstance(self.policy, Mapping):
             raise ExplanationError("explanation request and policy must be mappings")
+        if not isinstance(self.domain_policy, Mapping):
+            raise ExplanationError("explanation domain_policy must be a mapping")
         if not str(self.request.get("domain") or "").strip():
             raise ExplanationError("explanation request must record its domain")
         for code in self.rationale:
@@ -457,6 +465,7 @@ class RoutingExplanation:
             "observed_at": self.observed_at,
             "dispatch_receipt_hash": self.dispatch_receipt_hash,
             "decision_hash": self.decision_hash,
+            "domain_policy": dict(self.domain_policy),
             "scope": self.scope,
         }
 
@@ -537,6 +546,7 @@ def routing_explanation_from_dict(payload: Mapping[str, Any]) -> RoutingExplanat
             observed_at=str(payload.get("observed_at") or ""),
             dispatch_receipt_hash=str(payload.get("dispatch_receipt_hash") or ""),
             decision_hash=str(payload.get("decision_hash") or ""),
+            domain_policy=dict(payload.get("domain_policy") or {}),
             schema_version=payload.get("schema_version", SCHEMA_VERSION),
             explanation_hash=recorded,
         )
@@ -584,6 +594,7 @@ def _candidate_explanation(assessment: Any, profile: Any, receipt: Any, *,
         receipt_id=assessment.receipt_id, receipt_hash=assessment.receipt_hash,
         receipt_observed_at=assessment.receipt_observed_at,
         receipt_ttl_s=ttl_s,
+        endpoint_url=str(getattr(profile, "endpoint_url", "") or ""),
         receipt_healthy=bool(getattr(receipt, "healthy", False)),
         credential_bound=bool(profile.credential_sha256),
         capacity_eligible=bool(capacity_ok), capacity_rule=capacity_rule,
@@ -650,8 +661,21 @@ class RoutingInspectorEvaluator:
         receipts = list(receipts or ())
         moment = _require_aware(now if now is not None else self._now, "now")
         decision_id = str(decision_id or "").strip() or _decision_id_for(request)
+        # Resolve the domain policy once, record it, and hand the SAME object to
+        # the selector, so the explanation and the decision cannot disagree and
+        # the override gate can re-evaluate provider allow/deny offline.
+        if self._domain_policy is not None:
+            resolved_domain_policy = self._domain_policy
+        else:
+            try:
+                from src.routing_domain_policy import domain_policy
+
+                resolved_domain_policy = domain_policy(request.domain)
+            except Exception:
+                resolved_domain_policy = None
+        recorded_domain_policy = _recorded_domain_policy(resolved_domain_policy)
         options = {
-            "policy": self._policy, "domain_policy": self._domain_policy,
+            "policy": self._policy, "domain_policy": resolved_domain_policy,
             "resources": self._resources,
             "capacity_receipts": self._capacity_receipts,
             "now": moment, "decision_id": decision_id,
@@ -662,9 +686,11 @@ class RoutingInspectorEvaluator:
         except dr.RoutingRefused as refused:
             return self._refused_explanation(
                 request, refused, profiles=profiles, receipts=receipts,
-                now=moment, decision_id=decision_id)
+                now=moment, decision_id=decision_id,
+                domain_policy=recorded_domain_policy)
         return self._selected_explanation(
-            request, decision, profiles=profiles, receipts=receipts, now=moment)
+            request, decision, profiles=profiles, receipts=receipts, now=moment,
+            domain_policy=recorded_domain_policy)
 
     def _project(self, assessments: Sequence[Any], profiles: Sequence[Any],
                  receipts: Sequence[Any], now: datetime) -> Tuple[CandidateExplanation, ...]:
@@ -690,14 +716,15 @@ class RoutingInspectorEvaluator:
                      rationale: Tuple[str, ...] = (), refusal_code: str = "",
                      refusal_reason: str = "", observed_at: str = "",
                      dispatch_receipt_hash: str = "", decision_hash: str = "",
-                     policy: Any = None) -> RoutingExplanation:
+                     policy: Any = None,
+                     domain_policy: Optional[Mapping[str, Any]] = None) -> RoutingExplanation:
         provisional = RoutingExplanation(
             decision_id=decision_id, request=dict(request.core()),
             policy=dict((policy or dr.policy_snapshot()).to_dict()),
             considered=considered, selected=selected, rationale=rationale,
             refusal_code=refusal_code, refusal_reason=refusal_reason,
             observed_at=observed_at, dispatch_receipt_hash=dispatch_receipt_hash,
-            decision_hash=decision_hash)
+            decision_hash=decision_hash, domain_policy=dict(domain_policy or {}))
         digest = _sha256_hex(_canonical(provisional.core()))
         return RoutingExplanation(
             decision_id=provisional.decision_id, request=provisional.request,
@@ -707,22 +734,28 @@ class RoutingInspectorEvaluator:
             refusal_reason=provisional.refusal_reason,
             observed_at=provisional.observed_at,
             dispatch_receipt_hash=provisional.dispatch_receipt_hash,
-            decision_hash=provisional.decision_hash, explanation_hash=digest)
+            decision_hash=provisional.decision_hash,
+            domain_policy=provisional.domain_policy, explanation_hash=digest)
 
     def _selected_explanation(self, request: Any, decision: Any, *,
                               profiles: Sequence[Any], receipts: Sequence[Any],
-                              now: datetime) -> RoutingExplanation:
+                              now: datetime,
+                              domain_policy: Optional[Mapping[str, Any]] = None
+                              ) -> RoutingExplanation:
         considered = self._project(decision.candidates, profiles, receipts, now)
         return self._explanation(
             request, decision_id=decision.decision_id, considered=considered,
             selected=dict(decision.pin()), rationale=(decision.reason_code,),
             observed_at=decision.observed_at,
             dispatch_receipt_hash=decision.receipt_hash,
-            decision_hash=decision.decision_hash, policy=decision.policy)
+            decision_hash=decision.decision_hash, policy=decision.policy,
+            domain_policy=domain_policy)
 
     def _refused_explanation(self, request: Any, refused: Any, *,
                              profiles: Sequence[Any], receipts: Sequence[Any],
-                             now: datetime, decision_id: str) -> RoutingExplanation:
+                             now: datetime, decision_id: str,
+                             domain_policy: Optional[Mapping[str, Any]] = None
+                             ) -> RoutingExplanation:
         considered = self._project(refused.assessments, profiles, receipts, now)
         # A refusal that still reports an eligible candidate is not a refusal.
         if any(candidate.eligible for candidate in considered):
@@ -732,7 +765,8 @@ class RoutingInspectorEvaluator:
             request, decision_id=decision_id, considered=considered,
             rationale=(refused.code,), refusal_code=refused.code,
             refusal_reason=refused.reason, observed_at=now.isoformat(),
-            policy=self._policy or dr.policy_snapshot())
+            policy=self._policy or dr.policy_snapshot(),
+            domain_policy=domain_policy)
 
 
 def _as_explanation(value: Any) -> RoutingExplanation:
@@ -757,6 +791,72 @@ def _evidence_age_s(candidate: CandidateExplanation, now: datetime) -> Optional[
         return None
 
 
+def _recorded_domain_policy(policy: Any) -> dict:
+    """The resolved ``DomainPolicy`` as data, so the gate can re-evaluate it.
+
+    Unresolvable policy is recorded as local-only, matching the fail-closed
+    default ``dispatch_routing`` already applies.
+    """
+    if policy is None:
+        return {"resolution": "unavailable", "domain": "", "local_only": True,
+                "allowed_providers": None, "denied_providers": [],
+                "fallback_permitted": False, "model_substitution_permitted": False,
+                "approval_required": True, "budget_class": "sensitive"}
+    allowed = getattr(policy, "allowed_providers", None)
+    return {
+        "resolution": "resolved",
+        "domain": str(getattr(policy, "domain", "") or ""),
+        "local_only": bool(getattr(policy, "local_only", False)),
+        "allowed_providers": (None if allowed is None
+                              else sorted(str(p) for p in allowed)),
+        "denied_providers": sorted(str(p) for p in
+                                   getattr(policy, "denied_providers", ())),
+        "fallback_permitted": bool(getattr(policy, "fallback_permitted", False)),
+        "model_substitution_permitted": bool(
+            getattr(policy, "model_substitution_permitted", False)),
+        "approval_required": bool(getattr(policy, "approval_required", False)),
+        "budget_class": str(getattr(policy, "budget_class", "standard") or "standard"),
+    }
+
+
+def _domain_policy_violations(explanation: RoutingExplanation,
+                              candidate: CandidateExplanation) -> Tuple[str, ...]:
+    """Re-run the canonical domain evaluator over the recorded policy revision."""
+    recorded = dict(explanation.domain_policy or {})
+    if recorded.get("resolution") != "resolved":
+        return (dr.REFUSED_POLICY_DENIED,)
+    try:
+        from src.routing_domain_policy import DomainPolicy, evaluate_route
+
+        allowed = recorded.get("allowed_providers")
+        policy = DomainPolicy(
+            domain=str(recorded.get("domain") or ""),
+            local_only=bool(recorded.get("local_only")),
+            allowed_providers=(frozenset(str(p).lower() for p in allowed)
+                               if allowed is not None else None),
+            denied_providers=frozenset(
+                str(p).lower() for p in recorded.get("denied_providers") or ()),
+            fallback_permitted=bool(recorded.get("fallback_permitted")),
+            model_substitution_permitted=bool(
+                recorded.get("model_substitution_permitted")),
+            approval_required=bool(recorded.get("approval_required")),
+            budget_class=str(recorded.get("budget_class") or "standard"))
+        decision = evaluate_route(
+            domain=policy.domain or str(explanation.request.get("domain") or ""),
+            provider=candidate.provider,
+            sensitivity=str(explanation.request.get("sensitivity") or "internal"),
+            policy=policy,
+            endpoint_url=candidate.endpoint_url or None)
+    except Exception:
+        # A policy that cannot be re-evaluated DENIES, as it does in the selector.
+        return (dr.REFUSED_POLICY_DENIED,)
+    if decision.allowed:
+        return ()
+    if decision.rule == "sensitive-domain-local-only":
+        return (dr.REFUSED_PRIVACY_LOCAL_ONLY,)
+    return (dr.REFUSED_POLICY_DENIED,)
+
+
 def _gate_violations(explanation: RoutingExplanation,
                      candidate: CandidateExplanation, now: datetime) -> Tuple[str, ...]:
     """Re-derive every hard rule for this candidate at ``now``.
@@ -768,7 +868,12 @@ def _gate_violations(explanation: RoutingExplanation,
     if candidate.rule != RULE_ELIGIBLE:
         codes.append(candidate.rule)
 
-    # 1. privacy: local-only intent never executes on a hosted target.
+    # 1. domain policy: re-evaluate the RECORDED revision with the canonical
+    #    evaluator. Without this, a forged-but-sealed row could mark a
+    #    policy-denied provider eligible and the flag would be believed.
+    codes.extend(_domain_policy_violations(explanation, candidate))
+
+    # 1b. privacy: local-only intent never executes on a hosted target.
     if explanation.local_only and candidate.locality != dr.LOCALITY_LOCAL:
         codes.append(dr.REFUSED_PRIVACY_LOCAL_ONLY)
 

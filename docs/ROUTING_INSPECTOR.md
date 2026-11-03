@@ -57,10 +57,14 @@ the same evidence and instant, two evaluations hash identically. Passing
 `dispatch_receipt_hash` is comparable with the retained receipt.
 
 `apply_operator_override(explanation, target)` steers only between candidates
-that are already eligible. It re-derives privacy, evidence presence, health,
+that are already eligible. It re-derives the domain policy (provider allow and
+deny lists, sensitivity ceiling, local-only), evidence presence, health,
 freshness, credential binding and entitlement against the override instant
 rather than trusting the recorded `eligible` flag, so a hash-sealed receipt that
-claims eligibility for a target failing a hard rule is still refused. Every
+claims eligibility for a target failing a hard rule is still refused. The
+resolved `DomainPolicy` is recorded in the explanation as data and re-run
+through the canonical `evaluate_route`, so a provider the domain denies stays
+denied even when the request itself does not set local-only. Every
 ineligibility raises `PolicyViolationException` with its typed refusal codes and
 mints nothing; expired capability evidence is never restamped into freshness
 and a policy DENY is never converted. An accepted steering mints an immutable
@@ -79,4 +83,7 @@ receipt here must not be reported as measured attention cost or a completed
 override, and there is no route, store, migration or default activation for it.
 Tests cover the positive control, determinism, refusal codes for filtered
 alternates, and the negative controls above at both the evaluator and the
-override boundary, including a resealed tampered explanation.
+override boundary, including resealed tampered explanations. Because the
+hard/soft refusal taxonomy is descriptive, a further control proves a
+curably-classified refusal still blocks an override, so the DENY guarantee rests
+on the deciding rule the gate re-derives rather than on the classification.

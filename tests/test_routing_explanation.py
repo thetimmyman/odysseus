@@ -703,3 +703,62 @@ def test_a_soft_refusal_is_still_not_overridable():
                                 operator_id="operator-1",
                                 justification="I need this node instead", now=NOW)
     assert err.value.refusal_reasons == (dr.REFUSED_ROLE,)
+
+
+def test_the_explanation_records_the_resolved_domain_policy():
+    """The policy revision is evidence, not just a reference: the gate re-reads it."""
+    explanation = explain_two_locals()
+    recorded = explanation.domain_policy
+    assert recorded["resolution"] == "resolved"
+    assert recorded["domain"] == "general_swe"
+    assert recorded["local_only"] is False
+    assert recorded["denied_providers"] == []
+    # A refusal carries it too, so a denied route is explicable after the fact.
+    refused = evaluator().evaluate(
+        request(domain="personal"),
+        [hosted_profile("hosted-a", "prof-ha")],
+        [hosted_receipt("hosted-a", "prof-ha")])
+    assert refused.domain_policy["resolution"] == "resolved"
+    assert refused.domain_policy["local_only"] is True
+
+
+def test_a_policy_denied_provider_cannot_be_overridden_even_when_resealed():
+    """Regression: provider allow/deny is re-evaluated, never trusted as a flag.
+
+    A sensitive domain denies a hosted provider even though the request itself
+    does not set ``local_only``, so the request-level privacy check alone would
+    miss a forged row. The gate re-runs the canonical domain evaluator over the
+    recorded policy revision, so the DENY survives resealing.
+    """
+    hosted = hosted_profile("hosted-a", "prof-ha")
+    explanation = evaluator().evaluate(
+        request(domain="personal"),
+        [profile(), hosted],
+        [receipt(), hosted_receipt("hosted-a", "prof-ha")])
+    assert explanation.selected_target_id == "local-a"
+    # The request does not ask for local-only; only the domain policy does.
+    assert explanation.local_only is False
+    assert explanation.domain_policy["local_only"] is True
+
+    lie = CandidateExplanation(
+        target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
+        locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-hosted-a", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, credential_bound=True, capacity_eligible=True,
+        capacity_rule=RULE_ELIGIBLE, endpoint_url=HOSTED_ENDPOINT)
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy),
+        domain_policy=dict(explanation.domain_policy),
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+    assert explanation_hash_is_valid(forged.to_dict())
+
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
+                                justification="the receipt says eligible", now=NOW)
+    assert err.value.refusal_reasons == (dr.REFUSED_PRIVACY_LOCAL_ONLY,)
