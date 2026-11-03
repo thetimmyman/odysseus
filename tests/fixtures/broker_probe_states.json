@@ -1,0 +1,71 @@
+{
+  "_comment": "Synthetic broker-route fixtures for tests/test_broker_probe.py. Every host is .invalid (house convention) and every latency is synthetic; none is a captured observation from a real endpoint. Each entry is one way an attempt can end, and each has a negative control in the suite.",
+  "normal": {
+    "target_id": "synthetic-healthy",
+    "endpoint": "http://synthetic-broker.invalid:11434",
+    "outcome": "responded",
+    "latency_ms": 4.2,
+    "reason": "",
+    "observed_at": "2026-11-03T00:00:00+00:00",
+    "expect_status": "ok",
+    "expect_state": "healthy",
+    "expect_routable": true
+  },
+  "timed_out": {
+    "target_id": "synthetic-timed-out",
+    "endpoint": "http://synthetic-timeout.invalid:11434",
+    "outcome": "timeout",
+    "latency_ms": null,
+    "reason": "connect timed out",
+    "observed_at": "2026-11-03T00:00:00+00:00",
+    "expect_status": "offline",
+    "expect_state": "unreachable",
+    "expect_routable": false
+  },
+  "malformed_header": {
+    "target_id": "synthetic-malformed",
+    "endpoint": "http://synthetic-malformed.invalid:11434",
+    "outcome": "malformed",
+    "latency_ms": 7.8,
+    "reason": "first line is not an HTTP status",
+    "observed_at": "2026-11-03T00:00:00+00:00",
+    "expect_status": "degraded",
+    "expect_state": "degraded",
+    "expect_routable": false
+  },
+  "refused": {
+    "target_id": "synthetic-refused",
+    "endpoint": "http://synthetic-refused.invalid:11434",
+    "outcome": "refused",
+    "latency_ms": null,
+    "reason": "connect refused: ConnectionRefusedError",
+    "observed_at": "2026-11-03T00:00:00+00:00",
+    "expect_status": "offline",
+    "expect_state": "unreachable",
+    "expect_routable": false
+  },
+  "not_asked": {
+    "target_id": "synthetic-not-asked",
+    "endpoint": "http://synthetic-unasked.invalid:11434",
+    "outcome": "not_asked",
+    "latency_ms": null,
+    "reason": "no observation this cycle",
+    "observed_at": "2026-11-03T00:00:00+00:00",
+    "expect_status": "unknown",
+    "expect_state": "unknown",
+    "expect_routable": false
+  },
+  "answered_elsewhere": {
+    "_comment": "OD-47's actual failure shape: the socket answered, but on a host the spec does not register. Scheme, port, path, query and fragment all agree; only the hostname differs. It must stay a refusal, never become an alias.",
+    "target_id": "synthetic-hostname-drift",
+    "endpoint": "http://synthetic-answerer.invalid:11434",
+    "outcome": "responded",
+    "latency_ms": 3.9,
+    "reason": "",
+    "observed_at": "2026-11-03T00:00:00+00:00",
+    "registered_endpoint": "http://synthetic-registered.invalid:11434",
+    "expect_status": "ok",
+    "expect_state": "healthy",
+    "expect_routable": false
+  }
+}
