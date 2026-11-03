@@ -43,6 +43,7 @@ from src.routing_explanation import (
     RoutingInspectorEvaluator, apply_operator_override,
     explanation_hash_is_valid, override_receipt_hash_is_valid,
     routing_explanation_from_dict, _recorded_domain_policy,
+    verify_override_receipt,
 )
 from src.routing_domain_policy import domain_policy
 
@@ -1139,3 +1140,101 @@ def test_f6_audit_integrity_considered_eligible_recomputed_from_fresh_evaluation
     # Attempting to mint an unverified receipt fails closed
     with pytest.raises(ExplanationError, match="canonical_evidence_verified=True"):
         dataclasses.replace(override, canonical_evidence_verified=False)
+
+
+def test_a1_forged_evidence_profile_cannot_override_denied_target():
+    """A1 exploit regression: forging a local profile in CanonicalEvidence cannot override a policy-denied target."""
+    req = dr.RoutingRequest(domain="personal", role=dr.ROLE_IMPLEMENTER, run_id="run-1", packet_id="P-1")
+    local_p = profile()
+    hosted_p = hosted_profile("hosted-a", "prof-ha")
+    local_r = receipt()
+    hosted_r = hosted_receipt("hosted-a", "prof-ha")
+
+    # Genuine decision: personal domain refuses hosted target
+    explanation = evaluator().evaluate(req, [local_p, hosted_p], [local_r, hosted_r], now=NOW)
+    assert explanation.candidate("hosted-a").eligible is False
+    assert dr.REFUSED_POLICY_DENIED in explanation.candidate("hosted-a").refusal_reasons
+
+    # Attacker crafts forged profile claiming hosted-a is local/ollama
+    forged_hosted_prof = dr.make_target_profile(
+        target_id="hosted-a", profile_id="prof-ha", provider="ollama",
+        host="gpu-host", runtime_kind="ollama", model="qwen3.8:27b",
+        endpoint_url="http://127.0.0.1:11434/v1", locality=dr.LOCALITY_LOCAL,
+        roles=frozenset({dr.ROLE_IMPLEMENTER}), tools=frozenset({"write_file"}),
+        network_policy="private-loopback", budget_class="dev", cost_rank=0)
+
+    # Must fail closed with PolicyViolationException because hosted-a was ineligible in the explanation
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            explanation, "hosted-a", operator_id="attacker", justification="exploit A1",
+            now=NOW, evidence=CanonicalEvidence(request=req, profiles=[local_p, forged_hosted_prof], receipts=[local_r, hosted_r]))
+    assert dr.REFUSED_POLICY_DENIED in err.value.refusal_reasons
+
+
+def test_a2_backdated_override_instant_cannot_precede_explanation():
+    """A2 exploit regression: an override instant cannot be backdated before the explanation was observed."""
+    explanation = explain_two_locals()
+    profiles, receipts = two_locals()
+    req = request()
+    past = NOW - datetime.timedelta(seconds=60)
+
+    with pytest.raises(ExplanationError, match="override instant cannot precede"):
+        apply_operator_override(
+            explanation, "local-b", operator_id="operator-1", justification="backdate attempt",
+            now=past, evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
+
+
+def test_a4_fresh_evaluation_cannot_qualify_ineligible_target():
+    """A4 exploit regression: fresh evaluation cannot turn a recorded refusal into an authorized override."""
+    req = bare_request()
+    # local-b has no capability receipt -> ineligible in explanation
+    profiles = [profile(target_id="local-a", profile_id="prof-a"), profile(target_id="local-b", profile_id="prof-b", cost_rank=1)]
+    receipts = [receipt(receipt_id="cap-a", profile_id="prof-a", target_id="local-a")]
+    explanation = evaluator().evaluate(req, profiles, receipts, now=NOW)
+    assert explanation.candidate("local-b").eligible is False
+
+    # Even if attacker supplies a fresh receipt in CanonicalEvidence, the target was ineligible in explanation
+    fresh_receipt = receipt(receipt_id="cap-b", profile_id="prof-b", target_id="local-b")
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            explanation, "local-b", operator_id="operator-1", justification="try to qualify",
+            now=NOW, evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=[receipts[0], fresh_receipt]))
+    assert dr.REFUSED_RECEIPT_MISSING in err.value.refusal_reasons
+
+
+def test_a6_resources_unavailable_refuses_override():
+    """A6 exploit regression: unavailable resource in CanonicalEvidence refuses override with resource_unavailable."""
+    explanation = explain_two_locals()
+    profiles, receipts = two_locals()
+    req = request()
+    resources = {"local-b": {"available": False}}
+
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            explanation, "local-b", operator_id="operator-1", justification="check resource",
+            now=NOW, evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts, resources=resources))
+    assert dr.REFUSED_RESOURCE in err.value.refusal_reasons
+
+
+def test_a7_verifier_rederives_and_rejects_tampered_or_expired_receipt():
+    """A7 exploit regression: verify_override_receipt re-derives authorization and rejects tampered/expired receipts."""
+    explanation = explain_two_locals()
+    profiles, receipts = two_locals()
+    req = request()
+    evidence = CanonicalEvidence(request=req, profiles=profiles, receipts=receipts)
+
+    override = apply_operator_override(
+        explanation, "local-b", operator_id="operator-1", justification="legit",
+        now=NOW, evidence=evidence)
+
+    # Valid verification
+    assert verify_override_receipt(override, explanation, evidence, now=NOW) is True
+
+    # Expired verification (past valid_until)
+    expired_now = NOW + datetime.timedelta(minutes=10)
+    assert verify_override_receipt(override, explanation, evidence, now=expired_now) is False
+
+    # Tampered receipt targeting wrong explanation
+    fake_exp = dataclasses.replace(explanation, explanation_hash="0" * 64)
+    assert verify_override_receipt(override, fake_exp, evidence, now=NOW) is False
+
