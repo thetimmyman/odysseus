@@ -102,6 +102,12 @@ DEFAULT_SETTINGS = {
     # the finding. Off by default (no network, no finding change). See
     # src/research_citations.py and docs/research-citations.md.
     "research_citation_verification": False,
+    # Cross-family critique pass: evaluate extracted claims against evidence
+    # with an independent cross-family judge model. Off by default; enabled
+    # automatically in critical and evaluation depth modes.
+    "research_critique": False,
+    "research_critique_judge_model": "",
+    "research_critique_judge_endpoint": "",
     # Let deep research cite our own benchmark/receipt files as measured sources
     # (src/measured_evidence.py). Off by default; the root is the directory that
     # holds evidence/ and benchmark/<name>/results/.

@@ -13,7 +13,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from src.research_utils import strip_thinking, is_low_quality
 
@@ -323,6 +323,11 @@ class DeepResearcher:
         citation_verification: bool = False,
         citation_transport: Optional[Callable] = None,
         transport: Optional[ResearchTransport] = None,
+        critique: Optional[bool] = None,
+        critique_judge: Optional[Callable] = None,
+        critique_judge_model: Optional[str] = None,
+        critique_judge_endpoint: Optional[str] = None,
+        critique_judge_headers: Optional[Dict] = None,
     ):
         self.llm_endpoint = llm_endpoint
         self.llm_model = llm_model
@@ -334,6 +339,12 @@ class DeepResearcher:
                                              for method in ("generate", "search", "fetch")):
             raise TypeError("research transport requires generate, search and fetch methods")
         self.transport = transport
+        self.critique = critique
+        self.critique_judge = critique_judge
+        self.critique_judge_model = critique_judge_model
+        self.critique_judge_endpoint = critique_judge_endpoint
+        self.critique_judge_headers = critique_judge_headers
+        self.critique_result = None
 
         resolved_limits = resolve_depth(depth, overrides={
             "max_rounds": max_rounds,
@@ -409,7 +420,7 @@ class DeepResearcher:
                 claims are carried into this run's record.
         """
         self._start_time = time.time()
-        findings: List[Dict] = list(prior_findings) if prior_findings else []
+        findings: List[Dict] = list(prior_findings) if prior_findings is not None else list(self.findings)
         report = prior_report or ""
         if self.run_recorder is not None:
             # Claim ids restart at C1 in a fresh recorder, so a carried-over
@@ -518,11 +529,24 @@ class DeepResearcher:
                     "Synthesis produced no report; returning %d gathered "
                     "finding(s) as a fallback", len(findings)
                 )
-                return self._fallback_report(question, findings)
+                self.findings = findings
+                fallback = self._fallback_report(question, findings)
+                if self._critique_enabled():
+                    self._emit(phase="critiquing", total_findings=len(findings))
+                    critique_res = await self._run_critique_pass(question, fallback)
+                    if critique_res and critique_res.critical_claim_ids:
+                        fallback = self._append_critique_to_report(fallback, critique_res)
+                return fallback
             return "No information could be gathered for this question."
 
+        self.findings = findings
         self.evolving_report = report  # preserve pre-synthesis report
         final = await self._final_report(question, report)
+        if self._critique_enabled():
+            self._emit(phase="critiquing", total_findings=len(findings))
+            critique_res = await self._run_critique_pass(question, final)
+            if critique_res and critique_res.critical_claim_ids:
+                final = self._append_critique_to_report(final, critique_res)
         elapsed = time.time() - self._start_time
         logger.info(
             f"Research complete: {self.round_count} rounds, "
@@ -1233,6 +1257,148 @@ class DeepResearcher:
             f"{self._format_findings(findings)}"
         )
 
+    def _critique_enabled(self) -> bool:
+        """Whether adversarial critique should run for this research job."""
+        if self.critique is not None:
+            return bool(self.critique)
+        if self.depth in ("critical", "evaluation"):
+            return True
+        from src.settings import get_setting
+        return bool(get_setting("research_critique", False))
+
+    def _extract_claims_for_critique(self) -> List[Dict[str, Any]]:
+        """Extract grounding-view style claims from gathered findings."""
+        claims = []
+        from src.research_run_record import is_claim_id, normalize_quotes, evidence_quotes
+        for i, f in enumerate(self.findings, 1):
+            if not isinstance(f, dict):
+                continue
+            cid = f.get("claim_id")
+            if not is_claim_id(cid):
+                cid = f"C{i}"
+            raw_quotes = f.get("quotes")
+            if isinstance(raw_quotes, (list, str)):
+                quotes = normalize_quotes(raw_quotes)
+            elif f.get("evidence"):
+                quotes = evidence_quotes(f.get("evidence"))
+            else:
+                quotes = []
+            text = f.get("summary") or f.get("evidence") or ""
+            sid = f.get("source_id", "")
+            citations = [{"source_id": sid, "quote": q} for q in quotes]
+            claims.append({
+                "claim_id": cid,
+                "text": text,
+                "citations": citations,
+            })
+        return claims
+
+    async def _run_critique_pass(self, question: str, report: str) -> Optional[Any]:
+        """Run the cross-family critique pass over gathered claims."""
+        from src.research_critique import (
+            CritiqueResult, SKIPPED_NO_CLAIMS, family_of, run_critique_async,
+        )
+        claims = self._extract_claims_for_critique()
+        judge_model = (self.critique_judge_model or "").strip()
+        if not judge_model:
+            from src.settings import get_setting
+            judge_model = (get_setting("research_critique_judge_model", "") or "").strip()
+
+        if not claims:
+            logger.info("Critique pass skipped: no claims to critique")
+            self.critique_result = CritiqueResult(
+                status=SKIPPED_NO_CLAIMS,
+                critiques=(),
+                critical_claim_ids=(),
+                judge_family=family_of(judge_model),
+                author_family=family_of(self.llm_model),
+                notes=("no claims found to critique",),
+                skipped_claims=0,
+            )
+            if self.run_recorder is not None:
+                self.run_recorder.set_critique(self.critique_result)
+            return self.critique_result
+
+        judge = self.critique_judge
+        if judge is None and judge_model:
+            async def _default_judge(prompt: str) -> str:
+                messages = [{"role": "user", "content": prompt}]
+                if self.transport is not None:
+                    reply = await asyncio.wait_for(
+                        self.transport.generate(
+                            model=judge_model,
+                            messages=messages,
+                            temperature=0.0,
+                            max_tokens=4096,
+                            timeout=120,
+                        ),
+                        timeout=120,
+                    )
+                    return reply.text
+                from src.llm_core import llm_call_async
+                endpoint = self.critique_judge_endpoint or self.llm_endpoint
+                headers = self.critique_judge_headers or self.llm_headers
+                return await llm_call_async(
+                    url=endpoint,
+                    model=judge_model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=4096,
+                    headers=headers,
+                    timeout=120,
+                )
+            judge = _default_judge
+
+        try:
+            result = await run_critique_async(
+                claims=claims,
+                judge=judge,
+                judge_model=judge_model,
+                author_model=self.llm_model,
+                conclusion=report,
+            )
+        except Exception as e:
+            logger.warning(f"Critique pass failed with exception: {e}")
+            from src.research_critique import JUDGE_ERROR
+            result = CritiqueResult(
+                status=JUDGE_ERROR,
+                critiques=(),
+                critical_claim_ids=(),
+                judge_family=family_of(judge_model),
+                author_family=family_of(self.llm_model),
+                notes=(f"critique execution failed: {type(e).__name__}: {e}",),
+                skipped_claims=0,
+            )
+
+        self.critique_result = result
+        if self.run_recorder is not None:
+            self.run_recorder.set_critique(result)
+        return result
+
+    def _append_critique_to_report(self, report: str, critique: Any) -> str:
+        """Append an Adversarial Critique section to the report."""
+        from src.research_critique import gate_effect
+        if not getattr(critique, "critical_claim_ids", None):
+            return report
+        critical_count = len(critique.critical_claim_ids)
+        effect = gate_effect(critique)
+        parts = [
+            report.rstrip(),
+            "\n\n---\n\n## Adversarial Critique\n\n",
+            f"> [!WARNING]\n"
+            f"> Cross-family review identified critical contradiction(s) or unsupported finding(s) "
+            f"in {critical_count} claim(s) (Gate: {effect}).\n\n",
+            f"- **Judge Family:** {critique.judge_family} | **Author Family:** {critique.author_family}\n"
+            f"- **Critique Status:** {critique.status}\n\n",
+            "### Critical Findings\n",
+        ]
+        for c in critique.critiques:
+            if c.severity == "CRITICAL" or c.claim_id in critique.critical_claim_ids:
+                parts.append(f"- **[{c.claim_id}] {c.verdict}** ({c.severity}): {c.reason}\n")
+                if c.alternative:
+                    parts.append(f"  - *Alternative:* {c.alternative}\n")
+        return "".join(parts)
+
     def get_stats(self) -> Dict:
         """Return research statistics."""
         elapsed = time.time() - self._start_time if self._start_time else 0
@@ -1247,4 +1413,8 @@ class DeepResearcher:
             stats["Search"] = ", ".join(self.providers_used)
         if self.category:
             stats["Category"] = self.category.capitalize()
+        if self.critique_result is not None:
+            stats["Critique"] = self.critique_result.status
+            if self.critique_result.critical_claim_ids:
+                stats["CriticalFindings"] = len(self.critique_result.critical_claim_ids)
         return stats

@@ -133,7 +133,9 @@ __all__ = [
     "build_prompt",
     "parse_reply",
     "run_critique",
+    "run_critique_async",
     "gate_effect",
+    "critique_to_dict",
 ]
 
 # A judge callable: prompt in, the judge's raw text reply out.  Supplied by the
@@ -1164,6 +1166,189 @@ def run_critique(
     )
 
 
+async def run_critique_async(
+    claims: Sequence[Dict[str, Any]],
+    judge: Any,
+    judge_model: str,
+    author_model: str,
+    conclusion: str = "",
+) -> CritiqueResult:
+    """Async variant of run_critique supporting coroutine / async judge functions."""
+    import inspect
+
+    judge_family = family_of(judge_model)
+    author_family = family_of(author_model)
+    notes: List[str] = []
+
+    claim_items = list(claims) if claims is not None else []
+    ordered_ids, skipped = _claim_ids(claim_items)
+    malformed_citations = sum(
+        1 for claim in claim_items
+        if isinstance(claim, dict) and is_claim_id(claim.get("claim_id"))
+        and (
+            (claim.get("citations") is not None and not isinstance(claim.get("citations"), (list, tuple)))
+            or any(not isinstance(citation, dict) for citation in (claim.get("citations") or ()))
+        )
+    )
+    if malformed_citations:
+        notes.append(f"{_plural(malformed_citations, 'claim')} had malformed citations; requires human review")
+        skipped += malformed_citations
+    duplicated = _duplicated_claim_ids(claim_items)
+    unusable_ids = skipped - malformed_citations
+    if unusable_ids:
+        notes.append(f"skipped {_plural(unusable_ids, 'claim')} with no usable claim id")
+
+    if not ordered_ids:
+        return CritiqueResult(
+            SKIPPED_NO_CLAIMS,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    if UNKNOWN_FAMILY in (judge_family, author_family):
+        notes.append(
+            f"judge family {judge_family} and author family {author_family} are "
+            "not provably cross-family: family detection is a heuristic, and an "
+            "unknown name may be the author's own family, so the judge was not called"
+        )
+        return CritiqueResult(
+            SKIPPED_SAME_FAMILY,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    if judge_family == author_family:
+        notes.append(
+            f"judge and author are both family {judge_family}, so the pair is not "
+            "provably cross-family; the judge was not called"
+        )
+        return CritiqueResult(
+            SKIPPED_SAME_FAMILY,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    if not callable(judge):
+        notes.append("no callable judge was supplied")
+        return CritiqueResult(
+            JUDGE_ERROR,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    if all(claim_id in duplicated for claim_id in ordered_ids):
+        critiques, parse_notes = _critiques_from_items([], ordered_ids, duplicated)
+        notes.extend(parse_notes)
+        notes.append("no judge call: every usable claim id was duplicated")
+        return CritiqueResult(
+            UNPARSEABLE,
+            tuple(critiques),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    prompt = build_prompt(claim_items, conclusion=conclusion)
+    try:
+        if inspect.iscoroutinefunction(judge):
+            reply = await judge(prompt)
+        else:
+            res = judge(prompt)
+            reply = await res if inspect.isawaitable(res) else res
+    except Exception as exc:
+        notes.append(f"judge raised {type(exc).__name__}")
+        return CritiqueResult(
+            JUDGE_ERROR,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    if not isinstance(reply, str):
+        notes.append("judge returned a non-string reply")
+        return CritiqueResult(
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    if len(reply) > MAX_REPLY_CHARS:
+        notes.append(_oversize_reply_note(reply))
+        return CritiqueResult(
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    items, ambiguous = _critique_payload(reply)
+    if ambiguous:
+        notes.append(_AMBIGUOUS_NOTE)
+        return CritiqueResult(
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+    if items is None:
+        notes.append("judge reply contained no parseable critique JSON")
+        return CritiqueResult(
+            UNPARSEABLE,
+            (),
+            (),
+            judge_family,
+            author_family,
+            tuple(notes),
+            skipped_claims=skipped,
+        )
+
+    critiques, parse_notes = _critiques_from_items(items, ordered_ids, duplicated)
+    notes.extend(parse_notes)
+    critical_claim_ids = tuple(
+        critique.claim_id for critique in critiques if critique.severity == CRITICAL
+    )
+    return CritiqueResult(
+        DONE,
+        tuple(critiques),
+        critical_claim_ids,
+        judge_family,
+        author_family,
+        tuple(notes),
+        skipped_claims=skipped,
+    )
+
+
 def gate_effect(result: CritiqueResult) -> str:
     """What this pass means for a release gate.
 
@@ -1199,4 +1384,27 @@ def gate_effect(result: CritiqueResult) -> str:
     if status in UNJUDGED_STATUSES:
         return GATE_NOT_RUN
     return GATE_NEEDS_HUMAN
+
+
+def critique_to_dict(result: CritiqueResult) -> Dict[str, Any]:
+    """Serialize a CritiqueResult to a JSON-serializable dictionary."""
+    return {
+        "status": result.status,
+        "critiques": [
+            {
+                "claim_id": c.claim_id,
+                "verdict": c.verdict,
+                "severity": c.severity,
+                "reason": c.reason,
+                "alternative": c.alternative,
+            }
+            for c in result.critiques
+        ],
+        "critical_claim_ids": list(result.critical_claim_ids),
+        "judge_family": result.judge_family,
+        "author_family": result.author_family,
+        "notes": list(result.notes),
+        "skipped_claims": result.skipped_claims,
+        "gate_effect": gate_effect(result),
+    }
 
