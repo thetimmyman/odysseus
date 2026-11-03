@@ -34,7 +34,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, FrozenSet, Mapping, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = 1
 
@@ -775,7 +775,8 @@ def _assess(profile: ExecutionTargetProfile,
         decision = evaluate_route(
             domain=request.domain, provider=profile.provider,
             sensitivity=request.sensitivity, policy=domain_policy,
-            endpoint_url=profile.endpoint_url, **options)
+            endpoint_url=profile.endpoint_url,
+            locality=profile.locality, **options)
     except Exception as exc:  # a policy that cannot be evaluated DENIES
         return fate(False, REFUSED_POLICY_DENIED,
                     f"domain policy could not be evaluated: {exc}")
