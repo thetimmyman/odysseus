@@ -40,3 +40,68 @@ request idempotency and unchanged stale-capacity facts. They do not qualify a
 production filesystem, live provider, installed transport or the TMOS readiness
 pilot. Rollback disables the entry point/service while retaining every canonical
 receipt and association; do not delete the audit table or repoint handles.
+
+## Deterministic explanation and audited eligible-target steering
+
+`src/routing_explanation.py` supplies the fresh selector evaluation the section
+above reserved, as a pure module with no route and no store. It adds no rules:
+`RoutingInspectorEvaluator` calls `dispatch_routing.select_target` — the single
+ordered filter path — and projects that decision into a sealed
+`RoutingExplanation`. Each alternative carries the selector's own deciding rule
+code, its own prose, the canonical capability evidence identity, the entitlement
+outcome, and a deterministic `required_change_to_qualify`. The rationale is
+therefore a projection of canonical receipts: the module imports no model client
+and no network library, so a post-hoc rationale has nowhere to come from. Given
+the same evidence and instant, two evaluations hash identically. Passing
+`decision_id` pins an explanation to a decision actually taken, so its
+`dispatch_receipt_hash` is comparable with the retained receipt.
+
+`apply_operator_override(explanation, target)` steers only between candidates
+that are already eligible. It re-derives the domain policy (provider allow and
+deny lists, sensitivity ceiling, local-only), evidence presence, health,
+capability freshness, credential binding, and entitlement including the
+expiry of the capacity facts behind it, against the override instant
+rather than trusting the recorded `eligible` flag, so a hash-sealed receipt that
+claims eligibility for a target failing a hard rule is still refused. The
+resolved `DomainPolicy` is recorded in the explanation as data, but the gate
+re-evaluates the **authoritative** revision for that domain rather than the
+recorded one, so a forger who rewrites the policy and reseals is refused, and a
+provider the domain denies stays denied even when the request itself does not
+set local-only. A record whose policy disagrees with the authoritative revision
+is refused: that is either tampering or a policy that moved since the decision,
+and both must be re-decided.
+
+A sealed record is internally consistent even when its *request* was rewritten,
+so the record alone cannot be the last word. `apply_operator_override` requires
+`CanonicalEvidence` (the real request, profiles, capability and capacity
+receipts); record-only steering without evidence is rejected with `ExplanationError`.
+Eligibility is re-derived by a fresh evaluation of those canonical inputs, the
+candidate set and `considered_eligible` are recomputed from the fresh evaluation,
+and the target must qualify there. A swapped domain or evidence identity is refused.
+The issued `OverrideAuditReceipt` records `canonical_evidence_verified = True`.
+Every ineligibility raises `PolicyViolationException` with its typed refusal codes and
+mints nothing; expired capability evidence is never restamped into freshness
+and a policy DENY is never converted. An accepted steering mints an immutable
+`OverrideAuditReceipt` (schema 1) recording operator, justification, instant,
+original and authorized target/profile, explanation/decision/dispatch hashes,
+policy ref, request fingerprint, the closed eligible set, `original_still_eligible`
+and evidence refs. `authorizes` is a fixed single-element vocabulary and `scope`
+is fixed, so the receipt cannot be read as a dispatch, a capability grant, a
+policy change or a refresh. Re-issuing the same intent yields the same id and
+hash.
+
+This increment still authorizes nothing downstream: no dispatch, no worker
+control, no capability or policy change, no evidence refresh and no pinned
+attempt. OD-19 still does not accept observed interventions, so an override
+receipt here must not be reported as measured attention cost or a completed
+override, and there is no route, store, migration or default activation for it.
+Tests cover the positive control, determinism, refusal codes for filtered
+alternates, and the negative controls above at both the evaluator and the
+override boundary, including resealed tampered explanations. Capacity
+freshness is re-checked from the recorded fact expiry, so a grant whose evidence
+has lapsed (or whose expiry was never recorded) cannot be overridden; detecting
+a revocation that leaves the facts themselves fresh still needs a new capacity
+collection and remains a route-layer concern. Because the
+hard/soft refusal taxonomy is descriptive, a further control proves a
+curably-classified refusal still blocks an override, so the DENY guarantee rests
+on the deciding rule the gate re-derives rather than on the classification.
