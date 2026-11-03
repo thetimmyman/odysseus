@@ -966,144 +966,38 @@ class CanonicalEvidence:
     domain_policy: Any = None
     resources: Optional[Mapping[str, Mapping[str, Any]]] = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.profiles, (Sequence, tuple, list)):
+            raise ExplanationError("profiles must be a sequence")
+        if not isinstance(self.receipts, (Sequence, tuple, list)):
+            raise ExplanationError("receipts must be a sequence")
+        if not isinstance(self.capacity_receipts, (Sequence, tuple, list)):
+            raise ExplanationError("capacity_receipts must be a sequence")
+        if self.resources is not None and not isinstance(self.resources, Mapping):
+            raise ExplanationError("resources must be a mapping or None")
+
 
 def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
                             operator_id: str, justification: str,
-                            evidence: "CanonicalEvidence",
+                            evidence: Any,
                             now: Optional[datetime] = None,
                             idempotency_key: str = "",
-                            ) -> "OverrideAuditReceipt":
+                            resolver: Any = None,
+                            clock: Any = None,
+                            **kwargs: Any) -> "OverrideAuditReceipt":
     """Steer execution to an already-eligible candidate, or refuse and mint nothing.
 
-    ``decision_receipt`` is a sealed :class:`RoutingExplanation` (or its stored
-    JSON). Eligibility is re-derived from ``evidence`` at ``now``, so this is a fresh selector
-    evaluation, not a replay of the decision-time one. Record-only steering without
-    evidence is not supported.
-
-    Raises :class:`PolicyViolationException` when the target is ineligible for
-    any reason — hard refusals included, and never converted. Raises
-    :class:`ExplanationError` for an unsealed receipt, an unknown or ambiguous
-    target, a no-op, missing evidence, or a missing operator/justification.
+    Delegates to :mod:`src.override_authorization` to enforce authoritative
+    store resolution and reproduction invariants.
     """
-    explanation = _as_explanation(decision_receipt)
-    operator = str(operator_id or "").strip()
-    if not operator:
-        raise ExplanationError("an override must name the operator who issued it")
-    reason_text = str(justification or "").strip()
-    if not reason_text:
-        raise ExplanationError("an override must record a justification")
-    if len(reason_text) > 2000:
-        raise ExplanationError("an override justification must be at most 2000 characters")
-    key = str(idempotency_key or "").strip()
-    if len(key) > 200:
-        raise ExplanationError("an idempotency key must be at most 200 characters")
-    moment = _require_aware(now, "now")
+    from src.override_authorization import apply_operator_override as _auth_apply
+    return _auth_apply(
+        decision_receipt, requested_target_id,
+        operator_id=operator_id, justification=justification,
+        evidence=evidence, now=now, idempotency_key=idempotency_key,
+        resolver=resolver, clock=clock, **kwargs)
 
-    observed_ts = _parse_ts(explanation.observed_at)
-    if observed_ts is not None and moment < observed_ts:
-        raise ExplanationError("override instant cannot precede the decision it steers")
 
-    if not isinstance(evidence, CanonicalEvidence):
-        raise ExplanationError("evidence must be a CanonicalEvidence")
-    try:
-        claimed = dict(evidence.request.core())
-    except Exception as exc:
-        raise ExplanationError("evidence request is malformed") from exc
-    if _canonical(claimed) != _canonical(dict(explanation.request)):
-        raise ExplanationError(
-            "the supplied evidence describes a different request than this "
-            "explanation, so it cannot certify it")
-
-    target_id = str(requested_target_id or "").strip()
-    if not target_id:
-        raise ExplanationError("an override must name the requested target")
-    recorded_candidate = explanation.candidate(target_id)
-    if recorded_candidate is None:
-        raise ExplanationError(
-            f"target {target_id!r} is not among the candidates this explanation "
-            "considered")
-
-    if not recorded_candidate.eligible:
-        raise PolicyViolationException(
-            target_id, recorded_candidate.refusal_reasons,
-            detail="target is refused in the canonical explanation; an override can only steer to an already-eligible candidate")
-
-    if explanation.selected is None:
-        raise ExplanationError(
-            "this explanation records a refusal, so there is no selection to steer")
-    if target_id == explanation.selected_target_id:
-        raise ExplanationError(
-            f"target {target_id!r} is already the canonical selection; an override "
-            "must steer to a different eligible candidate")
-
-    fresh = RoutingInspectorEvaluator(
-        capacity_receipts=evidence.capacity_receipts,
-        resources=getattr(evidence, "resources", None),
-        policy=None, domain_policy=evidence.domain_policy).evaluate(
-            evidence.request, list(evidence.profiles), list(evidence.receipts),
-            now=moment)
-
-    authoritative = fresh.candidate(target_id)
-    violations = _gate_violations(fresh, authoritative, moment) if authoritative is not None else (dr.REFUSED_NO_ELIGIBLE_TARGET,)
-    if authoritative is None or violations or not authoritative.eligible:
-        reasons = violations or (authoritative.refusal_reasons if authoritative is not None else (dr.REFUSED_NO_ELIGIBLE_TARGET,))
-        raise PolicyViolationException(
-            target_id, reasons,
-            detail="a fresh evaluation of the canonical inputs refuses this target")
-
-    if authoritative.profile_id != recorded_candidate.profile_id:
-        raise PolicyViolationException(
-            target_id, (dr.REFUSED_NO_ELIGIBLE_TARGET,),
-            detail="the canonical inputs resolve this target to another profile")
-
-    if (authoritative.provider != recorded_candidate.provider
-            or authoritative.locality != recorded_candidate.locality):
-        raise PolicyViolationException(
-            target_id, (dr.REFUSED_POLICY_DENIED, dr.REFUSED_CAPACITY_MISSING),
-            detail="the canonical inputs resolve this target to another provider or locality")
-
-    recorded_violations = _gate_violations(explanation, recorded_candidate, moment)
-    if recorded_violations:
-        raise PolicyViolationException(
-            target_id, recorded_violations,
-            detail="the recorded candidate fails policy or freshness at the override instant")
-
-    recorded_eligible = {c.target_id for c in explanation.eligible_candidates()}
-    fresh_eligible = {c.target_id for c in fresh.eligible_candidates()}
-    if not fresh_eligible.issubset(recorded_eligible):
-        raise ExplanationError(
-            "fresh evaluation qualified candidates that were not eligible in the canonical explanation")
-
-    fresh_original = fresh.candidate(explanation.selected_target_id)
-    original_violations = _gate_violations(fresh, fresh_original, moment) if fresh_original is not None else ()
-    original_still_eligible = bool(
-        fresh_original is not None and fresh_original.eligible and not original_violations)
-
-    eligible = fresh.eligible_candidates()
-    minted_at = moment.isoformat()
-    valid_until = (moment + timedelta(seconds=300)).isoformat()
-
-    return OverrideAuditReceipt.seal(
-        operator_id=operator, justification=reason_text, requested_at=moment.isoformat(),
-        minted_at=minted_at, valid_until=valid_until,
-        original_target_id=explanation.selected_target_id,
-        original_profile_id=explanation.selected_profile_id,
-        authorized_target_id=authoritative.target_id,
-        authorized_profile_id=authoritative.profile_id,
-        explanation_hash=explanation.explanation_hash,
-        decision_hash=explanation.decision_hash,
-        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
-        policy_ref=str(explanation.policy.get("policy_ref") or ""),
-        request_fingerprint=_sha256_hex(_canonical(dict(explanation.request))),
-        rationale=tuple(explanation.rationale),
-        considered_eligible=tuple(f"{c.target_id}/{c.profile_id}" for c in eligible),
-        hard_refusals_checked=tuple(sorted(NON_OVERRIDABLE_REFUSALS)),
-        original_still_eligible=original_still_eligible,
-        canonical_evidence_verified=True,
-        evidence_refs=tuple(dict.fromkeys(
-            (*((authoritative.receipt_hash,) if authoritative.receipt_hash else ()),
-             *authoritative.capacity_receipt_refs))),
-        idempotency_key=key)
 
 
 @dataclass(frozen=True)
@@ -1134,6 +1028,7 @@ class OverrideAuditReceipt:
     original_still_eligible: bool
     minted_at: str = ""
     valid_until: str = ""
+    hmac_signature: str = ""
     #: True only when eligibility was re-derived from canonical inputs rather
     #: than from the sealed record alone. Every valid override requires True:
     #: record-only overrides without canonical evidence are not supported.
@@ -1219,6 +1114,7 @@ class OverrideAuditReceipt:
             "idempotency_key": self.idempotency_key,
             "authorizes": list(self.authorizes),
             "scope": self.scope,
+            "hmac_signature": self.hmac_signature,
         }
 
     @property
@@ -1265,69 +1161,22 @@ class OverrideAuditReceipt:
 
 
 def verify_override_receipt(receipt: OverrideAuditReceipt,
-                            explanation: RoutingExplanation,
-                            evidence: CanonicalEvidence,
+                            explanation: Optional[Any] = None,
+                            evidence: Optional[Any] = None,
                             *,
-                            now: Optional[datetime] = None) -> bool:
-    """Re-derive an override from canonical evidence and verify the receipt.
+                            resolver: Any = None,
+                            now: Optional[datetime] = None,
+                            clock: Any = None,
+                            hmac_key: Optional[bytes] = None,
+                            **kwargs: Any) -> bool:
+    """Verify an OverrideAuditReceipt's integrity, signature, and reproduction.
 
-    Returns True if and only if:
-    1. The receipt's hash seals its fields exactly;
-    2. The receipt cites this explanation's hash;
-    3. The evidence matches the explanation's request;
-    4. The receipt is within its validity window at now (if now supplied);
-    5. The authorized target was eligible in the explanation;
-    6. Re-running the gate evaluation over the evidence proves the target is still eligible.
+    Delegates to :mod:`src.override_authorization`.
     """
-    if not isinstance(receipt, OverrideAuditReceipt) or not receipt.verify():
-        return False
-    if receipt.explanation_hash != explanation.explanation_hash:
-        return False
-    try:
-        claimed = dict(evidence.request.core())
-    except Exception:
-        return False
-    if _canonical(claimed) != _canonical(dict(explanation.request)):
-        return False
-
-    req_ts = _parse_ts(receipt.requested_at)
-    minted_ts = _parse_ts(receipt.minted_at)
-    valid_ts = _parse_ts(receipt.valid_until)
-    if None in (req_ts, minted_ts, valid_ts):
-        return False
-
-    eval_moment = _require_aware(now, "now") if now is not None else minted_ts
-    if now is not None and (eval_moment < minted_ts or eval_moment > valid_ts):
-        return False
-
-    recorded = explanation.candidate(receipt.authorized_target_id)
-    if recorded is None or not recorded.eligible or recorded.profile_id != receipt.authorized_profile_id:
-        return False
-
-    for p in evidence.profiles:
-        c = explanation.candidate(p.target_id)
-        if c is None or p.profile_id != c.profile_id or p.provider != c.provider or p.locality != c.locality:
-            return False
-
-    try:
-        fresh = RoutingInspectorEvaluator(
-            capacity_receipts=evidence.capacity_receipts,
-            resources=evidence.resources,
-            policy=None, domain_policy=evidence.domain_policy).evaluate(
-                evidence.request, list(evidence.profiles), list(evidence.receipts),
-                now=eval_moment)
-    except Exception:
-        return False
-
-    authoritative = fresh.candidate(receipt.authorized_target_id)
-    if authoritative is None or not authoritative.eligible:
-        return False
-
-    violations = _gate_violations(fresh, authoritative, eval_moment)
-    if violations:
-        return False
-
-    return True
+    from src.override_authorization import verify_override_receipt as _auth_verify
+    return _auth_verify(
+        receipt, explanation, evidence,
+        resolver=resolver, now=now, clock=clock, hmac_key=hmac_key, **kwargs)
 
 
 def override_receipt_hash_is_valid(payload: Mapping[str, Any]) -> bool:
