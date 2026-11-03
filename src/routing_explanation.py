@@ -963,62 +963,23 @@ class CanonicalEvidence:
     domain_policy: Any = None
 
 
-def _verify_against_canonical_evidence(explanation: RoutingExplanation,
-                                       candidate: CandidateExplanation,
-                                       evidence: Optional[CanonicalEvidence],
-                                       moment: datetime) -> None:
-    """Re-evaluate the canonical inputs and require this target to qualify.
-
-    Without evidence the gate can only prove the record is internally consistent;
-    with it, eligibility is re-derived from the real inputs, so a forged record
-    is refused no matter how well it is sealed.
-    """
-    if evidence is None:
-        return
-    if not isinstance(evidence, CanonicalEvidence):
-        raise ExplanationError("evidence must be a CanonicalEvidence")
-    try:
-        claimed = dict(evidence.request.core())
-    except Exception as exc:
-        raise ExplanationError("evidence request is malformed") from exc
-    if _canonical(claimed) != _canonical(dict(explanation.request)):
-        raise ExplanationError(
-            "the supplied evidence describes a different request than this "
-            "explanation, so it cannot certify it")
-    fresh = RoutingInspectorEvaluator(
-        capacity_receipts=evidence.capacity_receipts,
-        policy=None, domain_policy=evidence.domain_policy).evaluate(
-            evidence.request, list(evidence.profiles), list(evidence.receipts),
-            now=moment)
-    authoritative = fresh.candidate(candidate.target_id)
-    if authoritative is None or not authoritative.eligible:
-        reasons = (authoritative.refusal_reasons if authoritative is not None
-                   else (dr.REFUSED_NO_ELIGIBLE_TARGET,))
-        raise PolicyViolationException(
-            candidate.target_id, reasons,
-            detail="a fresh evaluation of the canonical inputs refuses this target")
-    if authoritative.profile_id != candidate.profile_id:
-        raise PolicyViolationException(
-            candidate.target_id, (dr.REFUSED_NO_ELIGIBLE_TARGET,),
-            detail="the canonical inputs resolve this target to another profile")
-
-
 def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
                             operator_id: str, justification: str,
+                            evidence: "CanonicalEvidence",
                             now: Optional[datetime] = None,
                             idempotency_key: str = "",
-                            evidence: Optional["CanonicalEvidence"] = None
                             ) -> "OverrideAuditReceipt":
     """Steer execution to an already-eligible candidate, or refuse and mint nothing.
 
     ``decision_receipt`` is a sealed :class:`RoutingExplanation` (or its stored
-    JSON). Eligibility is re-derived at ``now``, so this is a fresh selector
-    evaluation, not a replay of the decision-time one.
+    JSON). Eligibility is re-derived from ``evidence`` at ``now``, so this is a fresh selector
+    evaluation, not a replay of the decision-time one. Record-only steering without
+    evidence is not supported.
 
     Raises :class:`PolicyViolationException` when the target is ineligible for
     any reason — hard refusals included, and never converted. Raises
     :class:`ExplanationError` for an unsealed receipt, an unknown or ambiguous
-    target, a no-op, or a missing operator/justification.
+    target, a no-op, missing evidence, or a missing operator/justification.
     """
     explanation = _as_explanation(decision_receipt)
     operator = str(operator_id or "").strip()
@@ -1034,25 +995,44 @@ def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
         raise ExplanationError("an idempotency key must be at most 200 characters")
     moment = _require_aware(now, "now")
 
+    if not isinstance(evidence, CanonicalEvidence):
+        raise ExplanationError("evidence must be a CanonicalEvidence")
+    try:
+        claimed = dict(evidence.request.core())
+    except Exception as exc:
+        raise ExplanationError("evidence request is malformed") from exc
+    if _canonical(claimed) != _canonical(dict(explanation.request)):
+        raise ExplanationError(
+            "the supplied evidence describes a different request than this "
+            "explanation, so it cannot certify it")
+
     target_id = str(requested_target_id or "").strip()
     if not target_id:
         raise ExplanationError("an override must name the requested target")
-    candidate = explanation.candidate(target_id)
-    if candidate is None:
+    recorded_candidate = explanation.candidate(target_id)
+    if recorded_candidate is None:
         raise ExplanationError(
             f"target {target_id!r} is not among the candidates this explanation "
             "considered")
 
-    violations = _gate_violations(explanation, candidate, moment)
-    if violations or not candidate.eligible:
-        # Belt and braces: an ineligible row is refused even if the gate above
-        # found no code, and a violation is refused even if the row says eligible.
-        raise PolicyViolationException(
-            target_id, violations or candidate.refusal_reasons,
-            detail=("the target is not eligible at the override instant"
-                    if violations else "the target was not eligible when selected"))
+    fresh = RoutingInspectorEvaluator(
+        capacity_receipts=evidence.capacity_receipts,
+        policy=None, domain_policy=evidence.domain_policy).evaluate(
+            evidence.request, list(evidence.profiles), list(evidence.receipts),
+            now=moment)
 
-    _verify_against_canonical_evidence(explanation, candidate, evidence, moment)
+    authoritative = fresh.candidate(target_id)
+    violations = _gate_violations(fresh, authoritative, moment) if authoritative is not None else (dr.REFUSED_NO_ELIGIBLE_TARGET,)
+    if authoritative is None or violations or not authoritative.eligible:
+        reasons = violations or (authoritative.refusal_reasons if authoritative is not None else (dr.REFUSED_NO_ELIGIBLE_TARGET,))
+        raise PolicyViolationException(
+            target_id, reasons,
+            detail="a fresh evaluation of the canonical inputs refuses this target")
+
+    if authoritative.profile_id != recorded_candidate.profile_id:
+        raise PolicyViolationException(
+            target_id, (dr.REFUSED_NO_ELIGIBLE_TARGET,),
+            detail="the canonical inputs resolve this target to another profile")
 
     if explanation.selected is None:
         raise ExplanationError(
@@ -1062,20 +1042,18 @@ def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
             f"target {target_id!r} is already the canonical selection; an override "
             "must steer to a different eligible candidate")
 
-    original = next((c for c in explanation.considered
-                     if c.target_id == explanation.selected_target_id
-                     and c.profile_id == explanation.selected_profile_id), None)
+    fresh_original = fresh.candidate(explanation.selected_target_id)
+    original_violations = _gate_violations(fresh, fresh_original, moment) if fresh_original is not None else ()
     original_still_eligible = bool(
-        original is not None and original.eligible
-        and not _gate_violations(explanation, original, moment))
+        fresh_original is not None and fresh_original.eligible and not original_violations)
 
-    eligible = explanation.eligible_candidates()
+    eligible = fresh.eligible_candidates()
     return OverrideAuditReceipt.seal(
         operator_id=operator, justification=reason_text, requested_at=moment.isoformat(),
         original_target_id=explanation.selected_target_id,
         original_profile_id=explanation.selected_profile_id,
-        authorized_target_id=candidate.target_id,
-        authorized_profile_id=candidate.profile_id,
+        authorized_target_id=authoritative.target_id,
+        authorized_profile_id=authoritative.profile_id,
         explanation_hash=explanation.explanation_hash,
         decision_hash=explanation.decision_hash,
         dispatch_receipt_hash=explanation.dispatch_receipt_hash,
@@ -1088,10 +1066,10 @@ def apply_operator_override(decision_receipt: Any, requested_target_id: str, *,
         considered_eligible=tuple(f"{c.target_id}/{c.profile_id}" for c in eligible),
         hard_refusals_checked=tuple(sorted(NON_OVERRIDABLE_REFUSALS)),
         original_still_eligible=original_still_eligible,
-        canonical_evidence_verified=evidence is not None,
+        canonical_evidence_verified=True,
         evidence_refs=tuple(dict.fromkeys(
-            (*((candidate.receipt_hash,) if candidate.receipt_hash else ()),
-             *candidate.capacity_receipt_refs))),
+            (*((authoritative.receipt_hash,) if authoritative.receipt_hash else ()),
+             *authoritative.capacity_receipt_refs))),
         idempotency_key=key)
 
 
@@ -1122,9 +1100,9 @@ class OverrideAuditReceipt:
     hard_refusals_checked: Tuple[str, ...]
     original_still_eligible: bool
     #: True only when eligibility was re-derived from canonical inputs rather
-    #: than from the sealed record alone. A route must require True: a record is
-    #: internally consistent even when its request or evidence identity is forged.
-    canonical_evidence_verified: bool = False
+    #: than from the sealed record alone. Every valid override requires True:
+    #: record-only overrides without canonical evidence are not supported.
+    canonical_evidence_verified: bool = True
     evidence_refs: Tuple[str, ...] = ()
     idempotency_key: str = ""
     override_id: str = ""
@@ -1144,10 +1122,12 @@ class OverrideAuditReceipt:
             raise ExplanationError(
                 f"override receipt requested_at must be an aware ISO timestamp, "
                 f"got {self.requested_at!r}")
-        for name in ("original_still_eligible", "canonical_evidence_verified"):
-            if type(getattr(self, name)) is not bool:
-                raise ExplanationError(
-                    f"override receipt {name} must be a bool")
+        if type(self.original_still_eligible) is not bool:
+            raise ExplanationError("override receipt original_still_eligible must be a bool")
+        if self.canonical_evidence_verified is not True:
+            raise ExplanationError(
+                "an override receipt must have canonical_evidence_verified=True; "
+                "record-only overrides are not supported")
         if self.schema_version != OVERRIDE_SCHEMA_VERSION:
             raise ExplanationError(
                 f"unsupported override schema_version {self.schema_version!r}")

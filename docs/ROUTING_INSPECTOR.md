@@ -72,16 +72,14 @@ is refused: that is either tampering or a policy that moved since the decision,
 and both must be re-decided.
 
 A sealed record is internally consistent even when its *request* was rewritten,
-so the record alone cannot be the last word. `apply_operator_override` accepts a
+so the record alone cannot be the last word. `apply_operator_override` requires
 `CanonicalEvidence` (the real request, profiles, capability and capacity
-receipts). When supplied, eligibility is re-derived by a fresh evaluation of
-those inputs and the target must qualify there, so a swapped domain or evidence
-identity is refused. The issued `OverrideAuditReceipt` records
-`canonical_evidence_verified` so the assurance class is visible, and a caller
-that needs the real guarantee must require it to be `True`; record-only
-steering is internally consistent, not proven, and must not be wired to a
-route. Every
-ineligibility raises `PolicyViolationException` with its typed refusal codes and
+receipts); record-only steering without evidence is rejected with `ExplanationError`.
+Eligibility is re-derived by a fresh evaluation of those canonical inputs, the
+candidate set and `considered_eligible` are recomputed from the fresh evaluation,
+and the target must qualify there. A swapped domain or evidence identity is refused.
+The issued `OverrideAuditReceipt` records `canonical_evidence_verified = True`.
+Every ineligibility raises `PolicyViolationException` with its typed refusal codes and
 mints nothing; expired capability evidence is never restamped into freshness
 and a policy DENY is never converted. An accepted steering mints an immutable
 `OverrideAuditReceipt` (schema 1) recording operator, justification, instant,

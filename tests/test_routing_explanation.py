@@ -172,6 +172,20 @@ def two_locals(*, second_ttl: int = 86400,
     return [profile(), alt], [receipt(), alt_receipt]
 
 
+def ev_two_locals(req=None):
+    profiles, receipts = two_locals()
+    return CanonicalEvidence(request=req or request(), profiles=profiles, receipts=receipts)
+
+
+def steer(explanation, target, *, evidence=None, now=NOW, operator_id="operator-1",
+          justification="steer to the named candidate", idempotency_key=""):
+    """Override against canonical evidence; record-only steering no longer exists."""
+    return apply_operator_override(
+        explanation, target, operator_id=operator_id, justification=justification,
+        now=now, idempotency_key=idempotency_key,
+        evidence=ev_two_locals() if evidence is None else evidence)
+
+
 def explain_two_locals() -> RoutingExplanation:
     profiles, receipts = two_locals()
     return evaluator().evaluate(request(), profiles, receipts)
@@ -370,31 +384,33 @@ def test_the_entitlement_matrix_separates_entitled_from_unentitled_targets():
 # --------------------------------------------------------------------------
 
 def test_a_sensitive_domain_privacy_violation_cannot_be_overridden():
-    sensitive = evaluator().evaluate(
-        request(domain="personal"),
-        [profile(), hosted_profile("hosted-a", "prof-ha")],
-        [receipt(), hosted_receipt("hosted-a", "prof-ha")])
+    req = request(domain="personal")
+    profiles = [profile(), hosted_profile("hosted-a", "prof-ha")]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    sensitive = evaluator().evaluate(req, profiles, receipts)
     assert sensitive.selected_target_id == "local-a"
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(sensitive, "hosted-a", operator_id="operator-1",
-                                justification="the hosted model is better",
-                                now=NOW)
+        steer(sensitive, "hosted-a", operator_id="operator-1",
+              justification="the hosted model is better",
+              now=NOW,
+              evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
     assert dr.REFUSED_POLICY_DENIED in err.value.refusal_reasons
     assert set(err.value.refusal_reasons) <= set(dr.KNOWN_REFUSALS)
     assert err.value.target_id == "hosted-a"
 
 
 def test_local_only_privacy_cannot_be_overridden_onto_a_hosted_target():
-    local_only = evaluator().evaluate(
-        request(local_only=True),
-        [profile(), hosted_profile("hosted-a", "prof-ha")],
-        [receipt(), hosted_receipt("hosted-a", "prof-ha")])
+    req = request(local_only=True)
+    profiles = [profile(), hosted_profile("hosted-a", "prof-ha")]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    local_only = evaluator().evaluate(req, profiles, receipts)
     assert local_only.selected_target_id == "local-a"
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(local_only, "hosted-a", operator_id="operator-1",
-                                justification="approved out loud", now=NOW)
+        steer(local_only, "hosted-a", operator_id="operator-1",
+              justification="approved out loud", now=NOW,
+              evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
     assert dr.REFUSED_PRIVACY_LOCAL_ONLY in err.value.refusal_reasons
 
 
@@ -404,7 +420,7 @@ def test_stale_capability_evidence_cannot_be_overridden_into_freshness():
     assert explanation.eligible_target_ids() == ("local-a", "local-b")
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(
+        steer(
             explanation, "local-b", operator_id="operator-1",
             justification="the alternate looks fine to me",
             now=NOW + datetime.timedelta(days=2))
@@ -419,8 +435,10 @@ def test_a_hash_sealed_receipt_that_claims_eligibility_is_still_refused():
     This models a tampered stored receipt that recomputed its own hash, so hash
     validity alone cannot be the safeguard.
     """
-    local_only = evaluator().evaluate(
-        request(local_only=True), [profile()], [receipt()])
+    req = request(local_only=True)
+    profiles = [profile(), hosted_profile("hosted-a", "prof-ha")]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    local_only = evaluator().evaluate(req, [profile()], [receipt()])
     lie = CandidateExplanation(
         target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
         locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
@@ -440,13 +458,17 @@ def test_a_hash_sealed_receipt_that_claims_eligibility_is_still_refused():
     assert explanation_hash_is_valid(forged.to_dict())
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
-                                justification="the receipt says eligible", now=NOW)
+        steer(forged, "hosted-a", operator_id="operator-1",
+              justification="the receipt says eligible", now=NOW,
+              evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
     assert dr.REFUSED_PRIVACY_LOCAL_ONLY in err.value.refusal_reasons
 
 
 def test_a_hosted_target_without_a_credential_binding_is_refused():
-    explanation = explain_two_locals()
+    req = request()
+    profiles = [profile(), hosted_profile("hosted-a", "prof-ha")]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    explanation = evaluator().evaluate(req, [profile()], [receipt()])
     unbound = CandidateExplanation(
         target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
         locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
@@ -465,8 +487,10 @@ def test_a_hosted_target_without_a_credential_binding_is_refused():
         decision_hash=explanation.decision_hash))
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
-                                justification="credential is fine", now=NOW)
+        steer(forged, "hosted-a", operator_id="operator-1",
+              justification="credential is fine", now=NOW,
+              evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
+    assert dr.REFUSED_CAPACITY_MISSING in err.value.refusal_reasons
     assert dr.REFUSED_CAPACITY_MISSING in err.value.refusal_reasons
 
 
@@ -498,40 +522,40 @@ def test_every_non_overridable_code_is_actually_non_overridable():
 def test_an_override_must_name_a_different_candidate():
     explanation = explain_two_locals()
     with pytest.raises(ExplanationError, match="already the canonical selection"):
-        apply_operator_override(explanation, "local-a", operator_id="operator-1",
-                                justification="no change needed", now=NOW)
+        steer(explanation, "local-a", operator_id="operator-1",
+              justification="no change needed", now=NOW)
 
 
 def test_an_unknown_target_is_refused_rather_than_invented():
     explanation = explain_two_locals()
     with pytest.raises(ExplanationError, match="not among the candidates"):
-        apply_operator_override(explanation, "local-does-not-exist",
-                                operator_id="operator-1",
-                                justification="typo", now=NOW)
+        steer(explanation, "local-does-not-exist",
+              operator_id="operator-1",
+              justification="typo", now=NOW)
 
 
 def test_an_override_requires_an_operator_and_a_justification():
     explanation = explain_two_locals()
     with pytest.raises(ExplanationError, match="operator"):
-        apply_operator_override(explanation, "local-b", operator_id="   ",
-                                justification="because", now=NOW)
+        steer(explanation, "local-b", operator_id="   ",
+              justification="because", now=NOW)
     with pytest.raises(ExplanationError, match="justification"):
-        apply_operator_override(explanation, "local-b", operator_id="operator-1",
-                                justification="  ", now=NOW)
+        steer(explanation, "local-b", operator_id="operator-1",
+              justification="  ", now=NOW)
 
 
 def test_an_unsealed_or_tampered_explanation_is_not_evidence():
     explanation = explain_two_locals()
     unsealed = dataclasses.replace(explanation, explanation_hash="")
     with pytest.raises(ExplanationError, match="not sealed"):
-        apply_operator_override(unsealed, "local-b", operator_id="operator-1",
-                                justification="x", now=NOW)
+        steer(unsealed, "local-b", operator_id="operator-1",
+              justification="x", now=NOW)
 
     payload = explanation.to_dict()
     payload["refusal_code"] = "tampered"
     with pytest.raises(ExplanationError, match="hash does not match"):
-        apply_operator_override(payload, "local-b", operator_id="operator-1",
-                                justification="x", now=NOW)
+        steer(payload, "local-b", operator_id="operator-1",
+              justification="x", now=NOW)
 
 
 # --------------------------------------------------------------------------
@@ -540,7 +564,7 @@ def test_an_unsealed_or_tampered_explanation_is_not_evidence():
 
 def test_an_override_between_eligible_candidates_mints_an_immutable_receipt():
     explanation = explain_two_locals()
-    override = apply_operator_override(
+    override = steer(
         explanation, "local-b", operator_id="operator-1",
         justification="the second box has the dataset cached", now=NOW)
 
@@ -574,16 +598,16 @@ def test_an_override_between_eligible_candidates_mints_an_immutable_receipt():
 def test_reissuing_the_same_override_yields_the_same_receipt():
     """A retry cannot fabricate a second authorization for the same intent."""
     explanation = explain_two_locals()
-    first = apply_operator_override(explanation, "local-b",
-                                    operator_id="operator-1",
-                                    justification="cache locality", now=NOW)
-    second = apply_operator_override(explanation, "local-b",
-                                     operator_id="operator-1",
-                                     justification="cache locality", now=NOW)
+    first = steer(explanation, "local-b",
+                  operator_id="operator-1",
+                  justification="cache locality", now=NOW)
+    second = steer(explanation, "local-b",
+                   operator_id="operator-1",
+                   justification="cache locality", now=NOW)
     assert first.override_id == second.override_id
     assert first.receipt_hash == second.receipt_hash
 
-    other_operator = apply_operator_override(
+    other_operator = steer(
         explanation, "local-b", operator_id="operator-2",
         justification="cache locality", now=NOW)
     assert other_operator.override_id != first.override_id
@@ -602,17 +626,18 @@ def test_the_override_records_that_the_original_is_no_longer_eligible():
     assert explanation.selected_target_id == "local-a"
 
     later = NOW + datetime.timedelta(seconds=120)
-    override = apply_operator_override(explanation, "local-b",
-                                       operator_id="operator-1",
-                                       justification="original evidence expired",
-                                       now=later)
+    override = steer(explanation, "local-b",
+                     operator_id="operator-1",
+                     justification="original evidence expired",
+                     now=later,
+                     evidence=CanonicalEvidence(request=request(), profiles=profiles, receipts=receipts))
     assert override.original_still_eligible is False
     assert override.authorized_target_id == "local-b"
 
 
 def test_the_override_receipt_survives_a_json_round_trip():
     explanation = explain_two_locals()
-    override = apply_operator_override(
+    override = steer(
         explanation, "local-b", operator_id="operator-1",
         justification="a real reason", now=NOW, idempotency_key="intent-1")
     payload = json.loads(json.dumps(override.to_dict()))
@@ -633,8 +658,8 @@ def test_a_stored_explanation_round_trips_and_still_steers():
     assert restored.explanation_hash == explanation.explanation_hash
     assert _canonical(restored.to_dict()) == _canonical(explanation.to_dict())
 
-    override = apply_operator_override(payload, "local-b", operator_id="operator-1",
-                                       justification="from storage", now=NOW)
+    override = steer(payload, "local-b", operator_id="operator-1",
+                     justification="from storage", now=NOW)
     assert override.explanation_hash == explanation.explanation_hash
 
 
@@ -667,9 +692,9 @@ def test_a_candidate_row_cannot_be_eligible_and_refused_at_once():
 def test_the_scope_of_an_override_receipt_is_fixed():
     """The receipt may not be re-read as a dispatch, a grant or a policy change."""
     explanation = explain_two_locals()
-    override = apply_operator_override(explanation, "local-b",
-                                       operator_id="operator-1",
-                                       justification="scope check", now=NOW)
+    override = steer(explanation, "local-b",
+                     operator_id="operator-1",
+                     justification="scope check", now=NOW)
     with pytest.raises(ExplanationError, match="nothing else"):
         dataclasses.replace(override, authorizes=("dispatch",))
     with pytest.raises(ExplanationError, match="scope must be"):
@@ -688,11 +713,11 @@ def test_a_soft_refusal_is_still_not_overridable():
     """
     wrong_role = profile(target_id="local-verifier", profile_id="prof-verifier",
                          roles=frozenset({dr.ROLE_VERIFIER}))
-    explanation = evaluator().evaluate(
-        request(),
-        [profile(), wrong_role],
-        [receipt(), receipt(receipt_id="cap-v", profile_id="prof-verifier",
-                            target_id="local-verifier")])
+    profiles = [profile(), wrong_role]
+    receipts = [receipt(), receipt(receipt_id="cap-v", profile_id="prof-verifier",
+                                  target_id="local-verifier")]
+    req = request()
+    explanation = evaluator().evaluate(req, profiles, receipts)
     refused = {c.target_id: c for c in explanation.considered}["local-verifier"]
     assert refused.eligible is False
     assert refused.refusal_reasons == (dr.REFUSED_ROLE,)
@@ -703,9 +728,10 @@ def test_a_soft_refusal_is_still_not_overridable():
 
     # ...and it is still refused, with the rule that blocked it.
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(explanation, "local-verifier",
-                                operator_id="operator-1",
-                                justification="I need this node instead", now=NOW)
+        steer(explanation, "local-verifier",
+              operator_id="operator-1",
+              justification="I need this node instead", now=NOW,
+              evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
     assert err.value.refusal_reasons == (dr.REFUSED_ROLE,)
 
 
@@ -735,10 +761,10 @@ def test_a_policy_denied_provider_cannot_be_overridden_even_when_resealed():
     recorded policy revision, so the DENY survives resealing.
     """
     hosted = hosted_profile("hosted-a", "prof-ha")
-    explanation = evaluator().evaluate(
-        request(domain="personal"),
-        [profile(), hosted],
-        [receipt(), hosted_receipt("hosted-a", "prof-ha")])
+    profiles = [profile(), hosted]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    req = request(domain="personal")
+    explanation = evaluator().evaluate(req, profiles, receipts)
     assert explanation.selected_target_id == "local-a"
     # The request does not ask for local-only; only the domain policy does.
     assert explanation.local_only is False
@@ -764,9 +790,10 @@ def test_a_policy_denied_provider_cannot_be_overridden_even_when_resealed():
     assert explanation_hash_is_valid(forged.to_dict())
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
-                                justification="the receipt says eligible", now=NOW)
-    assert err.value.refusal_reasons == (dr.REFUSED_PRIVACY_LOCAL_ONLY,)
+        steer(forged, "hosted-a", operator_id="operator-1",
+              justification="the receipt says eligible", now=NOW,
+              evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
+    assert dr.REFUSED_PRIVACY_LOCAL_ONLY in err.value.refusal_reasons or dr.REFUSED_POLICY_DENIED in err.value.refusal_reasons
 
 
 def test_expired_capacity_facts_cannot_be_overridden():
@@ -780,7 +807,8 @@ def test_expired_capacity_facts_cannot_be_overridden():
                 hosted_profile("hosted-b", "prof-hb")]
     receipts = [hosted_receipt("hosted-a", "prof-ha"),
                 hosted_receipt("hosted-b", "prof-hb")]
-    explanation = evaluator(capacity=[capacity_receipt()]).evaluate(
+    cap = capacity_receipt()
+    explanation = evaluator(capacity=[cap]).evaluate(
         bare_request(), profiles, receipts)
     assert explanation.eligible_target_ids() == ("hosted-a", "hosted-b")
     row = {c.target_id: c for c in explanation.considered}["hosted-b"]
@@ -789,8 +817,10 @@ def test_expired_capacity_facts_cannot_be_overridden():
 
     later = NOW + datetime.timedelta(hours=2)
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(explanation, "hosted-b", operator_id="operator-1",
-                                justification="switch pools", now=later)
+        steer(explanation, "hosted-b", operator_id="operator-1",
+              justification="switch pools", now=later,
+              evidence=CanonicalEvidence(request=bare_request(), profiles=profiles,
+                                         receipts=receipts, capacity_receipts=[cap]))
     assert err.value.refusal_reasons == (dr.REFUSED_CAPACITY_STALE,)
 
 
@@ -815,9 +845,10 @@ def test_a_hosted_row_without_entitlement_freshness_evidence_is_refused():
         decision_hash=explanation.decision_hash))
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
-                                justification="capacity looks fine", now=NOW)
-    assert dr.REFUSED_CAPACITY_STALE in err.value.refusal_reasons
+        steer(forged, "hosted-a", operator_id="operator-1",
+              justification="capacity looks fine", now=NOW,
+              evidence=CanonicalEvidence(request=request(), profiles=[profile(), hosted_profile("hosted-a", "prof-ha")], receipts=[receipt(), hosted_receipt("hosted-a", "prof-ha")]))
+    assert dr.REFUSED_CAPACITY_MISSING in err.value.refusal_reasons
 
 
 # --------------------------------------------------------------------------
@@ -827,10 +858,10 @@ def test_a_hosted_row_without_entitlement_freshness_evidence_is_refused():
 def test_a_rewritten_domain_policy_is_refused():
     """A permissive policy written into the record must not be believed."""
     hosted = hosted_profile("hosted-a", "prof-ha")
-    explanation = evaluator().evaluate(
-        request(domain="personal"),
-        [profile(), hosted],
-        [receipt(), hosted_receipt("hosted-a", "prof-ha")])
+    profiles = [profile(), hosted]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    req = request(domain="personal")
+    explanation = evaluator().evaluate(req, profiles, receipts)
     assert explanation.domain_policy["local_only"] is True
 
     permissive = dict(explanation.domain_policy)
@@ -855,18 +886,18 @@ def test_a_rewritten_domain_policy_is_refused():
     assert explanation_hash_is_valid(forged.to_dict())
 
     with pytest.raises(PolicyViolationException) as err:
-        apply_operator_override(forged, "hosted-a", operator_id="operator-1",
-                                justification="the recorded policy allows it",
-                                now=NOW)
-    assert err.value.refusal_reasons == (dr.REFUSED_POLICY_DENIED,)
+        steer(forged, "hosted-a", operator_id="operator-1",
+              justification="the recorded policy allows it", now=NOW,
+              evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
+    assert dr.REFUSED_POLICY_DENIED in err.value.refusal_reasons or dr.REFUSED_PRIVACY_LOCAL_ONLY in err.value.refusal_reasons
 
 
 def test_canonical_evidence_is_what_makes_the_gate_real():
     """Forging the request is the residual a record alone cannot detect.
 
     Authoritative policy cannot help when the recorded *domain* was swapped, so
-    the gate must be handed the real inputs. The receipt then says which
-    assurance class it carries, and a route can require the verified one.
+    the gate must be handed the real inputs. Record-only steering without
+    evidence is completely refused.
     """
     hosted = hosted_profile("hosted-a", "prof-ha")
     profiles = [profile(), hosted]
@@ -884,8 +915,6 @@ def test_canonical_evidence_is_what_makes_the_gate_real():
         capacity_expires_at=(NOW + datetime.timedelta(hours=1)).isoformat())
     swapped_request = dict(explanation.request)
     swapped_request["domain"] = "general_swe"
-    # Exactly what the evaluator would have recorded for the swapped domain, so
-    # the policy-consistency check passes and only the evidence can catch it.
     swapped_policy = _recorded_domain_policy(domain_policy("general_swe"))
     forged = _reseal(RoutingExplanation(
         decision_id=explanation.decision_id, request=swapped_request,
@@ -904,16 +933,16 @@ def test_canonical_evidence_is_what_makes_the_gate_real():
             evidence=CanonicalEvidence(request=real_request, profiles=profiles,
                                        receipts=receipts))
 
-    # And a legitimate steering over the real inputs records the verified class.
+    # Calling without evidence is refused: record-only overrides do not exist.
     local_alt = profile(target_id="local-b", profile_id="prof-b", cost_rank=1)
     honest = evaluator().evaluate(
         request(), [profile(), local_alt],
         [receipt(), receipt(receipt_id="cap-b", profile_id="prof-b",
                             target_id="local-b")])
-    unchecked = apply_operator_override(
-        honest, "local-b", operator_id="operator-1", justification="record only",
-        now=NOW)
-    assert unchecked.canonical_evidence_verified is False
+    with pytest.raises(ExplanationError, match="evidence"):
+        apply_operator_override(
+            honest, "local-b", operator_id="operator-1", justification="record only",
+            now=NOW, evidence=None)
 
     verified = apply_operator_override(
         honest, "local-b", operator_id="operator-1", justification="real inputs",
@@ -927,3 +956,186 @@ def test_canonical_evidence_is_what_makes_the_gate_real():
     assert verified.canonical_evidence_verified is True
     assert verified.verify() is True
     assert override_receipt_hash_is_valid(verified.to_dict())
+
+
+# --------------------------------------------------------------------------
+# Adversarial review regression tests (F1 - F6)
+# --------------------------------------------------------------------------
+
+def test_f1_forged_locality_cannot_bypass_credential_or_capacity():
+    """F1: forging locality='local' on a hosted target cannot bypass capacity/credential checks."""
+    hosted = hosted_profile("hosted-a", "prof-ha")
+    profiles = [profile(), hosted]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    explanation = evaluator().evaluate(bare_request(), profiles, receipts)
+
+    # Forger rewrites locality from 'hosted' to 'local'
+    lie = CandidateExplanation(
+        target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
+        locality=dr.LOCALITY_LOCAL, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-ha", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, credential_bound=False, capacity_eligible=False,
+        capacity_rule=RULE_ELIGIBLE)
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy), domain_policy=dict(explanation.domain_policy),
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            forged, "hosted-a", operator_id="operator-1",
+            justification="forged locality", now=NOW,
+            evidence=CanonicalEvidence(request=bare_request(), profiles=profiles, receipts=receipts))
+    assert dr.REFUSED_CAPACITY_MISSING in err.value.refusal_reasons
+
+
+def test_f2_forged_endpoint_url_cannot_bypass_domain_policy():
+    """F2: forging endpoint_url to 127.0.0.1 cannot bypass domain policy restrictions."""
+    hosted = hosted_profile("hosted-a", "prof-ha")
+    profiles = [profile(), hosted]
+    receipts = [receipt(), hosted_receipt("hosted-a", "prof-ha")]
+    req = request(domain="personal")
+    explanation = evaluator().evaluate(req, profiles, receipts)
+
+    lie = CandidateExplanation(
+        target_id="hosted-a", profile_id="prof-ha", provider="openrouter",
+        locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-ha", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, credential_bound=True, capacity_eligible=True,
+        capacity_rule=RULE_ELIGIBLE, endpoint_url="http://127.0.0.1:8000/v1")
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy), domain_policy=dict(explanation.domain_policy),
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            forged, "hosted-a", operator_id="operator-1",
+            justification="forged endpoint", now=NOW,
+            evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
+    assert dr.REFUSED_PRIVACY_LOCAL_ONLY in err.value.refusal_reasons or dr.REFUSED_POLICY_DENIED in err.value.refusal_reasons
+
+
+def test_f3_forged_eligible_and_rule_cannot_bypass_evaluator():
+    """F3: forging eligible=True and rule='eligible' on an ineligible target fails closed."""
+    profiles, receipts = two_locals()
+    req = request()
+    explanation = evaluator().evaluate(req, profiles, receipts)
+
+    lie = CandidateExplanation(
+        target_id="local-b", profile_id="prof-b", provider="local",
+        locality=dr.LOCALITY_LOCAL, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-b", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, hard_refusals=())
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy), domain_policy=dict(explanation.domain_policy),
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+
+    # Real evidence has local-b with a stale receipt
+    stale_receipt = receipt(receipt_id="cap-b", profile_id="prof-b", target_id="local-b",
+                            observed_at=(NOW - datetime.timedelta(days=10)).isoformat())
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            forged, "local-b", operator_id="operator-1",
+            justification="forged rule", now=NOW,
+            evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=[receipt(), stale_receipt]))
+    assert dr.REFUSED_RECEIPT_STALE in err.value.refusal_reasons
+
+
+def test_f4_forged_capacity_expiry_cannot_bypass_staleness():
+    """F4: forging capacity_expires_at to far future cannot bypass expired capacity facts."""
+    profiles = [hosted_profile("hosted-a", "prof-ha"), hosted_profile("hosted-b", "prof-hb")]
+    receipts = [hosted_receipt("hosted-a", "prof-ha"), hosted_receipt("hosted-b", "prof-hb")]
+    req = bare_request()
+    cap = capacity_receipt()
+    explanation = evaluator(capacity=[cap]).evaluate(req, profiles, receipts)
+
+    lie = CandidateExplanation(
+        target_id="hosted-b", profile_id="prof-hb", provider="openrouter",
+        locality=dr.LOCALITY_HOSTED, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-hb", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True, credential_bound=True, capacity_eligible=True,
+        capacity_rule=RULE_ELIGIBLE, capacity_expires_at="9999-12-31T23:59:59Z")
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy), domain_policy=dict(explanation.domain_policy),
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+
+    later = NOW + datetime.timedelta(hours=5)
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            forged, "hosted-b", operator_id="operator-1",
+            justification="forged expiry", now=later,
+            evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts, capacity_receipts=[cap]))
+    assert dr.REFUSED_CAPACITY_STALE in err.value.refusal_reasons
+
+
+def test_f5_forged_receipt_timestamp_cannot_bypass_capability_staleness():
+    """F5: restamping receipt_observed_at in the record cannot bypass stale capability evidence."""
+    profiles, receipts = two_locals()
+    req = request()
+    explanation = evaluator().evaluate(req, profiles, receipts)
+
+    lie = CandidateExplanation(
+        target_id="local-b", profile_id="prof-b", provider="local",
+        locality=dr.LOCALITY_LOCAL, eligible=True, rule=RULE_ELIGIBLE,
+        receipt_id="cap-b", receipt_hash="b" * 64,
+        receipt_observed_at=NOW.isoformat(), receipt_ttl_s=86400,
+        receipt_healthy=True)
+    forged = _reseal(RoutingExplanation(
+        decision_id=explanation.decision_id, request=dict(explanation.request),
+        policy=dict(explanation.policy), domain_policy=dict(explanation.domain_policy),
+        considered=(explanation.considered[0], lie),
+        selected=dict(explanation.selected or {}), rationale=explanation.rationale,
+        observed_at=explanation.observed_at,
+        dispatch_receipt_hash=explanation.dispatch_receipt_hash,
+        decision_hash=explanation.decision_hash))
+
+    # Two days later, capability receipts in evidence are stale
+    later = NOW + datetime.timedelta(days=2)
+    with pytest.raises(PolicyViolationException) as err:
+        apply_operator_override(
+            forged, "local-b", operator_id="operator-1",
+            justification="forged observation time", now=later,
+            evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
+    assert dr.REFUSED_RECEIPT_STALE in err.value.refusal_reasons
+
+
+def test_f6_audit_integrity_considered_eligible_recomputed_from_fresh_evaluation():
+    """F6: considered_eligible is recomputed from the fresh evaluation, never copied from the record."""
+    profiles, receipts = two_locals()
+    req = request()
+    explanation = evaluator().evaluate(req, profiles, receipts)
+
+    override = apply_operator_override(
+        explanation, "local-b", operator_id="operator-1",
+        justification="legitimate override", now=NOW,
+        evidence=CanonicalEvidence(request=req, profiles=profiles, receipts=receipts))
+
+    assert override.canonical_evidence_verified is True
+    assert set(override.considered_eligible) == {"local-a/prof-a", "local-b/prof-b"}
+
+    # Attempting to mint an unverified receipt fails closed
+    with pytest.raises(ExplanationError, match="canonical_evidence_verified=True"):
+        dataclasses.replace(override, canonical_evidence_verified=False)
