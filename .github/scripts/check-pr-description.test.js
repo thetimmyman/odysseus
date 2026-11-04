@@ -68,7 +68,7 @@ test('accepts existing GitHub issue reference forms', async (t) => {
 });
 
 test('accepts supported complete positive-integer Plane keys', async (t) => {
-  for (const reference of ['PS-1', 'TMOS-104', 'EOT-256', 'EST-12']) {
+  for (const reference of ['PS-1', 'TMOS-104', 'EOT-256', 'EST-12', 'OD-5', '(OD-52)']) {
     await t.test(reference, async () => {
       const state = await runGate(reference);
       assert.deepEqual(state.failures, []);
@@ -92,6 +92,14 @@ test('rejects malformed, embedded, unsupported, and unrelated Plane references',
     ['embedded suffix', 'PS-12_suffix'],
     ['hyphenated suffix', 'EST-12-extra'],
     ['unsupported project', 'POS-12'],
+    ['native project zero', 'OD-0'],
+    ['native project leading zero', 'OD-05'],
+    ['native project empty number', 'OD-'],
+    ['native project embedded prefix', 'prefixOD-5'],
+    ['native project embedded suffix', 'OD-5_suffix'],
+    ['native project hyphenated suffix', 'OD-5-extra'],
+    ['native project non-numeric suffix', 'OD-5x'],
+    ['native project placeholder comment', '<!-- OD-5 -->'],
     ['bare number', '12'],
     ['unrelated prose', 'See the relevant work item for context.'],
   ];
@@ -112,11 +120,13 @@ test('a valid Plane key does not bypass other description requirements', async (
     ['duplicate search', { checklist: '- [ ] I searched existing issues and PRs.' }, /\*\*Checklist\*\*/],
     ['test detail', { howTo: 'tested locally' }, /\*\*How to Test\*\*/],
   ];
-  for (const [name, overrides, expectedProblem] of cases) {
-    await t.test(name, async () => {
-      const state = await runGate('PS-1167', overrides);
-      assert.equal(state.failures.length, 1);
-      assert.match(state.comments[0], expectedProblem);
-    });
+  for (const reference of ['PS-1167', 'OD-5']) {
+    for (const [name, overrides, expectedProblem] of cases) {
+      await t.test(`${reference}: ${name}`, async () => {
+        const state = await runGate(reference, overrides);
+        assert.equal(state.failures.length, 1);
+        assert.match(state.comments[0], expectedProblem);
+      });
+    }
   }
 });

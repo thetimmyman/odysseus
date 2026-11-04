@@ -35,7 +35,7 @@ module.exports = async ({ github, context, core }) => {
   //    as complete, positive-integer identifiers (not embedded substrings).
   const linkedSection = section('Linked Issue');
   const hasGitHubRef = /#\d+\b/.test(linkedSection) || /\/issues\/\d+/.test(linkedSection);
-  const hasPlaneRef = /(?:^|[^A-Za-z0-9_-])(?:PS|TMOS|EOT|EST)-[1-9]\d*(?![A-Za-z0-9_-])/.test(linkedSection);
+  const hasPlaneRef = /(?:^|[^A-Za-z0-9_-])(?:PS|TMOS|EOT|EST|OD)-[1-9]\d*(?![A-Za-z0-9_-])/.test(linkedSection);
   const hasIssueRef = hasGitHubRef || hasPlaneRef;
   if (!linkedSection || !hasIssueRef) {
     problems.push('**Linked Issue** — add a reference like `Fixes #NNN`, a bare `#NNN`, or a link to the issue.');
