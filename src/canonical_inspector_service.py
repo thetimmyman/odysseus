@@ -267,6 +267,21 @@ def _minimized_projection(projection, publication):
                               "estimated_marginal_cost", "actual_billed_cost", "unit", "pricing_version")) or None
         capacity["supplements"].append(safe)
 
+    outcomes_data = projection.get("outcomes")
+    outcomes = {"status": "UNKNOWN", "sample_size": None}
+    if type(outcomes_data) is dict:
+        status = outcomes_data.get("status")
+        if status in {"OBSERVED", "UNKNOWN"}:
+            outcomes["status"] = status
+        scorecard = outcomes_data.get("scorecard")
+        if type(scorecard) is dict and scorecard.get("schema") == "execution-outcome-scorecard-v1":
+            outcomes["scorecard"] = scorecard
+            source_hashes = scorecard.get("source_record_hashes")
+            if type(source_hashes) is list:
+                outcomes["sample_size"] = len(source_hashes)
+        elif type(outcomes_data.get("associated_source_hashes")) is list:
+            outcomes["sample_size"] = len(outcomes_data["associated_source_hashes"])
+
     result = {"authoritative": False,
               "attempt_receipt_hash": publication.attempt_hash,
               "dispatch_receipt_hash": publication.dispatch_hash,
@@ -275,7 +290,7 @@ def _minimized_projection(projection, publication):
               "verification_state": state,
               "inspection_time": projection.get("inspection_time"),
               "routing": {"decision": decision, "capabilities": capabilities, "capacity": capacity,
-                          "outcomes": {"status": "UNKNOWN", "sample_size": None},
+                          "outcomes": outcomes,
                           "capability_state": observation_status("capabilities"),
                           "capacity_state": observation_status("capacity"),
                           "candidates": safe_candidates if candidates != "UNKNOWN" else "UNKNOWN"},
@@ -291,7 +306,7 @@ class InspectorService:
 
     def __init__(self, store, *, retained_root, projector, pilot_adapter=None,
                  retention_parents=(), restored_disclosure_generation=CANONICAL_PILOT_DISCLOSURE_GENERATION,
-                 work_owner=None):
+                 work_owner=None, outcomes_reader=None, outcome_scoring_version="canonical-inspector-v1"):
         self._store = store
         self._root = retained_root
         self._project = projector
@@ -300,6 +315,8 @@ class InspectorService:
         self._generation = restored_disclosure_generation
         self._read = read_retained_evidence_bundle
         self._work_owner = work_owner
+        self._outcomes_reader = outcomes_reader
+        self._outcome_scoring_version = outcome_scoring_version
 
     def inspect(self, owner, handle, reauthorize):
         try:
@@ -320,9 +337,25 @@ class InspectorService:
                     or len(attempts) != 1
                     or attempts[0].get("dispatch_receipt_hash") != publication.dispatch_hash):
                 raise UnknownInspection("inspection unavailable")
-            projected = self._project(payload, artifacts=artifacts,
-                                      attempt_receipt_hash=publication.attempt_hash,
-                                      now=datetime.now(timezone.utc))
+            project_kwargs = {
+                "artifacts": artifacts,
+                "attempt_receipt_hash": publication.attempt_hash,
+                "now": datetime.now(timezone.utc),
+            }
+            if self._outcomes_reader is not None:
+                try:
+                    found_outcomes = self._outcomes_reader(package, attempts[0]) or ()
+                    if found_outcomes:
+                        project_kwargs["outcomes"] = tuple(found_outcomes)
+                        project_kwargs["scoring_version"] = self._outcome_scoring_version
+                except Exception:
+                    pass
+            try:
+                projected = self._project(payload, **project_kwargs)
+            except TypeError:
+                project_kwargs.pop("outcomes", None)
+                project_kwargs.pop("scoring_version", None)
+                projected = self._project(payload, **project_kwargs)
             result = _minimized_projection(projected, publication)
             if self._generation == CANONICAL_TMOS_DISCLOSURE_GENERATION:
                 result["mission_key"] = package["ticket_key"]

@@ -440,6 +440,18 @@ async def inspector_alternate(handle: str, request: Request):
         raise HTTPException(404, "Inspection unavailable") from None
 
 
+import os
+from src.constants import CANONICAL_INSPECTOR_RESPONSE_BYTES
+from src.execution_outcomes import OutcomeError, validate_outcome_record
+from src.outcome_scorecard import aggregate_outcomes
+from src.execution_outcome_store import aggregate_stored_outcomes, ExecutionOutcomeStoreError
+
+
+class ScorecardOutcomesRequest(BaseModel):
+    scoring_version: str = "canonical-inspector-v1"
+    record_hashes: Optional[List[str]] = None
+    records: Optional[List[Dict[str, Any]]] = None
+
 
 def setup_routing_harness_routes():
     @router.post("/coordinator/wrap")
@@ -1539,5 +1551,45 @@ def setup_routing_harness_routes():
         actor = require_admin_cookie(request) or "admin"
         return _knowledge_transition(entry_id, expire_entry, actor,
                                      body.rationale)
+
+    @router.post("/scorecard/outcomes")
+    def scorecard_outcomes(body: ScorecardOutcomesRequest, request: Request):
+        """Descriptive outcome scorecard aggregated over explicit records or stored hashes."""
+        require_admin_cookie(request)
+        if not body.scoring_version or not body.scoring_version.strip():
+            raise HTTPException(400, "scoring_version must be non-empty")
+
+        if body.records is not None:
+            if not isinstance(body.records, list):
+                raise HTTPException(400, "records must be a list")
+            validated_records = []
+            for item in body.records:
+                try:
+                    if not isinstance(item, dict):
+                        raise OutcomeError("record must be a mapping")
+                    raw = json.dumps(item, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                    valid = validate_outcome_record(raw)
+                    validated_records.append(valid)
+                except Exception as exc:
+                    raise HTTPException(400, f"invalid outcome record: {exc}") from exc
+            try:
+                return aggregate_outcomes(validated_records, scoring_version=body.scoring_version)
+            except Exception as exc:
+                raise HTTPException(400, f"cannot aggregate records: {exc}") from exc
+
+        if body.record_hashes is not None:
+            if not isinstance(body.record_hashes, list) or not body.record_hashes:
+                raise HTTPException(400, "record_hashes must be a non-empty list of hashes")
+            store_root = getattr(request.app.state, "outcome_store_root", None) or os.environ.get("ODYSSEUS_OUTCOME_STORE_ROOT")
+            if not store_root:
+                raise HTTPException(503, "Outcome store unavailable")
+            try:
+                return aggregate_stored_outcomes(store_root, body.record_hashes,
+                                                 scoring_version=body.scoring_version,
+                                                 max_record_bytes=CANONICAL_INSPECTOR_RESPONSE_BYTES * 32)
+            except ExecutionOutcomeStoreError as exc:
+                raise HTTPException(400, f"cannot aggregate stored outcomes: {exc}") from exc
+
+        raise HTTPException(400, "Either records or record_hashes must be provided")
 
     return router
