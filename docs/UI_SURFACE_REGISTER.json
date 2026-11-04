@@ -53,7 +53,7 @@
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
       "routes/project_files_routes.py": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
       "routes/research_routes.py": "77ba0b6ef376788df985e756e86e7d5c8f571596a66bfb84aaad21a56f8e2dfc",
-      "routes/routing_harness_routes.py": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+      "routes/routing_harness_routes.py": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
       "routes/search_routes.py": "1510aa0e1bbf5cf537aea90406e29f95407eda507264e3d9eec09ca19fc4fb6a",
       "routes/session_routes.py": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
       "routes/shell_routes.py": "7f76cc62bd0cc663212cc31e993893be70c11fcf14b186b1477bf988ad2fec8e",
@@ -5432,7 +5432,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5453,7 +5453,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5473,7 +5473,7 @@
           {
             "path": "routes/routing_harness_routes.py",
             "line": 1,
-            "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+            "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -12878,7 +12878,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 359,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12889,7 +12889,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 371,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12900,7 +12900,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 413,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12911,7 +12911,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 395,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted bounded JSON request; immutable owner/attempt/dispatch-associated request receipt."
         }
       },
@@ -12922,7 +12922,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 425,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted bounded JSON preference; immutable owner, work-item, attempt and dispatch association."
         }
       },
@@ -12933,7 +12933,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 383,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted bounded JSON admission for an explicitly configured finite app owner."
         }
       },
@@ -12944,7 +12944,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 284,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted admin-cookie JSON status over the existing application session factory."
         }
       },
@@ -12955,7 +12955,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 295,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted bounded fixed-schema JSON maintenance operation; no caller-selected database or DDL."
         }
       },
@@ -12966,7 +12966,7 @@
         "source": {
           "path": "routes/routing_harness_routes.py",
           "line": 318,
-          "sha256": "2cd880515b2996bf22f390897f939a9af9b4cb9db42a0059b99bdc16ab07d530",
+          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
           "claim": "Mounted bounded fixed transport-proof maintenance operation with fresh account/configuration guards."
         }
       }
