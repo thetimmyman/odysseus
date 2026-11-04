@@ -677,6 +677,8 @@ class TestAuthEnabledGating:
         ("get", "/api/harness/registry", None),
         ("get", "/api/harness/policy", None),
         ("get", "/api/harness/emergency/active", None),
+        ("post", "/api/harness/scorecard/outcomes",
+         {"scoring_version": "test-v1", "records": []}),
     ]
 
     def _call(self, client, method, path, body, headers):
@@ -733,3 +735,83 @@ class TestAuthEnabledGating:
         assert client.get("/api/harness/emergency/active", headers=NON_ADMIN).status_code == 403
         rev = client.post(f"/api/harness/emergency/{oid}/revoke", headers=SEC_ADMIN, json={})
         assert rev.status_code == 200, rev.text
+
+
+class TestScorecardOutcomesRoute:
+    def test_scorecard_outcomes_records_aggregation(self, tmp_path):
+        from tests.test_execution_outcomes import make_evidence, make_facts
+        from src.execution_outcomes import build_outcome_record
+
+        _app, client = _make_app_and_client()
+        evidence, extensions, _, _, _, _ = make_evidence(tmp_path / "repo-1", run_id="run-1", prompt_tokens=10)
+        facts = make_facts(evidence, prompt_zero=False)
+        record = build_outcome_record(evidence_package=evidence, companion_facts=facts,
+                                      artifact_extensions=extensions)
+        body = {
+            "scoring_version": "test-v1",
+            "records": [record.to_dict()],
+        }
+        res = client.post("/api/harness/scorecard/outcomes", headers=ADMIN, json=body)
+        assert res.status_code == 200, res.text
+        scorecard = res.json()
+        assert scorecard["schema"] == "execution-outcome-scorecard-v1"
+        assert scorecard["scoring_version"] == "test-v1"
+        assert scorecard["ranking_allowed"] is False
+        assert len(scorecard["arms"]) == 1
+        assert scorecard["source_record_hashes"] == [record.raw_record_hash]
+
+    def test_scorecard_outcomes_invalid_record_400(self):
+        _app, client = _make_app_and_client()
+        body = {
+            "scoring_version": "test-v1",
+            "records": [{"not": "valid"}],
+        }
+        res = client.post("/api/harness/scorecard/outcomes", headers=ADMIN, json=body)
+        assert res.status_code == 400
+
+    def test_scorecard_outcomes_stored_hashes_aggregation(self, tmp_path, monkeypatch):
+        from tests.test_execution_outcomes import make_evidence, make_facts
+        from src.execution_outcomes import build_outcome_record
+        from src.execution_outcome_store import put_record
+
+        store_dir = tmp_path / "store"
+        store_dir.mkdir(mode=0o700)
+        monkeypatch.setenv("ODYSSEUS_OUTCOME_STORE_ROOT", str(store_dir))
+
+        evidence, extensions, _, _, _, _ = make_evidence(tmp_path / "repo-store", run_id="store-1")
+        facts = make_facts(evidence)
+        record = build_outcome_record(evidence_package=evidence, companion_facts=facts,
+                                      artifact_extensions=extensions)
+        put_record(store_dir, record, max_record_bytes=2 * 1024 * 1024)
+
+        _app, client = _make_app_and_client()
+        body = {
+            "scoring_version": "test-v1",
+            "record_hashes": [record.raw_record_hash],
+        }
+        res = client.post("/api/harness/scorecard/outcomes", headers=ADMIN, json=body)
+        assert res.status_code == 200, res.text
+        scorecard = res.json()
+        assert scorecard["schema"] == "execution-outcome-scorecard-v1"
+        assert scorecard["source_record_hashes"] == [record.raw_record_hash]
+
+    def test_scorecard_outcomes_missing_store_503(self, monkeypatch):
+        monkeypatch.delenv("ODYSSEUS_OUTCOME_STORE_ROOT", raising=False)
+        _app, client = _make_app_and_client()
+        body = {
+            "scoring_version": "test-v1",
+            "record_hashes": ["a" * 64],
+        }
+        res = client.post("/api/harness/scorecard/outcomes", headers=ADMIN, json=body)
+        assert res.status_code == 503
+
+    def test_scorecard_outcomes_empty_body_400(self):
+        _app, client = _make_app_and_client()
+        res = client.post("/api/harness/scorecard/outcomes", headers=ADMIN, json={"scoring_version": "test-v1"})
+        assert res.status_code == 400
+
+    def test_scorecard_outcomes_empty_version_400(self):
+        _app, client = _make_app_and_client()
+        res = client.post("/api/harness/scorecard/outcomes", headers=ADMIN, json={"scoring_version": " ", "records": []})
+        assert res.status_code == 400
+

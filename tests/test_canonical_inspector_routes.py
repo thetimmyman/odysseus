@@ -439,3 +439,65 @@ def test_composed_public_retained_projector_owned_read_and_revocation(native_sto
     revoked = client.get(path, headers={"x-test-user": "admin"})
     assert revoked.status_code == 404 and revoked.json() == missing.json()
     assert reader_calls == [] and state["workers"] == 1
+
+
+def test_owned_inspection_projects_scorecard_outcomes(native_store, tmp_path, monkeypatch):
+    store, _ = native_store
+    owner = principal()
+    claim = store.admit(owner, "one", prepared())
+    store.consume(claim, owner)
+    handle = store.publish(claim, owner, publication())
+
+    scorecard = {
+        "schema": "execution-outcome-scorecard-v1",
+        "scoring_version": "test-v1",
+        "confidence_status": "INSUFFICIENT",
+        "ranking_allowed": False,
+        "capacity_pool_coverage": {"status": "ABSENT", "distinct_pool_identity_n": 0},
+        "capacity_pool_identities": [],
+        "source_record_hashes": ["a" * 64, "b" * 64],
+        "arms": [{"arm_key": "k1", "distinct_execution_n": 2, "verified_n": 2}],
+    }
+    proj = retained_projection()
+    proj["outcomes"] = {
+        "status": "OBSERVED",
+        "associated_source_hashes": ["a" * 64, "b" * 64],
+        "scorecard": scorecard,
+    }
+
+    service = InspectorService(store, retained_root=tmp_path,
+                               projector=lambda *_a, **_k: proj)
+    monkeypatch.setattr(service, "_read", lambda *_a, **_k: (retained_payload(), {}))
+    _, _, client = client_for(tmp_path, monkeypatch, service)
+    path = "/api/harness/inspector/attempts/" + handle
+    res = client.get(path, headers={"x-test-user": "admin"})
+    assert res.status_code == 200
+    outcomes = res.json()["routing"]["outcomes"]
+    assert outcomes["status"] == "OBSERVED"
+    assert outcomes["sample_size"] == 2
+    assert outcomes["scorecard"]["schema"] == "execution-outcome-scorecard-v1"
+    assert outcomes["scorecard"]["ranking_allowed"] is False
+    assert len(outcomes["scorecard"]["arms"]) == 1
+
+
+def test_inspector_service_passes_reader_outcomes_to_projector(native_store, tmp_path):
+    store, _ = native_store
+    owner = principal()
+    claim = store.admit(owner, "one", prepared())
+    store.consume(claim, owner)
+    handle = store.publish(claim, owner, publication())
+
+    passed_kwargs = {}
+
+    def mock_projector(payload, **kwargs):
+        passed_kwargs.update(kwargs)
+        return retained_projection()
+
+    service = InspectorService(store, retained_root=tmp_path, projector=mock_projector,
+                               outcomes_reader=lambda pkg, att: ["mock_outcome"])
+    service._read = lambda *_a, **_k: (retained_payload(), {})
+    res = service.inspect(owner, handle, lambda: owner)
+    assert res["routing"]["outcomes"]["status"] == "UNKNOWN"
+    assert passed_kwargs.get("outcomes") == ("mock_outcome",)
+    assert passed_kwargs.get("scoring_version") == "canonical-inspector-v1"
+
