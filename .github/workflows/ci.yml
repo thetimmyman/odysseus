@@ -41,6 +41,8 @@ jobs:
           for f in static/app.js static/js/**/*.js; do
             node --check "$f"
           done
+      - name: PR description gate contract
+        run: node --test .github/scripts/check-pr-description.test.js
 
   python-tests:
     name: Python tests (pytest)
