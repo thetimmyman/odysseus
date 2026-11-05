@@ -166,6 +166,109 @@ Higher scores mean "inspect earlier", not "correct" or "merge-ready". Broad PRs 
 
 Dirty, blocked, conflicting, and unknown merge states are shown as risk/caution reasons. They do not add importance points by themselves.
 
+## Work-item references and readiness
+
+This section documents the boundary between what the PR description gate accepts as a
+work-item reference and what it does not decide. It is the documentation half of the
+reference-syntax behavior implemented in
+[`../.github/scripts/check-pr-description.js`](../.github/scripts/check-pr-description.js),
+covered by the contract tests in
+[`../.github/scripts/check-pr-description.test.js`](../.github/scripts/check-pr-description.test.js)
+and run in CI by
+[`../.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+
+### The Linked Issue requirement
+
+Every PR description needs a filled-in **Linked Issue** section containing at least one
+recognized reference. The gate reads the description text of the open PR; PRs here target
+`dev`, and `main` stays the curated release line. A missing **Linked Issue** section, or a
+section with no recognized reference, is reported as a problem and the PR is labelled
+`needs work`.
+
+### Supported prefixes
+
+These prefixes are recognized, exactly and only as listed:
+
+- `OD` — native Odysseus work items
+- `PS`
+- `TMOS`
+- `EOT`
+- `EST`
+
+GitHub issue references keep working unchanged: a bare `#NNN`, a closing keyword plus a
+number (`Fixes #NNN`), or a full issue URL ending in `/issues/NNN`. A description may
+carry both a GitHub reference and a prefixed work-item reference; either satisfies the
+check.
+
+### Identifier and boundary rules
+
+For the prefixed forms:
+
+- The prefix must be one of the supported set. Any other prefix is not a reference.
+- The number must be a positive integer: zero is rejected, and leading zeros are rejected.
+- The identifier must stand alone. It may not be glued to surrounding word characters or
+  hyphens — no embedded prefixes, no underscore suffixes, no extra hyphenated segments,
+  no trailing letters.
+- HTML comments are stripped from the description before matching, so a reference that
+  exists only inside a comment does not count.
+
+The GitHub numeric forms are looser on the number itself (`#0` matches the pattern); the
+positive-integer and leading-zero rules above apply to the prefixed forms only.
+
+### Examples
+
+All identifiers below are synthetic and illustrative.
+
+Accepted:
+
+| Reference | Why |
+| --- | --- |
+| `OD-7` | supported prefix, positive integer, stands alone |
+| `(OD-52)` | surrounding punctuation is a valid boundary |
+| `PS-1` | supported prefix, positive integer |
+| `TMOS-104` | supported prefix, positive integer |
+| `EOT-256` | supported prefix, positive integer |
+| `EST-12` | supported prefix, positive integer |
+| `Fixes #63` | closing keyword plus issue number |
+| `#63` | bare issue number |
+| `https://github.com/OWNER/REPO/issues/63` | full issue URL |
+
+Rejected:
+
+| Reference | Why |
+| --- | --- |
+| `OD-0` | zero is not a positive integer |
+| `OD-05` | leading zero |
+| `OD-` | empty number |
+| `prefixOD-7` | prefix embedded in a longer word |
+| `OD-7_suffix` | underscore suffix breaks the boundary |
+| `OD-7-extra` | extra hyphenated segment |
+| `OD-7x` | non-numeric suffix |
+| `<!-- OD-7 -->` | comments are stripped before matching |
+| `POS-12` | unsupported prefix |
+| `12` | bare number, no prefix and no `#` |
+| `See the relevant work item for context.` | prose, no reference at all |
+
+A valid reference satisfies only the **Linked Issue** requirement. It never bypasses the
+other description requirements (summary, type of change, duplicate-search checklist,
+how-to-test detail).
+
+### What acceptance does not mean
+
+Acceptance is syntactic. The gate pattern-matches the PR description text; it does not
+query the tracker, and it never has. A recognized reference therefore does not establish:
+
+- that the work item exists;
+- who owns it;
+- whether it was admitted, in scope, or already completed;
+- any authority to merge.
+
+Likewise, the rankings in this guide — locked areas, hot files, review priority scores,
+duplicate candidates — are triage prompts for maintainers. They do not establish readiness
+either, and they do not read the tracker. Passing the description gate and passing the
+normal review, CI, and branch protections are separate things; the gate is a formatting
+check with a label side effect, not an approval and not a merge decision.
+
 ## Design note: intentional single-script layout
 
 `pr_blocker_audit.py` is intentionally kept as one standalone script. The goal is to keep this maintainer/contributor workflow helper low-friction while broader repo tooling and test-suite conventions are still evolving. Splitting it into packages or modules is not ruled out, but is deferred until there is a clearer settled pattern to follow.
@@ -184,5 +287,6 @@ Dirty, blocked, conflicting, and unknown merge states are shown as risk/caution 
 python3 -m py_compile scripts/pr_blocker_audit.py tests/test_pr_blocker_audit.py
 python3 -m pytest tests/test_pr_blocker_audit.py -q
 python3 scripts/pr_blocker_audit.py --help
+node --test .github/scripts/check-pr-description.test.js
 git diff --check
 ```
