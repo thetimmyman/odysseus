@@ -14,6 +14,47 @@ import pytest
 from src import local_targets as lt
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_fleet_registry(tmp_path, monkeypatch):
+    """Populate a synthetic three-host registry file so capability, fitness,
+    and inspector unit tests exercise file-backed registered_targets()."""
+    registry_path = tmp_path / "synthetic-local-targets.json"
+    lt.write_local_target_registry(
+        [
+            lt.LocalTargetSpec(
+                target_id=lt.TARGET_RTX_4500,
+                label="Synthetic GPU Node",
+                ssh_host="minipc",
+                endpoint="http://127.0.0.1:11434",
+                model="qwen3.8:27b",
+                roles=(lt.ROLE_INFERENCE, lt.ROLE_VERIFIER),
+                qualification_ref="ps632-measured:local-rtx4500",
+            ),
+            lt.LocalTargetSpec(
+                target_id=lt.TARGET_MSR1,
+                label="Synthetic ARM64 Verifier Node",
+                ssh_host="msr1",
+                endpoint="http://127.0.0.1:11434",
+                model="qwen3.8:27b",
+                roles=(lt.ROLE_VERIFIER, lt.ROLE_GOVERNANCE, lt.ROLE_ARM64_CI),
+                qualification_ref="ps637-verifier-role",
+            ),
+            lt.LocalTargetSpec(
+                target_id=lt.TARGET_FRAMEWORK,
+                label="Synthetic Secondary Inference Node",
+                ssh_host="framework",
+                endpoint="http://127.0.0.1:11434",
+                model="qwen3.8:27b",
+                roles=(lt.ROLE_INFERENCE,),
+                qualification_ref="",
+            ),
+        ],
+        registry_path,
+    )
+    monkeypatch.delenv(lt.TARGET_CAPABILITY_PROFILE_REGISTRY_ENV, raising=False)
+    monkeypatch.setattr(lt, "LOCAL_TARGETS_REGISTRY_FILE", str(registry_path))
+
+
 def _model(*, name="qwen3.8:27b", quant="Q4_K_M", ctx=262144, caps=("completion",)):
     return {
         "name": name,
