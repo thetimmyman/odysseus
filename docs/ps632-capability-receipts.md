@@ -82,17 +82,56 @@ current.json     deterministic index: profile_id -> receipt_hash (+ previous)
 This is not a second evidence ledger: PS-638 owns execution evidence and only REFERS
 to a receipt hash.
 
-## 5. The registry topology (as the ticket states it)
+## 5. Local target registry file and deployed path
 
-| Host | roles | qualification_ref | inference? |
-| --- | --- | --- | --- |
-| `local-rtx4500` (minipc) | inference, deterministic_verifier | `ps632-measured:local-rtx4500` | yes — its own measured receipt |
-| `local-msr1` | deterministic_verifier, governance_ci, arm64_ci | `ps637-verifier-role` | **no** — PS-637 retired its Qwen role; no latent inference fallback exists |
-| `local-framework` | inference | `""` | **no** — only an independently qualified profile may fill this in; research/Phase-0 metadata is not qualification, and there is no generic `framework` capability |
+`src.local_targets.registered_targets()` resolves local inference target
+specifications in strict order rather than hardcoding estate host tables in
+source:
 
-The gate lives in the routing seam and applies to BOTH the persisted and the
-in-memory record paths, so a healthy probe answer cannot make MS-R1 or an unqualified
-Framework routable.
+1. **Explicit override (`PS632_PROFILE_REGISTRY`)** — when set to a non-empty
+   path, reads that JSON list of `LocalTargetSpec` objects (missing or malformed
+   files fail closed).
+2. **Deployed instance registry (`src.constants.LOCAL_TARGETS_REGISTRY_FILE`)** —
+   when `PS632_PROFILE_REGISTRY` is unset and `LOCAL_TARGETS_REGISTRY_FILE`
+   exists on disk, reads `$ODYSSEUS_DATA_DIR/local_targets.json`. In the
+   deployed Docker Compose instance (`docker-compose.yml` mounting
+   `${ODYSSEUS_DATA_DIR:-./data}:/app/data`), the container reads
+   `/app/data/local_targets.json` (backed on the host by
+   `/srv/odysseus/data/local_targets.json`).
+3. **Minimal unqualified fallback (`DEFAULT_TARGETS`)** — when no registry file
+   is present, keeps only a single minimal `local-fallback` entry with
+   `qualification_ref=""` so unconfigured checkouts never inherit stale host,
+   port, or model tables and never silently qualify a target.
+
+Generate or refresh the registry file from the TMOS observed graph
+(`graph-ir.json`) or from the capacity broker's `/state` via
+`scripts/odysseus-local-targets` (`derive_local_target_registry` +
+`write_local_target_registry`):
+
+```sh
+scripts/odysseus-local-targets \
+  --graph /path/to/graph-ir.json \
+  --servers /path/to/private-servers.json \
+  --output /srv/odysseus/data/local_targets.json
+```
+
+or from broker `/state`:
+
+```sh
+scripts/odysseus-local-targets \
+  --broker-state /path/to/broker-state.json \
+  --servers /path/to/private-servers.json \
+  --output /srv/odysseus/data/local_targets.json
+```
+
+Generation enforces one canonical endpoint spelling per physical server, omits
+non-inference hosts (such as `msr1`, which has no inference role and is also
+rejected by `registered_targets()` if supplied with `inference`), and emits
+`qualification_ref=""` unless an independently qualified anchor is supplied.
+The routing and live-probe seams additionally enforce health and qualification,
+so any registry entry whose endpoint fails health (`/health` or `/api/version`
+unreachable, non-`ok` status, `engine.responds == false`, or non-`live`
+persisted liveness) is never returned as selectable.
 
 ## 6. Consumption
 
@@ -141,10 +180,11 @@ historical store requires explicit activation, rather than silently reconstructi
 its authority.
 
 `PS632_PROFILE_REGISTRY` can point at a JSON list of `LocalTargetSpec` records to
-replace retired endpoint/model configuration with explicit installed profiles.
-The canonical persisted seam checks schema 2 endpoint, host, model, qualification
-reference and inference-role bindings. MS-R1 cannot acquire an inference role
-through this override. Generic Framework metadata remains unqualified.
+override the deployed `$ODYSSEUS_DATA_DIR/local_targets.json`
+(`src.constants.LOCAL_TARGETS_REGISTRY_FILE`) with an explicit per-consumer
+registry file. The canonical persisted seam checks schema 2 endpoint, host,
+model, qualification reference and inference-role bindings. MS-R1 cannot acquire
+an inference role through either file. Unqualified entries remain unroutable.
 
 `scripts/odysseus-capability --store DIRECTORY verify` audits evidence and indexes.
 `import RECEIPT [--supersedes HASH]` requires an already sealed receipt;

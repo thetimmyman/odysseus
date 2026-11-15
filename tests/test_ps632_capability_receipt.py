@@ -472,7 +472,19 @@ def test_mark_invalidated_appends_evidence_and_never_deletes(tmp_path):
     assert s.current(r.profile_id).qualification_state(now=NOW) == INVALIDATED_IDENTITY_DRIFT
 
 
+def _default_test_specs():
+    return (
+        spec("local-rtx4500", roles=(ROLE_INFERENCE, ROLE_VERIFIER),
+             qualification_ref="ps632-measured:local-rtx4500", ssh_host="minipc"),
+        spec("local-msr1", roles=(ROLE_VERIFIER,),
+             qualification_ref="ps637-verifier-role", ssh_host="msr1"),
+        spec("local-framework", roles=(ROLE_INFERENCE,),
+             qualification_ref="", ssh_host="framework"),
+    )
+
+
 def _inputs(s, **kwargs):
+    kwargs.setdefault("specs", _default_test_specs())
     return ltr.persisted_routing_inputs(s, now=kwargs.pop("now", NOW), **kwargs)
 
 
@@ -609,15 +621,34 @@ def test_control_9_msr1_cannot_route_inference(tmp_path):
             inputs, packet=PACKET, role="local_implementer")
 
 
-def test_control_9b_the_real_registry_routes_only_the_rtx_host(tmp_path):
-    from src.local_targets import registered_targets
+def test_control_9b_the_real_registry_routes_only_the_rtx_host(tmp_path, monkeypatch):
+    from src import local_targets as lt
 
     s = store(tmp_path)
-    s.append(receipt())
-    inputs = _inputs(s, specs=registered_targets())
+    s.append(receipt(spec_=spec("local-rtx4500",
+                                qualification_ref="ps632-measured:local-rtx4500")))
+
+    # Without a registry file, DEFAULT_TARGETS is a single unqualified fallback.
+    monkeypatch.delenv(lt.TARGET_CAPABILITY_PROFILE_REGISTRY_ENV, raising=False)
+    monkeypatch.setattr(lt, "LOCAL_TARGETS_REGISTRY_FILE", str(tmp_path / "absent.json"))
+    fallback_inputs = _inputs(s, specs=lt.registered_targets())
+    assert fallback_inputs.target_ids() == ()
+    assert all("unqualified" in entry["reason"] for entry in fallback_inputs.skipped)
+
+    # With a registry file containing one qualified host and one unqualified host,
+    # only the qualified host routes.
+    reg_file = tmp_path / "local_targets.json"
+    lt.write_local_target_registry(
+        [
+            spec("local-rtx4500", qualification_ref="ps632-measured:local-rtx4500"),
+            spec("local-framework", qualification_ref="", ssh_host="framework"),
+        ],
+        reg_file,
+    )
+    monkeypatch.setattr(lt, "LOCAL_TARGETS_REGISTRY_FILE", str(reg_file))
+    inputs = _inputs(s, specs=lt.registered_targets())
     assert inputs.target_ids() == ("local-rtx4500",)
     reasons = {entry["target_id"]: entry["reason"] for entry in inputs.skipped}
-    assert "inference role" in reasons["local-msr1"]
     assert "unqualified" in reasons["local-framework"]
 
 
