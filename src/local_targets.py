@@ -389,6 +389,17 @@ def derive_local_target_registry(
     if observed_graph is None and broker_state is None:
         raise ValueError("observed_graph or broker_state is required")
 
+    if server_endpoints is not None and (
+        not isinstance(server_endpoints, (list, tuple))
+        or any(not isinstance(entry, Mapping) for entry in server_endpoints)
+    ):
+        raise ValueError("server_endpoints must be a sequence of mappings")
+    if host_aliases is not None and (
+        not isinstance(host_aliases, Mapping)
+        or any(not isinstance(k, str) or not k.strip() or not isinstance(v, str) or not v.strip()
+               for k, v in host_aliases.items())
+    ):
+        raise ValueError("host_aliases must map nonempty strings to nonempty strings")
     candidates: List[Mapping[str, Any]] = list(server_endpoints or [])
     graph_hosts: Optional[set] = None
     active_units: Dict[str, set] = {}
@@ -446,6 +457,11 @@ def derive_local_target_registry(
         raw_urls: List[str] = []
         if entry.get("endpoint"):
             raw_urls.append(str(entry["endpoint"]))
+        if "endpoints" in entry and (
+            not isinstance(entry["endpoints"], (list, tuple))
+            or any(not isinstance(url, str) or not url.strip() for url in entry["endpoints"])
+        ):
+            raise ValueError("endpoints must be a sequence of nonempty strings")
         for extra_url in entry.get("endpoints") or ():
             if extra_url:
                 raw_urls.append(str(extra_url))
@@ -458,7 +474,10 @@ def derive_local_target_registry(
             )
             for u in raw_urls
         ]
-        server_key = host_slug or target_id
+        server_key = target_id
+        metadata = (host_slug, model, runtime_kind,
+                    int(entry.get("max_concurrency") or DEFAULT_MAX_CONCURRENCY),
+                    str(entry.get("qualification_ref") or ""))
         bucket = grouped.setdefault(
             server_key,
             {
@@ -470,13 +489,30 @@ def derive_local_target_registry(
                 "max_concurrency": int(entry.get("max_concurrency") or DEFAULT_MAX_CONCURRENCY),
                 "qualification_ref": str(entry.get("qualification_ref") or ""),
                 "urls": [],
+                "metadata": metadata,
             },
         )
+        if bucket["metadata"] != metadata:
+            raise ValueError(f"conflicting observations for target {target_id}")
+        bucket["label"] = min(bucket["label"], str(entry.get("label") or host_slug or target_id))
         bucket["urls"].extend(canon_urls)
 
     specs: List[LocalTargetSpec] = []
+    endpoint_owners: Dict[tuple, str] = {}
     for server_key in sorted(grouped):
         bucket = grouped[server_key]
+        urls = bucket["urls"]
+        remote_urls = [u for u in urls if (urlsplit(u).hostname or "").lower() not in _LOOPBACK_HOSTS]
+        if len(set(remote_urls)) > 1:
+            raise ValueError(f"conflicting endpoints for target {server_key}")
+        if len({(urlsplit(u).scheme, urlsplit(u).port, urlsplit(u).path) for u in urls}) > 1:
+            raise ValueError(f"conflicting endpoints for target {server_key}")
+        for url in urls:
+            parsed = urlsplit(url)
+            endpoint_key = (bucket["host_slug"] if parsed.hostname in _LOOPBACK_HOSTS else "", url)
+            owner = endpoint_owners.setdefault(endpoint_key, server_key)
+            if owner != server_key:
+                raise ValueError(f"endpoint assigned to conflicting targets: {owner}, {server_key}")
         best_url = min(
             bucket["urls"],
             key=lambda u: _endpoint_rank_key(u, runtime_kind=bucket["runtime_kind"]),
@@ -967,7 +1003,7 @@ class OllamaInspector:
             return raw
         raw["reachable"] = True
         hbody = health["body"] if isinstance(health.get("body"), dict) else {}
-        status = str(hbody.get("status") or "ok").strip().lower()
+        status = str(hbody.get("status") or "").strip().lower()
         engine = hbody.get("engine")
         engine_dead = isinstance(engine, dict) and engine.get("responds") is False
         if status not in ("ok", "healthy", "up", "ready", "live") or engine_dead:

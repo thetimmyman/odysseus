@@ -584,3 +584,68 @@ def test_negative_control_unhealthy_persisted_receipt_is_never_selectable(
         for item in degraded.skipped
     )
 
+
+@pytest.mark.parametrize('body', [{}, [], {'error': 'failed'}, {'status': ''}])
+def test_unknown_health_is_not_selectable(body):
+    spec = lt.LocalTargetSpec(target_id='local-test', label='test', ssh_host='',
+                              endpoint='http://example.invalid:8731', model='m',
+                              runtime_kind='halogen-flash', qualification_ref='qualified')
+
+    class Inspector(lt.OllamaInspector):
+        def api(self, spec, path, body=None):
+            return {'ok': True, 'body': health_body if path == '/health' else {'data': [{'id': 'm'}]}, 'err': ''}
+
+    health_body = body
+    with pytest.raises(lt.LocalTargetUnavailable):
+        lt.select_local_target(specs=[spec], inspector=Inspector(probe_tools=False))
+
+
+def test_conflicting_observations_refused_in_either_order():
+    state = {'gpus': {'gpus': [{'pool': 'p'}]}}
+    rows = [dict(host='node', pool='p', endpoint='http://a.invalid:11434', model='old'),
+            dict(host='node', pool='p', endpoint='http://z.invalid:11434', model='new')]
+    for order in (rows, rows[::-1]):
+        with pytest.raises(ValueError):
+            lt.derive_local_target_registry(broker_state=state, server_endpoints=order)
+
+
+@pytest.mark.parametrize('inventory', [{'servers': 'bad'}, {'servers': [1]},
+                                      {'servers': [], 'host_aliases': []},
+                                      {'servers': [], 'host_aliases': {'x': 1}}])
+def test_cli_refuses_invalid_inventory_without_replacing_output(tmp_path, inventory):
+    state = tmp_path / 'state.json'
+    state.write_text('{"gpus":{"gpus":[]}}')
+    servers = tmp_path / 'servers.json'
+    servers.write_text(json.dumps(inventory))
+    output = tmp_path / 'output.json'
+    output.write_bytes(b'previous registry\n')
+    result = subprocess.run([sys.executable, 'scripts/odysseus-local-targets', '--broker-state', str(state),
+                             '--servers', str(servers), '--output', str(output)], capture_output=True)
+    assert result.returncode == 2
+    assert output.read_bytes() == b'previous registry\n'
+
+
+def test_distinct_instances_on_one_host_remain_separate():
+    state = {'gpus': {'gpus': [{'pool': 'p'}]}}
+    rows = [dict(host='node', pool='p', target_id='first', endpoint='http://node:11434', model='a'),
+            dict(host='node', pool='p', target_id='second', endpoint='http://node:8731', model='b', runtime_kind='halogen')]
+    forward = lt.derive_local_target_registry(broker_state=state, server_endpoints=rows)
+    reverse = lt.derive_local_target_registry(broker_state=state, server_endpoints=rows[::-1])
+    assert forward == reverse
+    assert [(s.target_id, s.endpoint, s.model) for s in forward] == [
+        ('first', 'http://node:11434', 'a'), ('second', 'http://node:8731', 'b')]
+
+
+@pytest.mark.parametrize('change', [
+    {'endpoint': 'http://other.invalid:11434'},
+    {'runtime_kind': 'halogen'},
+    {'qualification_ref': 'other'},
+    {'target_id': 'other'},
+])
+def test_conflicting_identity_or_endpoint_refused_in_either_order(change):
+    state = {'gpus': {'gpus': [{'pool': 'p'}]}}
+    row = dict(host='node', pool='p', target_id='first', endpoint='http://node:11434', model='a')
+    rows = [row, {**row, **change}]
+    for order in (rows, rows[::-1]):
+        with pytest.raises(ValueError):
+            lt.derive_local_target_registry(broker_state=state, server_endpoints=order)

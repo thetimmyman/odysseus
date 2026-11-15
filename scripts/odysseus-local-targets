@@ -87,8 +87,12 @@ def main() -> int:
             if isinstance(raw_servers, list):
                 server_endpoints = raw_servers
             elif isinstance(raw_servers, dict):
-                server_endpoints = raw_servers.get("servers") or []
-                host_aliases = raw_servers.get("host_aliases") or {}
+                if "servers" not in raw_servers:
+                    raise ValueError("--servers object requires a servers list")
+                server_endpoints = raw_servers.get("servers", [])
+                host_aliases = raw_servers.get("host_aliases", {})
+                if not isinstance(server_endpoints, list) or not isinstance(host_aliases, dict):
+                    raise ValueError("--servers object requires a servers list and host_aliases object")
             else:
                 raise ValueError("--servers must be a JSON list or object")
 
