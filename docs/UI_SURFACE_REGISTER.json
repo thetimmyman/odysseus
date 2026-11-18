@@ -5,7 +5,7 @@
     "census_sha256": "92f2dddafaeac709a990ba7f08fdefa2d670d52741c97785e45a1ef3c7716abc",
     "source_file_count": 224,
     "source_pins": {
-      "AGENTS.md": "2e2e69f07438d9fb339a760c32528f1f406cea2cc0e2f5be162ed6c8bf900230",
+      "AGENTS.md": "19dadaab52747b9956bffa768c39af3f1b3a7c7a77f0bc3d17075587957f865a",
       "app.py": "0464c3f07cce511b1b4d336af09f0cccd62e47812e27b7fbe06004502bd485ea",
       "routes/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "routes/admin_wipe_routes.py": "b78047e84499d698ec3009d7ec7eae17baf37153b061ce0690c3dea378658dba",
