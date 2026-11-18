@@ -20,5 +20,5 @@ if [[ ! -f node_modules/.package-lock.json ]] || ! npm ls --depth=0 >/dev/null 2
 fi
 if [[ $mode == --verify ]]; then
     scripts/lint-ratchet-selftest.sh
-    python -m pytest -q tests/test_build_identity.py tests/test_deployment_controls.py
+    python -m pytest -q tests/test_build_identity.py tests/test_deployment_controls.py tests/test_ui_surface_register.py
 fi
