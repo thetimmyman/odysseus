@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
@@ -276,9 +277,59 @@ _deterministic_route = build_deterministic_route
 
 # The app lifespan owns an explicitly configured finite service. Missing
 # native state keeps these routes unavailable; no environment flag enables it.
+from src.automation_usefulness import (
+    AutomationControlError,
+    AutomationControlUnavailableError,
+    AutomationControlValidationError,
+    attach_automation_usefulness_from_source,
+    delegate_automation_control,
+    validate_automation_control_request,
+)
 from src.canonical_inspector_admission import InspectorUnavailable, UnknownInspection
 from src.canonical_inspector_service import request_principal
 from src.canonical_pilot_adapter import PilotLimit, read_idempotency_key
+from src.constants import AUTOMATION_CONTROL_BODY_BYTES, AUTOMATION_CONTROL_BODY_SECONDS
+
+
+def _require_same_origin_request(request: Request) -> None:
+    """Enforce CSRF/origin protections on state-changing admin inspector routes."""
+    from urllib.parse import urlsplit
+    from src.dev_preview_proxy import _same_site
+
+    site = (request.headers.get("sec-fetch-site") or "").lower()
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    content_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type != "application/json":
+        raise HTTPException(403, "Same-origin JSON admin request required")
+    try:
+        if (
+            not _same_site(request.headers, request.headers.get("host"))
+            or site not in ("", "same-origin", "none")
+        ):
+            raise HTTPException(403, "Same-origin admin request required")
+        if origin is not None:
+            parsed = urlsplit(origin)
+            if (
+                not origin
+                or len(origin) > 2048
+                or any(ord(c) <= 32 for c in origin)
+                or parsed.scheme != request.url.scheme
+                or parsed.netloc.lower() != request.headers.get("host", "").lower()
+            ):
+                raise HTTPException(403, "Same-origin admin request required")
+        elif referer is not None:
+            parsed_ref = urlsplit(referer)
+            if (
+                not referer
+                or len(referer) > 2048
+                or any(ord(c) <= 32 for c in referer)
+                or parsed_ref.scheme != request.url.scheme
+                or parsed_ref.netloc.lower() != request.headers.get("host", "").lower()
+            ):
+                raise HTTPException(403, "Same-origin admin request required")
+    except ValueError:
+        raise HTTPException(403, "Same-origin admin request required") from None
 
 
 @router.get("/inspector/setup")
@@ -438,6 +489,88 @@ async def inspector_alternate(handle: str, request: Request):
             body["reason"], body["idempotency_key"], lambda: request_principal(request))
     except (PilotLimit, UnknownInspection, InspectorUnavailable, ValueError, TypeError, RecursionError):
         raise HTTPException(404, "Inspection unavailable") from None
+
+
+@router.post("/inspector/automations/{automation_id}/control")
+async def inspector_automation_control(automation_id: str, request: Request):
+    """Fail-closed admin control surface for simplify/pause/retire/restore actions."""
+    owner = request_principal(request)
+    _require_same_origin_request(request)
+    from starlette.concurrency import run_in_threadpool
+    from src.canonical_pilot_adapter import collect_bytes, _pairs, _nonfinite
+
+    try:
+        raw = await collect_bytes(
+            request.stream(),
+            limit=AUTOMATION_CONTROL_BODY_BYTES,
+            seconds=AUTOMATION_CONTROL_BODY_SECONDS,
+        )
+        body = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_nonfinite)
+    except (PilotLimit, UnicodeError, ValueError, TypeError, RecursionError):
+        err = AutomationControlValidationError("Invalid automation control JSON payload.")
+        return JSONResponse(status_code=err.status_code, content=err.to_refusal())
+
+    try:
+        validated = validate_automation_control_request(automation_id, body)
+    except AutomationControlError as err:
+        return JSONResponse(status_code=err.status_code, content=err.to_refusal())
+
+    service = getattr(request.app.state, "canonical_inspector_service", None)
+    standalone_authority = getattr(request.app.state, "automation_control_authority", None)
+    service_has_control = (
+        service is not None
+        and callable(getattr(service, "apply_automation_control", None))
+        and getattr(service, "automation_control_authority", None) is not None
+    )
+
+    if not service_has_control and standalone_authority is None:
+        err = AutomationControlUnavailableError(
+            "Automation control authority is not configured; lifecycle controls fail closed."
+        )
+        return JSONResponse(
+            status_code=err.status_code,
+            content=err.to_refusal(
+                automation_id=validated.automation_id,
+                action=validated.action,
+            ),
+        )
+
+    def _run_control():
+        if service_has_control:
+            return service.apply_automation_control(
+                owner,
+                automation_id,
+                body,
+                lambda: request_principal(request),
+            )
+        if request_principal(request) != owner:
+            raise HTTPException(403, "Admin cookie session required")
+        ack = delegate_automation_control(standalone_authority, owner, validated)
+        if request_principal(request) != owner:
+            raise HTTPException(403, "Admin cookie session required")
+        return ack
+
+    try:
+        return await run_in_threadpool(_run_control)
+    except HTTPException:
+        raise
+    except AutomationControlError as err:
+        return JSONResponse(
+            status_code=err.status_code,
+            content=err.to_refusal(
+                automation_id=validated.automation_id,
+                action=validated.action,
+            ),
+        )
+    except Exception:
+        err = AutomationControlUnavailableError("Automation control backend is unavailable.")
+        return JSONResponse(
+            status_code=err.status_code,
+            content=err.to_refusal(
+                automation_id=validated.automation_id,
+                action=validated.action,
+            ),
+        )
 
 
 import os
@@ -1552,6 +1685,15 @@ def setup_routing_harness_routes():
         return _knowledge_transition(entry_id, expire_entry, actor,
                                      body.rationale)
 
+    def _maybe_attach_automation_usefulness(request: Request, scorecard: dict) -> dict:
+        source = getattr(request.app.state, "automation_usefulness_source", None)
+        if source is None:
+            service = getattr(request.app.state, "canonical_inspector_service", None)
+            source = getattr(service, "automation_usefulness_source", None)
+        if source is None:
+            return scorecard
+        return attach_automation_usefulness_from_source(scorecard, source)
+
     @router.post("/scorecard/outcomes")
     def scorecard_outcomes(body: ScorecardOutcomesRequest, request: Request):
         """Descriptive outcome scorecard aggregated over explicit records or stored hashes."""
@@ -1573,9 +1715,10 @@ def setup_routing_harness_routes():
                 except Exception as exc:
                     raise HTTPException(400, f"invalid outcome record: {exc}") from exc
             try:
-                return aggregate_outcomes(validated_records, scoring_version=body.scoring_version)
+                scorecard = aggregate_outcomes(validated_records, scoring_version=body.scoring_version)
             except Exception as exc:
                 raise HTTPException(400, f"cannot aggregate records: {exc}") from exc
+            return _maybe_attach_automation_usefulness(request, scorecard)
 
         if body.record_hashes is not None:
             if not isinstance(body.record_hashes, list) or not body.record_hashes:
@@ -1584,11 +1727,12 @@ def setup_routing_harness_routes():
             if not store_root:
                 raise HTTPException(503, "Outcome store unavailable")
             try:
-                return aggregate_stored_outcomes(store_root, body.record_hashes,
-                                                 scoring_version=body.scoring_version,
-                                                 max_record_bytes=CANONICAL_INSPECTOR_RESPONSE_BYTES * 32)
+                scorecard = aggregate_stored_outcomes(store_root, body.record_hashes,
+                                                      scoring_version=body.scoring_version,
+                                                      max_record_bytes=CANONICAL_INSPECTOR_RESPONSE_BYTES * 32)
             except ExecutionOutcomeStoreError as exc:
                 raise HTTPException(400, f"cannot aggregate stored outcomes: {exc}") from exc
+            return _maybe_attach_automation_usefulness(request, scorecard)
 
         raise HTTPException(400, "Either records or record_hashes must be provided")
 
