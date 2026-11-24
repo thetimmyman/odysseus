@@ -24,6 +24,10 @@ from src.provider_capacity import (
 )
 from src.execution_outcomes import ExecutionOutcomeRecord, validate_outcome_record
 from src.outcome_scorecard import aggregate_outcomes
+from src.automation_usefulness import (
+    attach_automation_usefulness,
+    load_automation_usefulness_entries,
+)
 from src.attempt_receipt import (
     ArtifactRef, AttemptReceipt, VerificationReceipt,
     attempt_receipt_hash_is_valid, recompute_outcome,
@@ -237,6 +241,7 @@ def _project_routing_mapping(
     outcomes: Iterable[ExecutionOutcomeRecord] = (),
     now: datetime,
     scoring_version: str = "",
+    automation_usefulness: Any = None,
 ) -> dict[str, Any]:
     """Return an isolated, descriptive view; never selects or authorizes a target."""
     moment = _require_time(now)
@@ -346,6 +351,15 @@ def _project_routing_mapping(
             raise RoutingInspectionError("outcome is not a valid canonical record") from exc
     scorecard = (aggregate_outcomes(normalized_outcomes, scoring_version=scoring_version)
                  if normalized_outcomes else None)
+    if automation_usefulness is not None:
+        loaded_usefulness = load_automation_usefulness_entries(
+            automation_usefulness, base_scorecard=scorecard)
+        if loaded_usefulness is not None:
+            if scorecard is None and loaded_usefulness:
+                scorecard = aggregate_outcomes(
+                    [], scoring_version=scoring_version or "canonical-inspector-v1")
+            if scorecard is not None:
+                scorecard = attach_automation_usefulness(scorecard, loaded_usefulness)
     view = {
         "schema": "routing-inspection-projection-v1",
         "authoritative": False,
@@ -401,6 +415,7 @@ def project_routing_inspection(
     outcomes: Iterable[ExecutionOutcomeRecord] = (),
     now: datetime,
     scoring_version: str = "",
+    automation_usefulness: Any = None,
 ) -> dict[str, Any]:
     """Return an isolated, descriptive view; never selects or authorizes a target."""
     _require_time(now)
@@ -416,7 +431,7 @@ def project_routing_inspection(
     return _project_routing_mapping(
         package_payload, dispatch_payload, capability_receipts=capability_receipts,
         capacity_receipts=capacity_receipts, outcomes=outcomes, now=now,
-        scoring_version=scoring_version)
+        scoring_version=scoring_version, automation_usefulness=automation_usefulness)
 
 
 def _full_hash(value: Any) -> bool:
@@ -707,6 +722,7 @@ def project_retained_routing_inspection(
     now: datetime,
     outcomes: Iterable[ExecutionOutcomeRecord] = (),
     scoring_version: str = "",
+    automation_usefulness: Any = None,
 ) -> dict[str, Any]:
     """Inspect one exact attempt from explicit retained v2 canonical inputs, without I/O.
 
@@ -763,7 +779,8 @@ def project_retained_routing_inspection(
         view = _project_routing_mapping(
             package, dispatches[attempt["dispatch_receipt_hash"]],
             capability_receipts=caps, capacity_receipts=capacity, outcomes=outcomes,
-            now=moment, scoring_version=scoring_version)
+            now=moment, scoring_version=scoring_version,
+            automation_usefulness=automation_usefulness)
         view["retained_evidence"] = {
             "evidence_package_hash": data["evidence_package_hash"],
             "attempt_receipt_hash": attempt_receipt_hash,
