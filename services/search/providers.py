@@ -128,10 +128,11 @@ def _safesearch_for(provider: str) -> Optional[str]:
 _NEWS_HINTS = ("news", "nyheter", "headlines", "breaking", "latest", "today", "idag")
 
 # Default general engines (google/duckduckgo/brave/startpage/wikipedia) are
-# routinely rate-limited / CAPTCHA-blocked on this instance and return nothing.
-# Pin engines that actually respond so non-news queries get results without any
-# third-party API fallback. Override via SEARXNG_GENERAL_ENGINES.
-_GENERAL_ENGINES = os.environ.get("SEARXNG_GENERAL_ENGINES", "bing,mojeek,presearch")
+# routinely rate-limited / CAPTCHA-blocked on this instance and return nothing,
+# and mojeek/presearch return 403/530 from the home egress IP. Pin engines that
+# actually respond without hitting Google so non-news queries get results
+# without any third-party API fallback. Override via SEARXNG_GENERAL_ENGINES.
+_GENERAL_ENGINES = os.environ.get("SEARXNG_GENERAL_ENGINES", "bing,yandex,mwmbl")
 
 
 def searxng_search_api(query: str, count: int = 10, categories: str = "general",
