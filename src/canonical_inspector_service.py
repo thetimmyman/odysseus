@@ -21,6 +21,16 @@ import uuid
 from fastapi import HTTPException
 
 from src.auth_helpers import require_admin_cookie
+from src.automation_usefulness import (
+    AutomationControlNotFoundError,
+    AutomationControlUnauthorizedError,
+    AutomationControlUnavailableError,
+    attach_automation_usefulness,
+    delegate_automation_control,
+    fit_response_with_automation_usefulness,
+    load_automation_usefulness_entries,
+    validate_automation_control_request,
+)
 from src.canonical_inspector_admission import (
     InspectorUnavailable, Principal, Publication, UnknownInspection,
 )
@@ -275,8 +285,21 @@ def _minimized_projection(projection, publication):
             outcomes["status"] = status
         scorecard = outcomes_data.get("scorecard")
         if type(scorecard) is dict and scorecard.get("schema") == "execution-outcome-scorecard-v1":
-            outcomes["scorecard"] = scorecard
-            source_hashes = scorecard.get("source_record_hashes")
+            safe_scorecard = dict(scorecard)
+            if "automation_usefulness" in safe_scorecard:
+                raw_usefulness = safe_scorecard.pop("automation_usefulness")
+                raw_total_n = safe_scorecard.pop("automation_usefulness_total_n", None)
+                if isinstance(raw_usefulness, list):
+                    sanitized_card = attach_automation_usefulness(safe_scorecard, raw_usefulness)
+                    if (
+                        "automation_usefulness" in sanitized_card
+                        and type(raw_total_n) is int
+                        and raw_total_n > sanitized_card.get("automation_usefulness_total_n", 0)
+                    ):
+                        sanitized_card["automation_usefulness_total_n"] = raw_total_n
+                    safe_scorecard = sanitized_card
+            outcomes["scorecard"] = safe_scorecard
+            source_hashes = safe_scorecard.get("source_record_hashes")
             if type(source_hashes) is list:
                 outcomes["sample_size"] = len(source_hashes)
         elif type(outcomes_data.get("associated_source_hashes")) is list:
@@ -295,6 +318,7 @@ def _minimized_projection(projection, publication):
                           "capacity_state": observation_status("capacity"),
                           "candidates": safe_candidates if candidates != "UNKNOWN" else "UNKNOWN"},
               "semantic_acceptance": "UNKNOWN"}
+    fit_response_with_automation_usefulness(result, max_bytes=CANONICAL_INSPECTOR_RESPONSE_BYTES)
     raw = json.dumps(result, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if len(raw) > CANONICAL_INSPECTOR_RESPONSE_BYTES:
         raise UnknownInspection("inspection unavailable")
@@ -306,7 +330,8 @@ class InspectorService:
 
     def __init__(self, store, *, retained_root, projector, pilot_adapter=None,
                  retention_parents=(), restored_disclosure_generation=CANONICAL_PILOT_DISCLOSURE_GENERATION,
-                 work_owner=None, outcomes_reader=None, outcome_scoring_version="canonical-inspector-v1"):
+                 work_owner=None, outcomes_reader=None, outcome_scoring_version="canonical-inspector-v1",
+                 automation_usefulness_source=None, automation_control_authority=None):
         self._store = store
         self._root = retained_root
         self._project = projector
@@ -317,6 +342,50 @@ class InspectorService:
         self._work_owner = work_owner
         self._outcomes_reader = outcomes_reader
         self._outcome_scoring_version = outcome_scoring_version
+        self._automation_usefulness_source = automation_usefulness_source
+        self._automation_control_authority = automation_control_authority
+
+    @property
+    def automation_usefulness_source(self):
+        return self._automation_usefulness_source
+
+    @property
+    def automation_control_authority(self):
+        return self._automation_control_authority
+
+    def _attach_configured_automation_usefulness(self, projected):
+        """Safely attach bounded automation_usefulness onto projected outcomes without crashing."""
+        if self._automation_usefulness_source is None or type(projected) is not dict:
+            return projected
+        try:
+            outcomes_data = projected.get("outcomes")
+            existing_scorecard = (
+                outcomes_data.get("scorecard")
+                if isinstance(outcomes_data, dict) and isinstance(outcomes_data.get("scorecard"), dict)
+                else None
+            )
+            loaded = load_automation_usefulness_entries(
+                self._automation_usefulness_source,
+                base_scorecard=existing_scorecard,
+            )
+            if loaded is None:
+                return projected
+            target_scorecard = existing_scorecard
+            if target_scorecard is None:
+                if not loaded:
+                    return projected
+                from src.outcome_scorecard import aggregate_outcomes
+                target_scorecard = aggregate_outcomes(
+                    [], scoring_version=self._outcome_scoring_version or "canonical-inspector-v1"
+                )
+            enriched_scorecard = attach_automation_usefulness(target_scorecard, loaded)
+            updated = dict(projected)
+            updated_outcomes = dict(outcomes_data) if isinstance(outcomes_data, dict) else {"status": "UNKNOWN"}
+            updated_outcomes["scorecard"] = enriched_scorecard
+            updated["outcomes"] = updated_outcomes
+            return updated
+        except Exception:
+            return projected
 
     def inspect(self, owner, handle, reauthorize):
         try:
@@ -356,6 +425,7 @@ class InspectorService:
                 project_kwargs.pop("outcomes", None)
                 project_kwargs.pop("scoring_version", None)
                 projected = self._project(payload, **project_kwargs)
+            projected = self._attach_configured_automation_usefulness(projected)
             result = _minimized_projection(projected, publication)
             if self._generation == CANONICAL_TMOS_DISCLOSURE_GENERATION:
                 result["mission_key"] = package["ticket_key"]
@@ -364,6 +434,7 @@ class InspectorService:
             if self._store.resolve(owner, handle, self._generation) != publication:
                 raise UnknownInspection("inspection unavailable")
             result["interventions"] = self._store.interventions(owner, handle, self._generation)
+            fit_response_with_automation_usefulness(result, max_bytes=CANONICAL_INSPECTOR_RESPONSE_BYTES)
             if len(json.dumps(result, allow_nan=False).encode()) > CANONICAL_INSPECTOR_RESPONSE_BYTES:
                 raise UnknownInspection("inspection unavailable")
             _reauthorize(owner, reauthorize)
@@ -555,3 +626,40 @@ class InspectorService:
         self._store.revoke(owner, handle)
         _reauthorize(owner, reauthorize)
         return {"status": "revoked"}
+
+    def apply_automation_control(self, owner, automation_id, body, reauthorize):
+        """Apply a validated, owner-authorized automation lifecycle control or fail closed."""
+        try:
+            _reauthorize(owner, reauthorize)
+        except UnknownInspection:
+            raise AutomationControlUnauthorizedError("Admin cookie session required.") from None
+        validated = validate_automation_control_request(automation_id, body)
+        if self._automation_control_authority is None:
+            raise AutomationControlUnavailableError(
+                "Automation control authority is not configured; lifecycle controls fail closed."
+            )
+        work_item_key = "ODYSSEUS-INSPECTOR"
+        if validated.handle is not None:
+            try:
+                publication = self._store.resolve(owner, validated.handle, self._generation)
+            except (UnknownInspection, InspectorUnavailable):
+                raise AutomationControlNotFoundError(
+                    "Attempt handle is not available to this account."
+                ) from None
+            if publication.packet_id:
+                work_item_key = publication.packet_id
+        try:
+            _reauthorize(owner, reauthorize)
+        except UnknownInspection:
+            raise AutomationControlUnauthorizedError("Admin cookie session required.") from None
+        ack = delegate_automation_control(
+            self._automation_control_authority,
+            owner,
+            validated,
+            work_item_key=work_item_key,
+        )
+        try:
+            _reauthorize(owner, reauthorize)
+        except UnknownInspection:
+            raise AutomationControlUnauthorizedError("Admin cookie session required.") from None
+        return ack

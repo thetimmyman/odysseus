@@ -53,7 +53,7 @@
       "routes/preset_routes.py": "b1b3441c9461fe574b9a76761e64fe943ae67e55f63b9ff5b30fcdddc86875de",
       "routes/project_files_routes.py": "81eb1b50b823e3a9f4336eebbe3b9caab401144616d0d8a6b4cd7136997ab281",
       "routes/research_routes.py": "77ba0b6ef376788df985e756e86e7d5c8f571596a66bfb84aaad21a56f8e2dfc",
-      "routes/routing_harness_routes.py": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+      "routes/routing_harness_routes.py": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
       "routes/search_routes.py": "1510aa0e1bbf5cf537aea90406e29f95407eda507264e3d9eec09ca19fc4fb6a",
       "routes/session_routes.py": "915c908379e0c74e6fb690e59b462820cf70600eed6c7db5078e64a2f40dcd8c",
       "routes/shell_routes.py": "7f76cc62bd0cc663212cc31e993893be70c11fcf14b186b1477bf988ad2fec8e",
@@ -5432,7 +5432,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Owning module or server route; see cited entry-point references for exact route/control lines."
         },
         {
@@ -5453,7 +5453,7 @@
         {
           "path": "routes/routing_harness_routes.py",
           "line": 1,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "State access and ownership require source-level interpretation; this citation anchors the owning module."
         },
         {
@@ -5473,7 +5473,7 @@
           {
             "path": "routes/routing_harness_routes.py",
             "line": 1,
-            "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+            "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
             "claim": "Backend route source associated with this surface."
           }
         ]
@@ -12877,8 +12877,8 @@
         "reason": "Fixed synthetic-pilot JSON admission uses the existing admin-cookie gate and a trusted per-app service. The app-owned real-work composition cannot execute the synthetic adapter. Default setup supplies no service. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 359,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 410,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12888,8 +12888,8 @@
         "reason": "Owner-checked minimized JSON inspection supports a future client. It adds no navigable HTML page, asset response or browser control; live transport and UI acceptance remain unobserved.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 371,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 422,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12899,8 +12899,8 @@
         "reason": "Owner-checked JSON locator revocation adds no navigable HTML page, asset response or browser control. It does not establish installed service or browser acceptance.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 413,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 464,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted JSON API route declaration; source hash pins the reviewed complete route module."
         }
       },
@@ -12910,8 +12910,8 @@
         "reason": "Owner-cookie authenticated pending escalation request with an exact retained-attempt join; no policy mutation, dispatch or navigable HTML. The app-owned service is absent in default setup.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 395,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 446,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted bounded JSON request; immutable owner/attempt/dispatch-associated request receipt."
         }
       },
@@ -12921,8 +12921,8 @@
         "reason": "Owner-cookie authenticated preference for another recorded eligible target. An explicitly configured app owner may consume the request once through current canonical routing and retained execution evidence; configuration cannot refresh evidence or grant eligibility. Default setup is unavailable; native and UI acceptance remain unobserved. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 425,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 476,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted bounded JSON preference; immutable owner, work-item, attempt and dispatch association."
         }
       },
@@ -12932,8 +12932,8 @@
         "reason": "Finite owner-cookie authenticated admission accepts only an idempotency key for one of two pre-admitted work packages. The app lifespan owns normal routing, execution and retention; browser callers supply no command, path, target, package or policy. Default setup remains unavailable and operational acceptance unobserved. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 383,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 434,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted bounded JSON admission for an explicitly configured finite app owner."
         }
       },
@@ -12943,8 +12943,8 @@
         "reason": "Explicit admin-cookie maintenance status reports the existing application database schema, connection qualification and current maintenance availability. Execution qualification remains NOT_RUN. This JSON endpoint creates no navigable page or browser control; native setup and execution acceptance remain unobserved.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 284,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 335,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted admin-cookie JSON status over the existing application session factory."
         }
       },
@@ -12954,8 +12954,8 @@
         "reason": "Explicit admin-cookie maintenance accepts only an expected fixed schema fingerprint. Disabled execution, absent owner and no unresolved admission are required before adding the fixed feature schema in one SQLite transaction. Partial schema refuses repair; account/configuration checks are snapshots. This adds no navigable page or browser control and does not enable execution or establish native application, restore or pilot acceptance.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 295,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 346,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted bounded fixed-schema JSON maintenance operation; no caller-selected database or DDL."
         }
       },
@@ -12965,9 +12965,20 @@
         "reason": "Explicit admin-cookie, same-origin maintenance accepts only an expected private manifest digest while execution is disabled and no owner, unresolved admission or foreign transport guard exists. It runs exactly two fixed owned transport proofs and cleanup, without broker/provider calls, work database rows, profile changes or capability qualification. Results are coarse operational observations for that call, not a routing/attempt receipt or a reusable eligibility grant. No navigable HTML or browser control is added.",
         "source": {
           "path": "routes/routing_harness_routes.py",
-          "line": 318,
-          "sha256": "1984576e2b356a2b89bbc5b4f3c5bfa51a6c6d844816143c9e291ef341bdbbc9",
+          "line": 369,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
           "claim": "Mounted bounded fixed transport-proof maintenance operation with fresh account/configuration guards."
+        }
+      },
+      {
+        "candidate": "POST /api/harness/inspector/automations/{automation_id}/control",
+        "type": "owned_canonical_inspector_json_api",
+        "reason": "Explicit admin-cookie, same-origin JSON lifecycle control admits only a bounded body and validates it against a configured automation-control authority; it fails closed when no service or standalone authority is attached. No navigable HTML, asset response or browser control is added. Default setup remains unavailable and lifecycle/UI acceptance is unobserved.",
+        "source": {
+          "path": "routes/routing_harness_routes.py",
+          "line": 494,
+          "sha256": "baed4fffe9007d495727c768dbe9fbdfbb2d56beacf09f64753a14663a14e74c",
+          "claim": "Mounted bounded admin-cookie same-origin JSON control and fail-closed authority gate; source hash pins the reviewed complete route module."
         }
       }
     ],
