@@ -34,6 +34,18 @@ def test_secret_placeholder_and_json_format_kept():
 
 def test_verified_engines_enabled_and_blocked_ones_disabled():
     engines = {e["name"]: e["disabled"] for e in _settings()["engines"]}
-    assert engines["bing"] is False
-    for blocked in ("brave", "duckduckgo", "startpage"):
+    for enabled in ("bing", "yandex", "mwmbl"):
+        assert engines[enabled] is False
+    for blocked in (
+        "brave",
+        "duckduckgo",
+        "google",
+        "google images",
+        "google news",
+        "google scholar",
+        "google videos",
+        "startpage",
+        "startpage images",
+        "startpage news",
+    ):
         assert engines[blocked] is True
