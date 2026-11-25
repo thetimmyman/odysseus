@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Generate Odysseus local target registry JSON from observed servers.
+
+Reads the TMOS observed graph (``graph-ir.json``) and/or broker ``/state``
+alongside an operator server inventory, normalizes every server to one canonical
+endpoint spelling, excludes non-inference hosts, and writes the JSON list read
+by ``src.local_targets.registered_targets`` (defaulting to
+``src.constants.LOCAL_TARGETS_REGISTRY_FILE``).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.constants import LOCAL_TARGETS_REGISTRY_FILE
+from src.local_targets import derive_local_target_registry, write_local_target_registry
+
+
+def _load_json(path: Path) -> object:
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _fetch_json(url: str, timeout: float = 5.0) -> object:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--graph",
+        type=Path,
+        default=None,
+        help="Path to TMOS observed graph-ir.json.",
+    )
+    parser.add_argument(
+        "--broker-state",
+        type=Path,
+        default=None,
+        help="Path to broker /state JSON snapshot.",
+    )
+    parser.add_argument(
+        "--broker-state-url",
+        default="",
+        help="HTTP URL for live broker /state JSON.",
+    )
+    parser.add_argument(
+        "--servers",
+        type=Path,
+        default=None,
+        help="JSON list of server endpoint observations or {'servers': [...], 'host_aliases': {...}}.",
+    )
+    parser.add_argument(
+        "--exclude-unhealthy",
+        action="store_true",
+        help="Omit broker pools currently failing health at generation time.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path(LOCAL_TARGETS_REGISTRY_FILE),
+        help="Destination registry path (defaults to LOCAL_TARGETS_REGISTRY_FILE).",
+    )
+    args = parser.parse_args()
+
+    try:
+        graph = _load_json(args.graph) if args.graph is not None else None
+        if args.broker_state is not None and args.broker_state_url:
+            raise ValueError("pass at most one of --broker-state and --broker-state-url")
+        if args.broker_state is not None:
+            broker_state = _load_json(args.broker_state)
+        elif args.broker_state_url:
+            broker_state = _fetch_json(args.broker_state_url)
+        else:
+            broker_state = None
+
+        server_endpoints = None
+        host_aliases = None
+        if args.servers is not None:
+            raw_servers = _load_json(args.servers)
+            if isinstance(raw_servers, list):
+                server_endpoints = raw_servers
+            elif isinstance(raw_servers, dict):
+                if "servers" not in raw_servers:
+                    raise ValueError("--servers object requires a servers list")
+                server_endpoints = raw_servers.get("servers", [])
+                host_aliases = raw_servers.get("host_aliases", {})
+                if not isinstance(server_endpoints, list) or not isinstance(host_aliases, dict):
+                    raise ValueError("--servers object requires a servers list and host_aliases object")
+            else:
+                raise ValueError("--servers must be a JSON list or object")
+
+        specs = derive_local_target_registry(
+            observed_graph=graph,
+            broker_state=broker_state,
+            server_endpoints=server_endpoints,
+            host_aliases=host_aliases,
+            exclude_unhealthy=args.exclude_unhealthy,
+        )
+        written = write_local_target_registry(specs, args.output)
+        print(
+            json.dumps(
+                {
+                    "count": len(specs),
+                    "output": str(written),
+                    "target_ids": [spec.target_id for spec in specs],
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    except Exception as exc:
+        print(f"local target registry generation refused: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
