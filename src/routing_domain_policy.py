@@ -37,7 +37,7 @@ _DEFAULT_CEILING = "confidential"
 _PRIVATE_HOST_RE = re.compile(
     r"^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal"
     r"|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+"
-    r"|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|[^.]+)$"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$"
 )
 
 
@@ -222,6 +222,7 @@ def evaluate_route(
     sensitivity: str = "internal",
     policy: Optional[DomainPolicy] = None,
     endpoint_url: Optional[str] = None,
+    locality: Optional[str] = None,
     provenance_sink=None,
 ) -> RoutingDecision:
     """Evaluate one (domain, provider) route. Fail-closed; always leaves a record."""
@@ -239,7 +240,14 @@ def evaluate_route(
     else:
         pol = policy or domain_policy(domain)
     p = (provider or "").strip().lower()
-    local = provider_is_local(p) or _endpoint_is_local(endpoint_url or "")
+    # Locality is required for privacy: hosted execution never counts as local,
+    # and an endpoint string alone may never confer privacy permission.
+    if locality == "hosted":
+        local = False
+    elif locality == "local":
+        local = True
+    else:
+        local = provider_is_local(p) or _endpoint_is_local(endpoint_url or "")
 
     def _decide(allowed: bool, rule: str, reason: str) -> RoutingDecision:
         decision = RoutingDecision(
