@@ -34,6 +34,12 @@ from src.target_capability_store import (
     CapabilityStoreError, TargetCapabilityStore)
 
 NOW = datetime.datetime.now(datetime.timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _refresh_now():
+    global NOW
+    NOW = datetime.datetime.now(datetime.timezone.utc)
 DIGEST = "d94d964641c751ddc0ae3d905770095e1c13bc2615964fdc41d0e89ccdc26f28"
 
 PACKET = {

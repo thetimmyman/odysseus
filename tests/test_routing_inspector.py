@@ -400,3 +400,39 @@ def test_same_dispatch_repair_chain_and_duplicate_record_keep_denominator(packag
     assert scorecard["arms"][0]["distinct_execution_n"] == 1
     assert scorecard["arms"][0]["attempt_n"] == 2
     assert scorecard["source_record_hashes"] == [repaired.raw_record_hash]
+    assert "automation_usefulness" not in scorecard
+
+
+def test_project_routing_inspection_attaches_bounded_automation_usefulness(package):
+    from tests.test_automation_usefulness_inspector import (
+        _assert_cockpit_valid_automation_usefulness,
+        make_usefulness_entry,
+    )
+
+    dispatch = _selected_receipt(package)
+    associated = _matching_outcome(package, dispatch)
+    view = project_routing_inspection(
+        package,
+        dispatch,
+        outcomes=(associated,),
+        now=NOW,
+        scoring_version="synthetic-v1",
+        automation_usefulness=[make_usefulness_entry("auto-routing-1")],
+    )
+    scorecard = view["outcomes"]["scorecard"]
+    assert scorecard["ranking_allowed"] is False
+    assert scorecard["automation_usefulness_total_n"] == 1
+    assert scorecard["automation_usefulness"][0]["automation_id"] == "auto-routing-1"
+    _assert_cockpit_valid_automation_usefulness(scorecard["automation_usefulness"])
+
+    # Malformed usefulness source never crashes the scorecard.
+    view_safe = project_routing_inspection(
+        package,
+        dispatch,
+        outcomes=(associated,),
+        now=NOW,
+        scoring_version="synthetic-v1",
+        automation_usefulness=lambda: (_ for _ in ()).throw(RuntimeError("store offline")),
+    )
+    assert view_safe["outcomes"]["status"] == "OBSERVED"
+    assert "automation_usefulness" not in view_safe["outcomes"]["scorecard"]

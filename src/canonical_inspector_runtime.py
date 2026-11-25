@@ -31,6 +31,7 @@ import threading
 import sys
 import uuid
 
+from src.automation_usefulness import JsonExportAutomationUsefulnessSource
 from src.canonical_inspector_admission import AdmissionStore, PreparedTmosWork
 from src.inspector_errors import InspectorUnavailable
 from src.canonical_inspector_workspace import (
@@ -505,7 +506,9 @@ class InspectorRuntime:
 
 
 async def start_inspector_runtime(app, *, settings=None, sessions=None, manifest=None,
-                                  retained_root=None, process_factory=SystemdProcesses, routing_reader=None):
+                                  retained_root=None, process_factory=SystemdProcesses, routing_reader=None,
+                                  outcomes_reader=None, automation_usefulness_source=None,
+                                  automation_control_authority=None):
     """Install only this lifespan's explicitly configured owned composition.
 
     Missing/unsupported native state leaves the existing 503 interface. This
@@ -534,16 +537,27 @@ async def start_inspector_runtime(app, *, settings=None, sessions=None, manifest
             raise InspectorUnavailable("inspector unavailable")
         if manifest is None:
             manifest = _manifest_file(CANONICAL_TMOS_MANIFEST_FILE)
+        usefulness_source = automation_usefulness_source
+        if usefulness_source is None:
+            export_path = requested.get("automationUsefulnessExport")
+            if isinstance(export_path, str) and export_path.strip():
+                usefulness_source = JsonExportAutomationUsefulnessSource(export_path.strip())
         owner = TmosExecutionOwner(manifest, store=store,
             auth_manager=app.state.auth_manager, retained_root=root, process_factory=process_factory,
             routing_reader=routing_reader)
         service = InspectorService(store, retained_root=root,
             projector=partial(project_retained_routing_inspection, scoring_version="canonical-inspector-v1"),
             retention_parents=(root.parent,), restored_disclosure_generation=CANONICAL_TMOS_DISCLOSURE_GENERATION,
-            work_owner=owner)
+            work_owner=owner, outcomes_reader=outcomes_reader,
+            automation_usefulness_source=usefulness_source,
+            automation_control_authority=automation_control_authority)
         runtime = InspectorRuntime(service, owner)
         app.state.canonical_inspector_runtime = runtime
         app.state.canonical_inspector_service = service
+        if usefulness_source is not None:
+            app.state.automation_usefulness_source = usefulness_source
+        if automation_control_authority is not None:
+            app.state.automation_control_authority = automation_control_authority
         return runtime
     except (OSError, ValueError, TypeError, KeyError):
         app.state.canonical_inspector_runtime_reason = "Inspector configuration or native state unavailable"
@@ -558,6 +572,10 @@ async def stop_inspector_runtime(app):
             or app.state.canonical_inspector_service not in (None, runtime.service)):
         raise InspectorUnavailable("inspector unavailable")
     app.state.canonical_inspector_service = None
+    if getattr(app.state, "automation_usefulness_source", None) is runtime.service.automation_usefulness_source:
+        app.state.automation_usefulness_source = None
+    if getattr(app.state, "automation_control_authority", None) is runtime.service.automation_control_authority:
+        app.state.automation_control_authority = None
     if not await runtime.owner.close():
         return False
     app.state.canonical_inspector_runtime = None

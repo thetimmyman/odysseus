@@ -501,3 +501,43 @@ def test_inspector_service_passes_reader_outcomes_to_projector(native_store, tmp
     assert passed_kwargs.get("outcomes") == ("mock_outcome",)
     assert passed_kwargs.get("scoring_version") == "canonical-inspector-v1"
 
+
+def test_scorecard_outcomes_route_attaches_configured_automation_usefulness(tmp_path, monkeypatch):
+    from tests.test_automation_usefulness_inspector import (
+        _assert_cockpit_valid_automation_usefulness,
+        make_usefulness_entry,
+    )
+    from src.execution_outcomes import build_outcome_record
+    from tests.test_execution_outcomes import make_evidence, make_facts
+
+    evidence, extensions, *_ = make_evidence(tmp_path / "scorecard-repo")
+    record = build_outcome_record(
+        evidence_package=evidence,
+        companion_facts=make_facts(evidence),
+        artifact_extensions=extensions,
+    )
+    app, _, client = client_for(tmp_path, monkeypatch)
+
+    # Unconfigured: safely omitted.
+    unconfigured = client.post(
+        "/api/harness/scorecard/outcomes",
+        headers={"x-test-user": "admin"},
+        json={"scoring_version": "test-v1", "records": [record.to_dict()]},
+    )
+    assert unconfigured.status_code == 200
+    assert "automation_usefulness" not in unconfigured.json()
+
+    # Configured: bounded and Cockpit-valid.
+    app.state.automation_usefulness_source = lambda: [make_usefulness_entry("auto-scorecard-1")]
+    configured = client.post(
+        "/api/harness/scorecard/outcomes",
+        headers={"x-test-user": "admin"},
+        json={"scoring_version": "test-v1", "records": [record.to_dict()]},
+    )
+    assert configured.status_code == 200
+    body = configured.json()
+    assert body["ranking_allowed"] is False
+    assert body["automation_usefulness_total_n"] == 1
+    assert body["automation_usefulness"][0]["automation_id"] == "auto-scorecard-1"
+    _assert_cockpit_valid_automation_usefulness(body["automation_usefulness"])
+
