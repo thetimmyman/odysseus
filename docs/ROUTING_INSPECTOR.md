@@ -56,52 +56,37 @@ the same evidence and instant, two evaluations hash identically. Passing
 `decision_id` pins an explanation to a decision actually taken, so its
 `dispatch_receipt_hash` is comparable with the retained receipt.
 
-`apply_operator_override(explanation, target)` steers only between candidates
-that are already eligible. It re-derives the domain policy (provider allow and
-deny lists, sensitivity ceiling, local-only), evidence presence, health,
-capability freshness, credential binding, and entitlement including the
-expiry of the capacity facts behind it, against the override instant
-rather than trusting the recorded `eligible` flag, so a hash-sealed receipt that
-claims eligibility for a target failing a hard rule is still refused. The
-resolved `DomainPolicy` is recorded in the explanation as data, but the gate
-re-evaluates the **authoritative** revision for that domain rather than the
-recorded one, so a forger who rewrites the policy and reseals is refused, and a
-provider the domain denies stays denied even when the request itself does not
-set local-only. A record whose policy disagrees with the authoritative revision
-is refused: that is either tampering or a policy that moved since the decision,
-and both must be re-decided.
+`apply_operator_override(explanation, target, ...)` operates at the authorization
+boundary (`src/override_authorization.py`). It enforces the core invariant:
+*The gate must never read an authorization fact from an object the caller can construct.
+Evidence must be references the gate resolves — never content the gate believes.*
 
-A sealed record is internally consistent even when its *request* was rewritten,
-so the record alone cannot be the last word. `apply_operator_override` requires
-`CanonicalEvidence` (the real request, profiles, capability and capacity
-receipts); record-only steering without evidence is rejected with `ExplanationError`.
-Eligibility is re-derived by a fresh evaluation of those canonical inputs, the
-candidate set and `considered_eligible` are recomputed from the fresh evaluation,
-and the target must qualify there. A swapped domain or evidence identity is refused.
-The issued `OverrideAuditReceipt` records `canonical_evidence_verified = True`.
-Every ineligibility raises `PolicyViolationException` with its typed refusal codes and
-mints nothing; expired capability evidence is never restamped into freshness
-and a policy DENY is never converted. An accepted steering mints an immutable
-`OverrideAuditReceipt` (schema 1) recording operator, justification, instant,
-original and authorized target/profile, explanation/decision/dispatch hashes,
-policy ref, request fingerprint, the closed eligible set, `original_still_eligible`
-and evidence refs. `authorizes` is a fixed single-element vocabulary and `scope`
-is fixed, so the receipt cannot be read as a dispatch, a capability grant, a
-policy change or a refresh. Re-issuing the same intent yields the same id and
-hash.
+To steer execution to an alternative candidate, the caller supplies `OverrideEvidenceRefs`
+(or compatible canonical references) rather than raw profile or receipt content. An injected
+`OverrideEvidenceResolver` resolves authoritative profiles from the capability store,
+receipts, live capacity grants from `CapacityRegistry`, request packets, resources, and
+authoritative domain policy.
 
-This increment still authorizes nothing downstream: no dispatch, no worker
-control, no capability or policy change, no evidence refresh and no pinned
-attempt. OD-19 still does not accept observed interventions, so an override
-receipt here must not be reported as measured attention cost or a completed
-override, and there is no route, store, migration or default activation for it.
-Tests cover the positive control, determinism, refusal codes for filtered
-alternates, and the negative controls above at both the evaluator and the
-override boundary, including resealed tampered explanations. Capacity
-freshness is re-checked from the recorded fact expiry, so a grant whose evidence
-has lapsed (or whose expiry was never recorded) cannot be overridden; detecting
-a revocation that leaves the facts themselves fresh still needs a new capacity
-collection and remains a route-layer concern. Because the
-hard/soft refusal taxonomy is descriptive, a further control proves a
-curably-classified refusal still blocks an override, so the DENY guarantee rests
-on the deciding rule the gate re-derives rather than on the classification.
+The gate enforces reproduction rather than replacement:
+1. **Explanation Authenticity:** The cited `RoutingExplanation` must be hash-sealed and untampered.
+2. **Recorded Eligibility:** The requested target must already have been eligible in the cited
+   explanation; an override can never convert a policy DENY into an ALLOW.
+3. **Reproduction of Facts:** A fresh evaluation of the resolved inputs must reproduce the
+   canonical per-row facts (`provider`, `locality`, `endpoint_url`, `receipt_hash`,
+   `capacity_receipt_refs`).
+4. **Current Eligibility:** A fresh evaluation at the authoritative override instant (`now`,
+   bound to server clock within strict skew tolerances) must confirm the requested candidate
+   remains eligible right now. The fresh evaluation cannot qualify any candidate that was not
+   eligible at decision time.
+5. **Bounded Validity & Keyed Authentication:** The resulting `OverrideAuditReceipt` is
+   privately minted with a keyed HMAC signature. Its validity lifetime is bounded:
+   `valid_until = min(capability_expiry, capacity_expiry, minted_at + 300s)`. A receipt
+   cannot outlive its underlying evidence.
+
+`verify_override_receipt(receipt, explanation, ...)` checks the HMAC signature, structural
+hash, temporal expiration, and optionally re-derives the full evaluation against the resolver.
+
+This increment authorizes nothing downstream: no dispatch, no worker control, no capability
+or policy change, no evidence refresh, and no pinned attempt. OD-19 still does not accept
+observed interventions, so an override receipt here must not be reported as measured attention
+cost or a completed override, and there is no route, store, migration or default activation for it.

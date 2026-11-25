@@ -120,7 +120,8 @@ def test_partial_required_blocking_coverage_is_not_meaningful():
 
 def test_nonprivate_existing_directory_rejected(setup):
     db, rows, root = setup
-    root.mkdir(mode=0o755)
+    root.mkdir()
+    root.chmod(0o755)
     with pytest.raises(ValueError, match="private"):
         export_task(db, "task1")
 
