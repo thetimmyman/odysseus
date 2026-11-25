@@ -1238,3 +1238,16 @@ def test_a7_verifier_rederives_and_rejects_tampered_or_expired_receipt():
     fake_exp = dataclasses.replace(explanation, explanation_hash="0" * 64)
     assert verify_override_receipt(override, fake_exp, evidence, now=NOW) is False
 
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_override_signing_key(monkeypatch):
+    monkeypatch.setenv("ODYSSEUS_OVERRIDE_HMAC_KEY", "synthetic-test-signing-key")
+
+
+def test_missing_signing_key_fails_closed(monkeypatch):
+    from src import override_authorization as oa
+    monkeypatch.delenv("ODYSSEUS_OVERRIDE_HMAC_KEY", raising=False)
+    monkeypatch.setattr("src.constants.APP_KEY_FILE", "/nonexistent/app_key", raising=False)
+    with pytest.raises(Exception):
+        oa._override_hmac_key()

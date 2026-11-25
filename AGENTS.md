@@ -84,3 +84,9 @@ Projected or intended improvements are not results.
 - Lint policy: `ruff.toml` — day-one selection is `E9` + `F` only.
 - Ratchet: `scripts/lint-changed.sh` (docs in its header: rename, delete,
   and baseline-reduction behavior).
+
+## Agent quick start
+
+Use `scripts/agent-bootstrap.sh` to prepare the local Python and Node dependencies.
+Use `--check` to diagnose the environment or `--verify` for the lint ratchet
+controls and build identity and deployment-control tests.
