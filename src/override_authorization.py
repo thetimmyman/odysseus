@@ -266,7 +266,8 @@ def _override_hmac_key() -> bytes:
             return p.read_bytes()
     except Exception:
         pass
-    return b"odysseus-operator-override-hmac-v1-fallback-key"
+    # No published default: a key in public source would let anyone mint receipts.
+    raise ExplanationError("override signing key is not configured (fail closed)")
 
 
 def _compute_hmac(core_payload: Mapping[str, Any], key: Optional[bytes] = None) -> str:
