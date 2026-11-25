@@ -691,33 +691,51 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
         package = sys.modules["src"]
         saved_attr = getattr(package, "local_targets", _PACKAGE_ATTR_MISSING)
         env_before = os.environ.get("PS632_CAPABILITY_STORE")
+        reg_before = os.environ.get("PS632_PROFILE_REGISTRY")
         del sys.modules["src.local_targets"]
         if hasattr(package, "local_targets"):
             delattr(package, "local_targets")
         try:
             local = importlib.import_module("src.local_targets")
-            spec = next(s for s in local.registered_targets()
-                        if local.ROLE_INFERENCE in s.roles and s.qualification_ref)
-            now = datetime.now(timezone.utc)
-            raw = {
-                "reachable": True, "version": "synthetic-runtime",
-                "model": {"name": spec.model, "digest": "a" * 64,
-                          "size": 1024, "details": {
-                              "context_length": 32768,
-                              "quantization_level": "Q4_K_M",
-                              "family": "synthetic"}, "capabilities": []},
-                "ps": {"models": [{"name": spec.model, "size_vram": 1024,
-                                    "context_length": 8192}]},
-                "tool_proof": None,
-            }
-            measured = local.build_capability(spec, raw, probed_at=now.isoformat())
-            receipt = local.receipt_from_capability(
-                measured, configured_context=8192, safe_working_context=8192,
-                safe_context_source="synthetic test measurement", backend="synthetic",
-                ttl_s=3600, health_ttl_s=300, observed_at=now.isoformat(),
-                roles=spec.roles, qualification_ref=spec.qualification_ref)
             with tempfile.TemporaryDirectory() as scratch:
-                os.environ["PS632_CAPABILITY_STORE"] = scratch
+                reg_path = os.path.join(scratch, "registry.json")
+                local.write_local_target_registry(
+                    [
+                        local.LocalTargetSpec(
+                            target_id="local-rtx4500",
+                            label="Synthetic Local",
+                            ssh_host="",
+                            endpoint="http://127.0.0.1:11434",
+                            model="qwen3.8:27b",
+                            roles=(local.ROLE_INFERENCE,),
+                            qualification_ref="ps632-measured:synthetic",
+                        )
+                    ],
+                    reg_path,
+                )
+                os.environ["PS632_PROFILE_REGISTRY"] = reg_path
+                spec = next(s for s in local.registered_targets()
+                            if local.ROLE_INFERENCE in s.roles and s.qualification_ref)
+                now = datetime.now(timezone.utc)
+                raw = {
+                    "reachable": True, "version": "synthetic-runtime",
+                    "model": {"name": spec.model, "digest": "a" * 64,
+                              "size": 1024, "details": {
+                                  "context_length": 32768,
+                                  "quantization_level": "Q4_K_M",
+                                  "family": "synthetic"}, "capabilities": []},
+                    "ps": {"models": [{"name": spec.model, "size_vram": 1024,
+                                        "context_length": 8192}]},
+                    "tool_proof": None,
+                }
+                measured = local.build_capability(spec, raw, probed_at=now.isoformat())
+                receipt = local.receipt_from_capability(
+                    measured, configured_context=8192, safe_working_context=8192,
+                    safe_context_source="synthetic test measurement", backend="synthetic",
+                    ttl_s=3600, health_ttl_s=300, observed_at=now.isoformat(),
+                    roles=spec.roles, qualification_ref=spec.qualification_ref)
+                store_dir = os.path.join(scratch, "store")
+                os.environ["PS632_CAPABILITY_STORE"] = store_dir
                 from src.target_capability_store import store_from_env
                 store_from_env().append(receipt)
                 targets = ec.catalog_targets(ec.CAPABILITY_BULK_LOCAL)
@@ -789,6 +807,10 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
                 os.environ.pop("PS632_CAPABILITY_STORE", None)
             else:
                 os.environ["PS632_CAPABILITY_STORE"] = env_before
+            if reg_before is None:
+                os.environ.pop("PS632_PROFILE_REGISTRY", None)
+            else:
+                os.environ["PS632_PROFILE_REGISTRY"] = reg_before
             sys.modules.pop("src.local_targets", None)
             sys.modules["src.local_targets"] = saved_local
             if saved_attr is _PACKAGE_ATTR_MISSING:
@@ -807,11 +829,29 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
         package = sys.modules["src"]
         saved_attr = getattr(package, "local_targets", _PACKAGE_ATTR_MISSING)
         env_before = os.environ.get("PS632_CAPABILITY_STORE")
+        reg_before = os.environ.get("PS632_PROFILE_REGISTRY")
+        reg_dir = tempfile.TemporaryDirectory(prefix="ps1168-reg-")
         del sys.modules["src.local_targets"]
         if hasattr(package, "local_targets"):
             delattr(package, "local_targets")
         try:
             local = importlib.import_module("src.local_targets")
+            reg_path = os.path.join(reg_dir.name, "registry.json")
+            local.write_local_target_registry(
+                [
+                    local.LocalTargetSpec(
+                        target_id="local-rtx4500",
+                        label="Synthetic Local",
+                        ssh_host="",
+                        endpoint="http://127.0.0.1:11434",
+                        model="qwen3.8:27b",
+                        roles=(local.ROLE_INFERENCE,),
+                        qualification_ref="ps632-measured:synthetic",
+                    )
+                ],
+                reg_path,
+            )
+            os.environ["PS632_PROFILE_REGISTRY"] = reg_path
             spec = next(s for s in local.registered_targets()
                         if local.ROLE_INFERENCE in s.roles and s.qualification_ref)
             from src.target_capability_store import store_from_env
@@ -922,6 +962,11 @@ class ExecutionCatalogReplacementControls(unittest.TestCase):
                 os.environ.pop("PS632_CAPABILITY_STORE", None)
             else:
                 os.environ["PS632_CAPABILITY_STORE"] = env_before
+            if reg_before is None:
+                os.environ.pop("PS632_PROFILE_REGISTRY", None)
+            else:
+                os.environ["PS632_PROFILE_REGISTRY"] = reg_before
+            reg_dir.cleanup()
             sys.modules.pop("src.local_targets", None)
             sys.modules["src.local_targets"] = saved_local
             if saved_attr is _PACKAGE_ATTR_MISSING:

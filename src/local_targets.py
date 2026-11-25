@@ -26,14 +26,21 @@ node is visible.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import subprocess
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
-from src.constants import TARGET_CAPABILITY_PROFILE_REGISTRY_ENV
+from src.constants import (
+    LOCAL_TARGETS_REGISTRY_FILE,
+    TARGET_CAPABILITY_PROFILE_REGISTRY_ENV,
+)
 from src.endpoint_identity import canonical_endpoint_identity
 
 
@@ -41,6 +48,9 @@ from src.endpoint_identity import canonical_endpoint_identity
 TARGET_RTX_4500 = "local-rtx4500"
 TARGET_MSR1 = "local-msr1"
 TARGET_FRAMEWORK = "local-framework"
+TARGET_FALLBACK = "local-fallback"
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 #: Ollama binds loopback on current nodes, so they're reached over ssh; a
 #: routable endpoint would use ``http``.
@@ -100,6 +110,10 @@ class LocalTargetSpec:
     #: empty means not routable.
     qualification_ref: str = ""
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.roles, tuple):
+            object.__setattr__(self, "roles", tuple(self.roles))
+
     @property
     def transport(self) -> str:
         """``http`` only when directly routable; any ``ssh_host`` means tunnelled."""
@@ -122,38 +136,16 @@ class LocalTargetSpec:
         }
 
 
-#: The registered fleet. Order is presentation only; selection is by measured
-#: fitness (:func:`select_local_target`).
+#: Minimal unqualified fallback used only when no local target registry file is
+#: present. Real targets are loaded from ``LOCAL_TARGETS_REGISTRY_FILE`` (or the
+#: explicit ``PS632_PROFILE_REGISTRY`` override) generated from observed servers.
 DEFAULT_TARGETS: Tuple[LocalTargetSpec, ...] = (
     LocalTargetSpec(
-        target_id=TARGET_RTX_4500,
-        label="RTX PRO 4500 Blackwell 32GB (x86_64, i9-12900H)",
-        ssh_host="minipc",
+        target_id=TARGET_FALLBACK,
+        label="Local Fallback (unconfigured)",
+        ssh_host="",
         endpoint="http://127.0.0.1:11434",
-        model="qwen3.8:27b",
-        roles=(ROLE_INFERENCE, ROLE_VERIFIER),
-        # Qualified by its own measured receipt.
-        qualification_ref="ps632-measured:local-rtx4500",
-    ),
-    LocalTargetSpec(
-        target_id=TARGET_MSR1,
-        label="MINISFORUM MS-R1 (aarch64, 12-core, 62GB)",
-        ssh_host="msr1",
-        endpoint="http://127.0.0.1:11434",
-        model="qwen3.8:27b",
-        # No inference role: deterministic verification and ARM64 CI only, so it
-        # can never be selected for generation.
-        roles=(ROLE_VERIFIER, ROLE_GOVERNANCE, ROLE_ARM64_CI),
-        qualification_ref="ps637-verifier-role",
-    ),
-    LocalTargetSpec(
-        target_id=TARGET_FRAMEWORK,
-        label="Framework Desktop (Strix Halo gfx1151, 128GB unified)",
-        ssh_host="framework",
-        endpoint="http://127.0.0.1:11434",
-        model="qwen3.8:27b",
-        # Inference only through an independently qualified profile; until then
-        # it has no qualification ref and can't be selected.
+        model="unconfigured",
         roles=(ROLE_INFERENCE,),
         qualification_ref="",
     ),
@@ -170,18 +162,45 @@ def _registry_file_identity(handle) -> Optional[Dict[str, int]]:
         return None
 
 
+def _read_registry_file(path: str, *, observing: bool) -> Tuple[Any, Optional[Dict[str, int]]]:
+    with open(path, encoding="utf-8") as handle:
+        before = _registry_file_identity(handle) if observing else None
+        payload = json.load(handle)
+        after = _registry_file_identity(handle) if observing else None
+    return payload, (before if before == after else None)
+
+
 def registered_targets(*, provenance_sink=None) -> Tuple[LocalTargetSpec, ...]:
     """The fleet's identity half, with optional metadata from this normal read.
 
-    A plain, request-owned dictionary receives branch and target origins outside
-    the returned specifications. Descriptor drift leaves its identity unknown.
+    Resolution order:
+    1. Explicit ``PS632_PROFILE_REGISTRY`` file (missing file raises).
+    2. Deployed registry file ``LOCAL_TARGETS_REGISTRY_FILE`` when present.
+    3. Builtin minimal unqualified ``DEFAULT_TARGETS`` fallback.
     """
     observing = type(provenance_sink) is dict
     if observing:
         provenance_sink.clear()
         provenance_sink.update(kind="unknown", path=None, identity=None, targets={})
-    path = os.environ.get(TARGET_CAPABILITY_PROFILE_REGISTRY_ENV, "")
-    if not path:
+    explicit_path = os.environ.get(TARGET_CAPABILITY_PROFILE_REGISTRY_ENV, "")
+    active_path = ""
+    origin_kind = "builtin"
+    payload: Any = None
+    identity: Optional[Dict[str, int]] = None
+    if explicit_path:
+        payload, identity = _read_registry_file(explicit_path, observing=observing)
+        active_path = explicit_path
+        origin_kind = "explicit_file"
+    elif LOCAL_TARGETS_REGISTRY_FILE:
+        try:
+            payload, identity = _read_registry_file(
+                LOCAL_TARGETS_REGISTRY_FILE, observing=observing
+            )
+            active_path = LOCAL_TARGETS_REGISTRY_FILE
+            origin_kind = "file"
+        except FileNotFoundError:
+            active_path = ""
+    if not active_path:
         if observing:
             try:
                 origins = {spec.target_id: {"kind": "builtin", "path": None}
@@ -190,34 +209,363 @@ def registered_targets(*, provenance_sink=None) -> Tuple[LocalTargetSpec, ...]:
             except Exception:
                 pass
         return DEFAULT_TARGETS
-    with open(path, encoding="utf-8") as handle:
-        before = _registry_file_identity(handle) if observing else None
-        payload = json.load(handle)
-        after = _registry_file_identity(handle) if observing else None
     if not isinstance(payload, list):
         raise ValueError("profile registry must be a list of explicit host specs")
     overrides = {}
     for row in payload:
+        if not isinstance(row, Mapping):
+            raise TypeError("host specification must be a mapping")
         spec = LocalTargetSpec(**row)
         if spec.target_id in overrides:
             raise ValueError("duplicate host specification")
         if spec.target_id == TARGET_MSR1 and ROLE_INFERENCE in spec.roles:
             raise ValueError("MS-R1 is not an inference target")
         overrides[spec.target_id] = spec
+    base = (
+        tuple(spec for spec in DEFAULT_TARGETS if spec.target_id != TARGET_FALLBACK)
+        if overrides
+        else DEFAULT_TARGETS
+    )
     origins = None
     if observing:
         try:
             origins = {spec.target_id: {"kind": "builtin", "path": None}
-                       for spec in DEFAULT_TARGETS}
-            origins.update({target_id: {"kind": "explicit_file", "path": path}
+                       for spec in base}
+            origins.update({target_id: {"kind": origin_kind, "path": active_path}
                             for target_id in overrides})
         except Exception:
             pass
-    result = tuple(overrides.pop(spec.target_id, spec) for spec in DEFAULT_TARGETS) + tuple(overrides.values())
+    result = tuple(overrides.pop(spec.target_id, spec) for spec in base) + tuple(overrides.values())
     if observing and origins is not None:
-        provenance_sink.update(kind="explicit_file", path=path,
-                               identity=before if before == after else None, targets=origins)
+        provenance_sink.update(kind=origin_kind, path=active_path,
+                               identity=identity, targets=origins)
     return result
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def canonicalize_target_endpoint(
+    endpoint: str,
+    *,
+    runtime_kind: str = "ollama",
+    host_aliases: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Normalize an inference server URL to a single canonical spelling."""
+    raw = str(endpoint or "").strip()
+    canonical_endpoint_identity(raw, runtime_kind)
+    parsed = urlsplit(raw)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"unsupported endpoint scheme: {endpoint!r}")
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise ValueError(f"endpoint must not contain credentials, query, or fragment: {endpoint!r}")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    aliases = {
+        str(k).strip().lower().rstrip("."): str(v).strip().lower().rstrip(".")
+        for k, v in (host_aliases or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+    host = aliases.get(host, host)
+    netloc_host = f"[{host}]" if ":" in host else host
+    netloc = f"{netloc_host}:{parsed.port}" if parsed.port is not None else netloc_host
+    path = parsed.path.rstrip("/")
+    if str(runtime_kind or "ollama").strip().lower() == "ollama" and path.lower() == "/v1":
+        path = ""
+    return f"{scheme}://{netloc}{path}"
+
+
+def _endpoint_rank_key(url: str, *, runtime_kind: str) -> tuple:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    stem = host.split(".", 1)[0]
+    numbered_alias = "-" in stem and stem.rsplit("-", 1)[-1].isdigit()
+    prefers_v1 = str(runtime_kind or "ollama").strip().lower() != "ollama"
+    has_v1 = parsed.path.rstrip("/").lower().endswith("/v1")
+    path_penalty = (0 if has_v1 else 1) if prefers_v1 else (1 if has_v1 else 0)
+    return (
+        1 if host in _LOOPBACK_HOSTS else 0,
+        1 if numbered_alias else 0,
+        1 if _is_ip_literal(host) else 0,
+        path_penalty,
+        canonical_endpoint_identity(url, runtime_kind),
+    )
+
+
+def _active_graph_inference_state(observed_graph: Mapping[str, Any]) -> Tuple[set, Dict[str, set], List[dict]]:
+    """Extract observed hosts, active systemd/process units per host, and any
+    embedded inference server descriptors from a TMOS graph-ir payload."""
+    nodes = observed_graph.get("nodes") or []
+    edges = observed_graph.get("edges") or []
+    node_by_id: Dict[str, Mapping[str, Any]] = {}
+    declared_hosts: set = set()
+    observed_hosts: set = set()
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        nid = str(node.get("node_id") or "")
+        if nid:
+            node_by_id[nid] = node
+        if node.get("kind") == "Host" and nid.startswith("host."):
+            slug = nid.removeprefix("host.")
+            declared_hosts.add(slug)
+            if node.get("truth_class") == "OBSERVED":
+                observed_hosts.add(slug)
+
+    runs_on: Dict[str, List[str]] = {}
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            continue
+        rel = edge.get("relation")
+        src = str(edge.get("source") or "")
+        tgt = str(edge.get("target") or "")
+        if rel == "VERIFIED_BY" and src.startswith("host.") and edge.get("truth_class") == "OBSERVED":
+            observed_hosts.add(src.removeprefix("host."))
+        elif rel == "RUNS_ON" and tgt.startswith("host.") and src:
+            runs_on.setdefault(tgt.removeprefix("host."), []).append(src)
+
+    eligible_hosts = observed_hosts if observed_hosts else declared_hosts
+    active_units_by_host: Dict[str, set] = {h: set() for h in eligible_hosts}
+    inference_capable_hosts: set = set()
+    embedded_servers: List[dict] = []
+
+    for host_slug in eligible_hosts:
+        for comp_id in runs_on.get(host_slug, ()):
+            comp = node_by_id.get(comp_id)
+            if not comp:
+                continue
+            desc = str(comp.get("description") or "").lower()
+            is_dead = "inactive/" in desc or "failed" in desc or str(comp.get("lifecycle") or "").lower() in ("retired", "disabled")
+            name = str(comp.get("name") or comp_id.rsplit(".", 1)[-1])
+            if comp.get("truth_class") == "OBSERVED" and not is_dead:
+                active_units_by_host[host_slug].add(name)
+                active_units_by_host[host_slug].add(comp_id)
+            apis = tuple(str(a) for a in (comp.get("exposes_api") or ()))
+            exposes_inference = any(
+                token in api
+                for api in apis
+                for token in ("/v1/chat/completions", "/api/chat", "/api/generate")
+            )
+            is_inference_unit = (
+                not is_dead
+                and comp.get("truth_class") == "OBSERVED"
+                and (
+                    "ollama" in name.lower()
+                    or "flash" in name.lower()
+                    or "inference" in name.lower()
+                )
+            )
+            if (exposes_inference and not is_dead) or is_inference_unit or comp.get("role") == ROLE_INFERENCE:
+                inference_capable_hosts.add(host_slug)
+            if comp.get("endpoint") and comp.get("model") and not is_dead:
+                embedded_servers.append({
+                    "host": host_slug,
+                    "target_id": comp.get("target_id") or f"local-{host_slug}",
+                    "label": comp.get("label") or comp.get("name") or host_slug,
+                    "endpoint": comp["endpoint"],
+                    "model": comp["model"],
+                    "runtime_kind": comp.get("runtime_kind") or "ollama",
+                })
+
+    return inference_capable_hosts & eligible_hosts, active_units_by_host, embedded_servers
+
+
+def derive_local_target_registry(
+    *,
+    observed_graph: Optional[Mapping[str, Any]] = None,
+    broker_state: Optional[Mapping[str, Any]] = None,
+    server_endpoints: Optional[Sequence[Mapping[str, Any]]] = None,
+    host_aliases: Optional[Mapping[str, str]] = None,
+    exclude_unhealthy: bool = False,
+) -> Tuple[LocalTargetSpec, ...]:
+    """Derive canonical ``LocalTargetSpec`` entries from the TMOS observed graph
+    and/or broker ``/state``, keeping one canonical endpoint spelling per server
+    and omitting non-inference hosts."""
+    if observed_graph is None and broker_state is None:
+        raise ValueError("observed_graph or broker_state is required")
+
+    if server_endpoints is not None and (
+        not isinstance(server_endpoints, (list, tuple))
+        or any(not isinstance(entry, Mapping) for entry in server_endpoints)
+    ):
+        raise ValueError("server_endpoints must be a sequence of mappings")
+    if host_aliases is not None and (
+        not isinstance(host_aliases, Mapping)
+        or any(not isinstance(k, str) or not k.strip() or not isinstance(v, str) or not v.strip()
+               for k, v in host_aliases.items())
+    ):
+        raise ValueError("host_aliases must map nonempty strings to nonempty strings")
+    candidates: List[Mapping[str, Any]] = list(server_endpoints or [])
+    graph_hosts: Optional[set] = None
+    active_units: Dict[str, set] = {}
+    if observed_graph is not None:
+        graph_hosts, active_units, embedded = _active_graph_inference_state(observed_graph)
+        candidates.extend(embedded)
+
+    active_pools: Optional[set] = None
+    if broker_state is not None:
+        gpu_rows = ((broker_state.get("gpus") or {}).get("gpus") or [])
+        health_map = broker_state.get("health") or {}
+        unavailable = broker_state.get("unavailable") or {}
+        active_pools = set()
+        for row in gpu_rows:
+            if not isinstance(row, Mapping):
+                continue
+            pool = str(row.get("pool") or "").strip()
+            if not pool or row.get("excluded"):
+                continue
+            if exclude_unhealthy:
+                pool_health = health_map.get(pool) or {}
+                if not pool_health.get("ok") or pool in unavailable:
+                    continue
+            active_pools.add(pool)
+            if row.get("endpoint") and row.get("model"):
+                candidates.append(row)
+
+    grouped: Dict[str, dict] = {}
+    for entry in candidates:
+        if not isinstance(entry, Mapping):
+            continue
+        host_slug = str(entry.get("host") or entry.get("ssh_host") or "").strip().lower()
+        if host_slug.startswith("host."):
+            host_slug = host_slug.removeprefix("host.")
+        target_id = str(entry.get("target_id") or (f"local-{host_slug}" if host_slug else "")).strip()
+        if not target_id or host_slug == "msr1" or target_id == TARGET_MSR1:
+            continue
+
+        if graph_hosts is not None:
+            if host_slug not in graph_hosts:
+                continue
+            required_unit = str(entry.get("service_unit") or "").strip()
+            if required_unit and active_units.get(host_slug) and required_unit not in active_units[host_slug]:
+                continue
+
+        if active_pools is not None:
+            pool = str(entry.get("pool") or "").strip()
+            if not pool or pool not in active_pools:
+                continue
+
+        model = str(entry.get("model") or "").strip()
+        if not model:
+            continue
+        runtime_kind = str(entry.get("runtime_kind") or "ollama").strip()
+        raw_urls: List[str] = []
+        if entry.get("endpoint"):
+            raw_urls.append(str(entry["endpoint"]))
+        if "endpoints" in entry and (
+            not isinstance(entry["endpoints"], (list, tuple))
+            or any(not isinstance(url, str) or not url.strip() for url in entry["endpoints"])
+        ):
+            raise ValueError("endpoints must be a sequence of nonempty strings")
+        for extra_url in entry.get("endpoints") or ():
+            if extra_url:
+                raw_urls.append(str(extra_url))
+        if not raw_urls:
+            continue
+
+        canon_urls = [
+            canonicalize_target_endpoint(
+                u, runtime_kind=runtime_kind, host_aliases=host_aliases
+            )
+            for u in raw_urls
+        ]
+        server_key = target_id
+        metadata = (host_slug, model, runtime_kind,
+                    int(entry.get("max_concurrency") or DEFAULT_MAX_CONCURRENCY),
+                    str(entry.get("qualification_ref") or ""))
+        bucket = grouped.setdefault(
+            server_key,
+            {
+                "host_slug": host_slug,
+                "target_id": target_id,
+                "label": str(entry.get("label") or host_slug or target_id),
+                "model": model,
+                "runtime_kind": runtime_kind,
+                "max_concurrency": int(entry.get("max_concurrency") or DEFAULT_MAX_CONCURRENCY),
+                "qualification_ref": str(entry.get("qualification_ref") or ""),
+                "urls": [],
+                "metadata": metadata,
+            },
+        )
+        if bucket["metadata"] != metadata:
+            raise ValueError(f"conflicting observations for target {target_id}")
+        bucket["label"] = min(bucket["label"], str(entry.get("label") or host_slug or target_id))
+        bucket["urls"].extend(canon_urls)
+
+    specs: List[LocalTargetSpec] = []
+    endpoint_owners: Dict[tuple, str] = {}
+    for server_key in sorted(grouped):
+        bucket = grouped[server_key]
+        urls = bucket["urls"]
+        remote_urls = [u for u in urls if (urlsplit(u).hostname or "").lower() not in _LOOPBACK_HOSTS]
+        if len(set(remote_urls)) > 1:
+            raise ValueError(f"conflicting endpoints for target {server_key}")
+        if len({(urlsplit(u).scheme, urlsplit(u).port, urlsplit(u).path) for u in urls}) > 1:
+            raise ValueError(f"conflicting endpoints for target {server_key}")
+        for url in urls:
+            parsed = urlsplit(url)
+            endpoint_key = (bucket["host_slug"] if parsed.hostname in _LOOPBACK_HOSTS else "", url)
+            owner = endpoint_owners.setdefault(endpoint_key, server_key)
+            if owner != server_key:
+                raise ValueError(f"endpoint assigned to conflicting targets: {owner}, {server_key}")
+        best_url = min(
+            bucket["urls"],
+            key=lambda u: _endpoint_rank_key(u, runtime_kind=bucket["runtime_kind"]),
+        )
+        parsed_host = (urlsplit(best_url).hostname or "").lower()
+        ssh_host = bucket["host_slug"] if parsed_host in _LOOPBACK_HOSTS else ""
+        specs.append(
+            LocalTargetSpec(
+                target_id=bucket["target_id"],
+                label=bucket["label"],
+                ssh_host=ssh_host,
+                endpoint=best_url,
+                model=bucket["model"],
+                runtime_kind=bucket["runtime_kind"],
+                max_concurrency=bucket["max_concurrency"],
+                roles=(ROLE_INFERENCE,),
+                qualification_ref=bucket["qualification_ref"],
+            )
+        )
+    return tuple(sorted(specs, key=lambda s: s.target_id))
+
+
+def write_local_target_registry(
+    specs: Sequence[LocalTargetSpec],
+    path: Optional[os.PathLike[str] | str] = None,
+) -> Path:
+    """Atomically write ``specs`` as the JSON list consumed by :func:`registered_targets`."""
+    target_path = Path(path or LOCAL_TARGETS_REGISTRY_FILE)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for spec in specs:
+        if spec.target_id == TARGET_MSR1 and ROLE_INFERENCE in spec.roles:
+            raise ValueError("MS-R1 is not an inference target")
+        data = asdict(spec)
+        data["roles"] = list(spec.roles)
+        rows.append(data)
+    serialized = json.dumps(rows, indent=2, sort_keys=True) + "\n"
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".local-targets-", suffix=".tmp", dir=str(target_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return target_path
 
 
 def target_by_id(target_id: str) -> Optional[LocalTargetSpec]:
@@ -570,10 +918,18 @@ class OllamaInspector:
         self.timeout = timeout
         self.probe_tools = probe_tools
 
+    @staticmethod
+    def _request_url(endpoint: str, path: str) -> str:
+        base = endpoint.rstrip("/")
+        if base.endswith("/v1"):
+            if path == "/health" or path == "/v1" or path.startswith("/v1/"):
+                return f"{base[:-3]}{path}"
+        return f"{base}{path}"
+
     def api(self, spec: LocalTargetSpec, path: str, body: Optional[dict] = None) -> dict:
         """One API call returning ``{'ok', 'http', 'body', 'err'}``. Failure is a
         value, so a dead node is still reported."""
-        url = f"{spec.endpoint.rstrip('/')}{path}"
+        url = self._request_url(spec.endpoint, path)
         if spec.transport == TRANSPORT_HTTP:
             import urllib.request
 
@@ -628,8 +984,98 @@ class OllamaInspector:
             body["think"] = False
         return self.api(spec, "/api/chat", body)
 
+    def _openai_tool_question(self, spec: LocalTargetSpec) -> dict:
+        body = {
+            "model": spec.model,
+            "messages": [{"role": "user", "content": self.TOOL_PROMPT}],
+            "tools": [self.TOOL_SCHEMA],
+            "temperature": 0,
+            "max_tokens": 64,
+        }
+        return self.api(spec, "/v1/chat/completions", body)
+
+    def _inspect_openai_compat(self, spec: LocalTargetSpec) -> dict:
+        raw: dict = {"reachable": False, "failure_classes": []}
+        health = self.api(spec, "/health")
+        if not health["ok"]:
+            raw["failure_classes"].append("runtime_unreachable")
+            raw["error"] = health["err"]
+            return raw
+        raw["reachable"] = True
+        hbody = health["body"] if isinstance(health.get("body"), dict) else {}
+        status = str(hbody.get("status") or "").strip().lower()
+        engine = hbody.get("engine")
+        engine_dead = isinstance(engine, dict) and engine.get("responds") is False
+        if status not in ("ok", "healthy", "up", "ready", "live") or engine_dead:
+            raw["failure_classes"].append("health_check_failed")
+            raw["error"] = str(hbody.get("error") or status or "health check failed")
+            return raw
+        ver_info = hbody.get("version")
+        if isinstance(ver_info, dict):
+            raw["version"] = str(ver_info.get("api") or ver_info.get("engine") or "")
+        else:
+            raw["version"] = str(ver_info or "")
+
+        models_resp = self.api(spec, "/v1/models")
+        if not models_resp["ok"]:
+            raw["failure_classes"].append("inventory_failed")
+            raw["error"] = models_resp["err"]
+            return raw
+        mbody = models_resp["body"] if isinstance(models_resp.get("body"), dict) else {}
+        entries = mbody.get("data") or mbody.get("models") or []
+        entry = next(
+            (
+                m for m in entries
+                if isinstance(m, dict)
+                and (
+                    m.get("id") == spec.model
+                    or m.get("name") == spec.model
+                    or m.get("model") == spec.model
+                )
+            ),
+            None,
+        )
+        if entry is None:
+            raw["failure_classes"].append("model_absent")
+            raw["available_models"] = [
+                m.get("id") or m.get("name")
+                for m in entries
+                if isinstance(m, dict)
+            ]
+            return raw
+        ctx_len = entry.get("context_length") or entry.get("max_model_len")
+        details = dict(entry.get("details") or {})
+        if ctx_len is not None and "context_length" not in details:
+            details["context_length"] = ctx_len
+        raw["model"] = {
+            "name": entry.get("id") or entry.get("name") or spec.model,
+            "digest": str(entry.get("digest") or ""),
+            "size": int(entry.get("size") or 0),
+            "details": details,
+            "capabilities": list(entry.get("capabilities") or []),
+        }
+        in_flight = int(hbody.get("in_flight") or 0) + int(hbody.get("queued") or 0)
+        raw["ps"] = {"models": [{"name": spec.model}] * max(0, in_flight)}
+
+        if self.probe_tools:
+            proof = self._openai_tool_question(spec)
+            choices = (proof["body"].get("choices") or []) if proof["ok"] else []
+            first_msg = (
+                choices[0].get("message") or {}
+                if choices and isinstance(choices[0], dict)
+                else {}
+            )
+            raw["tool_proof"] = {
+                "ok": proof["ok"],
+                "tool_calls": len(first_msg.get("tool_calls") or []),
+                "error": proof["err"],
+            }
+        return raw
+
     def inspect(self, spec: LocalTargetSpec) -> dict:
         """The raw observation :func:`build_capability` turns into a record."""
+        if str(spec.runtime_kind or "ollama").strip().lower() != "ollama":
+            return self._inspect_openai_compat(spec)
         raw: dict = {"reachable": False, "failure_classes": []}
         ver = self.api(spec, "/api/version")
         if not ver["ok"]:
@@ -782,7 +1228,7 @@ def probe_target(
 
 
 def probe_fleet(
-    specs: Sequence[LocalTargetSpec] = DEFAULT_TARGETS,
+    specs: Optional[Sequence[LocalTargetSpec]] = None,
     *,
     inspector: Optional[OllamaInspector] = None,
     timings_by_target: Optional[Dict[str, dict]] = None,
@@ -791,11 +1237,12 @@ def probe_fleet(
     never looks like "nothing to do". ``timings_by_target`` attaches measured
     throughput; without it selection falls back to an ID tie-break.
     """
+    resolved_specs = registered_targets() if specs is None else specs
     inspector = inspector or OllamaInspector()
     timings = dict(timings_by_target or {})
     return tuple(
         apply_timings(probe_target(spec, inspector=inspector), timings.get(spec.target_id, {}))
-        for spec in specs
+        for spec in resolved_specs
     )
 
 def _fitness_key(record: LocalTargetCapability) -> tuple:
@@ -812,7 +1259,7 @@ def select_local_target(
     required: Iterable[str] = (),
     *,
     records: Optional[Sequence[LocalTargetCapability]] = None,
-    specs: Sequence[LocalTargetSpec] = DEFAULT_TARGETS,
+    specs: Optional[Sequence[LocalTargetSpec]] = None,
     inspector: Optional[OllamaInspector] = None,
     exclude: Iterable[str] = (),
     pin: str = "",
@@ -830,13 +1277,15 @@ def select_local_target(
         if cap not in KNOWN_CAPABILITIES:
             raise ValueError(f"unknown local-target capability: {cap!r}")
     held = dict(held_write_scopes or {})
+    resolved_specs = registered_targets() if specs is None else tuple(specs)
     pool = (
         tuple(records)
         if records is not None
-        else probe_fleet(specs, inspector=inspector)
+        else probe_fleet(resolved_specs, inspector=inspector)
     )
     if pin:
-        if target_by_id(pin) is None:
+        known_ids = {r.target_id for r in pool} | {s.target_id for s in resolved_specs}
+        if pin not in known_ids and target_by_id(pin) is None:
             raise LocalTargetUnavailable({"pin": pin}, [f"unknown target_id {pin!r}"])
         pool = tuple(r for r in pool if r.target_id == pin)
 
@@ -846,6 +1295,9 @@ def select_local_target(
     for rec in pool:
         if rec.target_id in excluded:
             reasons.append(f"{rec.target_id}: excluded by caller")
+            continue
+        if rec.spec.target_id == TARGET_FALLBACK and not rec.spec.qualification_ref:
+            reasons.append(f"{rec.target_id}: unqualified fallback")
             continue
         if rec.health != HEALTH_HEALTHY:
             detail = ",".join(rec.failure_classes) or "no detail"
