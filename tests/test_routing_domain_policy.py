@@ -49,6 +49,38 @@ def test_local_endpoint_url_counts_as_local():
     assert d.allowed is True
 
 
+def test_dotless_single_label_host_is_not_local():
+    # https://openrouter has no dots; it must not be treated as a local LAN host.
+    d = rdp.evaluate_route(domain="finance", provider="openrouter", endpoint_url="https://openrouter/v1")
+    assert d.allowed is False
+    assert d.rule == "sensitive-domain-local-only"
+
+
+def test_hosted_locality_cannot_claim_local_via_loopback_endpoint():
+    # locality="hosted" requires remote treatment even if pointing to a loopback address.
+    d = rdp.evaluate_route(
+        domain="finance", provider="openrouter",
+        endpoint_url="http://127.0.0.1:9000/v1", locality="hosted")
+    assert d.allowed is False
+    assert d.rule == "sensitive-domain-local-only"
+
+
+def test_declared_local_locality_cannot_upgrade_a_hosted_endpoint():
+    # A profile's declared locality (the dataclass default is "local") is a claim,
+    # not evidence: it may tighten the decision but never grant locality that the
+    # provider/endpoint do not show. Fail closed.
+    d = rdp.evaluate_route(
+        domain="finance", provider="openrouter",
+        endpoint_url="https://openrouter.ai/api/v1", locality="local")
+    assert d.allowed is False
+    assert d.rule == "sensitive-domain-local-only"
+    d = rdp.evaluate_route(
+        domain="general", provider="openrouter", sensitivity="restricted",
+        endpoint_url="https://openrouter.ai/api/v1", locality="local")
+    assert d.allowed is False
+    assert d.rule == "sensitivity-ceiling"
+
+
 def test_fallback_fails_closed_for_sensitive_domain():
     with pytest.raises(rdp.PolicyDenied) as err:
         rdp.select_route(
