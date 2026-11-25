@@ -98,3 +98,11 @@ def test_service_ddg_html_fallback_sends_safesearch(monkeypatch):
 
     assert seen["params"]["kp"] == "-2"
     assert results[0]["url"].startswith("https://notduckduckgo.com/")
+
+
+def test_service_searxng_general_engines_exclude_google_and_blocked_defaults():
+    configured = [e.strip() for e in providers._GENERAL_ENGINES.split(",") if e.strip()]
+    assert "bing" in configured
+    assert "yandex" in configured
+    for forbidden in ("google", "mojeek", "presearch", "startpage"):
+        assert forbidden not in configured
